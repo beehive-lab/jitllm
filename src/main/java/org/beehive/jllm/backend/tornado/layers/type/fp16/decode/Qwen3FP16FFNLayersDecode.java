@@ -1,6 +1,7 @@
 package org.beehive.jllm.backend.tornado.layers.type.fp16.decode;
 
 import org.beehive.jllm.backend.tornado.layers.type.fp16.Qwen3FP16FFNLayers;
+import org.beehive.jllm.backend.tornado.layers.type.fp16.prefill.Qwen3FP16LayersBatchPrefillMMA;
 import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jllm.inference.state.Qwen3State;
 import org.beehive.jllm.inference.weights.tornado.Qwen3TornadoWeights;
@@ -94,5 +95,21 @@ public class Qwen3FP16FFNLayersDecode extends Qwen3FP16FFNLayers {
     @Override
     protected String weightSourceGraphName(int layerIndex) {
         return "batchPrefillLayer_" + layerIndex;
+    }
+
+    /**
+     * With the native gate/up projection the batch-prefill layer graph computes from one stacked
+     * [gate|up] weight, so {@code w1} and {@code w3} are arguments to no task in it and it never
+     * uploads them. This graph's fused gate/up kernel still reads both, so it uploads them itself.
+     */
+    @Override
+    protected Object[] weightsNotProvidedBySource(int layerIndex) {
+        if (!Qwen3FP16LayersBatchPrefillMMA.nativeGateUpProjection()) {
+            return super.weightsNotProvidedBySource(layerIndex);
+        }
+        return new Object[] {
+            weights.w1Layered[layerIndex].asHalfFloatArray(),
+            weights.w3Layered[layerIndex].asHalfFloatArray()
+        };
     }
 }

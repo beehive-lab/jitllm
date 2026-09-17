@@ -7,6 +7,7 @@ import org.beehive.jllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
+import org.beehive.jllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jllm.inference.state.Qwen3State;
@@ -74,6 +75,15 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final boolean cudnnAttention;
     private final boolean cublasProjection;
     private final boolean cublasW2Projection;
+    private final boolean cublasGateUpProjection;
+    /**
+     * gate and up stacked along the output dimension, one array per layer, so the packed
+     * [gate|up] result can come from a single GEMM. gemmMMAGateUp reads w1 and w3 as two separate
+     * operands and selects between them by output column; cuBLAS takes one B and the binding has
+     * no operand offset, so the two have to be adjacent in memory. Built once here, never per
+     * prefill, and the originals are left alone because decode and the JIT path still use them.
+     */
+    private final HalfFloatArray[] gateUpCat;
     /** Diagnostics only: makes the cuDNN staging buffers host-readable after each layer. */
     private static final boolean CUDNN_DEBUG =
             Boolean.getBoolean("jllm.attention.cudnnPrefill.debug");
@@ -105,6 +115,19 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         return state.usesFp16KeyValueCache();
     }
 
+    /**
+     * Whether the batch-prefill gate/up projection is the single stacked cuBLAS GEMM. Single source
+     * of truth: the decode layer graphs consume this layer's weights from the batch-prefill graph,
+     * and this flag decides whether that graph still reads {@code w1}/{@code w3} at all.
+     */
+    public static boolean nativeGateUpProjection() {
+        // Gated on the backend too, not on the property alone: this class is only built where
+        // tensor cores are, so on any other backend the flag selects nothing and the decode
+        // graphs must keep consuming w1/w3 from a prefill graph that still reads them.
+        return TensorCoreSupport.isTensorCoreCapableBackend()
+                && Boolean.getBoolean("jllm.projection.cublas.gateUp");
+    }
+
     public Qwen3FP16LayersBatchPrefillMMA(
             Qwen3State state,
             Qwen3TornadoWeights weights,
@@ -128,6 +151,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.cublasProjection = Boolean.getBoolean("jllm.projection.cublas");
         // Separate flag so the down projection can be measured on its own.
         this.cublasW2Projection = Boolean.getBoolean("jllm.projection.cublas.w2");
+        this.cublasGateUpProjection = nativeGateUpProjection();
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHead = config.numberOfHeadsValue();
         this.qDim = config.numberOfHeadsKey() * config.numberOfHeads();
@@ -151,6 +175,27 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             System.out.printf(
                     "[jllm] prefill attention: cuDNN SDPA (first chunk only), staging %d MiB%n",
                     4L * cudnnElems * Short.BYTES / (1024 * 1024));
+        }
+        this.gateUpCat = new HalfFloatArray[cublasGateUpProjection ? config.numberOfLayers() : 0];
+        if (cublasGateUpProjection) {
+            long t0 = System.nanoTime();
+            int rowsK = config.hiddenDim() * config.dim();
+            for (int l = 0; l < config.numberOfLayers(); l++) {
+                HalfFloatArray w1 = weights.w1Layered[l].asHalfFloatArray();
+                HalfFloatArray w3 = weights.w3Layered[l].asHalfFloatArray();
+                HalfFloatArray cat = new HalfFloatArray(2 * rowsK);
+                for (int i = 0; i < rowsK; i++) {
+                    cat.set(i, w1.get(i));
+                    cat.set(rowsK + i, w3.get(i));
+                }
+                gateUpCat[l] = cat;
+            }
+            System.out.printf(
+                    "[jllm] prefill gate/up: cuBLAS, %d stacked weights, %d MiB extra resident,"
+                            + " built in %.2f s%n",
+                    config.numberOfLayers(),
+                    (long) config.numberOfLayers() * 2 * rowsK * Short.BYTES / (1024 * 1024),
+                    (System.nanoTime() - t0) / 1e9);
         }
         this.layerITGs =
                 IntStream.range(0, config.numberOfLayers())
@@ -236,6 +281,13 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 weights.w1Layered[layerIndex].asHalfFloatArray(),
                 weights.w2Layered[layerIndex].asHalfFloatArray(),
                 weights.w3Layered[layerIndex].asHalfFloatArray());
+        if (cublasGateUpProjection) {
+            // A buffer this class owns, not one of the model's, so it needs its own upload. w1/w3
+            // stay declared above: the decode layer graphs consume this graph's weight buffers,
+            // and Qwen3FP16FFNLayersDecode uploads the two this graph no longer reads.
+            batchPrefillLayer.transferToDevice(
+                    DataTransferMode.FIRST_EXECUTION, gateUpCat[layerIndex]);
+        }
 
         // ── Attention Block ────────────────────────────────────────────────────
         batchPrefillLayer.task(
@@ -502,17 +554,41 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 state.workspace.ffnScaleBatch,
                 dim);
 
-        batchPrefillLayer.task(
-                "gateUpProj",
-                TransformerBatchPrefillKernels::gemmMMAGateUp,
-                context,
-                state.workspace.normedXFFNFP16,
-                weights.w1Layered[layerIndex].asHalfFloatArray(),
-                weights.w3Layered[layerIndex].asHalfFloatArray(),
-                state.workspace.gateUpResultBatch,
-                paddedBatch,
-                hidDim,
-                dim);
+        // Gate/up: [M=batch, N=2*hidDim, K=dim], producing the packed [gate|up] rows the SwiGLU
+        // kernel reads as rowBase+i and rowBase+hidDim+i. One GEMM over the stacked weight
+        // reproduces that layout exactly -- output column c < hidDim comes from a gate row,
+        // c >= hidDim from an up row -- so the fusion is preserved rather than split into two
+        // calls. Same contract as woProj/w2Proj: FP16 operands, FP32 accumulation, FP32 output.
+        if (cublasGateUpProjection) {
+            batchPrefillLayer.libraryTask(
+                    "gateUpProj",
+                    CuBlas::cublasGemmExFP16FP32,
+                    1,
+                    0,
+                    2 * hidDim,
+                    paddedBatch,
+                    dim,
+                    1.0f,
+                    gateUpCat[layerIndex],
+                    dim,
+                    state.workspace.normedXFFNFP16,
+                    dim,
+                    0.0f,
+                    state.workspace.gateUpResultBatch,
+                    2 * hidDim);
+        } else {
+            batchPrefillLayer.task(
+                    "gateUpProj",
+                    TransformerBatchPrefillKernels::gemmMMAGateUp,
+                    context,
+                    state.workspace.normedXFFNFP16,
+                    weights.w1Layered[layerIndex].asHalfFloatArray(),
+                    weights.w3Layered[layerIndex].asHalfFloatArray(),
+                    state.workspace.gateUpResultBatch,
+                    paddedBatch,
+                    hidDim,
+                    dim);
+        }
 
         batchPrefillLayer
                 .task(
@@ -640,7 +716,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             }
             scheduler.addWorkerGrid(p + "batch_ffn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_ffn_rms_apply", ffnRmsApplyWorker);
-            scheduler.addWorkerGrid(p + "gateUpProj", mmaGateUpWorker);
+            if (!cublasGateUpProjection) {
+                scheduler.addWorkerGrid(p + "gateUpProj", mmaGateUpWorker);
+            }
             scheduler.addWorkerGrid(p + "swiglu", ewHidWorker);
             if (!cublasW2Projection) {
                 scheduler.addWorkerGrid(p + "w2Proj", mmaDimWorker);
