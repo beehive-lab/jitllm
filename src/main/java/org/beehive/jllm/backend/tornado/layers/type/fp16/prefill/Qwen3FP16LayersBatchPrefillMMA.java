@@ -21,6 +21,7 @@ import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
+import uk.ac.manchester.tornado.cublas.CuBlas;
 import uk.ac.manchester.tornado.cudnn.CuDnn;
 
 /**
@@ -70,6 +71,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final int kvDim;
     private final int gqa;
     private final boolean cudnnAttention;
+    private final boolean cublasProjection;
     /**
      * Staging for the cuDNN call: contiguous FP16 Q, GQA-expanded K/V, and its output, all
      * {@code [head][tok][headDim]}. Allocated once and reused by every layer graph, because
@@ -110,6 +112,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         }
         this.cudnnAttention =
                 Boolean.getBoolean("jllm.attention.cudnnPrefill") && state.usesFp16KeyValueCache();
+        this.cublasProjection = Boolean.getBoolean("jllm.projection.cublas");
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHead = config.numberOfHeadsValue();
         this.qDim = config.numberOfHeadsKey() * config.numberOfHeads();
@@ -121,6 +124,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.cudnnV = new HalfFloatArray(cudnnElems);
         this.cudnnOut = new HalfFloatArray(cudnnElems);
         if (cudnnAttention) {
+            org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass.cudnnGraphBatchWidth = batchSize;
             System.out.printf(
                     "[jllm] prefill attention: cuDNN SDPA (first chunk only), staging %d MiB%n",
                     4L * cudnnElems * Short.BYTES / (1024 * 1024));
@@ -398,16 +402,41 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         }
 
         // Output projection: [M=batch, N=dim, K=qDim]
-        batchPrefillLayer.task(
-                "woProj",
-                TransformerBatchPrefillKernels::gemmMMA,
-                context,
-                state.workspace.attnOutFP16,
-                weights.woLayered[layerIndex].asHalfFloatArray(),
-                state.workspace.woOut,
-                paddedBatch,
-                dim,
-                qDim);
+        if (cublasProjection) {
+            // gemmMMA computes C[m][n] = sum_k A[m][k] * B[n][k] with A and B both row-major
+            // and B already stored transposed, i.e. C = A * B^T. cuBLAS is column-major, where
+            // that same buffer layout reads as C' = B'^T * A' -- hence OP_T on the weight,
+            // OP_N on the activation, and (m,n) swapped to (dim, batch).
+            // FP16 in, FP32 out, FP32 accumulate: same accumulation precision and the same
+            // woOut representation the fused RMS/residual consumer expects.
+            batchPrefillLayer.libraryTask(
+                    "woProj",
+                    CuBlas::cublasGemmExFP16FP32,
+                    1,
+                    0,
+                    dim,
+                    paddedBatch,
+                    qDim,
+                    1.0f,
+                    weights.woLayered[layerIndex].asHalfFloatArray(),
+                    qDim,
+                    state.workspace.attnOutFP16,
+                    qDim,
+                    0.0f,
+                    state.workspace.woOut,
+                    dim);
+        } else {
+            batchPrefillLayer.task(
+                    "woProj",
+                    TransformerBatchPrefillKernels::gemmMMA,
+                    context,
+                    state.workspace.attnOutFP16,
+                    weights.woLayered[layerIndex].asHalfFloatArray(),
+                    state.workspace.woOut,
+                    paddedBatch,
+                    dim,
+                    qDim);
+        }
 
         // ── FFN Block ──────────────────────────────────────────────────────────
         batchPrefillLayer.task(
@@ -541,7 +570,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             } else {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }
-            scheduler.addWorkerGrid(p + "woProj", mmaDimWorker);
+            if (!cublasProjection) {
+                scheduler.addWorkerGrid(p + "woProj", mmaDimWorker);
+            }
             scheduler.addWorkerGrid(p + "batch_ffn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_ffn_rms_apply", ffnRmsApplyWorker);
             scheduler.addWorkerGrid(p + "gateUpProj", mmaGateUpWorker);

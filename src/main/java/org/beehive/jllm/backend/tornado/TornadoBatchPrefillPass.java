@@ -15,6 +15,9 @@ public final class TornadoBatchPrefillPass {
     private static final int Q8_0_BLOCK_BYTES = 34;
 
     /** Mirrors the flag the prefill layer planner reads; see CuDnnPrefillAttentionKernels. */
+    /** Graph batch width, published by the prefill planner when the cuDNN path is built. */
+    public static volatile int cudnnGraphBatchWidth = -1;
+
     private static final boolean CUDNN_PREFILL_ATTENTION =
             Boolean.getBoolean("jllm.attention.cudnnPrefill");
 
@@ -49,12 +52,19 @@ public final class TornadoBatchPrefillPass {
         // query block IS the whole prefix. A chunk starting past zero has its queries at an
         // offset into a longer key range, and the library binding cannot express that, so
         // refuse rather than quietly apply first-chunk masking to a later chunk.
-        if (CUDNN_PREFILL_ATTENTION && startPos != 0) {
+        if (CUDNN_PREFILL_ATTENTION
+                && (startPos != 0 || chunkSize != cudnnGraphBatchWidth)) {
             throw new IllegalStateException(
-                    "jllm.attention.cudnnPrefill only supports a prefill that is a single chunk "
-                            + "starting at position 0; this chunk starts at "
+                    "jllm.attention.cudnnPrefill only supports a prefill that is a single FULL "
+                            + "chunk starting at position 0; this chunk starts at "
                             + startPos
-                            + ". Raise --batch-prefill-size to cover the prompt, or disable the flag.");
+                            + " and covers "
+                            + chunkSize
+                            + " of "
+                            + cudnnGraphBatchWidth
+                            + " rows. A partial chunk currently produces NaN (the padded query "
+                            + "rows are not masked the way the JIT kernel skips them), so it is "
+                            + "refused rather than silently wrong. Disable the flag for such prompts.");
         }
 
         state.workspace.batchStartPosHolder.set(0, startPos);
