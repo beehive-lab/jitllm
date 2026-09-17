@@ -73,6 +73,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final int gqa;
     private final boolean cudnnAttention;
     private final boolean cublasProjection;
+    private final boolean cublasW2Projection;
     /** Diagnostics only: makes the cuDNN staging buffers host-readable after each layer. */
     private static final boolean CUDNN_DEBUG =
             Boolean.getBoolean("jllm.attention.cudnnPrefill.debug");
@@ -125,6 +126,8 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.cudnnAttention =
                 Boolean.getBoolean("jllm.attention.cudnnPrefill") && state.usesFp16KeyValueCache();
         this.cublasProjection = Boolean.getBoolean("jllm.projection.cublas");
+        // Separate flag so the down projection can be measured on its own.
+        this.cublasW2Projection = Boolean.getBoolean("jllm.projection.cublas.w2");
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHead = config.numberOfHeadsValue();
         this.qDim = config.numberOfHeadsKey() * config.numberOfHeads();
@@ -519,22 +522,45 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         state.workspace.wrapHbFP16Batch,
                         state.workspace.gateUpResultBatch,
                         hidDim)
-                .task(
-                        "w2Proj",
-                        TransformerBatchPrefillKernels::gemmMMA,
-                        context,
-                        state.workspace.wrapHbFP16Batch,
-                        weights.w2Layered[layerIndex].asHalfFloatArray(),
-                        state.workspace.w2Out,
-                        paddedBatch,
-                        dim,
-                        hidDim)
-                .task(
-                        "w2Resid",
-                        TransformerBatchPrefillKernels::batchedResidualAddFP32,
-                        context,
-                        state.workspace.wrapXBatch,
-                        state.workspace.w2Out);
+                ;
+        // Down projection: [M=batch, N=dim, K=hidDim]. Same contract as woProj -- FP16
+        // operands, FP32 accumulation, FP32 w2Out -- and w2Resid still follows it, so the
+        // residual is added after the projection exactly as before.
+        if (cublasW2Projection) {
+            batchPrefillLayer.libraryTask(
+                    "w2Proj",
+                    CuBlas::cublasGemmExFP16FP32,
+                    1,
+                    0,
+                    dim,
+                    paddedBatch,
+                    hidDim,
+                    1.0f,
+                    weights.w2Layered[layerIndex].asHalfFloatArray(),
+                    hidDim,
+                    state.workspace.wrapHbFP16Batch,
+                    hidDim,
+                    0.0f,
+                    state.workspace.w2Out,
+                    dim);
+        } else {
+            batchPrefillLayer.task(
+                    "w2Proj",
+                    TransformerBatchPrefillKernels::gemmMMA,
+                    context,
+                    state.workspace.wrapHbFP16Batch,
+                    weights.w2Layered[layerIndex].asHalfFloatArray(),
+                    state.workspace.w2Out,
+                    paddedBatch,
+                    dim,
+                    hidDim);
+        }
+        batchPrefillLayer.task(
+                "w2Resid",
+                TransformerBatchPrefillKernels::batchedResidualAddFP32,
+                context,
+                state.workspace.wrapXBatch,
+                state.workspace.w2Out);
 
         batchPrefillLayer.persistOnDevice(state.workspace.wrapXBatch, keyCache, valueCache);
 
@@ -616,7 +642,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             scheduler.addWorkerGrid(p + "batch_ffn_rms_apply", ffnRmsApplyWorker);
             scheduler.addWorkerGrid(p + "gateUpProj", mmaGateUpWorker);
             scheduler.addWorkerGrid(p + "swiglu", ewHidWorker);
-            scheduler.addWorkerGrid(p + "w2Proj", mmaDimWorker);
+            if (!cublasW2Projection) {
+                scheduler.addWorkerGrid(p + "w2Proj", mmaDimWorker);
+            }
             scheduler.addWorkerGrid(p + "w2Resid", ewDimWorker);
         }
     }
