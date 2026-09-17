@@ -466,6 +466,20 @@ public class Qwen3PagedKvKernels {
         int pairIdx = globalIdx % halfQDim;
         int qkvStride = qDim + 2 * kvDim;
 
+        // A padded row is not a token and has no key/value to store. Writing one anyway
+        // addresses the block table at pos/blockSize for a position the session never
+        // allocated: when the context is smaller than the prefill width -- a short prompt in
+        // a wide chunk -- that index is past the end of this slot's table, and the physical
+        // block it reads back scatters the write over blocks that DO hold live keys. The
+        // damage is deterministic, so a single engine stays self-consistent and the defect
+        // hides; it only surfaces when two attention paths leave different values in the
+        // padded rows. Measured on Qwen3-0.6B-FP16, prompt 300 in a 512-wide chunk:
+        // capacity 320 < 512, and the two paths' logits diverged by relL2 ~1.0. Raising the
+        // context so capacity >= 512 dropped that to 6.4e-04 with nothing else changed.
+        if (batchIdx >= batchStartPosHolder.get(1)) {
+            return;
+        }
+
         int pos = batchStartPosHolder.get(0) + batchIdx;
         int slot = batchStartPosHolder.get(2);
 

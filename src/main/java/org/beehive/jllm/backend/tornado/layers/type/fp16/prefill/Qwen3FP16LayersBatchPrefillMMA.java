@@ -363,9 +363,22 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         qDim);
                 if (CUDNN_DEBUG && layerIndex == CUDNN_DEBUG_LAYER) {
                     batchPrefillLayer.transferToHost(
-                            DataTransferMode.EVERY_EXECUTION, cudnnQ, cudnnK, cudnnV, cudnnOut);
+                            DataTransferMode.EVERY_EXECUTION,
+                            cudnnQ, cudnnK, cudnnV, cudnnOut,
+                            state.workspace.qkvResultBatch,
+                            state.workspace.wrapKeyCacheFP16,
+                            state.workspace.wrapValueCacheFP16,
+                            state.workspace.attnOutFP16);
                 }
             } else {
+            if (CUDNN_DEBUG && layerIndex == CUDNN_DEBUG_LAYER) {
+                batchPrefillLayer.transferToHost(
+                        DataTransferMode.EVERY_EXECUTION,
+                        state.workspace.qkvResultBatch,
+                        state.workspace.wrapKeyCacheFP16,
+                        state.workspace.wrapValueCacheFP16,
+                        state.workspace.attnOutFP16);
+            }
             batchPrefillLayer.task(
                     "batch_attention",
                     packedHalf2Attention
