@@ -67,6 +67,23 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     // GEMM M dimension rounded up to whole 128-row tiles (BM); see the Llama
     // planner for the padding rationale. Non-GEMM kernels use the true batchSize.
     private final int paddedBatch;
+
+    /**
+     * Rows a native GEMM has to produce.
+     *
+     * <p>{@code paddedBatch} rounds the chunk width up to 128 because the JIT {@code gemmMMA*}
+     * kernels tile 128x128 and their worker grid is derived from it. cuBLAS has no such
+     * constraint, and nothing downstream reads the rows above the chunk width: every other
+     * worker grid in this class -- the RMS reduces and applies, the Q/K norm, RoPE, attention,
+     * the cuDNN adapters, SwiGLU and the residual add -- is sized on {@code batchSize}. So a
+     * native projection only needs to produce {@code batchSize} rows, and at a width that is not
+     * a multiple of 128 that is strictly less work: 300 rows instead of 384.
+     *
+     * <p>A JIT projection still gets {@code paddedBatch}, because its grid demands it.
+     */
+    private int nativeGemmRows() {
+        return unpaddedNativeGemm ? batchSize : paddedBatch;
+    }
     private final int nHeadKv;
     private final int nEmbdHead;
     private final int qDim;
@@ -86,6 +103,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final HalfFloatArray[] gateUpCat;
     private final int layersPerGraph;
     private final boolean sharedCudnnStaging;
+    private final boolean unpaddedNativeGemm;
     private final boolean cublasQkvProjection;
     /**
      * wq, wk and wv stacked along the output dimension, one array per layer, so the packed
@@ -159,6 +177,11 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      * binds one buffer everywhere, which is the same contract the workspace arrays already use
      * in this method.
      */
+    /** Whether native projections produce only the chunk's rows instead of the padded count. */
+    public static boolean unpaddedNativeGemm() {
+        return Boolean.getBoolean("jllm.projection.cublas.unpaddedRows");
+    }
+
     public static boolean sharedCudnnStaging() {
         return Boolean.getBoolean("jllm.attention.cudnnPrefill.sharedStaging");
     }
@@ -214,6 +237,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.cublasQkvProjection = nativeQkvProjection();
         this.layersPerGraph = Math.min(prefillLayersPerGraph(), config.numberOfLayers());
         this.sharedCudnnStaging = sharedCudnnStaging();
+        this.unpaddedNativeGemm = unpaddedNativeGemm();
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHead = config.numberOfHeadsValue();
         this.qDim = config.numberOfHeadsKey() * config.numberOfHeads();
@@ -286,6 +310,11 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     (System.nanoTime() - t0) / 1e9);
         }
         int groups = (config.numberOfLayers() + layersPerGraph - 1) / layersPerGraph;
+        if (unpaddedNativeGemm && batchSize != paddedBatch) {
+            System.out.printf(
+                    "[jllm] prefill native GEMM rows: %d (chunk width) instead of %d (padded)%n",
+                    batchSize, paddedBatch);
+        }
         if (layersPerGraph > 1) {
             System.out.printf(
                     "[jllm] prefill layer grouping: %d layers per graph, %d graphs instead of %d%n",
@@ -466,7 +495,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     1,
                     0,
                     qDim + 2 * kvDim,
-                    paddedBatch,
+                    nativeGemmRows(),
                     dim,
                     1.0f,
                     qkvCat[layerIndex],
@@ -676,7 +705,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     1,
                     0,
                     dim,
-                    paddedBatch,
+                    nativeGemmRows(),
                     qDim,
                     1.0f,
                     weights.woLayered[layerIndex].asHalfFloatArray(),
@@ -733,7 +762,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     1,
                     0,
                     2 * hidDim,
-                    paddedBatch,
+                    nativeGemmRows(),
                     dim,
                     1.0f,
                     gateUpCat[layerIndex],
@@ -776,7 +805,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     1,
                     0,
                     dim,
-                    paddedBatch,
+                    nativeGemmRows(),
                     hidDim,
                     1.0f,
                     weights.w2Layered[layerIndex].asHalfFloatArray(),
