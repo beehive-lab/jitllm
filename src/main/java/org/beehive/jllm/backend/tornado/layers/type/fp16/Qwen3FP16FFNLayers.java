@@ -1,5 +1,7 @@
 package org.beehive.jllm.backend.tornado.layers.type.fp16;
 
+import java.util.ArrayList;
+import java.util.List;
 import org.beehive.jllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
@@ -231,7 +233,31 @@ public class Qwen3FP16FFNLayers
         };
         String weightSrc = weightSourceGraphName(layerIndex);
         if (weightSrc != null) {
-            unifiedLayer.consumeFromDevice(weightSrc, layerWeights);
+            // consumeFromDevice only aliases a buffer the producer graph really has. TornadoVM
+            // builds a graph out of its tasks' argument lists, so a weight the producer declares
+            // in transferToDevice but passes to no task is never allocated or uploaded there, and
+            // consuming it here yields a buffer nothing ever wrote — silently, with no diagnostic.
+            // Anything the producer no longer reads is therefore uploaded by this graph instead.
+            Object[] notProvided = weightsNotProvidedBySource(layerIndex);
+            if (notProvided.length == 0) {
+                unifiedLayer.consumeFromDevice(weightSrc, layerWeights);
+            } else {
+                List<Object> consumed = new ArrayList<>(layerWeights.length);
+                for (Object w : layerWeights) {
+                    boolean skip = false;
+                    for (Object n : notProvided) {
+                        if (n == w) {
+                            skip = true;
+                            break;
+                        }
+                    }
+                    if (!skip) {
+                        consumed.add(w);
+                    }
+                }
+                unifiedLayer.consumeFromDevice(weightSrc, consumed.toArray());
+                unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, notProvided);
+            }
         } else {
             unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
         }
@@ -653,4 +679,15 @@ public class Qwen3FP16FFNLayers
     protected String weightSourceGraphName(int layerIndex) {
         return null;
     }
+
+    /**
+     * Weights that {@link #weightSourceGraphName} names as the producer but that no task in that
+     * graph actually reads, so it never uploads them and this graph has to. Empty by default,
+     * which is the case whenever the producer computes with every weight it declares.
+     */
+    protected Object[] weightsNotProvidedBySource(int layerIndex) {
+        return NO_WEIGHTS;
+    }
+
+    private static final Object[] NO_WEIGHTS = new Object[0];
 }
