@@ -2,6 +2,7 @@ package org.beehive.jllm.backend.tornado.layers.type.fp16.prefill;
 
 import java.util.List;
 import java.util.stream.IntStream;
+import org.beehive.jllm.backend.tornado.kernels.CuDnnPrefillAttentionKernels;
 import org.beehive.jllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
@@ -19,6 +20,8 @@ import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
+import uk.ac.manchester.tornado.cudnn.CuDnn;
 
 /**
  * Qwen3 batched-prefill transformer-layer TaskGraphs on the tensor-core (MMA) pipeline. Mirrors
@@ -66,6 +69,16 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final int qDim;
     private final int kvDim;
     private final int gqa;
+    private final boolean cudnnAttention;
+    /**
+     * Staging for the cuDNN call: contiguous FP16 Q, GQA-expanded K/V, and its output, all
+     * {@code [head][tok][headDim]}. Allocated once and reused by every layer graph, because
+     * the layers run one after another.
+     */
+    private final HalfFloatArray cudnnQ;
+    private final HalfFloatArray cudnnK;
+    private final HalfFloatArray cudnnV;
+    private final HalfFloatArray cudnnOut;
     private final List<ImmutableTaskGraph> layerITGs;
     private String lastLayerTaskGraphID;
 
@@ -95,11 +108,23 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                             + "GEMM efficiency is %d/%d — use a multiple of 128 for best throughput.%n",
                     batchSize, paddedBatch, batchSize, paddedBatch);
         }
+        this.cudnnAttention =
+                Boolean.getBoolean("jllm.attention.cudnnPrefill") && state.usesFp16KeyValueCache();
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHead = config.numberOfHeadsValue();
         this.qDim = config.numberOfHeadsKey() * config.numberOfHeads();
         this.kvDim = config.numberOfHeadsValue() * nHeadKv;
         this.gqa = config.numberOfHeads() / nHeadKv;
+        int cudnnElems = cudnnAttention ? qDim * batchSize : 0;
+        this.cudnnQ = new HalfFloatArray(cudnnElems);
+        this.cudnnK = new HalfFloatArray(cudnnElems);
+        this.cudnnV = new HalfFloatArray(cudnnElems);
+        this.cudnnOut = new HalfFloatArray(cudnnElems);
+        if (cudnnAttention) {
+            System.out.printf(
+                    "[jllm] prefill attention: cuDNN SDPA (first chunk only), staging %d MiB%n",
+                    4L * cudnnElems * Short.BYTES / (1024 * 1024));
+        }
         this.layerITGs =
                 IntStream.range(0, config.numberOfLayers())
                         .mapToObj(this::createBatchPrefillLayerTaskGraph)
@@ -257,6 +282,60 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.kvBlockStride,
                     qDim);
 
+            if (cudnnAttention) {
+                // Q from the packed FP32 QKV buffer, K/V gathered out of the paged cache with
+                // the 16:8 group expansion cuDNN's single head count cannot express, then the
+                // library call, then the output back into attnOutFP16's [tok][qDim] layout.
+                // Same graph as the surrounding JIT tasks: a library task does observe their
+                // writes, so no extra graph boundary is needed.
+                batchPrefillLayer.task(
+                        "cudnn_pack_q",
+                        CuDnnPrefillAttentionKernels::packQ,
+                        state.workspace.batchStartPosHolder,
+                        state.workspace.qkvResultBatch,
+                        cudnnQ,
+                        nEmbdHead,
+                        batchSize,
+                        qDim + 2 * kvDim);
+                batchPrefillLayer.task(
+                        "cudnn_gather_kv",
+                        CuDnnPrefillAttentionKernels::gatherKvExpanded,
+                        state.workspace.batchStartPosHolder,
+                        state.workspace.wrapKeyCacheFP16,
+                        state.workspace.wrapValueCacheFP16,
+                        state.workspace.wrapBlockTable,
+                        cudnnK,
+                        cudnnV,
+                        nEmbdHead,
+                        batchSize,
+                        kvDim,
+                        gqa,
+                        layerIndex,
+                        state.kvBlockCfg,
+                        state.kvBlockStride);
+                batchPrefillLayer.libraryTask(
+                        "cudnn_sdpa",
+                        CuDnn::sdpaForward,
+                        cudnnQ,
+                        cudnnK,
+                        cudnnV,
+                        cudnnOut,
+                        1,
+                        config.numberOfHeads(),
+                        batchSize,
+                        batchSize,
+                        nEmbdHead,
+                        (float) (1.0 / Math.sqrt(nEmbdHead)),
+                        true);
+                batchPrefillLayer.task(
+                        "cudnn_scatter",
+                        CuDnnPrefillAttentionKernels::scatterAttnOut,
+                        cudnnOut,
+                        state.workspace.attnOutFP16,
+                        nEmbdHead,
+                        batchSize,
+                        qDim);
+            } else {
             batchPrefillLayer.task(
                     "batch_attention",
                     packedHalf2Attention
@@ -279,6 +358,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.kvBlockCfg,
                     state.kvBlockStride,
                     qDim);
+            }
         } else {
             batchPrefillLayer.task(
                     "batch_rope_kv",
@@ -453,7 +533,14 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             scheduler.addWorkerGrid(p + "qkvProj", mmaQkvWorker);
             scheduler.addWorkerGrid(p + "batch_qk_rmsnorm", qkRmsNormWorker);
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
-            scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
+            if (cudnnAttention) {
+                WorkerGrid cudnnWorker = elementwiseGrid(qDim * batchSize);
+                scheduler.addWorkerGrid(p + "cudnn_pack_q", cudnnWorker);
+                scheduler.addWorkerGrid(p + "cudnn_gather_kv", cudnnWorker);
+                scheduler.addWorkerGrid(p + "cudnn_scatter", cudnnWorker);
+            } else {
+                scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
+            }
             scheduler.addWorkerGrid(p + "woProj", mmaDimWorker);
             scheduler.addWorkerGrid(p + "batch_ffn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_ffn_rms_apply", ffnRmsApplyWorker);

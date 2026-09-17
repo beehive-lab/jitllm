@@ -14,6 +14,10 @@ public final class TornadoBatchPrefillPass {
     private static final int Q8_0_BLOCK_SIZE = 32;
     private static final int Q8_0_BLOCK_BYTES = 34;
 
+    /** Mirrors the flag the prefill layer planner reads; see CuDnnPrefillAttentionKernels. */
+    private static final boolean CUDNN_PREFILL_ATTENTION =
+            Boolean.getBoolean("jllm.attention.cudnnPrefill");
+
     private static final int Q4_0_BLOCK_SIZE = 32;
     private static final int Q4_0_BLOCK_BYTES = 18;
 
@@ -40,6 +44,18 @@ public final class TornadoBatchPrefillPass {
             TornadoVMMasterPlanBatchPrefillDecode plan) {
         final Configuration config = model.configuration();
         final TornadoWeights weights = (TornadoWeights) model.weights();
+
+        // cuDNN's causal mask aligns query i to key i, which is the right mask only when the
+        // query block IS the whole prefix. A chunk starting past zero has its queries at an
+        // offset into a longer key range, and the library binding cannot express that, so
+        // refuse rather than quietly apply first-chunk masking to a later chunk.
+        if (CUDNN_PREFILL_ATTENTION && startPos != 0) {
+            throw new IllegalStateException(
+                    "jllm.attention.cudnnPrefill only supports a prefill that is a single chunk "
+                            + "starting at position 0; this chunk starts at "
+                            + startPos
+                            + ". Raise --batch-prefill-size to cover the prompt, or disable the flag.");
+        }
 
         state.workspace.batchStartPosHolder.set(0, startPos);
         // The kernels launch a fixed batchSize rows; this tells them how many are real, so the

@@ -68,6 +68,7 @@
                  profile and publishes only 6.0.0-jdk21 and 6.0.0-jdk22plus to Maven Central.
                  Tying the two together would silently rename jllm's own coordinates. -->
         <tornadovm.version.suffix>-jdk21</tornadovm.version.suffix>
+        <tornadovm.cudnn.version>6.1.1-jdk21-dev</tornadovm.cudnn.version>
         <!-- CUDA backend is only available after 5.0.0 TornadoVM version -->
         <tornadovm.version>${tornadovm.base.version}${tornadovm.version.suffix}</tornadovm.version>
         <!-- Compiler defaults (overridden by JDK profiles below) -->
@@ -97,6 +98,16 @@
             <groupId>io.github.beehive-lab</groupId>
             <artifactId>tornado-api</artifactId>
             <version>${tornadovm.version}</version>
+        </dependency>
+        <!-- cuDNN binding for the batched-prefill attention path. Provided: the SDK puts
+             it on the module path at runtime (tornado-argfile already lists tornado.cudnn).
+             Pinned separately because tornado-cudnn is not published to Maven Central for
+             6.1.0 - it comes from the local develop build. -->
+        <dependency>
+            <groupId>io.github.beehive-lab</groupId>
+            <artifactId>tornado-cudnn</artifactId>
+            <version>${tornadovm.cudnn.version}</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>io.github.beehive-lab</groupId>
