@@ -21,6 +21,10 @@ public final class TornadoBatchPrefillPass {
     private static final boolean CUDNN_PREFILL_ATTENTION =
             Boolean.getBoolean("jllm.attention.cudnnPrefill");
 
+    /** Diagnostics only: lets a partial chunk through the guard so the failure can be studied. */
+    private static final boolean CUDNN_ALLOW_PARTIAL =
+            Boolean.getBoolean("jllm.attention.cudnnPrefill.allowPartial");
+
     private static final int Q4_0_BLOCK_SIZE = 32;
     private static final int Q4_0_BLOCK_BYTES = 18;
 
@@ -53,6 +57,7 @@ public final class TornadoBatchPrefillPass {
         // offset into a longer key range, and the library binding cannot express that, so
         // refuse rather than quietly apply first-chunk masking to a later chunk.
         if (CUDNN_PREFILL_ATTENTION
+                && !CUDNN_ALLOW_PARTIAL
                 && (startPos != 0 || chunkSize != cudnnGraphBatchWidth)) {
             throw new IllegalStateException(
                     "jllm.attention.cudnnPrefill only supports a prefill that is a single FULL "

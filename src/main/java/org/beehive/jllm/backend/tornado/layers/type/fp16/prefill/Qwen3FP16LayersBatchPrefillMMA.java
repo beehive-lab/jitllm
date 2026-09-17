@@ -20,6 +20,7 @@ import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
+import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.cublas.CuBlas;
 import uk.ac.manchester.tornado.cudnn.CuDnn;
@@ -72,6 +73,17 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final int gqa;
     private final boolean cudnnAttention;
     private final boolean cublasProjection;
+    /** Diagnostics only: makes the cuDNN staging buffers host-readable after each layer. */
+    private static final boolean CUDNN_DEBUG =
+            Boolean.getBoolean("jllm.attention.cudnnPrefill.debug");
+    /** Which layer the debug transfer captures (the staging buffers are shared by all). */
+    /** Diagnostics only: seed the staging buffers with a finite sentinel instead of zero. */
+    private static final boolean CUDNN_CANARY =
+            Boolean.getBoolean("jllm.attention.cudnnPrefill.canary");
+    private static final int CUDNN_DEBUG_LAYER =
+            Integer.getInteger("jllm.attention.cudnnPrefill.debugLayer", 0);
+    /** Diagnostics only: last-built staging buffers, for the NaN hunt. */
+    public static HalfFloatArray dbgQ, dbgK, dbgV, dbgOut;
     /**
      * Staging for the cuDNN call: contiguous FP16 Q, GQA-expanded K/V, and its output, all
      * {@code [head][tok][headDim]}. Allocated once and reused by every layer graph, because
@@ -124,7 +136,15 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.cudnnV = new HalfFloatArray(cudnnElems);
         this.cudnnOut = new HalfFloatArray(cudnnElems);
         if (cudnnAttention) {
+            HalfFloat seed = new HalfFloat(CUDNN_CANARY ? 1234.0f : 0.0f);
+            cudnnQ.init(seed);
+            cudnnK.init(seed);
+            cudnnV.init(seed);
+            cudnnOut.init(seed);
+        }
+        if (cudnnAttention) {
             org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass.cudnnGraphBatchWidth = batchSize;
+            dbgQ = cudnnQ; dbgK = cudnnK; dbgV = cudnnV; dbgOut = cudnnOut;
             System.out.printf(
                     "[jllm] prefill attention: cuDNN SDPA (first chunk only), staging %d MiB%n",
                     4L * cudnnElems * Short.BYTES / (1024 * 1024));
@@ -292,6 +312,8 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 // library call, then the output back into attnOutFP16's [tok][qDim] layout.
                 // Same graph as the surrounding JIT tasks: a library task does observe their
                 // writes, so no extra graph boundary is needed.
+                batchPrefillLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, cudnnQ, cudnnK, cudnnV, cudnnOut);
                 batchPrefillLayer.task(
                         "cudnn_pack_q",
                         CuDnnPrefillAttentionKernels::packQ,
@@ -339,6 +361,10 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         nEmbdHead,
                         batchSize,
                         qDim);
+                if (CUDNN_DEBUG && layerIndex == CUDNN_DEBUG_LAYER) {
+                    batchPrefillLayer.transferToHost(
+                            DataTransferMode.EVERY_EXECUTION, cudnnQ, cudnnK, cudnnV, cudnnOut);
+                }
             } else {
             batchPrefillLayer.task(
                     "batch_attention",

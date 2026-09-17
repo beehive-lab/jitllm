@@ -44,11 +44,16 @@ public final class CuDnnPrefillAttentionKernels {
             int d = i % headSize;
             int tok = (i / headSize) % batchSize;
             int h = i / (headSize * batchSize);
+            // Every lane writes, and the write is unconditional: the HalfFloat is built once
+            // from a float that defaults to zero. A padded lane must not carry whatever
+            // qkvResultBatch held above the chunk - that memory is undefined on the first
+            // layer and contained NaN, which the library then spread through the padded
+            // rows of its output.
+            float qv = 0.0f;
             if (tok < batchStartPosHolder.get(1)) {
-                qOut.set(i, new HalfFloat(qkvBatch.get(tok * qkvStride + h * headSize + d)));
-            } else {
-                qOut.set(i, new HalfFloat(0.0f));
+                qv = qkvBatch.get(tok * qkvStride + h * headSize + d);
             }
+            qOut.set(i, new HalfFloat(qv));
         }
     }
 
@@ -74,6 +79,10 @@ public final class CuDnnPrefillAttentionKernels {
             int d = i % headSize;
             int tok = (i / headSize) % batchSize;
             int h = i / (headSize * batchSize);
+            // Same shape as packQ: unconditional writes, defaults of zero, and the cache is
+            // only addressed for a row this chunk actually wrote.
+            float kv = 0.0f;
+            float vv = 0.0f;
             if (tok < batchStartPosHolder.get(1)) {
                 int pos = batchStartPosHolder.get(0) + tok;
                 int slot = batchStartPosHolder.get(2);
@@ -82,12 +91,11 @@ public final class CuDnnPrefillAttentionKernels {
                         KvBlockAddress.offset(
                                 blockTable, slot, pos, layerOff, kvDim, blockCfg, blockStride);
                 int src = base + (h / kvMul) * headSize + d;
-                kOut.set(i, keyCache.get(src));
-                vOut.set(i, valueCache.get(src));
-            } else {
-                kOut.set(i, new HalfFloat(0.0f));
-                vOut.set(i, new HalfFloat(0.0f));
+                kv = keyCache.get(src).getFloat32();
+                vv = valueCache.get(src).getFloat32();
             }
+            kOut.set(i, new HalfFloat(kv));
+            vOut.set(i, new HalfFloat(vv));
         }
     }
 
