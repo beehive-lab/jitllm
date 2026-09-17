@@ -146,10 +146,13 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
         }
         metrics.report(batchAct.execute());
 
-        for (int l = 0; l < config.numberOfLayers(); l++) {
+        // Over batch-prefill layer GRAPHS, not layers: a family may hold several layers in one
+        // graph, and the layout is what knows how many that leaves. Identical to a loop over
+        // layers whenever it builds one graph each.
+        for (int g = 0; g < taskGraphLayout.batchLayerGraphs(); g++) {
             var batchLayer =
                     executionPlan
-                            .withGraph(taskGraphLayout.batchLayerIdx(l))
+                            .withGraph(taskGraphLayout.batchLayerIdx(g))
                             .withGridScheduler(batchPrefillDecodeForwardPlan.getGridScheduler());
             if (CUDA_GRAPHS) {
                 batchLayer.withCUDAGraph();

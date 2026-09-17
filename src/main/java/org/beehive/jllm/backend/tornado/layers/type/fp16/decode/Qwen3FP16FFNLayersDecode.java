@@ -96,7 +96,10 @@ public class Qwen3FP16FFNLayersDecode extends Qwen3FP16FFNLayers {
      */
     @Override
     protected String weightSourceGraphName(int layerIndex) {
-        return "batchPrefillLayer_" + layerIndex;
+        // Not "batchPrefillLayer_" + layerIndex: when the batch-prefill side groups layers into
+        // one graph, that graph is named after the first layer of its group and is the one that
+        // uploaded this layer's weights.
+        return Qwen3FP16LayersBatchPrefillMMA.prefillGraphOwning(layerIndex);
     }
 
     /**

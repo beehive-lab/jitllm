@@ -84,6 +84,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      * prefill, and the originals are left alone because decode and the JIT path still use them.
      */
     private final HalfFloatArray[] gateUpCat;
+    private final int layersPerGraph;
     private final boolean cublasQkvProjection;
     /**
      * wq, wk and wv stacked along the output dimension, one array per layer, so the packed
@@ -137,6 +138,27 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      * layer's weights from the batch-prefill graph, and this flag decides whether that graph still
      * reads {@code wq}/{@code wk}/{@code wv} at all.
      */
+    /**
+     * How many transformer layers share one batch-prefill graph. 1 -- one graph per layer -- is
+     * the shape every family has had; the property groups consecutive layers instead, which
+     * changes nothing about task order, buffers or arithmetic and only reduces the number of graph
+     * submissions (and, with them, device syncs) per prefill pass.
+     *
+     * <p>Read as a static so the decode side resolves the same grouping: it binds each layer's
+     * weights from the graph that uploaded them, and that graph is now named after the first layer
+     * of the group.
+     */
+    public static int prefillLayersPerGraph() {
+        int v = Integer.getInteger("jllm.prefill.layersPerGraph", 1);
+        return v < 1 ? 1 : v;
+    }
+
+    /** The batch-prefill graph that owns {@code layerIndex}'s weights. */
+    public static String prefillGraphOwning(int layerIndex) {
+        int g = prefillLayersPerGraph();
+        return "batchPrefillLayer_" + (layerIndex / g) * g;
+    }
+
     public static boolean nativeQkvProjection() {
         return TensorCoreSupport.isTensorCoreCapableBackend()
                 && Boolean.getBoolean("jllm.projection.cublas.qkv");
@@ -175,6 +197,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.cublasW2Projection = Boolean.getBoolean("jllm.projection.cublas.w2");
         this.cublasGateUpProjection = nativeGateUpProjection();
         this.cublasQkvProjection = nativeQkvProjection();
+        this.layersPerGraph = Math.min(prefillLayersPerGraph(), config.numberOfLayers());
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHead = config.numberOfHeadsValue();
         this.qDim = config.numberOfHeadsKey() * config.numberOfHeads();
@@ -242,17 +265,36 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     (long) config.numberOfLayers() * qkvCat[0].getSize() * Short.BYTES / (1024 * 1024),
                     (System.nanoTime() - t0) / 1e9);
         }
+        int groups = (config.numberOfLayers() + layersPerGraph - 1) / layersPerGraph;
+        if (layersPerGraph > 1) {
+            System.out.printf(
+                    "[jllm] prefill layer grouping: %d layers per graph, %d graphs instead of %d%n",
+                    layersPerGraph, groups, config.numberOfLayers());
+        }
         this.layerITGs =
-                IntStream.range(0, config.numberOfLayers())
+                IntStream.range(0, groups)
                         .mapToObj(this::createBatchPrefillLayerTaskGraph)
                         .map(TaskGraph::snapshot)
                         .toList();
     }
 
     // @formatter:off
-    private TaskGraph createBatchPrefillLayerTaskGraph(int layerIndex) {
-        String graphName = "batchPrefillLayer_" + layerIndex;
-        if (layerIndex == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
+    /**
+     * One graph per <i>group</i> of layers. With {@code layersPerGraph == 1} this is exactly the
+     * per-layer graph it has always been; above that, consecutive layers are appended to the same
+     * graph in the same order, with the same tasks, the same buffers and the same arithmetic. What
+     * changes is only how many graph submissions -- and therefore how many device syncs, since
+     * TaskGraph.execute(...) ends with waitOn() -- a prefill pass costs.
+     *
+     * <p>The graph keeps the name of its FIRST layer, because the decode layer graphs bind their
+     * weights from "batchPrefillLayer_&lt;i&gt;" by name and that name now has to resolve to the
+     * graph that actually uploaded them.
+     */
+    private TaskGraph createBatchPrefillLayerTaskGraph(int groupIndex) {
+        int firstLayer = groupIndex * layersPerGraph;
+        int lastLayer = Math.min(firstLayer + layersPerGraph, config.numberOfLayers()) - 1;
+        String graphName = "batchPrefillLayer_" + firstLayer;
+        if (lastLayer == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
 
         TaskGraph batchPrefillLayer = new TaskGraph(graphName);
         int dim = config.dim();
@@ -266,7 +308,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         : state.workspace.wrapValueCache;
 
         // ── Data Transfers ─────────────────────────────────────────────────────
-        if (layerIndex == 0) {
+        if (firstLayer == 0) {
             batchPrefillLayer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.batchStartPosHolder);
             batchPrefillLayer.transferToDevice(
@@ -291,7 +333,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
             batchPrefillLayer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
         } else {
-            String pred = "batchPrefillLayer_" + (layerIndex - 1);
+            String pred = "batchPrefillLayer_" + (firstLayer - layersPerGraph);
             batchPrefillLayer.consumeFromDevice(
                     pred,
                     context,
@@ -312,6 +354,23 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             batchPrefillLayer.consumeFromDevice(pred, state.workspace.wrapBlockTable);
         }
 
+        for (int layerIndex = firstLayer; layerIndex <= lastLayer; layerIndex++) {
+            appendBatchPrefillLayer(batchPrefillLayer, layerIndex, dim, hidDim);
+        }
+
+        batchPrefillLayer.persistOnDevice(state.workspace.wrapXBatch, keyCache, valueCache);
+
+        return batchPrefillLayer;
+    }
+
+    /**
+     * Appends one transformer layer's tasks to {@code batchPrefillLayer}. Task ids carry a
+     * per-layer prefix only when a graph holds more than one layer, so the single-layer graphs
+     * keep the ids they always had.
+     */
+    private void appendBatchPrefillLayer(
+            TaskGraph batchPrefillLayer, int layerIndex, int dim, int hidDim) {
+        String tp = taskPrefix(layerIndex);
         // Per-layer weights: upload once
         batchPrefillLayer.transferToDevice(
                 DataTransferMode.FIRST_EXECUTION,
@@ -342,7 +401,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
         // ── Attention Block ────────────────────────────────────────────────────
         batchPrefillLayer.task(
-                "batch_attn_rms",
+                tp + "batch_attn_rms",
                 TransformerBatchPrefillKernels::batchedRmsReduceParallel,
                 context,
                 state.workspace.wrapXBatch,
@@ -352,7 +411,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 RMS_LOCAL_SIZE);
 
         batchPrefillLayer.task(
-                "batch_attn_rms_apply",
+                tp + "batch_attn_rms_apply",
                 TransformerBatchPrefillKernels::batchedRmsApplyFP16,
                 context,
                 state.workspace.wrapXbFP16Batch,
@@ -371,7 +430,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // qkvResultBatch.
         if (cublasQkvProjection) {
             batchPrefillLayer.libraryTask(
-                    "qkvProj",
+                    tp + "qkvProj",
                     CuBlas::cublasGemmExFP16FP32,
                     1,
                     0,
@@ -388,7 +447,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     qDim + 2 * kvDim);
         } else {
             batchPrefillLayer.task(
-                    "qkvProj",
+                    tp + "qkvProj",
                     TransformerBatchPrefillKernels::gemmMMAQKV,
                     context,
                     state.workspace.wrapXbFP16Batch,
@@ -404,7 +463,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
         // Qwen3: per-head RMS norm on Q and K before RoPE
         batchPrefillLayer.task(
-                "batch_qk_rmsnorm",
+                tp + "batch_qk_rmsnorm",
                 Qwen3Kernels::batchedFusedQKRmsNormPacked,
                 context,
                 state.workspace.qkvResultBatch,
@@ -422,7 +481,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // attnOutFP16 row width — both are qDim for Qwen3.
         if (useFp16KVCache()) {
             batchPrefillLayer.task(
-                    "batch_rope_kv",
+                    tp + "batch_rope_kv",
                     Qwen3PagedKvKernels::batchedRopeWithKVCacheQwen3PackedFP16Paged,
                     context,
                     state.workspace.batchStartPosHolder,
@@ -447,7 +506,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 batchPrefillLayer.transferToDevice(
                         DataTransferMode.FIRST_EXECUTION, cudnnQ, cudnnK, cudnnV, cudnnOut);
                 batchPrefillLayer.task(
-                        "cudnn_pack_q",
+                        tp + "cudnn_pack_q",
                         CuDnnPrefillAttentionKernels::packQ,
                         state.workspace.batchStartPosHolder,
                         state.workspace.qkvResultBatch,
@@ -456,7 +515,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         batchSize,
                         qDim + 2 * kvDim);
                 batchPrefillLayer.task(
-                        "cudnn_gather_kv",
+                        tp + "cudnn_gather_kv",
                         CuDnnPrefillAttentionKernels::gatherKvExpanded,
                         state.workspace.batchStartPosHolder,
                         state.workspace.wrapKeyCacheFP16,
@@ -472,7 +531,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         state.kvBlockCfg,
                         state.kvBlockStride);
                 batchPrefillLayer.libraryTask(
-                        "cudnn_sdpa",
+                        tp + "cudnn_sdpa",
                         CuDnn::sdpaForward,
                         cudnnQ,
                         cudnnK,
@@ -486,7 +545,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         (float) (1.0 / Math.sqrt(nEmbdHead)),
                         true);
                 batchPrefillLayer.task(
-                        "cudnn_scatter",
+                        tp + "cudnn_scatter",
                         CuDnnPrefillAttentionKernels::scatterAttnOut,
                         cudnnOut,
                         state.workspace.attnOutFP16,
@@ -512,7 +571,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         state.workspace.attnOutFP16);
             }
             batchPrefillLayer.task(
-                    "batch_attention",
+                    tp + "batch_attention",
                     packedHalf2Attention
                             ? TransformerPagedKvBatchPrefillKernels
                                     ::batchedFlashAttentionFP16OutKVFP16PackedTilePaged
@@ -536,7 +595,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             }
         } else {
             batchPrefillLayer.task(
-                    "batch_rope_kv",
+                    tp + "batch_rope_kv",
                     Qwen3PagedKvKernels::batchedRopeWithKVCacheQwen3PackedPaged,
                     context,
                     state.workspace.batchStartPosHolder,
@@ -553,7 +612,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     qDim);
 
             batchPrefillLayer.task(
-                    "batch_attention",
+                    tp + "batch_attention",
                     TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionFP16OutPaged,
                     context,
                     state.workspace.batchStartPosHolder,
@@ -581,7 +640,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             // FP16 in, FP32 out, FP32 accumulate: same accumulation precision and the same
             // woOut representation the fused RMS/residual consumer expects.
             batchPrefillLayer.libraryTask(
-                    "woProj",
+                    tp + "woProj",
                     CuBlas::cublasGemmExFP16FP32,
                     1,
                     0,
@@ -598,7 +657,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     dim);
         } else {
             batchPrefillLayer.task(
-                    "woProj",
+                    tp + "woProj",
                     TransformerBatchPrefillKernels::gemmMMA,
                     context,
                     state.workspace.attnOutFP16,
@@ -611,7 +670,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
         // ── FFN Block ──────────────────────────────────────────────────────────
         batchPrefillLayer.task(
-                "batch_ffn_rms",
+                tp + "batch_ffn_rms",
                 TransformerBatchPrefillKernels::batchedRmsReduceFusedResidual,
                 context,
                 state.workspace.wrapXBatch,
@@ -622,7 +681,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 RMS_LOCAL_SIZE);
 
         batchPrefillLayer.task(
-                "batch_ffn_rms_apply",
+                tp + "batch_ffn_rms_apply",
                 TransformerBatchPrefillKernels::batchedFFNRmsApplyFP16,
                 context,
                 state.workspace.normedXFFNFP16,
@@ -638,7 +697,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // calls. Same contract as woProj/w2Proj: FP16 operands, FP32 accumulation, FP32 output.
         if (cublasGateUpProjection) {
             batchPrefillLayer.libraryTask(
-                    "gateUpProj",
+                    tp + "gateUpProj",
                     CuBlas::cublasGemmExFP16FP32,
                     1,
                     0,
@@ -655,7 +714,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     2 * hidDim);
         } else {
             batchPrefillLayer.task(
-                    "gateUpProj",
+                    tp + "gateUpProj",
                     TransformerBatchPrefillKernels::gemmMMAGateUp,
                     context,
                     state.workspace.normedXFFNFP16,
@@ -669,7 +728,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
         batchPrefillLayer
                 .task(
-                        "swiglu",
+                        tp + "swiglu",
                         TransformerBatchPrefillKernels::batchedFFNSwiGLUFP16Packed,
                         context,
                         state.workspace.wrapHbFP16Batch,
@@ -681,7 +740,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // residual is added after the projection exactly as before.
         if (cublasW2Projection) {
             batchPrefillLayer.libraryTask(
-                    "w2Proj",
+                    tp + "w2Proj",
                     CuBlas::cublasGemmExFP16FP32,
                     1,
                     0,
@@ -698,7 +757,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     dim);
         } else {
             batchPrefillLayer.task(
-                    "w2Proj",
+                    tp + "w2Proj",
                     TransformerBatchPrefillKernels::gemmMMA,
                     context,
                     state.workspace.wrapHbFP16Batch,
@@ -709,15 +768,12 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     hidDim);
         }
         batchPrefillLayer.task(
-                "w2Resid",
+                tp + "w2Resid",
                 TransformerBatchPrefillKernels::batchedResidualAddFP32,
                 context,
                 state.workspace.wrapXBatch,
                 state.workspace.w2Out);
 
-        batchPrefillLayer.persistOnDevice(state.workspace.wrapXBatch, keyCache, valueCache);
-
-        return batchPrefillLayer;
     }
 
     // @formatter:on
@@ -729,6 +785,11 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         WorkerGrid2D g = new WorkerGrid2D(mBlocks * 256, nBlocks);
         g.setLocalWork(256, 1, 1);
         return g;
+    }
+
+    /** Empty while a graph holds one layer, so the existing ids are untouched. */
+    private String taskPrefix(int layerIndex) {
+        return layersPerGraph == 1 ? "" : "L" + layerIndex + "_";
     }
 
     static WorkerGrid elementwiseGrid(int n) { // n must be a multiple of 256
@@ -774,7 +835,11 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         WorkerGrid ewHidWorker = elementwiseGrid(batchSize * hidDim); // swiglu
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String p = "batchPrefillLayer_" + i + ".";
+            String p =
+                    "batchPrefillLayer_"
+                            + (i / layersPerGraph) * layersPerGraph
+                            + "."
+                            + taskPrefix(i);
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApplyWorker);
             if (!cublasQkvProjection) {

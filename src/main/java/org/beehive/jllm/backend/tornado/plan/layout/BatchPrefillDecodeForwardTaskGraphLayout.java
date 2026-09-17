@@ -19,14 +19,25 @@ package org.beehive.jllm.backend.tornado.plan.layout;
  * layer builder's business.
  */
 // @formatter:on
-public record BatchPrefillDecodeForwardTaskGraphLayout(int N, int decodeLayerGraphs) {
+public record BatchPrefillDecodeForwardTaskGraphLayout(
+        int N, int batchLayerGraphs, int decodeLayerGraphs) {
 
     /** The ungrouped layout: one decode graph per layer, which is what every family built. */
     public BatchPrefillDecodeForwardTaskGraphLayout(int N) {
-        this(N, N);
+        this(N, N, N);
+    }
+
+    /** The batch-prefill side ungrouped, the decode side as given. */
+    public BatchPrefillDecodeForwardTaskGraphLayout(int N, int decodeLayerGraphs) {
+        this(N, N, decodeLayerGraphs);
     }
 
     public BatchPrefillDecodeForwardTaskGraphLayout {
+        if (batchLayerGraphs < 1 || batchLayerGraphs > N) {
+            throw new IllegalArgumentException(
+                    "batch-prefill layer graphs must be between 1 and " + N + ", got "
+                            + batchLayerGraphs);
+        }
         if (decodeLayerGraphs < 1 || decodeLayerGraphs > N) {
             throw new IllegalArgumentException(
                     "decode layer graphs must be between 1 and "
@@ -45,7 +56,7 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(int N, int decodeLayerGra
     }
 
     public int decodeActivationIdx() {
-        return N + 1;
+        return batchLayerGraphs + 1;
     }
 
     /**
@@ -55,17 +66,14 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(int N, int decodeLayerGra
      * graph may hold more than one layer.
      */
     public int decodeLayerGraphIdx(int g) {
-        return N + 2 + g;
+        return batchLayerGraphs + 2 + g;
     }
 
     public int logitsIdx() {
-        return N + 2 + decodeLayerGraphs;
+        return batchLayerGraphs + 2 + decodeLayerGraphs;
     }
 
-    /** Per-layer graphs the batch-prefill family builds: one each. */
-    public int batchLayerGraphs() {
-        return N;
-    }
+
 
     // @formatter:off
     /**
