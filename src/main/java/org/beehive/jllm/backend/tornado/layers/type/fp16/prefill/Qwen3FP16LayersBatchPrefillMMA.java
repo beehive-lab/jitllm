@@ -85,6 +85,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      */
     private final HalfFloatArray[] gateUpCat;
     private final int layersPerGraph;
+    private final boolean sharedCudnnStaging;
     private final boolean cublasQkvProjection;
     /**
      * wq, wk and wv stacked along the output dimension, one array per layer, so the packed
@@ -148,6 +149,20 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      * weights from the graph that uploaded them, and that graph is now named after the first layer
      * of the group.
      */
+    /**
+     * Whether the cuDNN staging quartet is one allocation for the whole execution plan.
+     *
+     * <p>Declaring {@code transferToDevice} for the same array in N graphs gives it N device
+     * buffers -- measured: the four staging arrays were the only objects allocated more than
+     * once across the batch-prefill graphs, 28 sets at one layer per graph, 7 at four. A single
+     * {@code transferToDevice} in the first graph plus {@code consumeFromDevice} in the rest
+     * binds one buffer everywhere, which is the same contract the workspace arrays already use
+     * in this method.
+     */
+    public static boolean sharedCudnnStaging() {
+        return Boolean.getBoolean("jllm.attention.cudnnPrefill.sharedStaging");
+    }
+
     public static int prefillLayersPerGraph() {
         int v = Integer.getInteger("jllm.prefill.layersPerGraph", 1);
         return v < 1 ? 1 : v;
@@ -198,6 +213,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.cublasGateUpProjection = nativeGateUpProjection();
         this.cublasQkvProjection = nativeQkvProjection();
         this.layersPerGraph = Math.min(prefillLayersPerGraph(), config.numberOfLayers());
+        this.sharedCudnnStaging = sharedCudnnStaging();
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHead = config.numberOfHeadsValue();
         this.qDim = config.numberOfHeadsKey() * config.numberOfHeads();
@@ -219,8 +235,12 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass.cudnnGraphBatchWidth = batchSize;
             dbgQ = cudnnQ; dbgK = cudnnK; dbgV = cudnnV; dbgOut = cudnnOut;
             System.out.printf(
-                    "[jllm] prefill attention: cuDNN SDPA (first chunk only), staging %d MiB%n",
-                    4L * cudnnElems * Short.BYTES / (1024 * 1024));
+                    "[jllm] prefill attention: cuDNN SDPA (first chunk only), staging %d MiB"
+                            + " per set, %s%n",
+                    4L * cudnnElems * Short.BYTES / (1024 * 1024),
+                    sharedCudnnStaging()
+                            ? "one set shared by every batch-prefill graph"
+                            : "one set per batch-prefill graph");
         }
         this.gateUpCat = new HalfFloatArray[cublasGateUpProjection ? config.numberOfLayers() : 0];
         if (cublasGateUpProjection) {
@@ -332,6 +352,14 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             batchPrefillLayer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
             batchPrefillLayer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            if (cudnnAttention && sharedCudnnStaging) {
+                // The one allocation. Scratch, private to this execution plan, owned by the
+                // first batch-prefill graph and bound by every later one.
+                if (!sharedCudnnStaging) {
+                    batchPrefillLayer.transferToDevice(
+                            DataTransferMode.FIRST_EXECUTION, cudnnQ, cudnnK, cudnnV, cudnnOut);
+                }
+            }
         } else {
             String pred = "batchPrefillLayer_" + (firstLayer - layersPerGraph);
             batchPrefillLayer.consumeFromDevice(
@@ -352,6 +380,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.workspace.wrapHbFP16Batch,
                     state.workspace.w2Out);
             batchPrefillLayer.consumeFromDevice(pred, state.workspace.wrapBlockTable);
+            if (cudnnAttention && sharedCudnnStaging) {
+                batchPrefillLayer.consumeFromDevice(pred, cudnnQ, cudnnK, cudnnV, cudnnOut);
+            }
         }
 
         for (int layerIndex = firstLayer; layerIndex <= lastLayer; layerIndex++) {
