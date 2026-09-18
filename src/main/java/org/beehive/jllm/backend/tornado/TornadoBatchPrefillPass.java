@@ -71,6 +71,7 @@ public final class TornadoBatchPrefillPass {
         //
         // -Djllm.attention.cudnnPrefill.strict=true restores the old refusal, for tests that want
         // to prove which path they exercised.
+        boolean useFallbackFamily = false;
         if (CUDNN_PREFILL_ATTENTION && startPos != 0) {
             if (CUDNN_PREFILL_STRICT) {
                 throw new IllegalStateException(
@@ -80,11 +81,16 @@ public final class TornadoBatchPrefillPass {
                                 + ". Raise --batch-prefill-size to cover the prompt, or disable"
                                 + " the flag.");
             }
-            for (int b = 0; b < chunkSize; b++) {
-                copyEmbedding(config, weights, state, tokens[b]);
-                plan.tornadoVMIngestDecodeOnly(startPos + b);
+            if (!plan.hasBatchPrefillFallback()) {
+                // Last resort, and documented as such: ingest the chunk a token at a time through
+                // the decode path. Correct, and about 20x slower than a batched chunk.
+                for (int b = 0; b < chunkSize; b++) {
+                    copyEmbedding(config, weights, state, tokens[b]);
+                    plan.tornadoVMIngestDecodeOnly(startPos + b);
+                }
+                return;
             }
-            return;
+            useFallbackFamily = true;
         }
 
         state.workspace.batchStartPosHolder.set(0, startPos);
@@ -161,7 +167,11 @@ public final class TornadoBatchPrefillPass {
                                     + weights.getTokenEmbeddingTable().dataType());
         }
 
-        plan.tornadoVMForwardBatchPrefill();
+        if (useFallbackFamily) {
+            plan.tornadoVMForwardBatchPrefillFallback();
+        } else {
+            plan.tornadoVMForwardBatchPrefill();
+        }
     }
     /**
      * Copies one token's embedding row into the single-token staging buffer, in the

@@ -104,6 +104,21 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final int layersPerGraph;
     private final boolean sharedCudnnStaging;
     private final boolean unpaddedNativeGemm;
+
+    /**
+     * Graph-name prefix for this family. The primary keeps "batchPrefillLayer_", which the decode
+     * graphs bind their weights by name from; the fallback family gets its own prefix.
+     */
+    private final String graphPrefix;
+
+    /**
+     * True for the fallback family: every buffer it uses is bound from the primary family's graph
+     * rather than declared for upload here, so nothing is allocated or copied twice.
+     */
+    private final boolean consumeFromPrimary;
+
+    /** cuDNN attention in THIS family. False in the fallback family whatever the flag says. */
+    private final boolean useCudnnAttention;
     private final boolean cublasQkvProjection;
     /**
      * wq, wk and wv stacked along the output dimension, one array per layer, so the packed
@@ -137,6 +152,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final HalfFloatArray cudnnOut;
     private final List<ImmutableTaskGraph> layerITGs;
     private String lastLayerTaskGraphID;
+    private Qwen3FP16LayersBatchPrefillMMA fallbackFamily;
 
     /**
      * The batched-prefill graphs only run on the CUDA backend (tensor-core gated), which is the
@@ -197,6 +213,15 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         return "batchPrefillLayer_" + (layerIndex / g) * g;
     }
 
+    /**
+     * Whether to build the fallback batch-prefill family. On by default wherever cuDNN prefill
+     * attention is on; turning it off leaves the per-token sequential ingest as the only route for
+     * a chunk past position 0, which is the documented last resort.
+     */
+    public static boolean batchedFallbackFamily() {
+        return !Boolean.getBoolean("jllm.attention.cudnnPrefill.noBatchedFallback");
+    }
+
     public static boolean nativeQkvProjection() {
         return TensorCoreSupport.isTensorCoreCapableBackend()
                 && Boolean.getBoolean("jllm.projection.cublas.qkv");
@@ -215,6 +240,8 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             Qwen3TornadoWeights weights,
             Qwen3Configuration config,
             int batchSize) {
+        this.graphPrefix = "batchPrefillLayer_";
+        this.consumeFromPrimary = false;
         this.state = state;
         // Resolved once from the session's policy, not read from a class constant.
         this.packedHalf2Attention = state.executionPolicy().packedHalf2Attention();
@@ -230,6 +257,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         }
         this.cudnnAttention =
                 Boolean.getBoolean("jllm.attention.cudnnPrefill") && state.usesFp16KeyValueCache();
+        this.useCudnnAttention = this.cudnnAttention;
         this.cublasProjection = Boolean.getBoolean("jllm.projection.cublas");
         // Separate flag so the down projection can be measured on its own.
         this.cublasW2Projection = Boolean.getBoolean("jllm.projection.cublas.w2");
@@ -327,6 +355,84 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         .toList();
     }
 
+    /**
+     * The fallback family: the same layer pipeline with the JIT paged attention instead of the
+     * cuDNN call, for a chunk whose queries do not start at position 0.
+     *
+     * <p>It shares every array with {@code primary} -- the model's weights, the stacked
+     * [q|k|v] and [gate|up] weights, the workspace, the KV cache -- and declares all of them with
+     * {@code consumeFromDevice} against the primary's graphs, so nothing is allocated, uploaded or
+     * copied a second time. It does not touch the cuDNN staging quartet at all, because it does
+     * not call cuDNN.
+     *
+     * <p>Only the attention step differs. QKV, gate/up, woProj and w2Proj stay native, with the
+     * same stacked weights and the same numerical contracts already validated for them.
+     */
+    private Qwen3FP16LayersBatchPrefillMMA(Qwen3FP16LayersBatchPrefillMMA primary) {
+        this.graphPrefix = "batchPrefillFallbackLayer_";
+        this.consumeFromPrimary = true;
+        this.useCudnnAttention = false;
+        this.state = primary.state;
+        this.packedHalf2Attention = primary.packedHalf2Attention;
+        this.weights = primary.weights;
+        this.config = primary.config;
+        this.batchSize = primary.batchSize;
+        this.paddedBatch = primary.paddedBatch;
+        this.cudnnAttention = primary.cudnnAttention;
+        this.cublasProjection = primary.cublasProjection;
+        this.cublasW2Projection = primary.cublasW2Projection;
+        this.cublasGateUpProjection = primary.cublasGateUpProjection;
+        this.cublasQkvProjection = primary.cublasQkvProjection;
+        this.layersPerGraph = primary.layersPerGraph;
+        this.sharedCudnnStaging = primary.sharedCudnnStaging;
+        this.unpaddedNativeGemm = primary.unpaddedNativeGemm;
+        this.nHeadKv = primary.nHeadKv;
+        this.nEmbdHead = primary.nEmbdHead;
+        this.qDim = primary.qDim;
+        this.kvDim = primary.kvDim;
+        this.gqa = primary.gqa;
+        this.cudnnQ = primary.cudnnQ;
+        this.cudnnK = primary.cudnnK;
+        this.cudnnV = primary.cudnnV;
+        this.cudnnOut = primary.cudnnOut;
+        this.gateUpCat = primary.gateUpCat;
+        this.qkvCat = primary.qkvCat;
+        int groups =
+                (config.numberOfLayers() + layersPerGraph - 1) / layersPerGraph;
+        this.layerITGs =
+                IntStream.range(0, groups)
+                        .mapToObj(this::createBatchPrefillLayerTaskGraph)
+                        .map(TaskGraph::snapshot)
+                        .toList();
+        System.out.printf(
+                "[jllm] prefill fallback family: %d graphs, JIT paged attention, all buffers bound"
+                        + " from the primary family%n",
+                groups);
+    }
+
+    /**
+     * Builds the fallback family for {@code primary}, or {@code null} when there is nothing to
+     * fall back from -- if the primary is not using cuDNN attention it already handles every
+     * chunk.
+     */
+    @Override
+    public List<ImmutableTaskGraph> getFallbackLayerImmutableTaskGraphs() {
+        if (!cudnnAttention || consumeFromPrimary || !batchedFallbackFamily()) {
+            return List.of();
+        }
+        if (fallbackFamily == null) {
+            fallbackFamily = new Qwen3FP16LayersBatchPrefillMMA(this);
+        }
+        return fallbackFamily.layerITGs;
+    }
+
+    @Override
+    public void updateFallbackGridScheduler(GridScheduler scheduler) {
+        if (fallbackFamily != null) {
+            fallbackFamily.updateGridScheduler(scheduler);
+        }
+    }
+
     // @formatter:off
     /**
      * One graph per <i>group</i> of layers. With {@code layersPerGraph == 1} this is exactly the
@@ -342,7 +448,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private TaskGraph createBatchPrefillLayerTaskGraph(int groupIndex) {
         int firstLayer = groupIndex * layersPerGraph;
         int lastLayer = Math.min(firstLayer + layersPerGraph, config.numberOfLayers()) - 1;
-        String graphName = "batchPrefillLayer_" + firstLayer;
+        String graphName = graphPrefix + firstLayer;
         if (lastLayer == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
 
         TaskGraph batchPrefillLayer = new TaskGraph(graphName);
@@ -357,7 +463,67 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         : state.workspace.wrapValueCache;
 
         // ── Data Transfers ─────────────────────────────────────────────────────
-        if (firstLayer == 0) {
+        // The fallback family owns nothing. Every buffer it touches -- workspace, KV cache, block
+        // table and the activation -- is bound from the primary graph covering the same layers, so
+        // there is no second allocation and no copy between the two families. Declarations for
+        // objects it does not actually use (w1/w3/wq/wk/wv under native projections) reach no task
+        // and therefore emit no bytecode, exactly as they already do in the primary.
+        String primaryGroup = "batchPrefillLayer_" + firstLayer;
+        if (consumeFromPrimary) {
+            // The fallback family allocates nothing: every FIRST_EXECUTION buffer is bound from
+            // the primary graph that owns it. But the two EVERY_EXECUTION uploads are not
+            // ownership, they are how this chunk's start position, valid length, KV slot and block
+            // table reach the device on every pass -- so this family performs them itself, exactly
+            // as the primary's first graph does. Consuming them instead would leave a fallback
+            // chunk reading the previous pass's position.
+            //
+            // Live state chains WITHIN this family, as it does within the primary: graph 0 takes
+            // the activation from prefillActivation and the workspace from the primary's owning
+            // graph, and every later graph takes both from the previous fallback graph.
+            if (firstLayer == 0) {
+                batchPrefillLayer.transferToDevice(
+                        DataTransferMode.EVERY_EXECUTION, state.workspace.batchStartPosHolder);
+                batchPrefillLayer.consumeFromDevice(
+                        primaryGroup,
+                        context,
+                        state.workspace.attnScaleBatch,
+                        state.workspace.ffnScaleBatch,
+                        state.workspace.wrapXbFP16Batch,
+                        state.workspace.qkvResultBatch,
+                        keyCache,
+                        valueCache,
+                        state.workspace.normedXFFNFP16,
+                        state.workspace.gateUpResultBatch,
+                        state.workspace.attnOutFP16,
+                        state.workspace.woOut,
+                        state.workspace.wrapHbFP16Batch,
+                        state.workspace.w2Out);
+                batchPrefillLayer.transferToDevice(
+                        DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
+                batchPrefillLayer.consumeFromDevice(
+                        "prefillActivation", state.workspace.wrapXBatch);
+            } else {
+                String prev = graphPrefix + (firstLayer - layersPerGraph);
+                batchPrefillLayer.consumeFromDevice(
+                        prev,
+                        context,
+                        state.workspace.wrapXBatch,
+                        state.workspace.batchStartPosHolder,
+                        state.workspace.attnScaleBatch,
+                        state.workspace.ffnScaleBatch,
+                        state.workspace.wrapXbFP16Batch,
+                        state.workspace.qkvResultBatch,
+                        keyCache,
+                        valueCache,
+                        state.workspace.normedXFFNFP16,
+                        state.workspace.gateUpResultBatch,
+                        state.workspace.attnOutFP16,
+                        state.workspace.woOut,
+                        state.workspace.wrapHbFP16Batch,
+                        state.workspace.w2Out);
+                batchPrefillLayer.consumeFromDevice(prev, state.workspace.wrapBlockTable);
+            }
+        } else if (firstLayer == 0) {
             batchPrefillLayer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.batchStartPosHolder);
             batchPrefillLayer.transferToDevice(
@@ -381,7 +547,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             batchPrefillLayer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
             batchPrefillLayer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
-            if (cudnnAttention && sharedCudnnStaging) {
+            if (useCudnnAttention && sharedCudnnStaging) {
                 // The one allocation. Scratch, private to this execution plan, owned by the
                 // first batch-prefill graph and bound by every later one.
                 if (!sharedCudnnStaging) {
@@ -390,7 +556,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 }
             }
         } else {
-            String pred = "batchPrefillLayer_" + (firstLayer - layersPerGraph);
+            String pred = graphPrefix + (firstLayer - layersPerGraph);
             batchPrefillLayer.consumeFromDevice(
                     pred,
                     context,
@@ -409,7 +575,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.workspace.wrapHbFP16Batch,
                     state.workspace.w2Out);
             batchPrefillLayer.consumeFromDevice(pred, state.workspace.wrapBlockTable);
-            if (cudnnAttention && sharedCudnnStaging) {
+            if (useCudnnAttention && sharedCudnnStaging) {
                 batchPrefillLayer.consumeFromDevice(pred, cudnnQ, cudnnK, cudnnV, cudnnOut);
             }
         }
@@ -432,6 +598,21 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             TaskGraph batchPrefillLayer, int layerIndex, int dim, int hidDim) {
         String tp = taskPrefix(layerIndex);
         // Per-layer weights: upload once
+        if (consumeFromPrimary) {
+            batchPrefillLayer.consumeFromDevice(
+                    primaryGraphOwning(layerIndex),
+                    weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                    weights.wqLayered[layerIndex].asHalfFloatArray(),
+                    weights.wkLayered[layerIndex].asHalfFloatArray(),
+                    weights.wvLayered[layerIndex].asHalfFloatArray(),
+                    weights.woLayered[layerIndex].asHalfFloatArray(),
+                    weights.rms_att_QNormLayered[layerIndex].asFloatArray(),
+                    weights.rms_att_KNormLayered[layerIndex].asFloatArray(),
+                    weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                    weights.w1Layered[layerIndex].asHalfFloatArray(),
+                    weights.w2Layered[layerIndex].asHalfFloatArray(),
+                    weights.w3Layered[layerIndex].asHalfFloatArray());
+        } else {
         batchPrefillLayer.transferToDevice(
                 DataTransferMode.FIRST_EXECUTION,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
@@ -445,18 +626,29 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 weights.w1Layered[layerIndex].asHalfFloatArray(),
                 weights.w2Layered[layerIndex].asHalfFloatArray(),
                 weights.w3Layered[layerIndex].asHalfFloatArray());
+        }
         if (cublasGateUpProjection) {
             // A buffer this class owns, not one of the model's, so it needs its own upload. w1/w3
             // stay declared above: the decode layer graphs consume this graph's weight buffers,
             // and Qwen3FP16FFNLayersDecode uploads the two this graph no longer reads.
-            batchPrefillLayer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION, gateUpCat[layerIndex]);
+            if (consumeFromPrimary) {
+                batchPrefillLayer.consumeFromDevice(
+                        primaryGraphOwning(layerIndex), gateUpCat[layerIndex]);
+            } else {
+                batchPrefillLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, gateUpCat[layerIndex]);
+            }
         }
         if (cublasQkvProjection) {
             // Same arrangement for QKV: wq/wk/wv stay declared above and Qwen3FP16FFNLayersDecode
             // uploads the three this graph no longer reads.
-            batchPrefillLayer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION, qkvCat[layerIndex]);
+            if (consumeFromPrimary) {
+                batchPrefillLayer.consumeFromDevice(
+                        primaryGraphOwning(layerIndex), qkvCat[layerIndex]);
+            } else {
+                batchPrefillLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, qkvCat[layerIndex]);
+            }
         }
 
         // ── Attention Block ────────────────────────────────────────────────────
@@ -557,7 +749,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.kvBlockStride,
                     qDim);
 
-            if (cudnnAttention) {
+            if (useCudnnAttention) {
                 // Q from the packed FP32 QKV buffer, K/V gathered out of the paged cache with
                 // the 16:8 group expansion cuDNN's single head count cannot express, then the
                 // library call, then the output back into attnOutFP16's [tok][qDim] layout.
@@ -847,6 +1039,11 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         return g;
     }
 
+    /** The PRIMARY family's graph that owns this layer's weights and stacked weights. */
+    private String primaryGraphOwning(int layerIndex) {
+        return "batchPrefillLayer_" + (layerIndex / layersPerGraph) * layersPerGraph;
+    }
+
     /** Empty while a graph holds one layer, so the existing ids are untouched. */
     private String taskPrefix(int layerIndex) {
         return layersPerGraph == 1 ? "" : "L" + layerIndex + "_";
@@ -896,7 +1093,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
             String p =
-                    "batchPrefillLayer_"
+                    graphPrefix
                             + (i / layersPerGraph) * layersPerGraph
                             + "."
                             + taskPrefix(i);
@@ -907,7 +1104,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             }
             scheduler.addWorkerGrid(p + "batch_qk_rmsnorm", qkRmsNormWorker);
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
-            if (cudnnAttention) {
+            if (useCudnnAttention) {
                 WorkerGrid cudnnWorker = elementwiseGrid(qDim * batchSize);
                 scheduler.addWorkerGrid(p + "cudnn_pack_q", cudnnWorker);
                 scheduler.addWorkerGrid(p + "cudnn_gather_kv", cudnnWorker);

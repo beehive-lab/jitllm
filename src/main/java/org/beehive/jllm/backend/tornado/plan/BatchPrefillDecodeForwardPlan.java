@@ -50,6 +50,15 @@ public class BatchPrefillDecodeForwardPlan extends ForwardPlan {
         all.addAll(batchLayerGraphs);
         batchLayers.updateGridScheduler(scheduler);
 
+        // The fallback family, when the primary builds one: the same layers with an attention
+        // implementation that handles a chunk starting past position 0. Its graphs bind their
+        // buffers from the primary's, so they cost graphs and no memory. Placed immediately after
+        // the primary so the decode side's producer names are unaffected.
+        List<ImmutableTaskGraph> fallbackLayerGraphs =
+                batchLayers.getFallbackLayerImmutableTaskGraphs();
+        all.addAll(fallbackLayerGraphs);
+        batchLayers.updateFallbackGridScheduler(scheduler);
+
         ActivationTaskGraph decodeAct =
                 components.batchDecodeActivation(batchLayers.getLastLayerTaskGraphID());
         all.add(decodeAct.getImmutableTaskGraph());
@@ -64,7 +73,10 @@ public class BatchPrefillDecodeForwardPlan extends ForwardPlan {
         // depends on how many there are.
         this.taskGraphLayout =
                 new BatchPrefillDecodeForwardTaskGraphLayout(
-                        N, batchLayerGraphs.size(), decodeLayerGraphs.size());
+                        N,
+                        batchLayerGraphs.size(),
+                        fallbackLayerGraphs.size(),
+                        decodeLayerGraphs.size());
 
         AbstractLogitsTaskGraph logits =
                 components.decodeLogits(decodeLayers.getLastFFNLayerTaskGraphID());

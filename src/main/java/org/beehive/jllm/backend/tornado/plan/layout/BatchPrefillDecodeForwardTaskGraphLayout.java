@@ -20,16 +20,16 @@ package org.beehive.jllm.backend.tornado.plan.layout;
  */
 // @formatter:on
 public record BatchPrefillDecodeForwardTaskGraphLayout(
-        int N, int batchLayerGraphs, int decodeLayerGraphs) {
+        int N, int batchLayerGraphs, int fallbackLayerGraphs, int decodeLayerGraphs) {
 
     /** The ungrouped layout: one decode graph per layer, which is what every family built. */
     public BatchPrefillDecodeForwardTaskGraphLayout(int N) {
-        this(N, N, N);
+        this(N, N, 0, N);
     }
 
     /** The batch-prefill side ungrouped, the decode side as given. */
     public BatchPrefillDecodeForwardTaskGraphLayout(int N, int decodeLayerGraphs) {
-        this(N, N, decodeLayerGraphs);
+        this(N, N, 0, decodeLayerGraphs);
     }
 
     public BatchPrefillDecodeForwardTaskGraphLayout {
@@ -37,6 +37,11 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
             throw new IllegalArgumentException(
                     "batch-prefill layer graphs must be between 1 and " + N + ", got "
                             + batchLayerGraphs);
+        }
+        if (fallbackLayerGraphs < 0 || fallbackLayerGraphs > N) {
+            throw new IllegalArgumentException(
+                    "fallback layer graphs must be between 0 and " + N + ", got "
+                            + fallbackLayerGraphs);
         }
         if (decodeLayerGraphs < 1 || decodeLayerGraphs > N) {
             throw new IllegalArgumentException(
@@ -55,8 +60,13 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
         return 1 + i;
     }
 
+    /** The index of the {@code g}-th FALLBACK batch-prefill layer graph. */
+    public int fallbackLayerIdx(int g) {
+        return 1 + batchLayerGraphs + g;
+    }
+
     public int decodeActivationIdx() {
-        return batchLayerGraphs + 1;
+        return batchLayerGraphs + fallbackLayerGraphs + 1;
     }
 
     /**
@@ -66,11 +76,11 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
      * graph may hold more than one layer.
      */
     public int decodeLayerGraphIdx(int g) {
-        return batchLayerGraphs + 2 + g;
+        return batchLayerGraphs + fallbackLayerGraphs + 2 + g;
     }
 
     public int logitsIdx() {
-        return batchLayerGraphs + 2 + decodeLayerGraphs;
+        return batchLayerGraphs + fallbackLayerGraphs + 2 + decodeLayerGraphs;
     }
 
 
@@ -86,7 +96,7 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
      */
     // @formatter:on
     public int layerGraphFamilies() {
-        return 2;
+        return fallbackLayerGraphs > 0 ? 3 : 2;
     }
 
     /**
@@ -96,7 +106,9 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
      * family added without a term here fails rather than under-predicting silently.
      */
     public int[] layerFamilyGraphCounts() {
-        return new int[] {batchLayerGraphs(), decodeLayerGraphs};
+        return fallbackLayerGraphs > 0
+                ? new int[] {batchLayerGraphs, fallbackLayerGraphs, decodeLayerGraphs}
+                : new int[] {batchLayerGraphs, decodeLayerGraphs};
     }
 
     /** Graphs that are not per-layer: batch activation, decode activation and logits. */
@@ -105,6 +117,6 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
     }
 
     public int totalGraphs() {
-        return batchLayerGraphs() + decodeLayerGraphs + nonLayerGraphs();
+        return batchLayerGraphs + fallbackLayerGraphs + decodeLayerGraphs + nonLayerGraphs();
     }
 }
