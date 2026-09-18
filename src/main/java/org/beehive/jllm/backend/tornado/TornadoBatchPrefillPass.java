@@ -21,6 +21,10 @@ public final class TornadoBatchPrefillPass {
     private static final boolean CUDNN_PREFILL_ATTENTION =
             Boolean.getBoolean("jllm.attention.cudnnPrefill");
 
+    /** Restores the pre-fallback refusal for a chunk cuDNN attention cannot mask. */
+    private static final boolean CUDNN_PREFILL_STRICT =
+            Boolean.getBoolean("jllm.attention.cudnnPrefill.strict");
+
     /** Diagnostics only: lets a partial chunk through the guard so the failure can be studied. */
     private static final boolean CUDNN_ALLOW_PARTIAL =
             Boolean.getBoolean("jllm.attention.cudnnPrefill.allowPartial");
@@ -54,19 +58,33 @@ public final class TornadoBatchPrefillPass {
 
         // cuDNN's causal mask aligns query i to key i, which is the right mask only when the
         // query block IS the whole prefix. A chunk starting past zero has its queries at an
-        // offset into a longer key range, and the library binding cannot express that, so
-        // refuse rather than quietly apply first-chunk masking to a later chunk.
-        // cuDNN's causal mask aligns query i to key i, which is the right mask only when the
-        // query block IS the whole prefix. A chunk starting past zero has its queries at an
-        // offset into a longer key range, and the binding cannot express that, so refuse
-        // rather than quietly apply first-chunk masking to a later chunk. A PARTIAL first
-        // chunk is fine: its queries still start at zero, and the padded rows are defined.
+        // offset into a longer key range, and the library binding cannot express that. A PARTIAL
+        // first chunk is fine: its queries still start at zero and the padded rows are defined.
+        //
+        // Rather than refuse such a chunk, ingest it through the decode path that is already in
+        // this plan. That path takes an arbitrary position, attends over the whole KV history it
+        // finds, and writes this chunk's K/V exactly where batched prefill would. It needs no new
+        // graph, no new buffer and no new setup: the decode layer graphs were built with the plan
+        // and already own the weights they read. It is slower per token than a batched chunk --
+        // one graph set per token instead of per chunk -- and that cost is confined to the chunks
+        // a native first chunk cannot cover.
+        //
+        // -Djllm.attention.cudnnPrefill.strict=true restores the old refusal, for tests that want
+        // to prove which path they exercised.
         if (CUDNN_PREFILL_ATTENTION && startPos != 0) {
-            throw new IllegalStateException(
-                    "jllm.attention.cudnnPrefill supports only a prefill chunk starting at "
-                            + "position 0; this chunk starts at "
-                            + startPos
-                            + ". Raise --batch-prefill-size to cover the prompt, or disable the flag.");
+            if (CUDNN_PREFILL_STRICT) {
+                throw new IllegalStateException(
+                        "jllm.attention.cudnnPrefill supports only a prefill chunk starting at "
+                                + "position 0; this chunk starts at "
+                                + startPos
+                                + ". Raise --batch-prefill-size to cover the prompt, or disable"
+                                + " the flag.");
+            }
+            for (int b = 0; b < chunkSize; b++) {
+                copyEmbedding(config, weights, state, tokens[b]);
+                plan.tornadoVMIngestDecodeOnly(startPos + b);
+            }
+            return;
         }
 
         state.workspace.batchStartPosHolder.set(0, startPos);
@@ -145,31 +163,13 @@ public final class TornadoBatchPrefillPass {
 
         plan.tornadoVMForwardBatchPrefill();
     }
-
     /**
-     * The decode step of the batched path: stage one token's embedding, then run the decode
-     * activation, layer and logits graphs.
-     *
-     * <p>Returns the neutral {@link Logits} view over the array the plan produced. The logits stay
-     * <b>device-resident</b> exactly as before — the view reads the same {@code FloatArray} in
-     * place, and no readback, copy or synchronization is added or removed.
-     *
-     * @param model the model
-     * @param state the session's state
-     * @param token current token id
-     * @param position sequence position
-     * @param plan the batched prefill/decode GPU plan
-     * @return the logits this invocation produced, for sampling
+     * Copies one token's embedding row into the single-token staging buffer, in the
+     * embedding tensor's own representation. Shared by the decode step and by the
+     * per-token ingest the multi-chunk fallback uses, so the two cannot diverge.
      */
-    public static Logits decode(
-            Model model,
-            State state,
-            int token,
-            int position,
-            TornadoVMMasterPlanBatchPrefillDecode plan) {
-        final Configuration config = model.configuration();
-        final TornadoWeights weights = (TornadoWeights) model.weights();
-
+    private static void copyEmbedding(
+            Configuration config, TornadoWeights weights, State state, int token) {
         switch (weights.getTokenEmbeddingTable().dataType()) {
             case F16 -> {
                 MemorySegment embTable =
@@ -210,6 +210,34 @@ public final class TornadoBatchPrefillPass {
                             "Unsupported embedding weight type: "
                                     + weights.getTokenEmbeddingTable().dataType());
         }
+    }
+
+
+    /**
+     * The decode step of the batched path: stage one token's embedding, then run the decode
+     * activation, layer and logits graphs.
+     *
+     * <p>Returns the neutral {@link Logits} view over the array the plan produced. The logits stay
+     * <b>device-resident</b> exactly as before — the view reads the same {@code FloatArray} in
+     * place, and no readback, copy or synchronization is added or removed.
+     *
+     * @param model the model
+     * @param state the session's state
+     * @param token current token id
+     * @param position sequence position
+     * @param plan the batched prefill/decode GPU plan
+     * @return the logits this invocation produced, for sampling
+     */
+    public static Logits decode(
+            Model model,
+            State state,
+            int token,
+            int position,
+            TornadoVMMasterPlanBatchPrefillDecode plan) {
+        final Configuration config = model.configuration();
+        final TornadoWeights weights = (TornadoWeights) model.weights();
+
+        copyEmbedding(config, weights, state, token);
 
         return state.workspace.logitsView(plan.tornadoVMForwardDecode(position));
     }
