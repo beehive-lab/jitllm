@@ -209,11 +209,15 @@ public final class GoldenCapture {
                 if (plan
                         instanceof
                         org.beehive.jllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode) {
+                    // Only the tasks this family's batched graphs hold: another family records
+                    // nothing under a qwen35 task name rather than failing the capture.
                     for (String task : RECORDED_BATCHED_TASKS) {
-                        result.batchedTaskKernels.put(
-                                task,
+                        java.util.Set<String> kernels =
                                 org.beehive.jllm.backend.tornado.PlanDispatchEvidence
-                                        .batchedTaskKernels(plan, task));
+                                        .batchedTaskKernelsIfAny(plan, task);
+                        if (!kernels.isEmpty()) {
+                            result.batchedTaskKernels.put(task, kernels);
+                        }
                     }
                 }
                 model.generateTokensGPU(

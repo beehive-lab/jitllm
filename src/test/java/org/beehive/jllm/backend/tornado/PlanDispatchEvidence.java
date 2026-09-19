@@ -211,6 +211,17 @@ public final class PlanDispatchEvidence {
      * which is what the API offers nothing public for.
      */
     public static java.util.Set<String> batchedTaskKernels(TornadoVMMasterPlan plan, String task) {
+        java.util.Set<String> kernels = batchedTaskKernelsIfAny(plan, task);
+        assertTrue("no batched layer graph holds a task named " + task, !kernels.isEmpty());
+        return kernels;
+    }
+
+    /**
+     * {@link #batchedTaskKernels} without the presence assertion: empty when no batched layer graph
+     * holds the task, which a family other than qwen35 legitimately is.
+     */
+    public static java.util.Set<String> batchedTaskKernelsIfAny(
+            TornadoVMMasterPlan plan, String task) {
         assertTrue(
                 "not a batched plan: " + plan.getClass().getSimpleName(),
                 plan instanceof TornadoVMMasterPlanBatchPrefillDecode);
@@ -235,7 +246,6 @@ public final class PlanDispatchEvidence {
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("cannot reach the task graphs behind the plan", e);
         }
-        assertTrue("no batched layer graph holds a task named " + task, !kernels.isEmpty());
         return kernels;
     }
 
