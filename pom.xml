@@ -68,7 +68,24 @@
                  profile and publishes only 6.0.0-jdk21 and 6.0.0-jdk22plus to Maven Central.
                  Tying the two together would silently rename jllm's own coordinates. -->
         <tornadovm.version.suffix>-jdk21</tornadovm.version.suffix>
-        <tornadovm.cudnn.version>6.1.1-jdk21-dev</tornadovm.cudnn.version>
+        <!-- tornado-cublas and tornado-cudnn, the vendor-library bindings the batched prefill
+                 path compiles against. A SEPARATE version from tornadovm.base.version above, and
+                 deliberately a development one, for two reasons:
+
+                 1. Neither module is published to Maven Central at any version. They only exist
+                    in a local repository after a TornadoVM source build has run `mvn install`,
+                    which is what `make BACKEND=cuda` does, and what the documented setup already
+                    requires for the CUDA backend.
+                 2. The fixes this path depends on landed on develop after the 6.1.0 tag, so the
+                    revision that has them calls itself 6.1.1-<line>-dev. NATIVE_PREFILL.md
+                    names the exact commit.
+
+                 The suffix is shared with TornadoVM's own so the jdk21 and jdk22plus lines each
+                 resolve the artifacts their SDK built. Both dependencies are `provided`: the SDK
+                 puts them on the module path at runtime (tornado-argfile already lists
+                 tornado.cublas and tornado.cudnn), so nothing of them is shaded into jllm's
+                 jar. -->
+        <tornadovm.native.version>6.1.1${tornadovm.version.suffix}-dev</tornadovm.native.version>
         <!-- CUDA backend is only available after 5.0.0 TornadoVM version -->
         <tornadovm.version>${tornadovm.base.version}${tornadovm.version.suffix}</tornadovm.version>
         <!-- Compiler defaults (overridden by JDK profiles below) -->
@@ -99,20 +116,20 @@
             <artifactId>tornado-api</artifactId>
             <version>${tornadovm.version}</version>
         </dependency>
-        <!-- cuDNN binding for the batched-prefill attention path. Provided: the SDK puts
-             it on the module path at runtime (tornado-argfile already lists tornado.cudnn).
-             Pinned separately because tornado-cudnn is not published to Maven Central for
-             6.1.0 - it comes from the local develop build. -->
+        <!-- The vendor-library bindings the batched prefill path compiles against: cuBLAS for
+             the four projections, cuDNN for the first chunk's fused attention. See
+             tornadovm.native.version above for why they are versioned separately and why they
+             are `provided`. -->
         <dependency>
             <groupId>io.github.beehive-lab</groupId>
-            <artifactId>tornado-cudnn</artifactId>
-            <version>${tornadovm.cudnn.version}</version>
+            <artifactId>tornado-cublas</artifactId>
+            <version>${tornadovm.native.version}</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>io.github.beehive-lab</groupId>
-            <artifactId>tornado-cublas</artifactId>
-            <version>${tornadovm.cudnn.version}</version>
+            <artifactId>tornado-cudnn</artifactId>
+            <version>${tornadovm.native.version}</version>
             <scope>provided</scope>
         </dependency>
         <dependency>

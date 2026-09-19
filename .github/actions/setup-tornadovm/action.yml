@@ -20,10 +20,23 @@ inputs:
 runs:
   using: composite
   steps:
-    # The TornadoVM the project supports: the v6.0.0 release tag, matching pom.xml's
-    # tornadovm.base.version. Pinned to a tag rather than a branch head because "develop" silently
-    # advanced to 6.0.1-dev before, and removed TornadoVMBackendType.PTX, breaking every leg's
-    # compile with nothing here to say the version had moved.
+    # The TornadoVM the project builds against.
+    #
+    # A develop COMMIT, not a release tag, and that is a deliberate step back from the tag pin
+    # below. The batched prefill path compiles against tornado-cublas and tornado-cudnn, and
+    # NEITHER module is published to Maven Central at any version -- they exist only in the local
+    # repository this build's `mvn install` populates. So the commit built here is what pom.xml's
+    # tornadovm.native.version has to name, and it has to be a revision that carries the CUDA
+    # codegen fixes that path depends on (PRs #1091, #1092, #1093, #1098, #1099), all of which
+    # landed on develop after v6.1.0. NATIVE_PREFILL.md records the revision and what it is
+    # required for.
+    #
+    # A full SHA, not "develop": the previous pin moved to a tag precisely because a branch head
+    # silently advanced to 6.0.1-dev and removed TornadoVMBackendType.PTX, breaking every leg's
+    # compile with nothing here to say the version had moved. A SHA keeps that guarantee while
+    # allowing a revision no tag names yet.
+    #
+    # Everything below about the v6.0.0 pin still applies to what that pin fixed:
     #
     # Moved off v5.2.0-jdk21 because that release could not run batched prefill on ANY backend:
     # consumeFromDevice(producer, ...) resolved against the previously executed graph rather than
@@ -39,8 +52,8 @@ runs:
     - name: Resolve pinned TornadoVM ref
       shell: bash
       run: |
-        echo "TORNADOVM_REF=v6.0.0" >> $GITHUB_ENV
-        echo "TORNADOVM_REF_DESC=v6.0.0 (release tag)" >> $GITHUB_ENV
+        echo "TORNADOVM_REF=65f06c5d162c36022f9d5724dd38b9784d85cfcc" >> $GITHUB_ENV
+        echo "TORNADOVM_REF_DESC=develop 65f06c5d1 (PR #1094 merge)" >> $GITHUB_ENV
 
     - name: Report the pinned TornadoVM commit
       id: tornado_sha
@@ -54,7 +67,7 @@ runs:
       shell: ${{ runner.os == 'macOS' && '/opt/homebrew/bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
       run: |
         SENTINEL="$TORNADO_ROOT/.built-sha"
-        EXPECTED="${{ steps.tornado_sha.outputs.sha }}+jdk${{ inputs.jdk }}+recipe6"
+        EXPECTED="${{ steps.tornado_sha.outputs.sha }}+jdk${{ inputs.jdk }}+recipe7"
         echo "expected=$EXPECTED" >> $GITHUB_OUTPUT
         if [ -f "$SENTINEL" ] && [ "$(cat $SENTINEL)" = "$EXPECTED" ]; then
           echo "up-to-date=true" >> $GITHUB_OUTPUT
@@ -67,9 +80,12 @@ runs:
       shell: ${{ runner.os == 'macOS' && '/opt/homebrew/bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
       run: |
         rm -rf $TORNADO_ROOT
-        git clone --depth 1 --branch "$TORNADOVM_REF" \
-          https://github.com/beehive-lab/TornadoVM.git \
-          $TORNADO_ROOT
+        # --branch takes a branch or tag, never a commit, so the ref is fetched explicitly.
+        # Still a shallow fetch of exactly the pinned revision, not a full clone.
+        git init --quiet $TORNADO_ROOT
+        git -C $TORNADO_ROOT remote add origin https://github.com/beehive-lab/TornadoVM.git
+        git -C $TORNADO_ROOT fetch --depth 1 --quiet origin "$TORNADOVM_REF"
+        git -C $TORNADO_ROOT checkout --quiet FETCH_HEAD
         echo "Checked out $(cd $TORNADO_ROOT && git rev-parse HEAD)"
 
     - name: Set up Python venv for TornadoVM
