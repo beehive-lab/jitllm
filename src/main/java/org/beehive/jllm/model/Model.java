@@ -82,6 +82,27 @@ public interface Model {
         return config.dim() * config.numberOfKeyValueHeads() / config.numberOfHeads();
     }
 
+    /**
+     * Host-side staging this family needs before its device graphs run for {@code token}.
+     *
+     * <p>Default: nothing. A family overrides it when a per-token input is too large to keep
+     * resident and has to be gathered on the host each step — Gemma 4's {@code
+     * per_layer_token_embd} is 2.35 billion elements, so only the current token's row is staged.
+     * The alternative is a family test inside the shared forward pass, which is the central switch
+     * Rule 15 forbids.
+     */
+    default void stagePerTokenDeviceInputs(State state, int token) {}
+
+    /**
+     * The chunk-wide twin of {@link #stagePerTokenDeviceInputs}: whatever a family has to put in a
+     * device buffer per prompt token before a batched prefill graph runs, for every token of the
+     * chunk.
+     *
+     * <p>A default no-op for the same reason the single-token hook is one, and separate from it
+     * because the destination is a row of a chunk-wide buffer rather than a buffer of its own.
+     */
+    default void stageBatchDeviceInputs(State state, int[] tokens, int chunkSize) {}
+
     default boolean shouldAddBeginOfText() {
         return true;
     }

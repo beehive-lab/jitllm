@@ -83,19 +83,6 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
         // projection in whatever the quantizer chose -- Qwen3.5's is Q6_K where its layers are
         // Q4_0 -- and reading one block layout as another produces plausible logits and wrong
         // tokens. A representation with no kernel is refused here rather than converted.
-        if (packedVocabulary(weights)) {
-            // One explicit terminal boundary: the final normalized activation, quantized here and
-            // read by the projection below and by nothing else.
-            logits.task(
-                    "vocab_quantize",
-                    org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0
-                            ::quantizeActivationQ8Blocks,
-                    context,
-                    state.workspace.wrapX,
-                    state.workspace.wrapXbQuants,
-                    state.workspace.wrapXbScales,
-                    state.workspace.wrapXbSums);
-        }
         addVocabularyProjection(logits, weights, config);
 
         logits.transferToHost(DataTransferMode.EVERY_EXECUTION, state.workspace.wrapLogits);
@@ -123,7 +110,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
      * which is why it needs no provenance flag: there is no second consumer to confuse it with.
      */
     // @formatter:on
-    private boolean packedVocabulary(TornadoWeights weights) {
+    protected boolean packedVocabulary(TornadoWeights weights) {
         return !"false".equalsIgnoreCase(System.getProperty("jllm.qwen35.packedIntegerDot", "true"))
                 && weights.wclsByteArray.dataType() == org.beehive.jllm.runtime.tensor.DataType.Q6_K
                 && state.workspace.wrapXbQuants != null
@@ -135,11 +122,33 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
     }
 
     /** The vocabulary projection task, chosen by what the output projection actually holds. */
-    private void addVocabularyProjection(
+    /**
+     * The vocabulary projection, by the output tensor's own representation.
+     *
+     * <p>Visible to subclasses because a family that overrides {@link #setupLogitsTaskGraph} still
+     * has to dispatch this the same way. Hardcoding a kernel here reads one block layout as another
+     * -- 34-byte Q8_0 blocks over a 144-byte Q4_K super-block tensor walks off the end of the
+     * buffer, which surfaces as an illegal address rather than as wrong numbers.
+     */
+    protected void addVocabularyProjection(
             TaskGraph logits, TornadoWeights weights, Configuration config) {
         int localSize = LOCAL_WORK_GROUP_SIZE_ALLOC * THREAD_SCALE_FOR_LOGITS;
         var w = weights.wclsByteArray;
         if (packedVocabulary(weights)) {
+            // Emitted here rather than by the caller, because the projection below is the only
+            // reader of this triple and a graph that has one without the other reads a buffer
+            // nothing wrote. A family that overrides setupLogitsTaskGraph — Gemma 4 does, for its
+            // logit soft-cap — would otherwise have to remember to bring the quantize with it, and
+            // one that forgot would get plausible logits off uninitialized quants.
+            logits.task(
+                    "vocab_quantize",
+                    org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0
+                            ::quantizeActivationQ8Blocks,
+                    context,
+                    state.workspace.wrapX,
+                    state.workspace.wrapXbQuants,
+                    state.workspace.wrapXbScales,
+                    state.workspace.wrapXbSums);
             logits.task(
                     "vocab_proj",
                     org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K

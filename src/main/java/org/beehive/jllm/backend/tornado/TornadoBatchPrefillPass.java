@@ -17,6 +17,23 @@ public final class TornadoBatchPrefillPass {
     private static final int Q4_0_BLOCK_SIZE = 32;
     private static final int Q4_0_BLOCK_BYTES = 18;
 
+    // @formatter:off
+    /**
+     * Opt-in timing for the per-chunk host staging, which no kernel profiler counts.
+     *
+     * <p>A measurement tool with no assertion attached, kept because this cost is invisible
+     * otherwise and turned out to matter: a per-task profile showed Gemma 4's Q4_0 prefill spending
+     * 230 ms of kernel time per four chunks while the wall clock said 98 ms per chunk, and the
+     * difference was entirely here. A static final read of a system property, so the branch is gone
+     * when it is off.
+     */
+    // @formatter:on
+    private static final boolean TIME_STAGING = Boolean.getBoolean("jllm.bench.timeStaging");
+
+    /** Rule 16: library code routes its output through the platform logger. */
+    private static final System.Logger LOGGER =
+            System.getLogger(TornadoBatchPrefillPass.class.getName());
+
     private TornadoBatchPrefillPass() {}
 
     /**
@@ -73,6 +90,7 @@ public final class TornadoBatchPrefillPass {
             moeState.workspace.activeBatchSizeHolder.set(0, chunkSize);
         }
 
+        long embStart = TIME_STAGING ? System.nanoTime() : 0L;
         // The embedding tensor's own representation, not the model-wide one: a mixed model holds
         // them apart, and reading 18-byte blocks as 34-byte ones is a plausible activation and
         // wrong output.
@@ -133,6 +151,26 @@ public final class TornadoBatchPrefillPass {
                                     + weights.getTokenEmbeddingTable().dataType());
         }
 
+        // Whatever this family stages per prompt token that is not the token embedding — Gemma 4's
+        // per-layer embedding rows are the only case today — for the whole chunk, before the graphs
+        // that read it run.
+        if (TIME_STAGING) {
+            LOGGER.log(
+                    System.Logger.Level.INFO,
+                    "staging: token embeddings for {0} tokens in {1} ms",
+                    chunkSize,
+                    (System.nanoTime() - embStart) / 1e6);
+        }
+        long stageStart = TIME_STAGING ? System.nanoTime() : 0L;
+        model.stageBatchDeviceInputs(state, tokens, chunkSize);
+        if (TIME_STAGING) {
+            LOGGER.log(
+                    System.Logger.Level.INFO,
+                    "staging: per-layer rows for {0} tokens in {1} ms",
+                    chunkSize,
+                    (System.nanoTime() - stageStart) / 1e6);
+        }
+
         if (useFallbackFamily) {
             plan.tornadoVMForwardBatchPrefillFallback();
         } else {
@@ -141,11 +179,33 @@ public final class TornadoBatchPrefillPass {
     }
 
     /**
-     * Copies one token's embedding row into the single-token staging buffer, in the embedding
-     * tensor's own representation.
+     * The decode step of the batched path: stage one token's embedding, then run the decode
+     * activation, layer and logits graphs.
+     *
+     * <p>Returns the neutral {@link Logits} view over the array the plan produced. The logits stay
+     * <b>device-resident</b> exactly as before — the view reads the same {@code FloatArray} in
+     * place, and no readback, copy or synchronization is added or removed.
+     *
+     * @param model the model
+     * @param state the session's state
+     * @param token current token id
+     * @param position sequence position
+     * @param plan the batched prefill/decode GPU plan
+     * @return the logits this invocation produced, for sampling
      */
-    private static void copyEmbedding(
-            Configuration config, TornadoWeights weights, State state, int token) {
+    public static Logits decode(
+            Model model,
+            State state,
+            int token,
+            int position,
+            TornadoVMMasterPlanBatchPrefillDecode plan) {
+        final Configuration config = model.configuration();
+        final TornadoWeights weights = (TornadoWeights) model.weights();
+
+        // The same per-token staging the single-token pass does first: a family with a device input
+        // besides the token embedding needs it on every decode step, batched plan or not.
+        model.stagePerTokenDeviceInputs(state, token);
+
         switch (weights.getTokenEmbeddingTable().dataType()) {
             case F16 -> {
                 MemorySegment embTable =
@@ -186,33 +246,6 @@ public final class TornadoBatchPrefillPass {
                             "Unsupported embedding weight type: "
                                     + weights.getTokenEmbeddingTable().dataType());
         }
-    }
-
-    /**
-     * The decode step of the batched path: stage one token's embedding, then run the decode
-     * activation, layer and logits graphs.
-     *
-     * <p>Returns the neutral {@link Logits} view over the array the plan produced. The logits stay
-     * <b>device-resident</b> exactly as before — the view reads the same {@code FloatArray} in
-     * place, and no readback, copy or synchronization is added or removed.
-     *
-     * @param model the model
-     * @param state the session's state
-     * @param token current token id
-     * @param position sequence position
-     * @param plan the batched prefill/decode GPU plan
-     * @return the logits this invocation produced, for sampling
-     */
-    public static Logits decode(
-            Model model,
-            State state,
-            int token,
-            int position,
-            TornadoVMMasterPlanBatchPrefillDecode plan) {
-        final Configuration config = model.configuration();
-        final TornadoWeights weights = (TornadoWeights) model.weights();
-
-        copyEmbedding(config, weights, state, token);
 
         return state.workspace.logitsView(plan.tornadoVMForwardDecode(position));
     }

@@ -82,6 +82,87 @@ public final class Gemma4State extends State {
         this.workspace.tempPostAttn = TornadoWorkspaces.floats(tempSize);
         this.workspace.tempPostFfn = TornadoWorkspaces.floats(tempSize);
         this.workspace.tempPostPle = TornadoWorkspaces.floats(tempSize);
+
+        allocateBatchPrefillWorkspace(gemma4config, perLayerTotal);
+    }
+
+    // @formatter:off
+    /**
+     * The chunk-wide buffers the batched prefill graphs use, allocated only when this state was
+     * built for a batched plan.
+     *
+     * <p>Sized like the generic ones the base class allocates, at the padded row count the
+     * tensor-core GEMMs launch, with three additions this family needs and no other does: the
+     * per-layer-embedding block a chunk wide, one FP16 carrier for the residual (the per-layer gate
+     * projection reads it as a GEMM operand and the residual itself stays FP32), and the attention
+     * score scratch.
+     *
+     * <p>The score scratch is the one allocation here that is not obviously small. A window may be
+     * the whole context, so a (row, head) slice is sized at {@code contextLength}; at the widths
+     * this plan is built for that is tens of megabytes, which is the price of computing each
+     * query-key dot product once instead of twice.
+     */
+    // @formatter:on
+    private void allocateBatchPrefillWorkspace(Gemma4Configuration config, int perLayerTotal) {
+        int batch = prefillBatchWidth;
+        if (batch <= 1) {
+            return;
+        }
+        int padded = (batch + 127) & ~127;
+        int segment = config.embeddingLengthPerLayer();
+
+        this.workspace.wrapPerLayerInputsBatch = TornadoWorkspaces.floats(padded * perLayerTotal);
+        this.workspace.wrapPerLayerProjScratchBatch =
+                TornadoWorkspaces.floats(padded * perLayerTotal);
+        this.workspace.wrapPerLayerGateBatch = TornadoWorkspaces.floats(padded * segment);
+        this.workspace.wrapPerLayerGateFP16Batch = TornadoWorkspaces.halfFloats(padded * segment);
+        this.workspace.wrapPerLayerOutBatch = TornadoWorkspaces.floats(padded * config.dim());
+        this.workspace.wrapPerLayerTokenEmbedRowBatch =
+                TornadoWorkspaces.floats(padded * perLayerTotal);
+        this.workspace.wrapXFP16Batch = TornadoWorkspaces.halfFloats(padded * config.dim());
+        this.workspace.branchScaleBatch = TornadoWorkspaces.floats(padded);
+        this.workspace.attnScoresBatch =
+                TornadoWorkspaces.floats(padded * config.numberOfHeads() * config.contextLength());
+        // The depth slices of the two narrow projections, before they are summed. One buffer for
+        // both: they are sequential in a layer's graph, so the second overwrites what the first has
+        // already been reduced out of.
+        // A projection's weights decoded into FP16, so its GEMM stages operands it does not have to
+        // convert. One buffer for every projection of every layer: the widest is what it has to
+        // hold -- the gate/up pair -- and everything else uses a prefix. They are sequential within
+        // a layer's graph and across layers, so nothing needs its own.
+        this.workspace.weightsF16Scratch =
+                TornadoWorkspaces.halfFloats(2 * config.maxFeedForwardLength() * config.dim());
+        this.workspace.splitKPartialBatch =
+                TornadoWorkspaces.floats(
+                        org.beehive.jllm.backend.tornado.layers.Gemma4BatchPrefillLayers
+                                        .SPLIT_K_SLICES
+                                * padded
+                                * config.dim());
+    }
+
+    /** This family's widest head is what one shared query buffer has to hold. */
+    @Override
+    protected int batchQDim(Configuration configuration) {
+        Gemma4Configuration config = (Gemma4Configuration) configuration;
+        return config.numberOfHeads() * config.maxHeadDim();
+    }
+
+    @Override
+    protected int batchKvDim(Configuration configuration) {
+        Gemma4Configuration config = (Gemma4Configuration) configuration;
+        return config.numberOfKeyValueHeads() * config.maxHeadDim();
+    }
+
+    // @formatter:off
+    /**
+     * The widest feed-forward across the layers, because {@code hiddenDim()} on this configuration
+     * refuses to answer: blocks 0-14 are 6144 wide and blocks 15-34 are 12288, and one buffer
+     * shared by every layer's graph has to hold the larger.
+     */
+    // @formatter:on
+    @Override
+    protected int batchHiddenDim(Configuration configuration) {
+        return ((Gemma4Configuration) configuration).maxFeedForwardLength();
     }
 
     /**
@@ -193,7 +274,23 @@ public final class Gemma4State extends State {
         workspace.wrapKeyCache = TornadoWorkspaces.floats(totalCacheElements);
         workspace.wrapValueCache = TornadoWorkspaces.floats(totalCacheElements);
         TornadoWorkspaces.zeroKeyValue(workspace);
+        // An activation in Q8 blocks, for the packed-integer projections: four quants per int, one
+        // scale and one sum of quants per block of 32. Sized for the widest activation any of them
+        // reads and used as a prefix by the narrower ones. This family's feed-forward width differs
+        // by layer, so the widest is the maximum over layers rather than a single hiddenDim.
+        int widest = Math.max(config.dim(), config.maxFeedForwardLength());
+        workspace.wrapXbQuants = TornadoWorkspaces.ints(widest / 4);
+        workspace.wrapXbScales = TornadoWorkspaces.floats(widest / 32);
+        workspace.wrapXbSums = TornadoWorkspaces.ints(widest / 32);
+
         workspace.wrapAtt = TornadoWorkspaces.floats(nHead * config.contextLength());
+        // Split-KV partials: per head, SPLIT_KV numerators of headDim, then SPLIT_KV maxima and
+        // SPLIT_KV sums. Sized at the widest head because this family's head width differs by
+        // layer -- 256 on the sliding-window layers, 512 on the full ones -- while the buffer is
+        // one allocation shared by every layer's graph.
+        workspace.wrapAttSplit =
+                TornadoWorkspaces.floats(
+                        nHead * config.attentionSplits() * (config.maxHeadDim() + 2));
         workspace.positionHolder = TornadoWorkspaces.ints(1);
 
         workspace.temp = TornadoWorkspaces.floats(1 + ((dim + localSize - 1) / localSize));

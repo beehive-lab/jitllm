@@ -56,6 +56,7 @@ public final class LongIndexedTensor {
                                                     elementIndex * Short.BYTES))
                                     << 16);
             case Q8_0 -> q8_0ValueAt(elementIndex);
+            case Q5_K -> q5_KValueAt(elementIndex);
             default ->
                     throw new UnsupportedOperationException(
                             "LongIndexedTensor does not read "
@@ -63,6 +64,91 @@ public final class LongIndexedTensor {
                                     + "; it is only used for embedding"
                                     + " tables, which are never stored in the format-decoded types");
         };
+    }
+
+    /**
+     * Q5_K: super-blocks of 256 values -- an FP16 scale and minimum, eight 6-bit sub-block
+     * scale/minimum pairs packed into 12 bytes, one high bit per value, and a low nibble per value.
+     *
+     * <p>The arithmetic is {@code Q5_KFloatTensor}'s, which is the accepted host decoder for this
+     * format; only the indexing widens, because this table has more elements than an {@code int}
+     * can address. A Gemma 4 Q4_0 file stores {@code per_layer_token_embd} this way, so without it
+     * the file cannot be read at all -- on either path, since both gather its rows from here.
+     */
+    private float q5_KValueAt(long elementIndex) {
+        final int superBlock = 256;
+        final int blockBytes = 176; // 2 d + 2 dmin + 12 scales + 32 qh + 128 qs
+        final int dminOffset = 2;
+        final int scalesOffset = 4;
+        final int qhOffset = 16;
+        final int qsOffset = 48;
+
+        long blockOffset = (elementIndex / superBlock) * blockBytes;
+        int withinBlock = (int) (elementIndex % superBlock);
+
+        float d = Float.float16ToFloat(data.get(ValueLayout.JAVA_SHORT_UNALIGNED, blockOffset));
+        float dmin =
+                Float.float16ToFloat(
+                        data.get(ValueLayout.JAVA_SHORT_UNALIGNED, blockOffset + dminOffset));
+        long scalesOff = blockOffset + scalesOffset;
+
+        int pairIndex = withinBlock / 64; // 0..3
+        int posInPair = withinBlock % 64; // 0..63
+
+        int subBlock;
+        int q;
+        int highBit;
+        if (posInPair < 32) {
+            subBlock = pairIndex * 2;
+            int qsByte =
+                    Byte.toUnsignedInt(
+                            data.get(
+                                    ValueLayout.JAVA_BYTE,
+                                    blockOffset + qsOffset + (long) pairIndex * 32 + posInPair));
+            q = qsByte & 0xF;
+            int qhByte =
+                    Byte.toUnsignedInt(
+                            data.get(ValueLayout.JAVA_BYTE, blockOffset + qhOffset + posInPair));
+            highBit = (qhByte >> (pairIndex * 2)) & 1;
+        } else {
+            subBlock = pairIndex * 2 + 1;
+            int qsByte =
+                    Byte.toUnsignedInt(
+                            data.get(
+                                    ValueLayout.JAVA_BYTE,
+                                    blockOffset
+                                            + qsOffset
+                                            + (long) pairIndex * 32
+                                            + (posInPair - 32)));
+            q = (qsByte >> 4) & 0xF;
+            int qhByte =
+                    Byte.toUnsignedInt(
+                            data.get(
+                                    ValueLayout.JAVA_BYTE,
+                                    blockOffset + qhOffset + (posInPair - 32)));
+            highBit = (qhByte >> (pairIndex * 2 + 1)) & 1;
+        }
+        q += highBit * 16;
+
+        return d * scaleK4(subBlock, scalesOff) * q - dmin * minK4(subBlock, scalesOff);
+    }
+
+    private int scaleK4(int j, long scalesOffset) {
+        if (j < 4) {
+            return Byte.toUnsignedInt(data.get(ValueLayout.JAVA_BYTE, scalesOffset + j)) & 63;
+        }
+        return (Byte.toUnsignedInt(data.get(ValueLayout.JAVA_BYTE, scalesOffset + j + 4)) & 0xF)
+                | ((Byte.toUnsignedInt(data.get(ValueLayout.JAVA_BYTE, scalesOffset + j - 4)) >> 6)
+                        << 4);
+    }
+
+    private int minK4(int j, long scalesOffset) {
+        if (j < 4) {
+            return Byte.toUnsignedInt(data.get(ValueLayout.JAVA_BYTE, scalesOffset + j + 4)) & 63;
+        }
+        return (Byte.toUnsignedInt(data.get(ValueLayout.JAVA_BYTE, scalesOffset + j + 4)) >> 4)
+                | ((Byte.toUnsignedInt(data.get(ValueLayout.JAVA_BYTE, scalesOffset + j)) >> 6)
+                        << 4);
     }
 
     /** Q8_0: 32 signed 8-bit values behind one FP16 scale, blocks tiling the row-major data. */

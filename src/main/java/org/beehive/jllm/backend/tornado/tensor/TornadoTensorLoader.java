@@ -133,9 +133,23 @@ public final class TornadoTensorLoader {
      */
     public static void copyEmbeddingRowToFloatArray(
             LongIndexedTensor table, long rowIndex, int rowSize, FloatArray dest, float scale) {
+        copyEmbeddingRowToFloatArray(table, rowIndex, rowSize, dest, 0, scale);
+    }
+
+    /**
+     * The same gather into a row of a chunk-wide destination: {@code destOffset} is where this
+     * token's row starts in a buffer that holds one row per prompt token.
+     */
+    public static void copyEmbeddingRowToFloatArray(
+            LongIndexedTensor table,
+            long rowIndex,
+            int rowSize,
+            FloatArray dest,
+            int destOffset,
+            float scale) {
         long rowStart = rowIndex * rowSize;
         for (int i = 0; i < rowSize; i++) {
-            dest.set(i, table.valueAt(rowStart + i) * scale);
+            dest.set(destOffset + i, table.valueAt(rowStart + i) * scale);
         }
     }
 }

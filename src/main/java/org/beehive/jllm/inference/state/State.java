@@ -341,6 +341,7 @@ public abstract class State {
             // garbage and are never read by the non-GEMM kernels.
             int paddedGpuBatch = (gpuBatchSize + 127) & ~127;
             int qDim = batchQDim(config);
+            int hiddenDimBatch = batchHiddenDim(config);
             int kvDim = batchKvDim(config);
             this.workspace.embeddingXBatch =
                     TornadoWorkspaces.halfFloats(gpuBatchSize * config.dim());
@@ -351,17 +352,14 @@ public abstract class State {
             this.workspace.wrapKBatch = TornadoWorkspaces.floats(gpuBatchSize * kvDim);
             this.workspace.wrapVBatch = TornadoWorkspaces.floats(gpuBatchSize * kvDim);
             this.workspace.wrapXbBatch = TornadoWorkspaces.floats(gpuBatchSize * qDim);
-            this.workspace.wrapHbBatch =
-                    TornadoWorkspaces.floats(gpuBatchSize * config.hiddenDim());
+            this.workspace.wrapHbBatch = TornadoWorkspaces.floats(gpuBatchSize * hiddenDimBatch);
             this.workspace.attnScaleBatch = TornadoWorkspaces.floats(gpuBatchSize);
             this.workspace.ffnScaleBatch = TornadoWorkspaces.floats(gpuBatchSize);
             this.workspace.batchStartPosHolder = TornadoWorkspaces.ints(3);
             this.workspace.normedXFFNFP16 =
                     TornadoWorkspaces.halfFloats(paddedGpuBatch * config.dim());
-            this.workspace.ffnGateResult =
-                    TornadoWorkspaces.floats(gpuBatchSize * config.hiddenDim());
-            this.workspace.ffnUpResult =
-                    TornadoWorkspaces.floats(gpuBatchSize * config.hiddenDim());
+            this.workspace.ffnGateResult = TornadoWorkspaces.floats(gpuBatchSize * hiddenDimBatch);
+            this.workspace.ffnUpResult = TornadoWorkspaces.floats(gpuBatchSize * hiddenDimBatch);
 
             this.workspace.xbFP16Batch = TornadoWorkspaces.halfFloats(gpuBatchSize * config.dim());
             this.workspace.attnOutFP16 =
@@ -371,12 +369,12 @@ public abstract class State {
             // Qwen3
             this.workspace.woOut = TornadoWorkspaces.floats(paddedGpuBatch * config.dim());
             this.workspace.wrapHbFP16Batch =
-                    TornadoWorkspaces.halfFloats(paddedGpuBatch * config.hiddenDim());
+                    TornadoWorkspaces.halfFloats(paddedGpuBatch * hiddenDimBatch);
             this.workspace.w2Out = TornadoWorkspaces.floats(paddedGpuBatch * config.dim());
             this.workspace.qkvResultBatch =
                     TornadoWorkspaces.floats(paddedGpuBatch * (qDim + 2 * kvDim));
             this.workspace.gateUpResultBatch =
-                    TornadoWorkspaces.floats(paddedGpuBatch * 2 * config.hiddenDim());
+                    TornadoWorkspaces.floats(paddedGpuBatch * 2 * hiddenDimBatch);
         } else {
             this.workspace.embeddingXBatch = null;
             this.workspace.wrapXBatch = null;
@@ -407,6 +405,19 @@ public abstract class State {
      */
     protected int batchQDim(Configuration config) {
         return config.dim();
+    }
+
+    /**
+     * Feed-forward width the chunk-wide buffers are sized from.
+     *
+     * <p>A hook rather than a direct {@code config.hiddenDim()} for the same reason {@link
+     * #batchQDim} is one: a family whose feed-forward width differs by layer has no single hidden
+     * dimension to report, and {@code hiddenDim()} on such a configuration refuses to answer rather
+     * than pick a layer. Such a family returns its widest here, which is what one buffer shared by
+     * every layer's graph has to hold.
+     */
+    protected int batchHiddenDim(Configuration config) {
+        return config.hiddenDim();
     }
 
     /**

@@ -593,6 +593,65 @@ public final class TransformerComputeKernelsQ4_0 {
         }
     }
 
+    /**
+     * {@link #fusedFFNGateUpSiLUQ4_0} with GeGLU in place of SwiGLU.
+     *
+     * <p>A separate method rather than a flag: the activation is the only difference, and the two
+     * families that need them do not otherwise share a feed-forward. Everything above the final
+     * combine — the single local array holding both halves, the one tree that reduces both, the
+     * block addressing — is that kernel's and is deliberately identical, so a change to the
+     * addressing has one place to be made and two places to be checked.
+     */
+    public static void fusedFFNGateUpGeGLUQ4_0(
+            KernelContext context,
+            FloatArray x,
+            FloatArray hb,
+            ByteArray w1,
+            ByteArray w3,
+            int n,
+            int d,
+            int localWorkGroupSize) {
+        int rowId = context.groupIdx;
+        int localId = context.localIdx;
+        if (rowId >= d) {
+            return;
+        }
+
+        float[] localSums = context.allocateFloatLocalArray(localWorkGroupSize * 2);
+        int blocksPerRow = (n + QK - 1) / QK;
+        int rowBlockOffset = rowId * blocksPerRow;
+
+        float gate = 0.0f;
+        float up = 0.0f;
+        for (int j = localId; j < n; j += localWorkGroupSize) {
+            int blockIdx = j / QK;
+            int withinBlock = j - blockIdx * QK;
+            int blockByteOffset = (rowBlockOffset + blockIdx) * BLOCK_BYTES;
+            float activation = x.get(j);
+            gate += decode(w1, blockByteOffset, withinBlock) * activation;
+            up += decode(w3, blockByteOffset, withinBlock) * activation;
+        }
+        localSums[localId] = gate;
+        localSums[localWorkGroupSize + localId] = up;
+        context.localBarrier();
+
+        for (int stride = localWorkGroupSize / 2; stride > 0; stride >>= 1) {
+            if (localId < stride) {
+                localSums[localId] += localSums[localId + stride];
+                localSums[localWorkGroupSize + localId] +=
+                        localSums[localWorkGroupSize + localId + stride];
+            }
+            context.localBarrier();
+        }
+
+        if (localId == 0) {
+            hb.set(
+                    rowId,
+                    TransformerComputeKernelsLayered.geluActivation(localSums[0])
+                            * localSums[localWorkGroupSize]);
+        }
+    }
+
     // @formatter:off
     /**
      * {@code hb[row] += w[row]·x} in packed integers — the residual form, not yet dispatched.
@@ -779,6 +838,102 @@ public final class TransformerComputeKernelsQ4_0 {
             // linear, so the order is the function.
             float silu = gateSum / (1.0f + TornadoMath.exp(-gateSum));
             hb.set(rowId, silu * upSum);
+        }
+    }
+
+    /**
+     * {@link #fusedFFNGateUpSiLUQ4_0DP4A} with GeGLU in place of SwiGLU — the packed-integer
+     * counterpart of {@link #fusedFFNGateUpGeGLUQ4_0}. Everything above the final combine is that
+     * kernel's and is deliberately identical.
+     */
+    public static void fusedFFNGateUpGeGLUQ4_0DP4A(
+            KernelContext context,
+            IntArray xQuants,
+            FloatArray xScales,
+            IntArray xSums,
+            FloatArray hb,
+            ByteArray w1,
+            ByteArray w3,
+            int n,
+            int d,
+            int localWorkGroupSize) {
+        int rowId = context.groupIdx;
+        int localId = context.localIdx;
+        if (rowId >= d) {
+            return;
+        }
+
+        int warpCount = localWorkGroupSize / 32;
+        // Gate in the first warpCount entries, up in the second — the halves-of-one-array layout
+        // the tree used, at a thirty-second of the size.
+        float[] warpSums = context.allocateFloatLocalArray(warpCount * 2);
+        int blocksPerRow = (n + QK - 1) / QK;
+        int rowBlockOffset = rowId * blocksPerRow;
+
+        float gate = 0.0f;
+        float up = 0.0f;
+        for (int block = localId; block < blocksPerRow; block += localWorkGroupSize) {
+            int blockByteOffset = (rowBlockOffset + block) * BLOCK_BYTES;
+            float gateScale = w1.getHalfFloat(blockByteOffset).getFloat32();
+            float upScale = w3.getHalfFloat(blockByteOffset).getFloat32();
+            int quantBase = block * (QK / 4);
+            float activationScale = xScales.get(block);
+            int correction = 8 * xSums.get(block);
+
+            int gateDot = 0;
+            int upDot = 0;
+            for (int g = 0; g < 4; g++) {
+                // Paired nibble read; see the class comment for why it is a pair and not a word.
+                int quantOffset = blockByteOffset + QS_OFFSET + g * 4;
+                int gateWord =
+                        (w1.getHalfFloat(quantOffset).getHalfFloatValue() & 0xFFFF)
+                                | ((w1.getHalfFloat(quantOffset + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int upWord =
+                        (w3.getHalfFloat(quantOffset).getHalfFloatValue() & 0xFFFF)
+                                | ((w3.getHalfFloat(quantOffset + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int low = xQuants.get(quantBase + g);
+                int high = xQuants.get(quantBase + 4 + g);
+                // The same four operands the byte-wise packing produced: the low nibble of each of
+                // the four bytes, then the high nibble of each, in the same DP4A pairing and order.
+                gateDot = QuantizationUtils.dp4a_packed(gateWord & 0x0F0F0F0F, low, gateDot);
+                gateDot =
+                        QuantizationUtils.dp4a_packed((gateWord >>> 4) & 0x0F0F0F0F, high, gateDot);
+                upDot = QuantizationUtils.dp4a_packed(upWord & 0x0F0F0F0F, low, upDot);
+                upDot = QuantizationUtils.dp4a_packed((upWord >>> 4) & 0x0F0F0F0F, high, upDot);
+            }
+            gate += gateScale * activationScale * (gateDot - correction);
+            up += upScale * activationScale * (upDot - correction);
+        }
+
+        gate += context.simdShuffleDown(gate, 16);
+        gate += context.simdShuffleDown(gate, 8);
+        gate += context.simdShuffleDown(gate, 4);
+        gate += context.simdShuffleDown(gate, 2);
+        gate += context.simdShuffleDown(gate, 1);
+        up += context.simdShuffleDown(up, 16);
+        up += context.simdShuffleDown(up, 8);
+        up += context.simdShuffleDown(up, 4);
+        up += context.simdShuffleDown(up, 2);
+        up += context.simdShuffleDown(up, 1);
+
+        if ((localId & 31) == 0) {
+            warpSums[localId >> 5] = gate;
+            warpSums[warpCount + (localId >> 5)] = up;
+        }
+        context.localBarrier();
+
+        if (localId == 0) {
+            float gateSum = 0.0f;
+            float upSum = 0.0f;
+            for (int warp = 0; warp < warpCount; warp++) {
+                gateSum += warpSums[warp];
+                upSum += warpSums[warpCount + warp];
+            }
+            // GELU is applied to the gate reduced across every warp, never per warp: it is not
+            // linear, so the order is the function.
+            hb.set(rowId, TransformerComputeKernelsLayered.geluActivation(gateSum) * upSum);
         }
     }
 

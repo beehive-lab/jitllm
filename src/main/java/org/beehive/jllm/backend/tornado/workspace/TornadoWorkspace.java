@@ -146,6 +146,22 @@ public final class TornadoWorkspace {
     public FloatArray wrapSsmV;
     public FloatArray wrapSsmOut;
 
+    // gemma4 batched prefill. The chunk-wide twins of the per-layer-embedding buffers above, plus
+    // the two this family's batched layer needs and no single-token graph does: one FP16 carrier
+    // per GEMM input, and a score scratch the attention kernel writes because a window of up to the
+    // whole context does not fit in a workgroup's shared memory.
+    public FloatArray wrapPerLayerInputsBatch;
+    public FloatArray wrapPerLayerProjScratchBatch;
+    public FloatArray wrapPerLayerGateBatch;
+    public HalfFloatArray wrapPerLayerGateFP16Batch;
+    public FloatArray wrapPerLayerOutBatch;
+    public FloatArray wrapPerLayerTokenEmbedRowBatch;
+    public HalfFloatArray wrapXFP16Batch;
+    public FloatArray branchScaleBatch;
+    public FloatArray attnScoresBatch;
+    public FloatArray splitKPartialBatch;
+    public HalfFloatArray weightsF16Scratch;
+
     /** The query half of an attention layer's fused query/gate projection, de-interleaved. */
     public FloatArray wrapAttnQ;
 

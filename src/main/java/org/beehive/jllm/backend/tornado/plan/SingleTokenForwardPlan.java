@@ -29,7 +29,13 @@ public class SingleTokenForwardPlan extends ForwardPlan {
     private final SingleTokenForwardTaskGraphLayout taskGraphLayout;
 
     public SingleTokenForwardPlan(Model model, SingleTokenForwardPlanComponents components) {
-        int N = model.configuration().numberOfLayers();
+        // The layer graphs are built first because N is how many of them there are, which is not
+        // always the layer count: a family may put several adjacent layers in one graph to cut
+        // submissions. For every family that does not, the two are equal and this is the number it
+        // always was.
+        TransformerLayerTaskGraphs layers = components.singleTokenTransformerLayers();
+        List<ImmutableTaskGraph> layerGraphs = layers.getFFNLayerImmutableTaskGraphs();
+        int N = layerGraphs.size();
         this.taskGraphLayout = new SingleTokenForwardTaskGraphLayout(N);
 
         List<ImmutableTaskGraph> all = new ArrayList<>(N + 2);
@@ -39,8 +45,7 @@ public class SingleTokenForwardPlan extends ForwardPlan {
         all.add(act.getImmutableTaskGraph());
         act.updateGridScheduler(scheduler);
 
-        TransformerLayerTaskGraphs layers = components.singleTokenTransformerLayers();
-        all.addAll(layers.getFFNLayerImmutableTaskGraphs());
+        all.addAll(layerGraphs);
         layers.updateGridScheduler(scheduler);
 
         AbstractLogitsTaskGraph logits =

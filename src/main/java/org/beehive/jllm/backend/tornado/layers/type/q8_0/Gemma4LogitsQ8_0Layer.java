@@ -59,7 +59,7 @@ public class Gemma4LogitsQ8_0Layer extends LogitsQ8_0Layer {
         // === Final RMS Normalization ===
         logits.task(
                 "rms_reduce",
-                TransformerComputeKernels::reductionOneBlockWithLayer,
+                rmsReduceKernel(),
                 context,
                 state.workspace.tempLogits,
                 state.workspace.wrapX,
@@ -86,16 +86,10 @@ public class Gemma4LogitsQ8_0Layer extends LogitsQ8_0Layer {
                 state.workspace.tempLogits);
 
         // === Vocabulary Projection ===
-        logits.task(
-                "vocab_proj",
-                TransformerComputeKernelsLayered::matrixVectorGenericQ8Byte,
-                context,
-                state.workspace.wrapX,
-                state.workspace.wrapLogits,
-                weights.wclsByteArray.asByteArray(),
-                config.dim(),
-                config.vocabularySize(),
-                LOCAL_WORK_GROUP_SIZE_ALLOC * THREAD_SCALE_FOR_LOGITS);
+        // By the output tensor's own representation, not by this class's name. A Q4_0 Gemma 4 file
+        // ties the output projection to a Q4_K token_embd, and reading that with Q8_0 block
+        // arithmetic runs off the end of the buffer.
+        addVocabularyProjection(logits, weights, config);
 
         // === Final logit soft-capping (Gemma4-specific) ===
         if (softcap() != 0.0f) {

@@ -110,6 +110,7 @@ public final class LogitDump {
                 sb.append(String.format("%14.7f", rows.get(p)[i]));
             }
             System.out.println(sb);
+            System.out.println("    " + stats(rows.get(p)));
         }
     }
 
@@ -121,6 +122,13 @@ public final class LogitDump {
             }
             return out;
         }
+        if (t instanceof org.beehive.jllm.inference.Logits lg) {
+            float[] out = new float[lg.size()];
+            for (int i = 0; i < out.length; i++) {
+                out[i] = lg.get(i);
+            }
+            return out;
+        }
         org.beehive.jllm.tensor.standard.FloatTensor ft =
                 (org.beehive.jllm.tensor.standard.FloatTensor) t;
         float[] out = new float[ft.size()];
@@ -128,6 +136,28 @@ public final class LogitDump {
             out[i] = ft.getFloat(i);
         }
         return out;
+    }
+
+    /**
+     * Shape of the whole row, which the first few columns cannot show. A path whose logits are
+     * saturated by a final soft-cap looks normal column by column and obvious here.
+     */
+    private static String stats(float[] v) {
+        double sum = 0;
+        float min = Float.POSITIVE_INFINITY;
+        float max = Float.NEGATIVE_INFINITY;
+        int atCap = 0;
+        for (float x : v) {
+            sum += (double) x * x;
+            min = Math.min(min, x);
+            max = Math.max(max, x);
+            if (Math.abs(x) >= 29.9f) {
+                atCap++;
+            }
+        }
+        return String.format(
+                "rms=%.5f min=%.5f max=%.5f |x|>=29.9: %d/%d",
+                Math.sqrt(sum / v.length), min, max, atCap, v.length);
     }
 
     private LogitDump() {}

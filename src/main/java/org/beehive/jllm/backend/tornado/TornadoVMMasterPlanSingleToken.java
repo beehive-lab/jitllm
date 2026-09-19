@@ -96,7 +96,8 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
         state.workspace.temp.clear();
         state.workspace.tempFFN.clear();
 
-        for (int layer = 0; layer < config.numberOfLayers(); layer++) {
+        // By graph, not by layer: a family may hold several layers in one graph.
+        for (int layer = 0; layer < taskGraphLayout.N(); layer++) {
             metrics.report(
                     executionPlan
                             .withGraph(taskGraphLayout.layerIdx(layer))
@@ -136,7 +137,8 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
                         .withGridScheduler(tornadoVMForwardPlan.getGridScheduler())
                         .execute());
 
-        for (int layer = 0; layer < config.numberOfLayers(); layer++) {
+        // By graph, not by layer: a family may hold several layers in one graph.
+        for (int layer = 0; layer < taskGraphLayout.N(); layer++) {
             metrics.report(
                     executionPlan
                             .withGraph(taskGraphLayout.layerIdx(layer))

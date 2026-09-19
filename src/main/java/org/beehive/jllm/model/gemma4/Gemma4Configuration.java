@@ -110,6 +110,37 @@ public record Gemma4Configuration(
     }
 
     /**
+     * How many slices the decode attention window is cut into, or 1 for the single-pass kernel.
+     *
+     * <p>Lives on the configuration because two places need the same answer and must not drift: the
+     * state sizes the split scratch from it, and the layer graph launches from it. A disagreement
+     * is an out-of-bounds write into that scratch rather than an error.
+     *
+     * <p>Derived from this model's own attention shape. One workgroup per head is {@code
+     * numberOfHeads()} of them — eight here, on a device with more than a hundred multiprocessors —
+     * so the window is split until there is enough resident work, then capped so the slices do not
+     * become too fine to amortise their own combine: at least 32 positions per slice at the
+     * shortest window this model uses.
+     *
+     * <p><b>{@code TARGET_WORKGROUPS} is an approximation and is written as one.</b> It stands for
+     * "enough workgroups to fill a modern GPU" and happens to be the multiprocessor count of the
+     * device this was measured on. The honest form is a device capability; there is no compute-unit
+     * count on the backend's {@code Device} contract today, and adding one is a change to a backend
+     * interface rather than something a decode kernel should do quietly.
+     */
+    public int attentionSplits() {
+        final int targetWorkgroups = 128;
+        final int minPositionsPerSlice = 32;
+        if (contextLength < 512) {
+            return 1;
+        }
+        int bySpread = Math.max(1, targetWorkgroups / numberOfHeads);
+        int byWindow =
+                Math.max(1, Math.min(slidingWindowSize, contextLength) / minPositionsPerSlice);
+        return Math.min(bySpread, byWindow);
+    }
+
+    /**
      * Number of (initial) layers that own and populate their own KV cache; later layers reuse one
      * of these.
      */

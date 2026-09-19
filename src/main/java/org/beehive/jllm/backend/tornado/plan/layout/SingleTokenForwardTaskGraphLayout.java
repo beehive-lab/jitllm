@@ -10,6 +10,10 @@ package org.beehive.jllm.backend.tornado.plan.layout;
  *   [N+1]    logits
  * </pre>
  */
+/*
+ * N is the number of LAYER GRAPHS, which equals the layer count for every family that builds one
+ * graph per layer and is smaller for one that groups adjacent layers to cut submissions.
+ */
 public record SingleTokenForwardTaskGraphLayout(int N) {
     public int activationIdx() {
         return 0;

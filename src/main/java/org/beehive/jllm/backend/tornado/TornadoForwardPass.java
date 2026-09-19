@@ -44,6 +44,8 @@ public final class TornadoForwardPass {
             int token,
             int position,
             TornadoVMMasterPlan tornadoVMMasterPlan) {
+        // Per-token host staging the family owns, before anything reads its device buffers.
+        model.stagePerTokenDeviceInputs(state, token);
         if (tornadoVMMasterPlan
                 instanceof org.beehive.jllm.backend.tornado.lowering.InvocationBoundary boundary) {
             return boundary.invoke(token, position).logits();

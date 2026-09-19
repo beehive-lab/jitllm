@@ -111,6 +111,35 @@ public final class GoldenFixture {
          * every quantized model reports for its activations, because what distinguishes this
          * fixture is what the weights are, and it also mixes Q4_1, Q5_K, Q6_K and Q8_0 tensors.
          */
+        /**
+         * Gemma 4 E2B, the family's first device fixture. Three representations of one checkpoint,
+         * from {@code unsloth/gemma-4-E2B-it-GGUF}.
+         *
+         * <p>The fp16 leg is the file's own <b>BF16</b>: upstream publishes no F16 build of this
+         * model, and {@code general.file_type} 32 reports FP16 activations for it, so it runs the
+         * FP16 plan against BF16 weights.
+         *
+         * <p>The Q4_0 leg is mixed, which is the normal shape of a Q4_0 file and the reason this
+         * family cannot use Llama's all-or-nothing retention: 241 Q4_0 tensors, {@code ffn_down}
+         * Q4_1 on blocks 0-3 only, a Q4_K {@code token_embd} that is also the output projection,
+         * and a Q5_K {@code per_layer_token_embd} that never reaches the device.
+         */
+        GEMMA_4_E2B_BF16(
+                "gemma-4-E2B-it-BF16.gguf",
+                "BF16",
+                "1eafd61d010ce8ca09db38f370aadd64c6d792db269c365ad0d9ea2709701890",
+                "gemma-4-e2b"),
+        GEMMA_4_E2B_Q8_0(
+                "gemma-4-E2B-it-Q8_0.gguf",
+                "Q8_0",
+                "0a8488b149e1f700712c35d5bf0a3795f9dcc2563b4944d5ef2fb89375f9483e",
+                "gemma-4-e2b"),
+        GEMMA_4_E2B_Q4_0(
+                "gemma-4-E2B-it-Q4_0.gguf",
+                "Q4_0",
+                "31d3a3c630d4e71a7416498c42660dd3805066948acaec76a47e1ffac7010132",
+                "gemma-4-e2b"),
+
         QWEN3_8_27B_Q4_0(
                 "Qwen3.8-27B-Q4_0.gguf",
                 "Q4_0",
