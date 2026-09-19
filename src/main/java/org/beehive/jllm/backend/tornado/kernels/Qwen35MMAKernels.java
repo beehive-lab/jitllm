@@ -388,7 +388,8 @@ public final class Qwen35MMAKernels {
         int superBlocksPerRow = k / QK_K;
 
         // One allocation per operand, the second panel at a byte offset, as in
-        // projectionMMAQ4_0. The tile geometry and the addressing are the same here: a B panel's
+        // the Q4_0 direct kernel. The tile geometry and the addressing are the same here: a B
+        // panel's
         // in-panel address is at most 254 before the swizzle, which permutes within the same 256
         // bytes, and an A panel's per-lane address reaches at most 496 of its 512. The A load
         // applies no swizzle; the B store and load apply it before adding the offset.
@@ -510,8 +511,8 @@ public final class Qwen35MMAKernels {
      * {@code out[M,N] = A[M,K] x W[N,K]} for {@code Q4_1} weights — this model's {@code ffn_down}
      * on the first eight blocks.
      *
-     * <p>{@link #projectionMMAQ4_0}'s staging with Q4_1's decode: two fp16 headers rather than one,
-     * an unsigned nibble, and {@code d * q + m} rather than {@code d * (q - 8)}.
+     * <p>The Q4_0 direct kernel's staging with Q4_1's decode: two fp16 headers rather than one, an
+     * unsigned nibble, and {@code d * q + m} rather than {@code d * (q - 8)}.
      */
     // @formatter:on
     public static void projectionMMAQ4_1(
@@ -532,7 +533,8 @@ public final class Qwen35MMAKernels {
         int blocksPerRow = k / QK;
 
         // One allocation per operand, the second panel at a byte offset, as in
-        // projectionMMAQ4_0. Same tile geometry and same addressing: a B panel's in-panel address
+        // the Q4_0 direct kernel. Same tile geometry and same addressing: a B panel's in-panel
+        // address
         // is at most 254 before the swizzle, which permutes within the same 256 bytes, and an A
         // panel's per-lane address reaches at most 496 of its 512. The A load applies no swizzle;
         // the B store and load apply it before adding the offset.
@@ -630,8 +632,22 @@ public final class Qwen35MMAKernels {
 
     // @formatter:off
     /**
-     * {@link #dequantizeQ4_0ToFP16Tiled} with both nibbles of a packed byte decoded by one lane:
-     * one scale and one byte read, two halves written, in the same tiled layout.
+     * {@code out = fp16(scale * (q - 8))} for a whole {@code Q4_0} matrix, written not row-major
+     * but in the order {@link #gemmMMATiledB} stages its B tile in shared memory, both nibbles of a
+     * packed byte decoded by one lane: one scale and one byte read, two halves written.
+     *
+     * <p><b>Layout.</b> The matrix is {@code n} rows (output columns of the projection) by {@code
+     * k}. It is cut into tiles of 128 rows by 16 k, numbered {@code tile = (row / 128) * (k / 16) +
+     * kk / 16}: all of a row block's k-steps in order, then the next row block. A tile holds 1024
+     * packed pairs; pair {@code idx} (0..1023) holds rows {@code (idx >>> 6) * 8 + (idx & 3) * 2}
+     * and that plus one at k {@code (idx & 63) >>> 2} within the tile — the index the GEMM gives
+     * {@code bTile[idx]} — with the even row in the low half. Half position {@code h = tile * 2048
+     * + idx * 2 + (row & 1)}. Inverse, from {@code h}: {@code idx = (h >>> 1) & 1023}, {@code tile
+     * = h >>> 11}, {@code row = (tile / (k / 16)) * 128 + ((idx >>> 6) << 3) + ((idx & 3) << 1) +
+     * (h & 1)}, {@code kk = (tile % (k / 16)) * 16 + ((idx & 63) >>> 2)}. Requires {@code n % 128
+     * == 0} and {@code k % 32 == 0}. The lane order below is a fixed permutation of the half
+     * positions under which a warp covers four rows by eight k (four blocks read, four 32-byte
+     * sectors written), measured 2-3% faster than the identity over the production shapes.
      *
      * <p><b>Address mapping.</b> Byte {@code t} (0..15) of block {@code b} of row {@code r} holds
      * elements {@code 32b + t} (low nibble) and {@code 32b + t + 16} (high nibble): the same row,
@@ -687,8 +703,9 @@ public final class Qwen35MMAKernels {
      * {@link #dequantizeQ4_0ToFP16TiledPairs} for a {@code Q4_1} matrix: the same lane order, the
      * same tiled layout, the same two halves a byte apart in k, with the block's scale and minimum
      * read from its four-byte header and each element decoded as {@code fp16(scale * q + minimum)}
-     * — the expression of {@link #dequantizeQ4_1ToFP16}, so the halves carry the bits it writes.
-     * The high nibble is {@code (packed & 0xF0) >>> 4}, as the Q4_0 pairs decoder records.
+     * — the expression of the row-major reference decoder ({@code
+     * Qwen35ReferenceKernels.dequantizeQ4_1ToFP16}), so the halves carry the bits it writes. The
+     * high nibble is {@code (packed & 0xF0) >>> 4}, as the Q4_0 pairs decoder records.
      *
      * <p>Worker: {@code n * k / 2} lanes.
      */
@@ -724,8 +741,8 @@ public final class Qwen35MMAKernels {
 
     // @formatter:off
     /**
-     * {@link #dequantizeQ5_KToFP16} written into the tiled layout of {@link
-     * #dequantizeQ4_0ToFP16Tiled}, both nibbles of a {@code qs} byte decoded by one lane.
+     * The Q5_K decoder into the tiled layout ({@code Qwen35ReferenceKernels.dequantizeQ5_KToFP16}
+     * written in the order below), both nibbles of a {@code qs} byte decoded by one lane.
      *
      * <p><b>Address mapping.</b> Byte {@code t} (0..31) of nibble pair {@code p} (0..3) of a
      * super-block holds element {@code 64p + t} of the super-block in its low nibble (sub-block
@@ -802,13 +819,13 @@ public final class Qwen35MMAKernels {
     // @formatter:off
     /**
      * {@code TransformerBatchPrefillKernels.gemmMMA} with its B operand in the tile order {@link
-     * #dequantizeQ4_0ToFP16Tiled} writes: {@code C[M,N] (FP32) = A[M,K] (FP16, row-major) x B},
-     * where B's tile {@code (blockCol / 128) * (K / 16) + kStep} is the 1024 ints of this K-step's
-     * shared tile in shared-tile order. The A staging, the fragment loads, the MMA sequence, the
-     * FP32 accumulation, the store and the tile geometry are those of {@code gemmMMA}; only the B
-     * staging differs: each lane's four ints of the tile are copied global-to-shared with {@code
-     * cp.async}, four-byte words from contiguous addresses, in place of eight two-byte loads a K
-     * apart and four shared stores through registers.
+     * #dequantizeQ4_0ToFP16TiledPairs} writes: {@code C[M,N] (FP32) = A[M,K] (FP16, row-major) x
+     * B}, where B's tile {@code (blockCol / 128) * (K / 16) + kStep} is the 1024 ints of this
+     * K-step's shared tile in shared-tile order. The A staging, the fragment loads, the MMA
+     * sequence, the FP32 accumulation, the store and the tile geometry are those of {@code
+     * gemmMMA}; only the B staging differs: each lane's four ints of the tile are copied
+     * global-to-shared with {@code cp.async}, four-byte words from contiguous addresses, in place
+     * of eight two-byte loads a K apart and four shared stores through registers.
      *
      * <p>Same synchronisation shape: the next step's B copies are issued after the barrier that
      * ends this step's fragment loads, overlap the MMAs, and are waited for before the barrier that

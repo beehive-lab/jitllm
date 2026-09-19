@@ -772,8 +772,9 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     /**
      * Whether the causal convolution runs as a lane per (row, channel) plus a window update ({@code
-     * causalConv1dBatch} + {@code causalConv1dWindowUpdate}) rather than the per-channel scan: the
-     * window update is written for the four-tap kernel this family has.
+     * causalConv1dSiluSplitBatch} + {@code causalConv1dWindowUpdate}) rather than the per-channel
+     * scan, the SiLU and the split: the window update is written for the four-tap kernel this
+     * family has.
      */
     private boolean parallelConv() {
         return config.ssmConvKernel() == 4;
