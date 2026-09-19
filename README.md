@@ -295,6 +295,7 @@ usage: jllm [-h] --model MODEL_PATH [--prompt PROMPT] [-sp SYSTEM_PROMPT]
                      [--print-bytecodes] [--print-threads] [--print-kernel] [--full-dump] [--verbose-init]
                      [--show-command] [--execute-after-show]
                      [--with-prefill-decode] [--batch-prefill-size N] [--cuda-graphs]
+                     [--fp16-kv-cache] [--no-tensor-cores]
                      [--opencl-flags FLAGS] [--max-wait-events N] [--verbose]
 
 LLaMA Configuration:  --prompt, -sp/--system-prompt, --temperature (0.0–2.0, default 0.1),
@@ -308,8 +309,11 @@ Hardware:             --gpu, --opencl/--cuda/--metal (auto-detected; force one o
 Debug & Profiling:    --debug, --profiler, --profiler-dump-dir,
                       --print-bytecodes, --print-threads, --print-kernel, --full-dump, --verbose-init
 Command Display:      --show-command, --execute-after-show
-Prefill-Decode:       --with-prefill-decode, --batch-prefill-size N (tensor-core MMA batch prefill,
-                      FP16 & Q8_0)
+Prefill-Decode:       --with-prefill-decode, --batch-prefill-size N (batched prefill; on CUDA the
+                      Qwen3.8 Q4_0 projections and attention run on the tensor cores by default,
+                      --no-tensor-cores keeps the scalar kernels; widths 512-2048 are the fast ones)
+KV cache:             --fp16-kv-cache (half-precision key/value store; selects the tensor-core
+                      attention for batched Qwen3.8 prefill)
 Advanced:             --cuda-graphs (CUDA backend only), --opencl-flags (default: -cl-denorms-are-zero
                       -cl-no-signed-zeros -cl-finite-math-only), --max-wait-events (default 32000), --verbose/-v
 ```

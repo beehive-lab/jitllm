@@ -15,6 +15,12 @@ import org.junit.Test;
  */
 public class Qwen35BatchedPrefillWidth7ParityAccelTest extends CpuGpuParity {
 
+    static {
+        // The scalar batched path, which the tensor-core default would otherwise replace: this
+        // class is the scalar kernels' coverage; the Qwen35Mma* classes cover the tensor cores.
+        System.setProperty("jllm.qwen35.tensorCores", "false");
+    }
+
     @Test
     public void qwen3_8_27b_q4_0_batchedPrefillParityAt7() throws Exception {
         assertParityBatched(Fixture.QWEN3_8_27B_Q4_0, Q8_0_PACKED_DECODE, 7);

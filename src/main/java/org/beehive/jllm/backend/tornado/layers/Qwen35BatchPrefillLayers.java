@@ -51,18 +51,22 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     /**
      * Whether this family's eligible batched projections run on the tensor cores.
      *
-     * <p>Off by default: FP16 multiplicands are not bit-identical to the scalar kernels, so this is
-     * a change to the arithmetic and not only to the speed. What it covers, once on, is every
-     * projection {@link #mmaEligible} admits — the gate and up panels, {@code ffn_down} in both of
-     * this model's representations, the Q5_K recurrent readout and the attention output.
+     * <p>On by default; {@code -Djllm.qwen35.tensorCores=false} (the launcher's {@code
+     * --no-tensor-cores}) keeps the scalar batched kernels, whose multiplicands are not FP16 and
+     * whose outputs are therefore not bit-identical to the tensor-core path. It applies only where
+     * the backend has tensor cores ({@code TensorCoreSupport.isTensorCoreCapableBackend()}, CUDA);
+     * elsewhere the scalar kernels run regardless. What it covers is every projection {@link
+     * #mmaEligible} admits — the gate and up panels, {@code ffn_down} in both of this model's
+     * representations, the Q5_K recurrent readout and the attention output.
      *
      * <p>Which kernels a plan is built to dispatch is a question about that plan, not about this
-     * field: the {@code Qwen35Mma*} accel classes select the path and then check their own plan's
-     * grid scheduler, and {@code theBatchedPlanSelectsTensorCoresPerWidth} pins the per-width
-     * selection and the MMA grids against the scalar path at an ineligible width.
+     * field: the {@code Qwen35Mma*} accel classes check their own plan's grid scheduler and task
+     * graphs, and {@code theBatchedPlanSelectsTensorCoresPerWidth} pins the per-width selection and
+     * the MMA grids against the scalar path at an ineligible width.
      */
     // @formatter:on
-    private static final boolean TENSOR_CORES = Boolean.getBoolean("jllm.qwen35.tensorCores");
+    private static final boolean TENSOR_CORES =
+            Boolean.parseBoolean(System.getProperty("jllm.qwen35.tensorCores", "true"));
 
     private static final int MATVEC_LOCAL = 128;
     private static final int ELEMENTWISE_LOCAL = 128;

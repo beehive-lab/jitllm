@@ -164,8 +164,8 @@ class LlamaRunner:
         if args.fp16_kv_cache:
             cmd.append("-Djllm.kvcache.fp16=true")
 
-        if args.tensor_cores:
-            cmd.append("-Djllm.qwen35.tensorCores=true")
+        if args.no_tensor_cores:
+            cmd.append("-Djllm.qwen35.tensorCores=false")
 
         # Debug options
         debug_config = []
@@ -462,7 +462,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--max-tokens",
         type=int,
         default=512,
-        help="Maximum number of tokens to generate",
+        help="Capacity in positions for this run: prompt plus generated tokens (sizes the context; a prompt this long or longer is refused)",
     )
     llm_group.add_argument(
         "--stream", type=bool, default=True, help="Enable streaming output"
@@ -500,7 +500,13 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--tensor-cores",
         action="store_true",
-        help="Run the qwen35 Q4_0 projections that read the normed chunk on the tensor cores (FP16 multiplicands, FP32 accumulate)",
+        help="Accepted for compatibility: the qwen35 batched projections run on the tensor cores by default where the backend has them (CUDA)",
+    )
+    parser.add_argument(
+        "--no-tensor-cores",
+        dest="no_tensor_cores",
+        action="store_true",
+        help="Keep the qwen35 batched projections on the scalar kernels (FP32 multiplicands) instead of the tensor cores (FP16 multiplicands, FP32 accumulate)",
     )
     bench_group = parser.add_argument_group("Benchmark (llama-bench style)")
     bench_group.add_argument(
