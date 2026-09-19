@@ -985,4 +985,353 @@ public final class Qwen35MMAKernels {
         ctx.mmaStore(c16, C, rBase + 16, cBase + 48, N);
         ctx.mmaStore(c17, C, rBase + 16, cBase + 56, N);
     }
+
+    // @formatter:off
+    /**
+     * {@link #gemmMMATiledB} with the residual folded into its epilogue: {@code X[M,N] += A x B} in
+     * place of a store to a scratch and a separate add. Each lane reads the four elements of each
+     * of its sixteen accumulators — element {@code i} of lane {@code l} of a 16 x 8 tile is row
+     * {@code l / 4 + 8 (i / 2)}, column {@code 2 (l % 4) + i % 2} — and adds them to the residual
+     * in FP32, the expression {@code residualAdd} evaluates on the stored value, so the result is
+     * bit-equal to the two-kernel form. Same tiles, staging, MMAs and requirements.
+     */
+    // @formatter:on
+    public static void gemmMMATiledBResidual(
+            KernelContext ctx,
+            HalfFloatArray A,
+            HalfFloatArray B,
+            FloatArray X,
+            int M,
+            int N,
+            int K) {
+        int tid = ctx.localIdx;
+        int warpId = tid / WARP_SIZE;
+        int warpM = warpId / GEMM_WARPS_N;
+        int warpN = warpId % GEMM_WARPS_N;
+        int blockRow = GEMM_BM * ctx.groupIdx;
+        int blockCol = GEMM_BN * ctx.groupIdy;
+
+        int[] aTile = ctx.allocateIntLocalArray(GEMM_BM * GEMM_BK / 2);
+        // Two B tiles: the copy for the next step lands in the one this step is not reading.
+        int[] bTile = ctx.allocateIntLocalArray(2 * GEMM_B_TILE_INTS);
+
+        float[] c00 = ctx.mmaFragment(0.0f);
+        float[] c01 = ctx.mmaFragment(0.0f);
+        float[] c02 = ctx.mmaFragment(0.0f);
+        float[] c03 = ctx.mmaFragment(0.0f);
+        float[] c04 = ctx.mmaFragment(0.0f);
+        float[] c05 = ctx.mmaFragment(0.0f);
+        float[] c06 = ctx.mmaFragment(0.0f);
+        float[] c07 = ctx.mmaFragment(0.0f);
+        float[] c10 = ctx.mmaFragment(0.0f);
+        float[] c11 = ctx.mmaFragment(0.0f);
+        float[] c12 = ctx.mmaFragment(0.0f);
+        float[] c13 = ctx.mmaFragment(0.0f);
+        float[] c14 = ctx.mmaFragment(0.0f);
+        float[] c15 = ctx.mmaFragment(0.0f);
+        float[] c16 = ctx.mmaFragment(0.0f);
+        float[] c17 = ctx.mmaFragment(0.0f);
+
+        int aIdx0 = tid;
+        int gA0 = (blockRow + (aIdx0 >>> 3)) * K + ((aIdx0 & 7) << 1);
+        int aIdx1 = tid + 256;
+        int gA1 = (blockRow + (aIdx1 >>> 3)) * K + ((aIdx1 & 7) << 1);
+        int aIdx2 = tid + 512;
+        int gA2 = (blockRow + (aIdx2 >>> 3)) * K + ((aIdx2 & 7) << 1);
+        int aIdx3 = tid + 768;
+        int gA3 = (blockRow + (aIdx3 >>> 3)) * K + ((aIdx3 & 7) << 1);
+        // B: this block's column tile sequence starts at pair (groupIdy * (K / 16)) * 1024; each
+        // K-step's tile is the next 1024 pairs, and shared int idx is global half 2 * (base + idx).
+        int numKSteps = K / GEMM_BK;
+        int bTileBase = ctx.groupIdy * numKSteps * GEMM_B_TILE_INTS;
+        int bIdx0 = tid;
+        int bIdx1 = tid + 256;
+        int bIdx2 = tid + 512;
+        int bIdx3 = tid + 768;
+
+        int aReg0 = packHalvesGemm(A, gA0, gA0 + 1);
+        int aReg1 = packHalvesGemm(A, gA1, gA1 + 1);
+        int aReg2 = packHalvesGemm(A, gA2, gA2 + 1);
+        int aReg3 = packHalvesGemm(A, gA3, gA3 + 1);
+        aTile[aIdx0] = aReg0;
+        aTile[aIdx1] = aReg1;
+        aTile[aIdx2] = aReg2;
+        aTile[aIdx3] = aReg3;
+        int gB = (bTileBase) << 1;
+        ctx.asyncCopyToLocal(bTile, bIdx0, B, gB + (bIdx0 << 1));
+        ctx.asyncCopyToLocal(bTile, bIdx1, B, gB + (bIdx1 << 1));
+        ctx.asyncCopyToLocal(bTile, bIdx2, B, gB + (bIdx2 << 1));
+        ctx.asyncCopyToLocal(bTile, bIdx3, B, gB + (bIdx3 << 1));
+        ctx.asyncCopyCommit();
+        ctx.asyncCopyWaitGroup(0);
+        ctx.localBarrier();
+
+        for (int kStep = 0; kStep < numKSteps; kStep++) {
+            int bufThis = (kStep & 1) * GEMM_B_TILE_INTS;
+            int bufNext = GEMM_B_TILE_INTS - bufThis;
+            if (kStep + 1 < numKSteps) {
+                int kOff = (kStep + 1) * GEMM_BK;
+                aReg0 = packHalvesGemm(A, gA0 + kOff, gA0 + kOff + 1);
+                aReg1 = packHalvesGemm(A, gA1 + kOff, gA1 + kOff + 1);
+                aReg2 = packHalvesGemm(A, gA2 + kOff, gA2 + kOff + 1);
+                aReg3 = packHalvesGemm(A, gA3 + kOff, gA3 + kOff + 1);
+                // The other B buffer was last read a step ago, before that step's closing
+                // barrier: free. Issue now, so the copy overlaps this whole step.
+                int gBNext = (bTileBase + (kStep + 1) * GEMM_B_TILE_INTS) << 1;
+                ctx.asyncCopyToLocal(bTile, bufNext + bIdx0, B, gBNext + (bIdx0 << 1));
+                ctx.asyncCopyToLocal(bTile, bufNext + bIdx1, B, gBNext + (bIdx1 << 1));
+                ctx.asyncCopyToLocal(bTile, bufNext + bIdx2, B, gBNext + (bIdx2 << 1));
+                ctx.asyncCopyToLocal(bTile, bufNext + bIdx3, B, gBNext + (bIdx3 << 1));
+                ctx.asyncCopyCommit();
+            }
+
+            int aOff0 = warpM * 1024;
+            int aOff1 = warpM * 1024 + 512;
+            HalfFloat[] a0 = ctx.mmaLoadA(aTile, GEMM_BK, aOff0);
+            HalfFloat[] a1 = ctx.mmaLoadA(aTile, GEMM_BK, aOff1);
+            int bBase = warpN * 8 + (bufThis >>> 6);
+            HalfFloat[] b0 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 0) * B_SUBTILE_BYTES);
+            HalfFloat[] b1 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 1) * B_SUBTILE_BYTES);
+            HalfFloat[] b2 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 2) * B_SUBTILE_BYTES);
+            HalfFloat[] b3 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 3) * B_SUBTILE_BYTES);
+            HalfFloat[] b4 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 4) * B_SUBTILE_BYTES);
+            HalfFloat[] b5 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 5) * B_SUBTILE_BYTES);
+            HalfFloat[] b6 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 6) * B_SUBTILE_BYTES);
+            HalfFloat[] b7 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 7) * B_SUBTILE_BYTES);
+            ctx.localBarrier();
+
+            if (kStep + 1 < numKSteps) {
+                aTile[aIdx0] = aReg0;
+                aTile[aIdx1] = aReg1;
+                aTile[aIdx2] = aReg2;
+                aTile[aIdx3] = aReg3;
+            }
+
+            c00 = ctx.mma(a0, b0, c00, MMAShape.M16N8K16);
+            c01 = ctx.mma(a0, b1, c01, MMAShape.M16N8K16);
+            c02 = ctx.mma(a0, b2, c02, MMAShape.M16N8K16);
+            c03 = ctx.mma(a0, b3, c03, MMAShape.M16N8K16);
+            c04 = ctx.mma(a0, b4, c04, MMAShape.M16N8K16);
+            c05 = ctx.mma(a0, b5, c05, MMAShape.M16N8K16);
+            c06 = ctx.mma(a0, b6, c06, MMAShape.M16N8K16);
+            c07 = ctx.mma(a0, b7, c07, MMAShape.M16N8K16);
+            c10 = ctx.mma(a1, b0, c10, MMAShape.M16N8K16);
+            c11 = ctx.mma(a1, b1, c11, MMAShape.M16N8K16);
+            c12 = ctx.mma(a1, b2, c12, MMAShape.M16N8K16);
+            c13 = ctx.mma(a1, b3, c13, MMAShape.M16N8K16);
+            c14 = ctx.mma(a1, b4, c14, MMAShape.M16N8K16);
+            c15 = ctx.mma(a1, b5, c15, MMAShape.M16N8K16);
+            c16 = ctx.mma(a1, b6, c16, MMAShape.M16N8K16);
+            c17 = ctx.mma(a1, b7, c17, MMAShape.M16N8K16);
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+        }
+
+        int lane = tid & 31;
+        int rBase = blockRow + warpM * GEMM_WM + (lane >> 2);
+        int cBase = blockCol + warpN * GEMM_WN + ((lane & 3) << 1);
+        addTile(X, c00, rBase, cBase, N);
+        addTile(X, c01, rBase, cBase + 8, N);
+        addTile(X, c02, rBase, cBase + 16, N);
+        addTile(X, c03, rBase, cBase + 24, N);
+        addTile(X, c04, rBase, cBase + 32, N);
+        addTile(X, c05, rBase, cBase + 40, N);
+        addTile(X, c06, rBase, cBase + 48, N);
+        addTile(X, c07, rBase, cBase + 56, N);
+        addTile(X, c10, rBase + 16, cBase, N);
+        addTile(X, c11, rBase + 16, cBase + 8, N);
+        addTile(X, c12, rBase + 16, cBase + 16, N);
+        addTile(X, c13, rBase + 16, cBase + 24, N);
+        addTile(X, c14, rBase + 16, cBase + 32, N);
+        addTile(X, c15, rBase + 16, cBase + 40, N);
+        addTile(X, c16, rBase + 16, cBase + 48, N);
+        addTile(X, c17, rBase + 16, cBase + 56, N);
+    }
+
+    /** {@code X[r][c] += acc[i]} for this lane's four elements of one 16 x 8 accumulator. */
+    private static void addTile(FloatArray X, float[] acc, int r, int c, int ld) {
+        int i0 = r * ld + c;
+        X.set(i0, X.get(i0) + acc[0]);
+        X.set(i0 + 1, X.get(i0 + 1) + acc[1]);
+        int i1 = i0 + 8 * ld;
+        X.set(i1, X.get(i1) + acc[2]);
+        X.set(i1 + 1, X.get(i1 + 1) + acc[3]);
+    }
+
+    // @formatter:off
+    /**
+     * {@link #gemmMMATiledB} for the up projection with SwiGLU folded into its epilogue: {@code
+     * hb16[M,N] = fp16(silu(gate) * (A x B))}, {@code gate} the FP32 output of the gate projection,
+     * the expression {@link #swiGLUBatchFP16} evaluates on the stored up value, so the halves are
+     * bit-equal to the two-kernel form; the up matrix is never stored. Same tiles, staging, MMAs
+     * and requirements.
+     */
+    // @formatter:on
+    public static void gemmMMATiledBSwiGLU(
+            KernelContext ctx,
+            HalfFloatArray A,
+            HalfFloatArray B,
+            FloatArray gate,
+            HalfFloatArray hb,
+            int M,
+            int N,
+            int K) {
+        int tid = ctx.localIdx;
+        int warpId = tid / WARP_SIZE;
+        int warpM = warpId / GEMM_WARPS_N;
+        int warpN = warpId % GEMM_WARPS_N;
+        int blockRow = GEMM_BM * ctx.groupIdx;
+        int blockCol = GEMM_BN * ctx.groupIdy;
+
+        int[] aTile = ctx.allocateIntLocalArray(GEMM_BM * GEMM_BK / 2);
+        // Two B tiles: the copy for the next step lands in the one this step is not reading.
+        int[] bTile = ctx.allocateIntLocalArray(2 * GEMM_B_TILE_INTS);
+
+        float[] c00 = ctx.mmaFragment(0.0f);
+        float[] c01 = ctx.mmaFragment(0.0f);
+        float[] c02 = ctx.mmaFragment(0.0f);
+        float[] c03 = ctx.mmaFragment(0.0f);
+        float[] c04 = ctx.mmaFragment(0.0f);
+        float[] c05 = ctx.mmaFragment(0.0f);
+        float[] c06 = ctx.mmaFragment(0.0f);
+        float[] c07 = ctx.mmaFragment(0.0f);
+        float[] c10 = ctx.mmaFragment(0.0f);
+        float[] c11 = ctx.mmaFragment(0.0f);
+        float[] c12 = ctx.mmaFragment(0.0f);
+        float[] c13 = ctx.mmaFragment(0.0f);
+        float[] c14 = ctx.mmaFragment(0.0f);
+        float[] c15 = ctx.mmaFragment(0.0f);
+        float[] c16 = ctx.mmaFragment(0.0f);
+        float[] c17 = ctx.mmaFragment(0.0f);
+
+        int aIdx0 = tid;
+        int gA0 = (blockRow + (aIdx0 >>> 3)) * K + ((aIdx0 & 7) << 1);
+        int aIdx1 = tid + 256;
+        int gA1 = (blockRow + (aIdx1 >>> 3)) * K + ((aIdx1 & 7) << 1);
+        int aIdx2 = tid + 512;
+        int gA2 = (blockRow + (aIdx2 >>> 3)) * K + ((aIdx2 & 7) << 1);
+        int aIdx3 = tid + 768;
+        int gA3 = (blockRow + (aIdx3 >>> 3)) * K + ((aIdx3 & 7) << 1);
+        // B: this block's column tile sequence starts at pair (groupIdy * (K / 16)) * 1024; each
+        // K-step's tile is the next 1024 pairs, and shared int idx is global half 2 * (base + idx).
+        int numKSteps = K / GEMM_BK;
+        int bTileBase = ctx.groupIdy * numKSteps * GEMM_B_TILE_INTS;
+        int bIdx0 = tid;
+        int bIdx1 = tid + 256;
+        int bIdx2 = tid + 512;
+        int bIdx3 = tid + 768;
+
+        int aReg0 = packHalvesGemm(A, gA0, gA0 + 1);
+        int aReg1 = packHalvesGemm(A, gA1, gA1 + 1);
+        int aReg2 = packHalvesGemm(A, gA2, gA2 + 1);
+        int aReg3 = packHalvesGemm(A, gA3, gA3 + 1);
+        aTile[aIdx0] = aReg0;
+        aTile[aIdx1] = aReg1;
+        aTile[aIdx2] = aReg2;
+        aTile[aIdx3] = aReg3;
+        int gB = (bTileBase) << 1;
+        ctx.asyncCopyToLocal(bTile, bIdx0, B, gB + (bIdx0 << 1));
+        ctx.asyncCopyToLocal(bTile, bIdx1, B, gB + (bIdx1 << 1));
+        ctx.asyncCopyToLocal(bTile, bIdx2, B, gB + (bIdx2 << 1));
+        ctx.asyncCopyToLocal(bTile, bIdx3, B, gB + (bIdx3 << 1));
+        ctx.asyncCopyCommit();
+        ctx.asyncCopyWaitGroup(0);
+        ctx.localBarrier();
+
+        for (int kStep = 0; kStep < numKSteps; kStep++) {
+            int bufThis = (kStep & 1) * GEMM_B_TILE_INTS;
+            int bufNext = GEMM_B_TILE_INTS - bufThis;
+            if (kStep + 1 < numKSteps) {
+                int kOff = (kStep + 1) * GEMM_BK;
+                aReg0 = packHalvesGemm(A, gA0 + kOff, gA0 + kOff + 1);
+                aReg1 = packHalvesGemm(A, gA1 + kOff, gA1 + kOff + 1);
+                aReg2 = packHalvesGemm(A, gA2 + kOff, gA2 + kOff + 1);
+                aReg3 = packHalvesGemm(A, gA3 + kOff, gA3 + kOff + 1);
+                // The other B buffer was last read a step ago, before that step's closing
+                // barrier: free. Issue now, so the copy overlaps this whole step.
+                int gBNext = (bTileBase + (kStep + 1) * GEMM_B_TILE_INTS) << 1;
+                ctx.asyncCopyToLocal(bTile, bufNext + bIdx0, B, gBNext + (bIdx0 << 1));
+                ctx.asyncCopyToLocal(bTile, bufNext + bIdx1, B, gBNext + (bIdx1 << 1));
+                ctx.asyncCopyToLocal(bTile, bufNext + bIdx2, B, gBNext + (bIdx2 << 1));
+                ctx.asyncCopyToLocal(bTile, bufNext + bIdx3, B, gBNext + (bIdx3 << 1));
+                ctx.asyncCopyCommit();
+            }
+
+            int aOff0 = warpM * 1024;
+            int aOff1 = warpM * 1024 + 512;
+            HalfFloat[] a0 = ctx.mmaLoadA(aTile, GEMM_BK, aOff0);
+            HalfFloat[] a1 = ctx.mmaLoadA(aTile, GEMM_BK, aOff1);
+            int bBase = warpN * 8 + (bufThis >>> 6);
+            HalfFloat[] b0 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 0) * B_SUBTILE_BYTES);
+            HalfFloat[] b1 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 1) * B_SUBTILE_BYTES);
+            HalfFloat[] b2 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 2) * B_SUBTILE_BYTES);
+            HalfFloat[] b3 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 3) * B_SUBTILE_BYTES);
+            HalfFloat[] b4 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 4) * B_SUBTILE_BYTES);
+            HalfFloat[] b5 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 5) * B_SUBTILE_BYTES);
+            HalfFloat[] b6 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 6) * B_SUBTILE_BYTES);
+            HalfFloat[] b7 = ctx.mmaLoadB(bTile, GEMM_BK, (bBase + 7) * B_SUBTILE_BYTES);
+            ctx.localBarrier();
+
+            if (kStep + 1 < numKSteps) {
+                aTile[aIdx0] = aReg0;
+                aTile[aIdx1] = aReg1;
+                aTile[aIdx2] = aReg2;
+                aTile[aIdx3] = aReg3;
+            }
+
+            c00 = ctx.mma(a0, b0, c00, MMAShape.M16N8K16);
+            c01 = ctx.mma(a0, b1, c01, MMAShape.M16N8K16);
+            c02 = ctx.mma(a0, b2, c02, MMAShape.M16N8K16);
+            c03 = ctx.mma(a0, b3, c03, MMAShape.M16N8K16);
+            c04 = ctx.mma(a0, b4, c04, MMAShape.M16N8K16);
+            c05 = ctx.mma(a0, b5, c05, MMAShape.M16N8K16);
+            c06 = ctx.mma(a0, b6, c06, MMAShape.M16N8K16);
+            c07 = ctx.mma(a0, b7, c07, MMAShape.M16N8K16);
+            c10 = ctx.mma(a1, b0, c10, MMAShape.M16N8K16);
+            c11 = ctx.mma(a1, b1, c11, MMAShape.M16N8K16);
+            c12 = ctx.mma(a1, b2, c12, MMAShape.M16N8K16);
+            c13 = ctx.mma(a1, b3, c13, MMAShape.M16N8K16);
+            c14 = ctx.mma(a1, b4, c14, MMAShape.M16N8K16);
+            c15 = ctx.mma(a1, b5, c15, MMAShape.M16N8K16);
+            c16 = ctx.mma(a1, b6, c16, MMAShape.M16N8K16);
+            c17 = ctx.mma(a1, b7, c17, MMAShape.M16N8K16);
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+        }
+
+        int lane = tid & 31;
+        int rBase = blockRow + warpM * GEMM_WM + (lane >> 2);
+        int cBase = blockCol + warpN * GEMM_WN + ((lane & 3) << 1);
+        swigluTile(gate, hb, c00, rBase, cBase, N);
+        swigluTile(gate, hb, c01, rBase, cBase + 8, N);
+        swigluTile(gate, hb, c02, rBase, cBase + 16, N);
+        swigluTile(gate, hb, c03, rBase, cBase + 24, N);
+        swigluTile(gate, hb, c04, rBase, cBase + 32, N);
+        swigluTile(gate, hb, c05, rBase, cBase + 40, N);
+        swigluTile(gate, hb, c06, rBase, cBase + 48, N);
+        swigluTile(gate, hb, c07, rBase, cBase + 56, N);
+        swigluTile(gate, hb, c10, rBase + 16, cBase, N);
+        swigluTile(gate, hb, c11, rBase + 16, cBase + 8, N);
+        swigluTile(gate, hb, c12, rBase + 16, cBase + 16, N);
+        swigluTile(gate, hb, c13, rBase + 16, cBase + 24, N);
+        swigluTile(gate, hb, c14, rBase + 16, cBase + 32, N);
+        swigluTile(gate, hb, c15, rBase + 16, cBase + 40, N);
+        swigluTile(gate, hb, c16, rBase + 16, cBase + 48, N);
+        swigluTile(gate, hb, c17, rBase + 16, cBase + 56, N);
+    }
+
+    /** {@code hb[r][c] = fp16(silu(gate[r][c]) * acc[i])} for this lane's four elements. */
+    private static void swigluTile(
+            FloatArray gate, HalfFloatArray hb, float[] acc, int r, int c, int ld) {
+        int i0 = r * ld + c;
+        float g0 = gate.get(i0);
+        hb.set(i0, new HalfFloat((g0 / (1.0f + TornadoMath.exp(-g0))) * acc[0]));
+        float g1 = gate.get(i0 + 1);
+        hb.set(i0 + 1, new HalfFloat((g1 / (1.0f + TornadoMath.exp(-g1))) * acc[1]));
+        int i1 = i0 + 8 * ld;
+        float g2 = gate.get(i1);
+        hb.set(i1, new HalfFloat((g2 / (1.0f + TornadoMath.exp(-g2))) * acc[2]));
+        float g3 = gate.get(i1 + 1);
+        hb.set(i1 + 1, new HalfFloat((g3 / (1.0f + TornadoMath.exp(-g3))) * acc[3]));
+    }
 }

@@ -293,11 +293,15 @@ public final class PlanDispatchEvidence {
     public static java.util.Map<String, Integer> assertQwen35DequantGemmPairs(
             TornadoVMMasterPlan plan, GridScheduler scheduler) {
         assertNotNull("no grid scheduler for the plan this run built", scheduler);
+        // A pair's GEMM is the tiled-B GEMM with one of its epilogues: a store (gate, k, v), the
+        // residual add (attention output, ffn_down, ssm_out) or SwiGLU (up).
         java.util.Set<String> allowed =
                 java.util.Set.of(
                         "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledB",
-                        "dequantizeQ4_1ToFP16TiledPairs+gemmMMATiledB",
-                        "dequantizeQ5_KToFP16TiledPairs+gemmMMATiledB");
+                        "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledBResidual",
+                        "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledBSwiGLU",
+                        "dequantizeQ4_1ToFP16TiledPairs+gemmMMATiledBResidual",
+                        "dequantizeQ5_KToFP16TiledPairs+gemmMMATiledBResidual");
         java.util.Map<String, Integer> seen = new java.util.TreeMap<>();
         java.util.Set<String> tasks = new TreeSet<>();
         for (String key : scheduler.keySet()) {

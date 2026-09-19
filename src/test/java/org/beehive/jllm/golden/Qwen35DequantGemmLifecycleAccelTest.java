@@ -195,10 +195,18 @@ public class Qwen35DequantGemmLifecycleAccelTest {
                     "the batched delta-rule scan this plan compiled",
                     java.util.Set.of("deltaRuleScanWarp"),
                     scanKernels);
+            // Three decoders by five epilogues: Q4_0 with the store (gate, k, v), the residual
+            // (attention output, Q4_0 ffn_down) and SwiGLU (up); Q4_1 ffn_down and Q5_K ssm_out
+            // with the residual. All interleaved through the one scratch in graph order.
             assertEquals(
-                    "the three pair layouts all in this plan, interleaved: " + dequantPairs,
-                    3,
-                    dequantPairs.size());
+                    "the pair combinations in this plan: " + dequantPairs,
+                    java.util.Set.of(
+                            "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledB",
+                            "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledBResidual",
+                            "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledBSwiGLU",
+                            "dequantizeQ4_1ToFP16TiledPairs+gemmMMATiledBResidual",
+                            "dequantizeQ5_KToFP16TiledPairs+gemmMMATiledBResidual"),
+                    dequantPairs.keySet());
             System.out.println("[lifecycle] dequant pairs " + dequantPairs);
 
             assertSameInput("pair vs direct, prompt A", pairA, directA);

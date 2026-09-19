@@ -1063,8 +1063,9 @@ public class Qwen35GraphTopologyAccelTest {
             assertFalse(
                     "width 128 layer " + layer + " put the 256-wide down projection on the pair",
                     tasks.contains("ffn_down_proj_dequant"));
-            assertTrue(
-                    "width 128 layer " + layer + " lost the SwiGLU after the pair",
+            // On the pair the up GEMM writes silu(gate) * up itself: no SwiGLU task.
+            assertFalse(
+                    "width 128 layer " + layer + " kept a SwiGLU task beside the fused up GEMM",
                     tasks.contains("ffn_swiglu"));
         }
 
