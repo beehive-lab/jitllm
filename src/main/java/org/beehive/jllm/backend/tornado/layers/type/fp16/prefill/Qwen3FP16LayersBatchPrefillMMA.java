@@ -100,7 +100,11 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      */
     private final boolean nativeProjections;
 
-    /** Whether this PLAN uses cuDNN attention anywhere; see {@link #useCudnnAttention}. */
+    /**
+     * Whether this PLAN uses cuDNN attention at all -- true in both families when the primary
+     * does, which is what decides that a fallback family is needed. {@link #useCudnnAttention} is
+     * the per-family answer.
+     */
     private final boolean cudnnAttention;
 
     /**
@@ -126,7 +130,10 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      */
     private final boolean consumeFromPrimary;
 
-    /** cuDNN attention in THIS family. False in the fallback family whatever the flag says. */
+    /**
+     * cuDNN attention in THIS family. Always false in the fallback family, which exists precisely
+     * because cuDNN cannot mask the chunks it takes.
+     */
     private final boolean useCudnnAttention;
 
     /**
@@ -377,8 +384,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     }
 
     /**
-     * Builds the fallback family for {@code primary}, or {@code null} when there is nothing to fall
-     * back from -- if the primary is not using cuDNN attention it already handles every chunk.
+     * Builds the fallback family on first request, or returns an empty list when there is nothing
+     * to fall back from: a primary that is not using cuDNN attention already handles every chunk
+     * itself, and the fallback family never has one of its own.
      */
     @Override
     public List<ImmutableTaskGraph> getFallbackLayerImmutableTaskGraphs() {
@@ -594,26 +602,17 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     weights.w3Layered[layerIndex].asHalfFloatArray());
         }
         if (nativeProjections) {
-            // A buffer this class owns, not one of the model's, so it needs its own upload. w1/w3
-            // stay declared above: the decode layer graphs consume this graph's weight buffers,
-            // and Qwen3FP16FFNLayersDecode uploads the two this graph no longer reads.
+            // Buffers this class owns, not the model's, so they need their own upload. The five
+            // originals stay declared above: the decode layer graphs consume this graph's weight
+            // buffers, and Qwen3FP16FFNLayersDecode uploads the ones this graph no longer reads.
             if (consumeFromPrimary) {
                 batchPrefillLayer.consumeFromDevice(
-                        primaryGraphOwning(layerIndex), gateUpCat[layerIndex]);
+                        primaryGraphOwning(layerIndex), gateUpCat[layerIndex], qkvCat[layerIndex]);
             } else {
                 batchPrefillLayer.transferToDevice(
-                        DataTransferMode.FIRST_EXECUTION, gateUpCat[layerIndex]);
-            }
-        }
-        if (nativeProjections) {
-            // Same arrangement for QKV: wq/wk/wv stay declared above and Qwen3FP16FFNLayersDecode
-            // uploads the three this graph no longer reads.
-            if (consumeFromPrimary) {
-                batchPrefillLayer.consumeFromDevice(
-                        primaryGraphOwning(layerIndex), qkvCat[layerIndex]);
-            } else {
-                batchPrefillLayer.transferToDevice(
-                        DataTransferMode.FIRST_EXECUTION, qkvCat[layerIndex]);
+                        DataTransferMode.FIRST_EXECUTION,
+                        gateUpCat[layerIndex],
+                        qkvCat[layerIndex]);
             }
         }
 

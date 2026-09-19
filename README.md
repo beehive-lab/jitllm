@@ -141,7 +141,7 @@ implementation 'io.github.beehive-lab:jllm:1.0.0-jdk25'
 - **[TornadoVM](https://github.com/beehive-lab/TornadoVM)** with an OpenCL, CUDA, or Metal backend. `jllm`/`jllm4j` auto-detect whichever backend your installed SDK was built with.
 - **GCC/G++ 13+** — to build TornadoVM's native components.
 
-### Get TornadoVM (SDKMAN!, recommended)
+### Get TornadoVM
 
 TornadoVM is distributed via the [official website](https://www.tornadovm.org/downloads) and [SDKMAN!](https://sdkman.io/sdks/tornadovm/). Pick a package matching your OS, architecture, and backend (opencl, cuda, metal).
 
@@ -149,6 +149,12 @@ TornadoVM is distributed via the [official website](https://www.tornadovm.org/do
 sdk install tornadovm
 tornado --devices        # verify
 ```
+
+> **Building jllm from source needs a TornadoVM built from source**, at the commit named in
+> [`NATIVE_PREFILL.md`](NATIVE_PREFILL.md). jllm compiles against `tornado-cublas` and
+> `tornado-cudnn`, and neither module is published to Maven Central — they only exist in your
+> local Maven repository after TornadoVM's own `make BACKEND=…` has installed them. An SDKMAN
+> package is enough to **run** a pre-built jllm; it is not enough to build one.
 
 ### Clone this repo
 
@@ -332,9 +338,10 @@ Advanced:             --cuda-graphs (CUDA backend only), --opencl-flags (default
 - ✅ **Automatic backend detection** — `jllm`/`jllm4j` detect and use whichever backend (OpenCL, CUDA, or Metal) your installed TornadoVM SDK was built with; override with `--opencl`/`--cuda`/`--metal`.
 - ✅ **Cross-platform**: NVIDIA (OpenCL · CUDA), Intel (OpenCL), Apple (OpenCL · Metal).
 - ✅ **Serving** — OpenAI-compatible API, llama-bench-style benchmarking, tensor-core (MMA) batch prefill.
+- ✅ **Native batched prefill** (Qwen3 FP16, CUDA) — cuBLAS projections and a fused cuDNN first-chunk attention, selected automatically with no flag. See [`NATIVE_PREFILL.md`](NATIVE_PREFILL.md).
 - 🧩 **Coming next** — static batched decode, on-device sampling (preview; see [Serving](#-serving-openai-compatible-preview)).
 
-📄 [Transformer optimizations in TornadoVM](docs/TORNADOVM_TRANSFORMER_OPTIMIZATIONS.md) · 🧭 [Project roadmap](docs/jllm-roadmap.md)
+📄 [Transformer optimizations in TornadoVM](docs/TORNADOVM_TRANSFORMER_OPTIMIZATIONS.md) · ⚡ [Native batched prefill](NATIVE_PREFILL.md) · 🧭 [Project roadmap](docs/jllm-roadmap.md)
 
 -----------
 
