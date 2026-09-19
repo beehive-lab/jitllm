@@ -244,7 +244,7 @@ public class Qwen35SplitKvAttentionAccelTest {
                                 xb)
                         .task(
                                 name + "s",
-                                TransformerPagedKvKernels
+                                Qwen35ReferenceKernels
                                         ::processHeadsFlashAttentionSplitKVFP16PagedWideHead,
                                 new KernelContext(),
                                 query,

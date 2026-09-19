@@ -8,6 +8,7 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
+import uk.ac.manchester.tornado.api.types.vectors.Half2;
 
 // @formatter:off
 /**
@@ -26,6 +27,8 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  *       #dequantizeQ5_KToFP16}: row-major decoders, a lane per element; {@link
  *       #dequantizeQ4_0ToFP16Tiled}: the tiled layout with a lane per element.
  *   <li>{@link #causalConv1dBatch}: the convolution without the SiLU and split folded in.
+ *   <li>{@link #processHeadsFlashAttentionSplitKVFP16PagedWideHead}: the split-KV decode attention
+ *       with a lane per position and a shared accumulator row per lane.
  *   <li>{@link #attentionBatchFP16PagedScoredStaged}: the scored attention with a staged key tile,
  *       128 lanes; {@link #attentionBatchFP16PagedTensorCore}: the first tensor-core attention, 16
  *       queries, K^T restaged per tile, scores in the [row][head][key] scratch.
@@ -1299,6 +1302,168 @@ public final class Qwen35ReferenceKernels {
         for (int d = tid; d < headSize; d += localSize) {
             outBatch.set(outBase + d, accumulated[slotIndex] / denominator);
             slotIndex++;
+        }
+    }
+
+    // @formatter:off
+    /**
+     * {@link #processHeadsFlashAttentionSplitKVFP16Paged} for a head twice as wide.
+     *
+     * <p>Identical body, identical algorithm, identical FP16 key/value interpretation. The only
+     * difference is the pair of constants that size the shared arrays, and they are the reason a
+     * separate method exists: {@code accShared} is {@code MAX_LOCAL_SIZE * MAX_HEAD_SIZE} floats,
+     * so the 128-wide kernel's 64 x 128 cannot be handed a 256-wide head — it would read and write
+     * past the array. This one is <b>32 x 256</b>, the same 32 KiB, so the wider head costs no more
+     * shared memory; what it costs is half the lanes per workgroup, which the splits give back many
+     * times over.
+     *
+     * <p><b>The workgroup must therefore be launched with at most 32 lanes</b>, because {@code
+     * mShared}, {@code lShared} and {@code corrShared} are indexed by {@code localIdx} and both
+     * block reductions run to {@code localGroupSizeX}. Everything else — the strided query stage,
+     * the position scan, the running max and sum, and the strided partial write — is written
+     * against {@code headSize} and {@code localSize} and needs no change.
+     *
+     * <p>The partial layout is the one {@code combineSplitKVAttention} expects, unchanged: per head
+     * {@code nSplits * headSize} numerators, then {@code nSplits} maxima, then {@code nSplits}
+     * sums. That combine is already generic in {@code headSize} and already treats a split whose
+     * chunk was empty as a zero contribution.
+     */
+    // @formatter:on
+    public static void processHeadsFlashAttentionSplitKVFP16PagedWideHead(
+            KernelContext context,
+            FloatArray q,
+            HalfFloatArray key_cache,
+            HalfFloatArray value_cache,
+            FloatArray att,
+            int nHeads,
+            int headSize,
+            int kvDim,
+            int kvMul,
+            IntArray positionHolder,
+            int layer,
+            IntArray blockTable,
+            int blockCfg,
+            int blockStride,
+            int nSplits) {
+
+        final int MAX_HEAD_SIZE = 256;
+        final int MAX_LOCAL_SIZE = 32;
+
+        int tid = context.localIdx;
+        int g = context.groupIdx; // 0 .. nHeads*nSplits - 1
+        int localSize = context.localGroupSizeX;
+        int h = g / nSplits;
+        int s = g % nSplits;
+
+        if (h >= nHeads) {
+            return;
+        }
+
+        int pos = positionHolder.get(0);
+        int slot = positionHolder.get(1);
+        int seqLen = pos + 1;
+        int chunk = (seqLen + nSplits - 1) / nSplits;
+        int startPos = s * chunk;
+        int endPos = Math.min(startPos + chunk, seqLen); // exclusive
+
+        int layerOff = KvBlockAddress.layerOffset(layer, kvDim, blockCfg);
+        int kvHeadIdx = h / kvMul;
+        float invSqrt = 1.0f / TornadoMath.sqrt(headSize);
+
+        float[] q_shared = context.allocateFloatLocalArray(MAX_HEAD_SIZE);
+        float[] accShared = context.allocateFloatLocalArray(MAX_LOCAL_SIZE * MAX_HEAD_SIZE);
+        float[] mShared = context.allocateFloatLocalArray(MAX_LOCAL_SIZE);
+        float[] lShared = context.allocateFloatLocalArray(MAX_LOCAL_SIZE);
+        float[] corrShared = context.allocateFloatLocalArray(MAX_LOCAL_SIZE);
+        float[] bcast = context.allocateFloatLocalArray(1);
+
+        int headBase = h * nSplits * (headSize + 2);
+        int outBase = headBase + s * headSize;
+        int mBase = headBase + nSplits * headSize;
+        int lBase = mBase + nSplits;
+
+        for (int i = tid; i < headSize; i += localSize) {
+            q_shared[i] = q.get(h * headSize + i);
+        }
+        int rowBase = tid * headSize;
+        for (int d = 0; d < headSize; d++) {
+            accShared[rowBase + d] = 0.0f;
+        }
+        context.localBarrier();
+
+        // Strided scan over this split's position chunk (no barriers).
+        float m = Float.NEGATIVE_INFINITY;
+        float l = 0.0f;
+        for (int p = startPos + tid; p < endPos; p += localSize) {
+            int base =
+                    KvBlockAddress.offset(
+                                    blockTable, slot, p, layerOff, kvDim, blockCfg, blockStride)
+                            + kvHeadIdx * headSize;
+            float score = 0.0f;
+            for (int d = 0; d < headSize; d += 2) {
+                Half2 kPair = key_cache.getHalf2(base + d);
+                score += q_shared[d] * Half2.lowFloat(kPair);
+                score += q_shared[d + 1] * Half2.highFloat(kPair);
+            }
+            score *= invSqrt;
+            float newM = Math.max(m, score);
+            float corr = (m == Float.NEGATIVE_INFINITY) ? 0.0f : TornadoMath.exp(m - newM);
+            float e = TornadoMath.exp(score - newM);
+            for (int d = 0; d < headSize; d += 2) {
+                Half2 vPair = value_cache.getHalf2(base + d);
+                accShared[rowBase + d] = accShared[rowBase + d] * corr + e * Half2.lowFloat(vPair);
+                accShared[rowBase + d + 1] =
+                        accShared[rowBase + d + 1] * corr + e * Half2.highFloat(vPair);
+            }
+            l = l * corr + e;
+            m = newM;
+        }
+        mShared[tid] = m;
+        lShared[tid] = l;
+        context.localBarrier();
+
+        // Block max.
+        if (tid == 0) {
+            float blockMax = Float.NEGATIVE_INFINITY;
+            for (int t = 0; t < localSize; t++) {
+                if (mShared[t] > blockMax) {
+                    blockMax = mShared[t];
+                }
+            }
+            bcast[0] = blockMax;
+        }
+        context.localBarrier();
+        float M = bcast[0];
+
+        corrShared[tid] =
+                (mShared[tid] == Float.NEGATIVE_INFINITY)
+                        ? 0.0f
+                        : TornadoMath.exp(mShared[tid] - M);
+        context.localBarrier();
+
+        // Block sum L = Σ_t l_t · corr_t.
+        if (tid == 0) {
+            float blockSum = 0.0f;
+            for (int t = 0; t < localSize; t++) {
+                blockSum += lShared[t] * corrShared[t];
+            }
+            bcast[0] = blockSum;
+        }
+        context.localBarrier();
+        float L = bcast[0];
+
+        // Write UNNORMALIZED partial numerator (relative to block max M), plus M and L for the
+        // combine.
+        for (int d = tid; d < headSize; d += localSize) {
+            float acc = 0.0f;
+            for (int t = 0; t < localSize; t++) {
+                acc += corrShared[t] * accShared[t * headSize + d];
+            }
+            att.set(outBase + d, acc);
+        }
+        if (tid == 0) {
+            att.set(mBase + s, M);
+            att.set(lBase + s, L);
         }
     }
 }

@@ -323,6 +323,14 @@ public record Qwen35Configuration(
                 * ATTENTION_TILE_KEYS;
     }
 
+    /**
+     * Key/value splits of this family's decode attention: one warp per (head, split), each split a
+     * contiguous slice of the positions. Thirty-two: at 24 heads that is 768 warps, which fills the
+     * device the kernel was measured on; screened 8/16/32 at depths 512 and 2048, 32 fastest at
+     * both (kernel + combine 28 / 44 us against 51 / 124 at eight). Sizes the split scratch.
+     */
+    public static final int DECODE_ATTENTION_SPLITS = 32;
+
     /** Rows one tile of the batched FP16 GEMM covers; a width has to be a whole number of them. */
     public static final int DEQUANT_GEMM_ROWS = 128;
 

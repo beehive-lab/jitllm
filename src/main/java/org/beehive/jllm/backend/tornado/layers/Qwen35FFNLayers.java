@@ -71,10 +71,10 @@ public class Qwen35FFNLayers
     /** Lanes per workgroup for an elementwise task. */
     private static final int ELEMENTWISE_LOCAL = 128;
 
-    /** The widest head the split-KV wide-head kernel sizes its shared arrays for. */
+    /** The head width the split-KV warp kernel is written for: eight dimensions per lane. */
     private static final int SPLIT_KV_MAX_HEAD = 256;
 
-    /** Lanes per split-KV workgroup: the wide-head kernel indexes its shared arrays by lane. */
+    /** Lanes per split-KV workgroup: one warp per (head, split). */
     private static final int SPLIT_KV_LOCAL = 32;
 
     private final Qwen35State qwen35State;
@@ -785,37 +785,30 @@ public class Qwen35FFNLayers
     /**
      * How many KV splits this family's decode attention runs, or one for the per-head kernel.
      *
-     * <p>Split-KV decomposes each head's key/value range across {@code SPLIT_KV} workgroups and a
-     * combine pass, which is what turns two dozen workgroups into two dozen times eight on a device
-     * with far more multiprocessors than heads. It needs the wide-head kernel — this family's head
-     * is 256 and the shared 128-wide one cannot take it — and that kernel's shared arrays are
-     * indexed by lane, so it is launched with 32 lanes rather than the 64 {@code
-     * findOptimalLocalSize} would pick.
+     * <p>Split-KV decomposes each head's key/value range across {@code DECODE_ATTENTION_SPLITS}
+     * warps and a combine pass; the warp kernel walks its split's positions in order, each lane
+     * holding eight dimensions of the query, the key, the value and the output in registers, the
+     * score a shuffle-down sum. The launch is one warp per (head, split): {@code SPLIT_KV_LOCAL}
+     * lanes, and the kernel is written for a 256-wide head ({@code SPLIT_KV_MAX_HEAD}).
      *
-     * <p><b>The boundary.</b> {@code SPLIT_KV_MAX_HEAD} is the width the wide-head kernel sizes
-     * {@code q_shared} and {@code accShared} for, and the launch is fixed at {@code SPLIT_KV_LOCAL}
-     * lanes, so any head at or below that width addresses {@code tid * headSize < SPLIT_KV_LOCAL *
-     * SPLIT_KV_MAX_HEAD} and stays inside both. This family ships a 256-wide head and the kernel
-     * gate covers it at that width and at 128; a narrower head is admitted by the same arithmetic
-     * rather than by measurement, and a wider one is refused outright.
-     *
-     * <p>Restricted to <b>CUDA</b>, which is where this was measured and validated. FP16 key/value
-     * storage is an option rather than a backend property, so the capability alone would have
-     * admitted OpenCL, where nothing has run. The FP32 key/value path keeps the kernel it has, on
-     * every backend. One is not a special case: it selects the per-head kernel below.
+     * <p>Restricted to <b>CUDA</b>, whose warp shuffles are the verified ones and where this was
+     * measured. FP16 key/value storage is an option rather than a backend property, so the
+     * capability alone would have admitted OpenCL, where nothing has run. The FP32 key/value path
+     * keeps the kernel it has, on every backend. One is not a special case: it selects the per-head
+     * kernel.
      */
     // @formatter:on
     private int attentionSplits() {
         var device = org.beehive.jllm.backend.tornado.device.TornadoDevices.current();
         boolean eligible =
                 fp16Kv()
-                        && config.headSize() <= SPLIT_KV_MAX_HEAD
+                        && config.headSize() == SPLIT_KV_MAX_HEAD
                         && org.beehive.jllm.runtime.backend.BackendId.CUDA.equals(device.backend())
                         && device.capabilities()
                                 .supports(
                                         org.beehive.jllm.runtime.backend.DeviceCapability
                                                 .SPLIT_KV_ATTENTION);
-        return eligible ? org.beehive.jllm.inference.state.State.SPLIT_KV : 1;
+        return eligible ? Qwen35Configuration.DECODE_ATTENTION_SPLITS : 1;
     }
 
     /** Whether this state's key/value store is half precision. */
@@ -1151,18 +1144,10 @@ public class Qwen35FFNLayers
         }
 
         // @formatter:off
-        // The single-workgroup online-softmax kernel, on every backend.
-        //
-        // Not the split-KV (flash-decoding) kernel every other family decodes with: that one
-        // stages the query and a per-thread accumulator in local arrays fixed at 128 floats per
-        // head, and this family's head is 256 wide. Handing it a 256-wide head reads and writes
-        // past those arrays — an illegal address on CUDA, which surfaces as a poisoned context and
-        // an allocation failure several calls later rather than as a fault in the kernel that
-        // caused it. This kernel sizes its shared memory from the head width it is given.
-        //
-        // The cost is the parallelism the splits would have given: one workgroup per head rather
-        // than eight per head. A split-KV variant whose local arrays are sized from parameters
-        // would recover it, and belongs with a measurement rather than ahead of one.
+        // Split-KV decode attention, a warp per (head, split), where attentionSplits() admits it
+        // (FP16 store, a 256-wide head, CUDA); the single-workgroup online-softmax kernel
+        // otherwise. The single-workgroup kernel sizes its shared memory from the head width; the
+        // shared 128-wide split-KV kernel of the other families cannot take this family's head.
         // @formatter:on
         int splits = attentionSplits();
         if (splits > 1) {
@@ -1170,7 +1155,7 @@ public class Qwen35FFNLayers
             // wrapAttSplit in the compact layout the combine expects.
             layer.task(
                     tn("attention"),
-                    TransformerPagedKvKernels::processHeadsFlashAttentionSplitKVFP16PagedWideHead,
+                    TransformerPagedKvKernels::processHeadsFlashAttentionSplitKVFP16PagedWarp,
                     context,
                     qwen35State.workspace.wrapAttnQ,
                     qwen35State.workspace.wrapKeyCacheFP16,
@@ -1683,11 +1668,9 @@ public class Qwen35FFNLayers
                         config.numberOfHeads() * (config.ropeDimensionCount() / 2), 32);
         WorkerGrid kvAppend = WorkerGridFactory.genericWorker(config.kvDim(), ELEMENTWISE_LOCAL);
         int splits = attentionSplits();
-        // Split-KV launches nHeads*splits workgroups of SPLIT_KV_LOCAL lanes -- the wide-head
-        // kernel indexes its per-lane shared arrays by localIdx, so the 64 lanes
-        // createAttentionWorker would choose for a 256-wide head would run past them -- followed by
-        // a combine pass of one workgroup per head. With splits == 1 the per-head kernel keeps the
-        // worker it has always had.
+        // Split-KV launches nHeads*splits warps of SPLIT_KV_LOCAL lanes, followed by a combine
+        // pass of one workgroup per head. With splits == 1 the per-head kernel keeps the worker it
+        // has always had.
         WorkerGrid attention =
                 splits > 1
                         ? WorkerGridFactory.genericWorker(

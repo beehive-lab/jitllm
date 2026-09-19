@@ -359,7 +359,9 @@ public final class Qwen35State extends State {
         // recurrent branch is sized by.
         workspace.wrapAttSplit =
                 TornadoWorkspaces.floats(
-                        config.numberOfHeads() * SPLIT_KV * (config.headSize() + 2));
+                        config.numberOfHeads()
+                                * Qwen35Configuration.DECODE_ATTENTION_SPLITS
+                                * (config.headSize() + 2));
 
         // The delta-net branch's scratch.
         workspace.wrapSsmQkv = TornadoWorkspaces.floats(config.deltaNetConvDim());

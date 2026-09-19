@@ -840,168 +840,6 @@ public class TransformerPagedKvKernels {
         }
     }
 
-    // @formatter:off
-    /**
-     * {@link #processHeadsFlashAttentionSplitKVFP16Paged} for a head twice as wide.
-     *
-     * <p>Identical body, identical algorithm, identical FP16 key/value interpretation. The only
-     * difference is the pair of constants that size the shared arrays, and they are the reason a
-     * separate method exists: {@code accShared} is {@code MAX_LOCAL_SIZE * MAX_HEAD_SIZE} floats,
-     * so the 128-wide kernel's 64 x 128 cannot be handed a 256-wide head — it would read and write
-     * past the array. This one is <b>32 x 256</b>, the same 32 KiB, so the wider head costs no more
-     * shared memory; what it costs is half the lanes per workgroup, which the splits give back many
-     * times over.
-     *
-     * <p><b>The workgroup must therefore be launched with at most 32 lanes</b>, because {@code
-     * mShared}, {@code lShared} and {@code corrShared} are indexed by {@code localIdx} and both
-     * block reductions run to {@code localGroupSizeX}. Everything else — the strided query stage,
-     * the position scan, the running max and sum, and the strided partial write — is written
-     * against {@code headSize} and {@code localSize} and needs no change.
-     *
-     * <p>The partial layout is the one {@code combineSplitKVAttention} expects, unchanged: per head
-     * {@code nSplits * headSize} numerators, then {@code nSplits} maxima, then {@code nSplits}
-     * sums. That combine is already generic in {@code headSize} and already treats a split whose
-     * chunk was empty as a zero contribution.
-     */
-    // @formatter:on
-    public static void processHeadsFlashAttentionSplitKVFP16PagedWideHead(
-            KernelContext context,
-            FloatArray q,
-            HalfFloatArray key_cache,
-            HalfFloatArray value_cache,
-            FloatArray att,
-            int nHeads,
-            int headSize,
-            int kvDim,
-            int kvMul,
-            IntArray positionHolder,
-            int layer,
-            IntArray blockTable,
-            int blockCfg,
-            int blockStride,
-            int nSplits) {
-
-        final int MAX_HEAD_SIZE = 256;
-        final int MAX_LOCAL_SIZE = 32;
-
-        int tid = context.localIdx;
-        int g = context.groupIdx; // 0 .. nHeads*nSplits - 1
-        int localSize = context.localGroupSizeX;
-        int h = g / nSplits;
-        int s = g % nSplits;
-
-        if (h >= nHeads) {
-            return;
-        }
-
-        int pos = positionHolder.get(0);
-        int slot = positionHolder.get(1);
-        int seqLen = pos + 1;
-        int chunk = (seqLen + nSplits - 1) / nSplits;
-        int startPos = s * chunk;
-        int endPos = Math.min(startPos + chunk, seqLen); // exclusive
-
-        int layerOff = KvBlockAddress.layerOffset(layer, kvDim, blockCfg);
-        int kvHeadIdx = h / kvMul;
-        float invSqrt = 1.0f / TornadoMath.sqrt(headSize);
-
-        float[] q_shared = context.allocateFloatLocalArray(MAX_HEAD_SIZE);
-        float[] accShared = context.allocateFloatLocalArray(MAX_LOCAL_SIZE * MAX_HEAD_SIZE);
-        float[] mShared = context.allocateFloatLocalArray(MAX_LOCAL_SIZE);
-        float[] lShared = context.allocateFloatLocalArray(MAX_LOCAL_SIZE);
-        float[] corrShared = context.allocateFloatLocalArray(MAX_LOCAL_SIZE);
-        float[] bcast = context.allocateFloatLocalArray(1);
-
-        int headBase = h * nSplits * (headSize + 2);
-        int outBase = headBase + s * headSize;
-        int mBase = headBase + nSplits * headSize;
-        int lBase = mBase + nSplits;
-
-        for (int i = tid; i < headSize; i += localSize) {
-            q_shared[i] = q.get(h * headSize + i);
-        }
-        int rowBase = tid * headSize;
-        for (int d = 0; d < headSize; d++) {
-            accShared[rowBase + d] = 0.0f;
-        }
-        context.localBarrier();
-
-        // Strided scan over this split's position chunk (no barriers).
-        float m = Float.NEGATIVE_INFINITY;
-        float l = 0.0f;
-        for (int p = startPos + tid; p < endPos; p += localSize) {
-            int base =
-                    KvBlockAddress.offset(
-                                    blockTable, slot, p, layerOff, kvDim, blockCfg, blockStride)
-                            + kvHeadIdx * headSize;
-            float score = 0.0f;
-            for (int d = 0; d < headSize; d += 2) {
-                Half2 kPair = key_cache.getHalf2(base + d);
-                score += q_shared[d] * Half2.lowFloat(kPair);
-                score += q_shared[d + 1] * Half2.highFloat(kPair);
-            }
-            score *= invSqrt;
-            float newM = Math.max(m, score);
-            float corr = (m == Float.NEGATIVE_INFINITY) ? 0.0f : TornadoMath.exp(m - newM);
-            float e = TornadoMath.exp(score - newM);
-            for (int d = 0; d < headSize; d += 2) {
-                Half2 vPair = value_cache.getHalf2(base + d);
-                accShared[rowBase + d] = accShared[rowBase + d] * corr + e * Half2.lowFloat(vPair);
-                accShared[rowBase + d + 1] =
-                        accShared[rowBase + d + 1] * corr + e * Half2.highFloat(vPair);
-            }
-            l = l * corr + e;
-            m = newM;
-        }
-        mShared[tid] = m;
-        lShared[tid] = l;
-        context.localBarrier();
-
-        // Block max.
-        if (tid == 0) {
-            float blockMax = Float.NEGATIVE_INFINITY;
-            for (int t = 0; t < localSize; t++) {
-                if (mShared[t] > blockMax) {
-                    blockMax = mShared[t];
-                }
-            }
-            bcast[0] = blockMax;
-        }
-        context.localBarrier();
-        float M = bcast[0];
-
-        corrShared[tid] =
-                (mShared[tid] == Float.NEGATIVE_INFINITY)
-                        ? 0.0f
-                        : TornadoMath.exp(mShared[tid] - M);
-        context.localBarrier();
-
-        // Block sum L = Σ_t l_t · corr_t.
-        if (tid == 0) {
-            float blockSum = 0.0f;
-            for (int t = 0; t < localSize; t++) {
-                blockSum += lShared[t] * corrShared[t];
-            }
-            bcast[0] = blockSum;
-        }
-        context.localBarrier();
-        float L = bcast[0];
-
-        // Write UNNORMALIZED partial numerator (relative to block max M), plus M and L for the
-        // combine.
-        for (int d = tid; d < headSize; d += localSize) {
-            float acc = 0.0f;
-            for (int t = 0; t < localSize; t++) {
-                acc += corrShared[t] * accShared[t * headSize + d];
-            }
-            att.set(outBase + d, acc);
-        }
-        if (tid == 0) {
-            att.set(mBase + s, M);
-            att.set(lBase + s, L);
-        }
-    }
-
     public static void processHeadsFlashAttentionSplitKVFP16PackedPaged(
             KernelContext context,
             FloatArray q,
@@ -1273,6 +1111,148 @@ public class TransformerPagedKvKernels {
         }
         for (int i = 0; i < headSize; i++) {
             allXb.set(h * headSize + i, weightedSums[i]);
+        }
+    }
+
+    // @formatter:off
+    /**
+     * Split-KV decode attention for a 256-wide head over the FP16 paged store, a warp per (head,
+     * split) cooperating on each position.
+     *
+     * <p>Split {@code s} of head {@code h} owns positions {@code s * chunk .. min((s + 1) chunk,
+     * seqLen) - 1}, {@code chunk = ceil(seqLen / nSplits)}, and walks them in order. Lane {@code l}
+     * holds dimensions {@code 2 l + 64 j} and {@code 2 l + 1 + 64 j} ({@code j = 0..3}) of the
+     * query, and for each position loads those of the key and the value as four aligned half pairs
+     * (128 contiguous bytes per warp load); the score is the 32-lane shuffle-down sum of the lanes'
+     * eight products, broadcast from lane zero, scaled by {@code 1/sqrt(headSize)}; each lane keeps
+     * its eight output dimensions in registers under the split's single running maximum and sum
+     * (online softmax in position order). The partial written is the unnormalized numerator, then
+     * the split's maximum and sum, in the compact layout {@code combineSplitKVAttention} expects:
+     * per head {@code nSplits * headSize} numerators, {@code nSplits} maxima, {@code nSplits} sums.
+     * An empty split (positions past the sequence) writes zeros and {@code -inf}, which the combine
+     * treats as no contribution.
+     *
+     * <p>Numerics: FP32 throughout from the FP16 keys and values; the dot product is a tree (eight
+     * products per lane in dimension order, then five shuffle levels), so it is not the
+     * dimension-order sum of a one-lane scan. Requires {@code headSize == 256} and a 32-lane
+     * workgroup; the shuffles are the CUDA backend's.
+     *
+     * <p>Worker: {@code nHeads * nSplits * 32} lanes, local 32.
+     */
+    // @formatter:on
+    public static void processHeadsFlashAttentionSplitKVFP16PagedWarp(
+            KernelContext context,
+            FloatArray q,
+            HalfFloatArray key_cache,
+            HalfFloatArray value_cache,
+            FloatArray att,
+            int nHeads,
+            int headSize,
+            int kvDim,
+            int kvMul,
+            IntArray positionHolder,
+            int layer,
+            IntArray blockTable,
+            int blockCfg,
+            int blockStride,
+            int nSplits) {
+        int lane = context.localIdx;
+        int g = context.groupIdx;
+        int h = g / nSplits;
+        int s = g - h * nSplits;
+        if (h >= nHeads) {
+            return;
+        }
+        int pos = positionHolder.get(0);
+        int slot = positionHolder.get(1);
+        int seqLen = pos + 1;
+        int chunk = (seqLen + nSplits - 1) / nSplits;
+        int startPos = s * chunk;
+        int endPos = Math.min(startPos + chunk, seqLen);
+
+        int layerOff = KvBlockAddress.layerOffset(layer, kvDim, blockCfg);
+        int kvHeadIdx = h / kvMul;
+        float invSqrt = 1.0f / TornadoMath.sqrt(headSize);
+
+        int headBase = h * nSplits * (headSize + 2);
+        int outBase = headBase + s * headSize;
+        int mBase = headBase + nSplits * headSize;
+        int lBase = mBase + nSplits;
+
+        int qBase = h * headSize + (lane << 1);
+        float q0 = q.get(qBase);
+        float q1 = q.get(qBase + 1);
+        float q2 = q.get(qBase + 64);
+        float q3 = q.get(qBase + 65);
+        float q4 = q.get(qBase + 128);
+        float q5 = q.get(qBase + 129);
+        float q6 = q.get(qBase + 192);
+        float q7 = q.get(qBase + 193);
+
+        float m = Float.NEGATIVE_INFINITY;
+        float l = 0.0f;
+        float a0 = 0.0f;
+        float a1 = 0.0f;
+        float a2 = 0.0f;
+        float a3 = 0.0f;
+        float a4 = 0.0f;
+        float a5 = 0.0f;
+        float a6 = 0.0f;
+        float a7 = 0.0f;
+        for (int p = startPos; p < endPos; p++) {
+            int base =
+                    KvBlockAddress.offset(
+                                    blockTable, slot, p, layerOff, kvDim, blockCfg, blockStride)
+                            + kvHeadIdx * headSize
+                            + (lane << 1);
+            Half2 k0 = key_cache.getHalf2(base);
+            Half2 k1 = key_cache.getHalf2(base + 64);
+            Half2 k2 = key_cache.getHalf2(base + 128);
+            Half2 k3 = key_cache.getHalf2(base + 192);
+            Half2 v0 = value_cache.getHalf2(base);
+            Half2 v1 = value_cache.getHalf2(base + 64);
+            Half2 v2 = value_cache.getHalf2(base + 128);
+            Half2 v3 = value_cache.getHalf2(base + 192);
+            float partial = q0 * Half2.lowFloat(k0);
+            partial += q1 * Half2.highFloat(k0);
+            partial += q2 * Half2.lowFloat(k1);
+            partial += q3 * Half2.highFloat(k1);
+            partial += q4 * Half2.lowFloat(k2);
+            partial += q5 * Half2.highFloat(k2);
+            partial += q6 * Half2.lowFloat(k3);
+            partial += q7 * Half2.highFloat(k3);
+            partial += context.simdShuffleDown(partial, 16);
+            partial += context.simdShuffleDown(partial, 8);
+            partial += context.simdShuffleDown(partial, 4);
+            partial += context.simdShuffleDown(partial, 2);
+            partial += context.simdShuffleDown(partial, 1);
+            float score = context.simdBroadcastFirst(partial) * invSqrt;
+            float newM = Math.max(m, score);
+            float corr = (m == Float.NEGATIVE_INFINITY) ? 0.0f : TornadoMath.exp(m - newM);
+            float e = TornadoMath.exp(score - newM);
+            a0 = a0 * corr + e * Half2.lowFloat(v0);
+            a1 = a1 * corr + e * Half2.highFloat(v0);
+            a2 = a2 * corr + e * Half2.lowFloat(v1);
+            a3 = a3 * corr + e * Half2.highFloat(v1);
+            a4 = a4 * corr + e * Half2.lowFloat(v2);
+            a5 = a5 * corr + e * Half2.highFloat(v2);
+            a6 = a6 * corr + e * Half2.lowFloat(v3);
+            a7 = a7 * corr + e * Half2.highFloat(v3);
+            l = l * corr + e;
+            m = newM;
+        }
+        int o = outBase + (lane << 1);
+        att.set(o, a0);
+        att.set(o + 1, a1);
+        att.set(o + 64, a2);
+        att.set(o + 65, a3);
+        att.set(o + 128, a4);
+        att.set(o + 129, a5);
+        att.set(o + 192, a6);
+        att.set(o + 193, a7);
+        if (lane == 0) {
+            att.set(mBase + s, m);
+            att.set(lBase + s, l);
         }
     }
 }
