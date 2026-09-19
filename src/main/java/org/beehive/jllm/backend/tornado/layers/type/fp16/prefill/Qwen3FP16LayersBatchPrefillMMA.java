@@ -101,9 +101,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final boolean nativeProjections;
 
     /**
-     * Whether this PLAN uses cuDNN attention at all -- true in both families when the primary
-     * does, which is what decides that a fallback family is needed. {@link #useCudnnAttention} is
-     * the per-family answer.
+     * Whether this PLAN uses cuDNN attention at all -- true in both families when the primary does,
+     * which is what decides that a fallback family is needed. {@link #useCudnnAttention} is the
+     * per-family answer.
      */
     private final boolean cudnnAttention;
 

@@ -203,7 +203,9 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
      * @param position sequence position
      * @return logits array for sampling
      */
-    private void runDecodeLayers(int position) {
+    // @formatter:off
+    @Override
+    public FloatArray tornadoVMForwardDecode(int position) {
         state.setPosition(position);
         state.workspace.temp.clear();
         state.workspace.tempFFN.clear();
@@ -217,6 +219,9 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
         }
         metrics.report(decodeAct.execute());
 
+        // Over decode layer GRAPHS, not layers: a family may hold several layers in one graph,
+        // and the layout is what knows how many graphs that leaves. Identical to a loop over
+        // layers for every family that builds one graph each.
         for (int g = 0; g < taskGraphLayout.decodeLayerGraphs(); g++) {
             var decodeLayer =
                     executionPlan
@@ -227,12 +232,6 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
             }
             metrics.report(decodeLayer.execute());
         }
-    }
-
-    // @formatter:off
-    @Override
-    public FloatArray tornadoVMForwardDecode(int position) {
-        runDecodeLayers(position);
 
         state.workspace.tempLogits.clear();
         state.workspace.wrapLogits.clear();

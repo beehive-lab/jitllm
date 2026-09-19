@@ -22,7 +22,7 @@ package org.beehive.jllm.backend.tornado.plan.layout;
 public record BatchPrefillDecodeForwardTaskGraphLayout(
         int N, int batchLayerGraphs, int fallbackLayerGraphs, int decodeLayerGraphs) {
 
-    /** The ungrouped layout: one decode graph per layer, which is what every family built. */
+    /** The fully ungrouped layout, no fallback family: one graph per layer on both sides. */
     public BatchPrefillDecodeForwardTaskGraphLayout(int N) {
         this(N, N, 0, N);
     }
