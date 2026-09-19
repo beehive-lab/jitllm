@@ -17,7 +17,7 @@ import uk.ac.manchester.tornado.api.GridScheduler;
  *
  * <p>Drive it with {@code -Djllm.nllScreen.batch=32} for the batched prefix, and with {@code
  * -Djllm.nllScreen.out=<file>} to write the per-passage report. Without the batch width the plan is
- * the single-token one, which has no batched projection to check, and this class fails rather than
+ * the single-token one, which has no batched projection to check, and this class skips rather than
  * scoring a path its name does not describe.
  *
  * <p><b>This is the repository's reused development screen, not independent quality validation.</b>
@@ -29,6 +29,11 @@ public class Qwen35MmaNllScreenAccelTest extends Qwen35NllScreenAccelTest {
 
     static {
         System.setProperty("jllm.qwen35.tensorCores", "true");
+    }
+
+    @Override
+    protected boolean applies(int batch) {
+        return batch > 1;
     }
 
     @Override

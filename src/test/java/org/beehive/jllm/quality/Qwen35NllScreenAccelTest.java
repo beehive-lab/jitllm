@@ -103,6 +103,10 @@ public class Qwen35NllScreenAccelTest {
         StringBuilder report = new StringBuilder();
         try {
             int batch = Integer.getInteger(BATCH_PROPERTY, 1);
+            if (!applies(batch)) {
+                System.out.println("[SKIP] " + getClass().getSimpleName() + " at batch " + batch);
+                assumeTrue("plan this screen describes not selected", false);
+            }
             if (batch > 1) {
                 // The plan is chosen from these, not from the state's width: sizing the state
                 // alone leaves the single-token plan in place.
@@ -348,6 +352,15 @@ public class Qwen35NllScreenAccelTest {
                         plan, "ssm_delta_rule");
         assertEquals("one batched delta-rule kernel across the layers", 1, kernels.size());
         return kernels.iterator().next();
+    }
+
+    /**
+     * Whether this screen has anything to say at the given prefill width. The base screen scores
+     * any plan; a subclass that describes one particular plan declines the widths that select
+     * another, so a suite run without the property skips it rather than failing it.
+     */
+    protected boolean applies(int batch) {
+        return true;
     }
 
     protected void verifyDispatch(

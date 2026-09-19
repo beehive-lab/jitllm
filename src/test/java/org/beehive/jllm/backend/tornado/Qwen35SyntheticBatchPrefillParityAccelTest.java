@@ -42,6 +42,13 @@ import org.junit.Test;
 // @formatter:on
 public class Qwen35SyntheticBatchPrefillParityAccelTest {
 
+    static {
+        // The scalar batched path, whose kernels reproduce the host's arithmetic closely enough
+        // for the host comparison below. The tensor-core default rounds Q and P to FP16 in the
+        // attention and is covered by its own numerics tests at its own bounds.
+        System.setProperty("jllm.qwen35.tensorCores", "false");
+    }
+
     private static final int DECODE_ROWS = 3;
 
     /** Widths worth separating: one, a pair, a non-power-of-two, a power of two, and too wide. */
