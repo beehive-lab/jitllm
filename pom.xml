@@ -57,8 +57,17 @@
                  reproduced here on Metal, and CI recorded the same NPE on its cuda and opencl
                  legs. 6.0.0 also carries the sketch-phase fix for the LambdaForm hidden-class
                  reader, which took out every F16 family on OpenCL.
-                 See docs/architecture/metal/SESSION-2026-09-04.md §1. -->
-        <tornadovm.base.version>6.1.0</tornadovm.base.version>
+                 See docs/architecture/metal/SESSION-2026-09-04.md §1.
+
+                 6.1.1-jdk21-dev = TornadoVM develop at 65f06c5d162c36022f9d5724dd38b9784d85cfcc
+                 (2026-09-19), which carries the CUDA fixes the Qwen3.8 batched prefill kernels rely on
+                 (PRs #1091-#1094, #1098, #1099, #1101: signed int-to-float conversion, private array
+                 zero-init, FP16 header selection, HalfFloat(short) bit reinterpretation, float-to-half
+                 value conversion, in-kernel reads of MMA accumulator elements, byte-offset int8
+                 fragment loads). Not on Maven Central: build that revision with `make BACKEND=cuda`
+                 (or opencl), which installs the -dev artifacts into ~/.m2, then run with that SDK's
+                 setvars.sh. CI does the same in .github/actions/setup-tornadovm. -->
+        <tornadovm.base.version>6.1.1</tornadovm.base.version>
         <archunit.version>1.4.2</archunit.version>
         <jdk.version.suffix>-jdk21</jdk.version.suffix>
         <!-- TornadoVM's own JDK suffix, deliberately a SEPARATE property from
@@ -67,7 +76,7 @@
                  TornadoVM 6.0.0 collapsed its jdk25/jdk26/jdk27 lines into a single jdk22plus
                  profile and publishes only 6.0.0-jdk21 and 6.0.0-jdk22plus to Maven Central.
                  Tying the two together would silently rename jllm's own coordinates. -->
-        <tornadovm.version.suffix>-jdk21</tornadovm.version.suffix>
+        <tornadovm.version.suffix>-jdk21-dev</tornadovm.version.suffix>
         <!-- CUDA backend is only available after 5.0.0 TornadoVM version -->
         <tornadovm.version>${tornadovm.base.version}${tornadovm.version.suffix}</tornadovm.version>
         <!-- Compiler defaults (overridden by JDK profiles below) -->
@@ -330,7 +339,7 @@
                 <maven.compiler.source>21</maven.compiler.source>
                 <maven.compiler.target>21</maven.compiler.target>
                 <jdk.version.suffix>-jdk21</jdk.version.suffix>
-                <tornadovm.version.suffix>-jdk21</tornadovm.version.suffix>
+                <tornadovm.version.suffix>-jdk21-dev</tornadovm.version.suffix>
                 <tornadovm.version>${tornadovm.base.version}${tornadovm.version.suffix}</tornadovm.version>
             </properties>
             <build>
@@ -368,7 +377,7 @@
                 <!-- -jdk22plus, not -jdk25: TornadoVM 6.0.0 replaced its per-version jdk25 /
                          jdk26 / jdk27 profiles with one jdk22plus profile, so 6.0.0-jdk25 does not
                          exist on Maven Central. This project's own artifact stays -jdk25. -->
-                <tornadovm.version.suffix>-jdk22plus</tornadovm.version.suffix>
+                <tornadovm.version.suffix>-jdk22plus-dev</tornadovm.version.suffix>
                 <tornadovm.version>${tornadovm.base.version}${tornadovm.version.suffix}</tornadovm.version>
             </properties>
         </profile>
