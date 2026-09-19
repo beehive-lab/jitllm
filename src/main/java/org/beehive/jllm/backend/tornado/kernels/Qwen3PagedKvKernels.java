@@ -396,7 +396,7 @@ public class Qwen3PagedKvKernels {
         int pairIdx = globalIdx % halfQDim;
         int qkvStride = qDim + 2 * kvDim;
 
-                // Padded rows are not tokens: see the FP16 variant below. No barriers here, so an
+        // Padded rows are not tokens: see the FP16 variant below. No barriers here, so an
         // early return is safe per lane.
         if (batchIdx >= batchStartPosHolder.get(1)) {
             return;

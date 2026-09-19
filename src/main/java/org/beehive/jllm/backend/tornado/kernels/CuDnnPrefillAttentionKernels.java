@@ -7,20 +7,19 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 /**
- * The layout adapters around a cuDNN scaled-dot-product-attention call on the batched
- * prefill path.
+ * The layout adapters around a cuDNN scaled-dot-product-attention call on the batched prefill path.
  *
- * <p>cuDNN's binding takes three contiguous {@code [batch][head][seq][headDim]} FP16
- * tensors and one head count. jllm's prefill keeps Q inside a packed FP32 QKV buffer and
- * its K/V in a paged FP16 cache with a block table, and serves several query heads from
- * one KV head. These three kernels bridge exactly that gap and nothing else: the
- * projections, Q/K normalization, RoPE and the output projection are untouched, and the
- * KV cache is still written by the existing RoPE kernel — this only reads it.
+ * <p>cuDNN's binding takes three contiguous {@code [batch][head][seq][headDim]} FP16 tensors and
+ * one head count. jllm's prefill keeps Q inside a packed FP32 QKV buffer and its K/V in a paged
+ * FP16 cache with a block table, and serves several query heads from one KV head. These three
+ * kernels bridge exactly that gap and nothing else: the projections, Q/K normalization, RoPE and
+ * the output projection are untouched, and the KV cache is still written by the existing RoPE
+ * kernel — this only reads it.
  *
- * <p>Applicable to the first prefill chunk of a sequence only, because cuDNN's causal mask
- * aligns query <i>i</i> to key <i>i</i>. That is the correct mask when the query block is
- * the whole prefix (query length == key length) and the wrong one for any later chunk,
- * where the queries sit at an offset into a longer key range. The caller enforces this.
+ * <p>Applicable to the first prefill chunk of a sequence only, because cuDNN's causal mask aligns
+ * query <i>i</i> to key <i>i</i>. That is the correct mask when the query block is the whole prefix
+ * (query length == key length) and the wrong one for any later chunk, where the queries sit at an
+ * offset into a longer key range. The caller enforces this.
  */
 public final class CuDnnPrefillAttentionKernels {
 
@@ -29,9 +28,9 @@ public final class CuDnnPrefillAttentionKernels {
     /**
      * Packed FP32 QKV {@code [tok][qkvStride]} to FP16 {@code [head][tok][headDim]}.
      *
-     * <p>Padding rows are zero-filled rather than skipped: they still take part in the
-     * attention the library computes, so leaving them undefined would feed NaNs into the
-     * softmax of the real rows' key range.
+     * <p>Padding rows are zero-filled rather than skipped: they still take part in the attention
+     * the library computes, so leaving them undefined would feed NaNs into the softmax of the real
+     * rows' key range.
      */
     public static void packQ(
             IntArray batchStartPosHolder,
@@ -58,8 +57,8 @@ public final class CuDnnPrefillAttentionKernels {
     }
 
     /**
-     * Paged FP16 K/V to contiguous FP16 {@code [head][tok][headDim]}, expanding grouped
-     * query attention: query head {@code h} reads KV head {@code h / kvMul}.
+     * Paged FP16 K/V to contiguous FP16 {@code [head][tok][headDim]}, expanding grouped query
+     * attention: query head {@code h} reads KV head {@code h / kvMul}.
      */
     public static void gatherKvExpanded(
             IntArray batchStartPosHolder,
@@ -101,7 +100,11 @@ public final class CuDnnPrefillAttentionKernels {
 
     /** cuDNN output {@code [head][tok][headDim]} back to {@code attnOutFP16[tok][qDim]}. */
     public static void scatterAttnOut(
-            HalfFloatArray sdpaOut, HalfFloatArray attnOutFP16, int headSize, int batchSize, int qDim) {
+            HalfFloatArray sdpaOut,
+            HalfFloatArray attnOutFP16,
+            int headSize,
+            int batchSize,
+            int qDim) {
         for (@Parallel int i = 0; i < sdpaOut.getSize(); i++) {
             int d = i % headSize;
             int tok = (i / headSize) % batchSize;

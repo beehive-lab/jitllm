@@ -167,10 +167,9 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
     }
 
     /**
-     * Batch prefill through the fallback family: the same layers, with the attention
-     * implementation that handles a chunk whose queries do not start at position 0. The caller has
-     * already put this chunk's embeddings and its start position into state, exactly as for the
-     * primary path.
+     * Batch prefill through the fallback family: the same layers, with the attention implementation
+     * that handles a chunk whose queries do not start at position 0. The caller has already put
+     * this chunk's embeddings and its start position into state, exactly as for the primary path.
      */
     // @formatter:off
     public void tornadoVMForwardBatchPrefillFallback() {
@@ -204,19 +203,6 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
      * @param position sequence position
      * @return logits array for sampling
      */
-    /**
-     * Ingests one token at {@code position} without producing logits.
-     *
-     * <p>Used when a prefill chunk cannot go through the batched path: the chunk's tokens are
-     * ingested one at a time so their K/V lands where batched prefill would have put it, and the
-     * logits of an intermediate prompt token are not wanted. Skipping the logits graph is the
-     * difference between reading the model's weights and reading them plus the 296 MiB output
-     * projection, per token.
-     */
-    public void tornadoVMIngestDecodeOnly(int position) {
-        runDecodeLayers(position);
-    }
-
     private void runDecodeLayers(int position) {
         state.setPosition(position);
         state.workspace.temp.clear();

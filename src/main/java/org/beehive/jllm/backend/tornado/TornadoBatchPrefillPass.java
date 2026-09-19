@@ -14,21 +14,6 @@ public final class TornadoBatchPrefillPass {
     private static final int Q8_0_BLOCK_SIZE = 32;
     private static final int Q8_0_BLOCK_BYTES = 34;
 
-    /** Mirrors the flag the prefill layer planner reads; see CuDnnPrefillAttentionKernels. */
-    /** Graph batch width, published by the prefill planner when the cuDNN path is built. */
-    public static volatile int cudnnGraphBatchWidth = -1;
-
-    private static final boolean CUDNN_PREFILL_ATTENTION =
-            Boolean.getBoolean("jllm.attention.cudnnPrefill");
-
-    /** Restores the pre-fallback refusal for a chunk cuDNN attention cannot mask. */
-    private static final boolean CUDNN_PREFILL_STRICT =
-            Boolean.getBoolean("jllm.attention.cudnnPrefill.strict");
-
-    /** Diagnostics only: lets a partial chunk through the guard so the failure can be studied. */
-    private static final boolean CUDNN_ALLOW_PARTIAL =
-            Boolean.getBoolean("jllm.attention.cudnnPrefill.allowPartial");
-
     private static final int Q4_0_BLOCK_SIZE = 32;
     private static final int Q4_0_BLOCK_BYTES = 18;
 
@@ -56,42 +41,23 @@ public final class TornadoBatchPrefillPass {
         final Configuration config = model.configuration();
         final TornadoWeights weights = (TornadoWeights) model.weights();
 
+        // Which prefill family takes this chunk.
+        //
         // cuDNN's causal mask aligns query i to key i, which is the right mask only when the
         // query block IS the whole prefix. A chunk starting past zero has its queries at an
-        // offset into a longer key range, and the library binding cannot express that. A PARTIAL
-        // first chunk is fine: its queries still start at zero and the padded rows are defined.
+        // offset into a longer key range, and the library binding exposes no bottom-right
+        // alignment to express that. A PARTIAL first chunk is fine: its queries still start at
+        // zero and the padded rows are defined.
         //
-        // Rather than refuse such a chunk, ingest it through the decode path that is already in
-        // this plan. That path takes an arbitrary position, attends over the whole KV history it
-        // finds, and writes this chunk's K/V exactly where batched prefill would. It needs no new
-        // graph, no new buffer and no new setup: the decode layer graphs were built with the plan
-        // and already own the weights they read. It is slower per token than a batched chunk --
-        // one graph set per token instead of per chunk -- and that cost is confined to the chunks
-        // a native first chunk cannot cover.
+        // So a chunk past position 0 goes to the fallback family instead: the same layer
+        // pipeline, the same native projections over the same stacked weights, with the batched
+        // JIT paged attention that takes an arbitrary start position. It binds every buffer from
+        // the primary family, so it costs graphs and no memory, and it stays batched -- one graph
+        // set per chunk, not per token.
         //
-        // -Djllm.attention.cudnnPrefill.strict=true restores the old refusal, for tests that want
-        // to prove which path they exercised.
-        boolean useFallbackFamily = false;
-        if (CUDNN_PREFILL_ATTENTION && startPos != 0) {
-            if (CUDNN_PREFILL_STRICT) {
-                throw new IllegalStateException(
-                        "jllm.attention.cudnnPrefill supports only a prefill chunk starting at "
-                                + "position 0; this chunk starts at "
-                                + startPos
-                                + ". Raise --batch-prefill-size to cover the prompt, or disable"
-                                + " the flag.");
-            }
-            if (!plan.hasBatchPrefillFallback()) {
-                // Last resort, and documented as such: ingest the chunk a token at a time through
-                // the decode path. Correct, and about 20x slower than a batched chunk.
-                for (int b = 0; b < chunkSize; b++) {
-                    copyEmbedding(config, weights, state, tokens[b]);
-                    plan.tornadoVMIngestDecodeOnly(startPos + b);
-                }
-                return;
-            }
-            useFallbackFamily = true;
-        }
+        // The plan only builds that family when the primary uses cuDNN attention; where it does
+        // not, the primary already handles every chunk itself.
+        boolean useFallbackFamily = startPos != 0 && plan.hasBatchPrefillFallback();
 
         state.workspace.batchStartPosHolder.set(0, startPos);
         // The kernels launch a fixed batchSize rows; this tells them how many are real, so the
@@ -173,10 +139,10 @@ public final class TornadoBatchPrefillPass {
             plan.tornadoVMForwardBatchPrefill();
         }
     }
+
     /**
-     * Copies one token's embedding row into the single-token staging buffer, in the
-     * embedding tensor's own representation. Shared by the decode step and by the
-     * per-token ingest the multi-chunk fallback uses, so the two cannot diverge.
+     * Copies one token's embedding row into the single-token staging buffer, in the embedding
+     * tensor's own representation.
      */
     private static void copyEmbedding(
             Configuration config, TornadoWeights weights, State state, int token) {
@@ -221,7 +187,6 @@ public final class TornadoBatchPrefillPass {
                                     + weights.getTokenEmbeddingTable().dataType());
         }
     }
-
 
     /**
      * The decode step of the batched path: stage one token's embedding, then run the decode

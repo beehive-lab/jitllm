@@ -682,8 +682,8 @@ public class Qwen3FP16FFNLayers
 
     /**
      * Weights that {@link #weightSourceGraphName} names as the producer but that no task in that
-     * graph actually reads, so it never uploads them and this graph has to. Empty by default,
-     * which is the case whenever the producer computes with every weight it declares.
+     * graph actually reads, so it never uploads them and this graph has to. Empty by default, which
+     * is the case whenever the producer computes with every weight it declares.
      */
     protected Object[] weightsNotProvidedBySource(int layerIndex) {
         return NO_WEIGHTS;

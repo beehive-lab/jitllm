@@ -2,12 +2,13 @@ package org.beehive.jllm.backend.tornado.layers.type.fp16.prefill;
 
 import java.util.List;
 import java.util.stream.IntStream;
+import org.beehive.jllm.backend.tornado.NativePrefillSupport;
+import org.beehive.jllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jllm.backend.tornado.kernels.CuDnnPrefillAttentionKernels;
 import org.beehive.jllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jllm.inference.state.Qwen3State;
@@ -72,38 +73,46 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      * Rows a native GEMM has to produce.
      *
      * <p>{@code paddedBatch} rounds the chunk width up to 128 because the JIT {@code gemmMMA*}
-     * kernels tile 128x128 and their worker grid is derived from it. cuBLAS has no such
-     * constraint, and nothing downstream reads the rows above the chunk width: every other
-     * worker grid in this class -- the RMS reduces and applies, the Q/K norm, RoPE, attention,
-     * the cuDNN adapters, SwiGLU and the residual add -- is sized on {@code batchSize}. So a
-     * native projection only needs to produce {@code batchSize} rows, and at a width that is not
-     * a multiple of 128 that is strictly less work: 300 rows instead of 384.
+     * kernels tile 128x128 and their worker grid is derived from it. cuBLAS has no such constraint,
+     * and nothing downstream reads the rows above the chunk width: every other worker grid in this
+     * class -- the RMS reduces and applies, the Q/K norm, RoPE, attention, the cuDNN adapters,
+     * SwiGLU and the residual add -- is sized on {@code batchSize}. So a native projection only
+     * needs to produce {@code batchSize} rows, and at a width that is not a multiple of 128 that is
+     * strictly less work: 300 rows instead of 384.
      *
      * <p>A JIT projection still gets {@code paddedBatch}, because its grid demands it.
      */
     private int nativeGemmRows() {
-        return unpaddedNativeGemm ? batchSize : paddedBatch;
+        return batchSize;
     }
+
     private final int nHeadKv;
     private final int nEmbdHead;
     private final int qDim;
     private final int kvDim;
     private final int gqa;
-    private final boolean cudnnAttention;
-    private final boolean cublasProjection;
-    private final boolean cublasW2Projection;
-    private final boolean cublasGateUpProjection;
+
     /**
-     * gate and up stacked along the output dimension, one array per layer, so the packed
-     * [gate|up] result can come from a single GEMM. gemmMMAGateUp reads w1 and w3 as two separate
-     * operands and selects between them by output column; cuBLAS takes one B and the binding has
-     * no operand offset, so the two have to be adjacent in memory. Built once here, never per
-     * prefill, and the originals are left alone because decode and the JIT path still use them.
+     * Whether this family's four projections are cuBLAS GEMMs over stacked weights. One field, not
+     * one per projection: {@link NativePrefillSupport} answers for all four together, because a
+     * configuration with only some of them native has never been validated end to end -- and the
+     * decode side derives which weights it must upload itself from the same single answer.
+     */
+    private final boolean nativeProjections;
+
+    /** Whether this PLAN uses cuDNN attention anywhere; see {@link #useCudnnAttention}. */
+    private final boolean cudnnAttention;
+
+    /**
+     * gate and up stacked along the output dimension, one array per layer, so the packed [gate|up]
+     * result can come from a single GEMM. gemmMMAGateUp reads w1 and w3 as two separate operands
+     * and selects between them by output column; cuBLAS takes one B and the binding has no operand
+     * offset, so the two have to be adjacent in memory. Built once here, never per prefill, and the
+     * originals are left alone because decode and the JIT path still use them.
      */
     private final HalfFloatArray[] gateUpCat;
+
     private final int layersPerGraph;
-    private final boolean sharedCudnnStaging;
-    private final boolean unpaddedNativeGemm;
 
     /**
      * Graph-name prefix for this family. The primary keeps "batchPrefillLayer_", which the decode
@@ -119,34 +128,25 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     /** cuDNN attention in THIS family. False in the fallback family whatever the flag says. */
     private final boolean useCudnnAttention;
-    private final boolean cublasQkvProjection;
+
     /**
-     * wq, wk and wv stacked along the output dimension, one array per layer, so the packed
-     * [q|k|v] result can come from a single GEMM. gemmMMAQKV reads the three as separate operands
-     * and selects between them by output column -- [0,qDim) from wq, [qDim,qDim+kvDim) from wk,
-     * the rest from wv, each indexed row-major [outCol][K]. The slices are NOT equal: for this
-     * model 2048 | 1024 | 1024. cuBLAS takes one B and the binding has no operand offset, so the
-     * three have to be adjacent in memory, in that order. Built once here, never per prefill, and
-     * the originals are left alone because decode and the JIT path still read them.
+     * wq, wk and wv stacked along the output dimension, one array per layer, so the packed [q|k|v]
+     * result can come from a single GEMM. gemmMMAQKV reads the three as separate operands and
+     * selects between them by output column -- [0,qDim) from wq, [qDim,qDim+kvDim) from wk, the
+     * rest from wv, each indexed row-major [outCol][K]. The slices are NOT equal: for this model
+     * 2048 | 1024 | 1024. cuBLAS takes one B and the binding has no operand offset, so the three
+     * have to be adjacent in memory, in that order. Built once here, never per prefill, and the
+     * originals are left alone because decode and the JIT path still read them.
      */
     private final HalfFloatArray[] qkvCat;
-    /** Diagnostics only: makes the cuDNN staging buffers host-readable after each layer. */
-    private static final boolean CUDNN_DEBUG =
-            Boolean.getBoolean("jllm.attention.cudnnPrefill.debug");
-    /** Which layer the debug transfer captures (the staging buffers are shared by all). */
-    /** Diagnostics only: seed the staging buffers with a finite sentinel instead of zero. */
-    private static final boolean CUDNN_CANARY =
-            Boolean.getBoolean("jllm.attention.cudnnPrefill.canary");
-    private static final int CUDNN_DEBUG_LAYER =
-            Integer.getInteger("jllm.attention.cudnnPrefill.debugLayer", 0);
-    /** Diagnostics only: last-built staging buffers, for the NaN hunt. */
-    public static HalfFloatArray dbgQ, dbgK, dbgV, dbgOut;
+
     /**
-     * Staging for the cuDNN call: contiguous FP16 Q, GQA-expanded K/V, and its output, all
-     * {@code [head][tok][headDim]}. Allocated once and reused by every layer graph, because
-     * the layers run one after another.
+     * Staging for the cuDNN call: contiguous FP16 Q, GQA-expanded K/V, and its output, all {@code
+     * [head][tok][headDim]}. Allocated once and reused by every layer graph, because the layers run
+     * one after another.
      */
     private final HalfFloatArray cudnnQ;
+
     private final HalfFloatArray cudnnK;
     private final HalfFloatArray cudnnV;
     private final HalfFloatArray cudnnOut;
@@ -163,49 +163,28 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     }
 
     /**
-     * Whether the batch-prefill gate/up projection is the single stacked cuBLAS GEMM. Single source
-     * of truth: the decode layer graphs consume this layer's weights from the batch-prefill graph,
-     * and this flag decides whether that graph still reads {@code w1}/{@code w3} at all.
-     */
-    /**
-     * Whether the batch-prefill QKV projection is the single stacked cuBLAS GEMM. Same role and
-     * same backend gate as {@link #nativeGateUpProjection()}: the decode layer graphs consume this
-     * layer's weights from the batch-prefill graph, and this flag decides whether that graph still
-     * reads {@code wq}/{@code wk}/{@code wv} at all.
-     */
-    /**
-     * How many transformer layers share one batch-prefill graph. 1 -- one graph per layer -- is
-     * the shape every family has had; the property groups consecutive layers instead, which
-     * changes nothing about task order, buffers or arithmetic and only reduces the number of graph
-     * submissions (and, with them, device syncs) per prefill pass.
+     * How many transformer layers share one batch-prefill graph.
      *
-     * <p>Read as a static so the decode side resolves the same grouping: it binds each layer's
-     * weights from the graph that uploaded them, and that graph is now named after the first layer
-     * of the group.
-     */
-    /**
-     * Whether the cuDNN staging quartet is one allocation for the whole execution plan.
+     * <p>Grouping changes nothing about task order, buffers or arithmetic: consecutive layers are
+     * appended to the same graph, with the same tasks and the same operands. What it changes is how
+     * many graph submissions -- and therefore how many device syncs, since {@code
+     * TaskGraph.execute} ends with a wait -- a prefill pass costs. Four was measured the knee on
+     * this pipeline; the gain is sub-linear above it.
      *
-     * <p>Declaring {@code transferToDevice} for the same array in N graphs gives it N device
-     * buffers -- measured: the four staging arrays were the only objects allocated more than
-     * once across the batch-prefill graphs, 28 sets at one layer per graph, 7 at four. A single
-     * {@code transferToDevice} in the first graph plus {@code consumeFromDevice} in the rest
-     * binds one buffer everywhere, which is the same contract the workspace arrays already use
-     * in this method.
+     * <p><b>Gated on the tensor-core backend, and that gate is load-bearing.</b> Grouping renames a
+     * layer's graph to the first layer of its group, and the decode layer graphs bind their weights
+     * from that name. On a backend where {@code Qwen3FP16PlanComponents} builds the ungrouped
+     * {@link Qwen3FP16LayersBatchPrefill} family instead, the graphs are still one per layer, so
+     * this has to answer one per layer there too.
+     *
+     * <p>Static so both sides resolve the same grouping from the same predicate.
      */
-    /** Whether native projections produce only the chunk's rows instead of the padded count. */
-    public static boolean unpaddedNativeGemm() {
-        return Boolean.getBoolean("jllm.projection.cublas.unpaddedRows");
-    }
-
-    public static boolean sharedCudnnStaging() {
-        return Boolean.getBoolean("jllm.attention.cudnnPrefill.sharedStaging");
-    }
-
     public static int prefillLayersPerGraph() {
-        int v = Integer.getInteger("jllm.prefill.layersPerGraph", 1);
-        return v < 1 ? 1 : v;
+        return TensorCoreSupport.isTensorCoreCapableBackend() ? LAYERS_PER_GRAPH : 1;
     }
+
+    /** The measured knee; see {@link #prefillLayersPerGraph()}. */
+    private static final int LAYERS_PER_GRAPH = 4;
 
     /** The batch-prefill graph that owns {@code layerIndex}'s weights. */
     public static String prefillGraphOwning(int layerIndex) {
@@ -214,25 +193,17 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     }
 
     /**
-     * Whether to build the fallback batch-prefill family. On by default wherever cuDNN prefill
-     * attention is on; turning it off leaves the per-token sequential ingest as the only route for
-     * a chunk past position 0, which is the documented last resort.
+     * Whether the batch-prefill projections are single stacked cuBLAS GEMMs.
+     *
+     * <p><b>Single source of truth, and the reason it is a static.</b> The decode layer graphs
+     * consume this layer's weights from the batch-prefill graph, and this answer decides whether
+     * that graph still reads {@code wq}/{@code wk}/{@code wv} and {@code w1}/{@code w3} at all.
+     * TornadoVM builds a graph from its tasks' argument lists, so a weight the producer declares
+     * but hands to no task is never uploaded and the consumer binds a buffer nothing wrote. Both
+     * sides ask this one method; see {@code Qwen3FP16FFNLayersDecode.weightsNotProvidedBySource}.
      */
-    public static boolean batchedFallbackFamily() {
-        return !Boolean.getBoolean("jllm.attention.cudnnPrefill.noBatchedFallback");
-    }
-
-    public static boolean nativeQkvProjection() {
-        return TensorCoreSupport.isTensorCoreCapableBackend()
-                && Boolean.getBoolean("jllm.projection.cublas.qkv");
-    }
-
-    public static boolean nativeGateUpProjection() {
-        // Gated on the backend too, not on the property alone: this class is only built where
-        // tensor cores are, so on any other backend the flag selects nothing and the decode
-        // graphs must keep consuming w1/w3 from a prefill graph that still reads them.
-        return TensorCoreSupport.isTensorCoreCapableBackend()
-                && Boolean.getBoolean("jllm.projection.cublas.gateUp");
+    public static boolean nativeProjections() {
+        return NativePrefillSupport.nativeProjections();
     }
 
     public Qwen3FP16LayersBatchPrefillMMA(
@@ -251,21 +222,21 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.paddedBatch = (batchSize + 127) & ~127;
         if (batchSize % 128 != 0) {
             System.out.printf(
-                    "[jllm] prefill batch %d padded to %d for tensor-core tiles; "
-                            + "GEMM efficiency is %d/%d — use a multiple of 128 for best throughput.%n",
+                    "[jllm] prefill batch %d padded to %d for tensor-core tiles; GEMM efficiency is"
+                            + " %d/%d — use a multiple of 128 for best throughput.%n",
                     batchSize, paddedBatch, batchSize, paddedBatch);
         }
+        // The FP16 key/value cache is part of the supported configuration, not an extra switch:
+        // the cuDNN adapters read K/V straight out of it as FP16, and the gather that would be
+        // needed from an FP32 cache has never been written or validated. An FP32 KV session on
+        // this device keeps the JIT attention and loses nothing else -- the projections stay
+        // native, because they do not touch the cache.
         this.cudnnAttention =
-                Boolean.getBoolean("jllm.attention.cudnnPrefill") && state.usesFp16KeyValueCache();
+                NativePrefillSupport.nativeAttention() && state.usesFp16KeyValueCache();
         this.useCudnnAttention = this.cudnnAttention;
-        this.cublasProjection = Boolean.getBoolean("jllm.projection.cublas");
-        // Separate flag so the down projection can be measured on its own.
-        this.cublasW2Projection = Boolean.getBoolean("jllm.projection.cublas.w2");
-        this.cublasGateUpProjection = nativeGateUpProjection();
-        this.cublasQkvProjection = nativeQkvProjection();
+        this.nativeProjections = nativeProjections();
         this.layersPerGraph = Math.min(prefillLayersPerGraph(), config.numberOfLayers());
-        this.sharedCudnnStaging = sharedCudnnStaging();
-        this.unpaddedNativeGemm = unpaddedNativeGemm();
+        System.out.printf("[jllm] prefill acceleration: %s%n", NativePrefillSupport.describe());
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHead = config.numberOfHeadsValue();
         this.qDim = config.numberOfHeadsKey() * config.numberOfHeads();
@@ -277,25 +248,21 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.cudnnV = new HalfFloatArray(cudnnElems);
         this.cudnnOut = new HalfFloatArray(cudnnElems);
         if (cudnnAttention) {
-            HalfFloat seed = new HalfFloat(CUDNN_CANARY ? 1234.0f : 0.0f);
-            cudnnQ.init(seed);
-            cudnnK.init(seed);
-            cudnnV.init(seed);
-            cudnnOut.init(seed);
-        }
-        if (cudnnAttention) {
-            org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass.cudnnGraphBatchWidth = batchSize;
-            dbgQ = cudnnQ; dbgK = cudnnK; dbgV = cudnnV; dbgOut = cudnnOut;
+            // Zero, not left undefined: the padded rows take part in the attention the library
+            // computes, so whatever these held would reach the softmax of the real rows.
+            HalfFloat zero = new HalfFloat(0.0f);
+            cudnnQ.init(zero);
+            cudnnK.init(zero);
+            cudnnV.init(zero);
+            cudnnOut.init(zero);
             System.out.printf(
-                    "[jllm] prefill attention: cuDNN SDPA (first chunk only), staging %d MiB"
-                            + " per set, %s%n",
-                    4L * cudnnElems * Short.BYTES / (1024 * 1024),
-                    sharedCudnnStaging()
-                            ? "one set shared by every batch-prefill graph"
-                            : "one set per batch-prefill graph");
+                    "[jllm] prefill attention: cuDNN SDPA for the first chunk, batched JIT paged"
+                            + " attention for the rest; staging %d MiB, one set shared by every"
+                            + " batch-prefill graph%n",
+                    4L * cudnnElems * Short.BYTES / (1024 * 1024));
         }
-        this.gateUpCat = new HalfFloatArray[cublasGateUpProjection ? config.numberOfLayers() : 0];
-        if (cublasGateUpProjection) {
+        this.gateUpCat = new HalfFloatArray[nativeProjections ? config.numberOfLayers() : 0];
+        if (nativeProjections) {
             long t0 = System.nanoTime();
             int rowsK = config.hiddenDim() * config.dim();
             for (int l = 0; l < config.numberOfLayers(); l++) {
@@ -315,15 +282,14 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     (long) config.numberOfLayers() * 2 * rowsK * Short.BYTES / (1024 * 1024),
                     (System.nanoTime() - t0) / 1e9);
         }
-        this.qkvCat = new HalfFloatArray[cublasQkvProjection ? config.numberOfLayers() : 0];
-        if (cublasQkvProjection) {
+        this.qkvCat = new HalfFloatArray[nativeProjections ? config.numberOfLayers() : 0];
+        if (nativeProjections) {
             long t0 = System.nanoTime();
             for (int l = 0; l < config.numberOfLayers(); l++) {
                 HalfFloatArray wq = weights.wqLayered[l].asHalfFloatArray();
                 HalfFloatArray wk = weights.wkLayered[l].asHalfFloatArray();
                 HalfFloatArray wv = weights.wvLayered[l].asHalfFloatArray();
-                HalfFloatArray cat =
-                        new HalfFloatArray(wq.getSize() + wk.getSize() + wv.getSize());
+                HalfFloatArray cat = new HalfFloatArray(wq.getSize() + wk.getSize() + wv.getSize());
                 int at = 0;
                 for (int i = 0; i < wq.getSize(); i++) cat.set(at++, wq.get(i));
                 for (int i = 0; i < wk.getSize(); i++) cat.set(at++, wk.get(i));
@@ -333,12 +299,18 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             System.out.printf(
                     "[jllm] prefill QKV: cuBLAS, %d stacked weights (%d|%d|%d cols), %d MiB extra"
                             + " resident, built in %.2f s%n",
-                    config.numberOfLayers(), qDim, kvDim, kvDim,
-                    (long) config.numberOfLayers() * qkvCat[0].getSize() * Short.BYTES / (1024 * 1024),
+                    config.numberOfLayers(),
+                    qDim,
+                    kvDim,
+                    kvDim,
+                    (long) config.numberOfLayers()
+                            * qkvCat[0].getSize()
+                            * Short.BYTES
+                            / (1024 * 1024),
                     (System.nanoTime() - t0) / 1e9);
         }
         int groups = (config.numberOfLayers() + layersPerGraph - 1) / layersPerGraph;
-        if (unpaddedNativeGemm && batchSize != paddedBatch) {
+        if (nativeProjections && batchSize != paddedBatch) {
             System.out.printf(
                     "[jllm] prefill native GEMM rows: %d (chunk width) instead of %d (padded)%n",
                     batchSize, paddedBatch);
@@ -359,11 +331,11 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      * The fallback family: the same layer pipeline with the JIT paged attention instead of the
      * cuDNN call, for a chunk whose queries do not start at position 0.
      *
-     * <p>It shares every array with {@code primary} -- the model's weights, the stacked
-     * [q|k|v] and [gate|up] weights, the workspace, the KV cache -- and declares all of them with
-     * {@code consumeFromDevice} against the primary's graphs, so nothing is allocated, uploaded or
-     * copied a second time. It does not touch the cuDNN staging quartet at all, because it does
-     * not call cuDNN.
+     * <p>It shares every array with {@code primary} -- the model's weights, the stacked [q|k|v] and
+     * [gate|up] weights, the workspace, the KV cache -- and declares all of them with {@code
+     * consumeFromDevice} against the primary's graphs, so nothing is allocated, uploaded or copied
+     * a second time. It does not touch the cuDNN staging quartet at all, because it does not call
+     * cuDNN.
      *
      * <p>Only the attention step differs. QKV, gate/up, woProj and w2Proj stay native, with the
      * same stacked weights and the same numerical contracts already validated for them.
@@ -379,13 +351,8 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.batchSize = primary.batchSize;
         this.paddedBatch = primary.paddedBatch;
         this.cudnnAttention = primary.cudnnAttention;
-        this.cublasProjection = primary.cublasProjection;
-        this.cublasW2Projection = primary.cublasW2Projection;
-        this.cublasGateUpProjection = primary.cublasGateUpProjection;
-        this.cublasQkvProjection = primary.cublasQkvProjection;
+        this.nativeProjections = primary.nativeProjections;
         this.layersPerGraph = primary.layersPerGraph;
-        this.sharedCudnnStaging = primary.sharedCudnnStaging;
-        this.unpaddedNativeGemm = primary.unpaddedNativeGemm;
         this.nHeadKv = primary.nHeadKv;
         this.nEmbdHead = primary.nEmbdHead;
         this.qDim = primary.qDim;
@@ -397,8 +364,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.cudnnOut = primary.cudnnOut;
         this.gateUpCat = primary.gateUpCat;
         this.qkvCat = primary.qkvCat;
-        int groups =
-                (config.numberOfLayers() + layersPerGraph - 1) / layersPerGraph;
+        int groups = (config.numberOfLayers() + layersPerGraph - 1) / layersPerGraph;
         this.layerITGs =
                 IntStream.range(0, groups)
                         .mapToObj(this::createBatchPrefillLayerTaskGraph)
@@ -411,13 +377,12 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     }
 
     /**
-     * Builds the fallback family for {@code primary}, or {@code null} when there is nothing to
-     * fall back from -- if the primary is not using cuDNN attention it already handles every
-     * chunk.
+     * Builds the fallback family for {@code primary}, or {@code null} when there is nothing to fall
+     * back from -- if the primary is not using cuDNN attention it already handles every chunk.
      */
     @Override
     public List<ImmutableTaskGraph> getFallbackLayerImmutableTaskGraphs() {
-        if (!cudnnAttention || consumeFromPrimary || !batchedFallbackFamily()) {
+        if (!cudnnAttention || consumeFromPrimary) {
             return List.of();
         }
         if (fallbackFamily == null) {
@@ -547,13 +512,14 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             batchPrefillLayer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
             batchPrefillLayer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
-            if (useCudnnAttention && sharedCudnnStaging) {
-                // The one allocation. Scratch, private to this execution plan, owned by the
-                // first batch-prefill graph and bound by every later one.
-                if (!sharedCudnnStaging) {
-                    batchPrefillLayer.transferToDevice(
-                            DataTransferMode.FIRST_EXECUTION, cudnnQ, cudnnK, cudnnV, cudnnOut);
-                }
+            if (useCudnnAttention) {
+                // The one allocation of the staging quartet: scratch, private to this execution
+                // plan, owned by the first batch-prefill graph and bound by every later one.
+                // Declaring transferToDevice for the same array in N graphs would give it N
+                // device buffers -- measured, and the only objects that were ever allocated more
+                // than once across these graphs.
+                batchPrefillLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, cudnnQ, cudnnK, cudnnV, cudnnOut);
             }
         } else {
             String pred = graphPrefix + (firstLayer - layersPerGraph);
@@ -575,7 +541,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.workspace.wrapHbFP16Batch,
                     state.workspace.w2Out);
             batchPrefillLayer.consumeFromDevice(pred, state.workspace.wrapBlockTable);
-            if (useCudnnAttention && sharedCudnnStaging) {
+            if (useCudnnAttention) {
                 batchPrefillLayer.consumeFromDevice(pred, cudnnQ, cudnnK, cudnnV, cudnnOut);
             }
         }
@@ -591,8 +557,8 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     /**
      * Appends one transformer layer's tasks to {@code batchPrefillLayer}. Task ids carry a
-     * per-layer prefix only when a graph holds more than one layer, so the single-layer graphs
-     * keep the ids they always had.
+     * per-layer prefix only when a graph holds more than one layer, so the single-layer graphs keep
+     * the ids they always had.
      */
     private void appendBatchPrefillLayer(
             TaskGraph batchPrefillLayer, int layerIndex, int dim, int hidDim) {
@@ -613,21 +579,21 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     weights.w2Layered[layerIndex].asHalfFloatArray(),
                     weights.w3Layered[layerIndex].asHalfFloatArray());
         } else {
-        batchPrefillLayer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqLayered[layerIndex].asHalfFloatArray(),
-                weights.wkLayered[layerIndex].asHalfFloatArray(),
-                weights.wvLayered[layerIndex].asHalfFloatArray(),
-                weights.woLayered[layerIndex].asHalfFloatArray(),
-                weights.rms_att_QNormLayered[layerIndex].asFloatArray(),
-                weights.rms_att_KNormLayered[layerIndex].asFloatArray(),
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.w1Layered[layerIndex].asHalfFloatArray(),
-                weights.w2Layered[layerIndex].asHalfFloatArray(),
-                weights.w3Layered[layerIndex].asHalfFloatArray());
+            batchPrefillLayer.transferToDevice(
+                    DataTransferMode.FIRST_EXECUTION,
+                    weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                    weights.wqLayered[layerIndex].asHalfFloatArray(),
+                    weights.wkLayered[layerIndex].asHalfFloatArray(),
+                    weights.wvLayered[layerIndex].asHalfFloatArray(),
+                    weights.woLayered[layerIndex].asHalfFloatArray(),
+                    weights.rms_att_QNormLayered[layerIndex].asFloatArray(),
+                    weights.rms_att_KNormLayered[layerIndex].asFloatArray(),
+                    weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                    weights.w1Layered[layerIndex].asHalfFloatArray(),
+                    weights.w2Layered[layerIndex].asHalfFloatArray(),
+                    weights.w3Layered[layerIndex].asHalfFloatArray());
         }
-        if (cublasGateUpProjection) {
+        if (nativeProjections) {
             // A buffer this class owns, not one of the model's, so it needs its own upload. w1/w3
             // stay declared above: the decode layer graphs consume this graph's weight buffers,
             // and Qwen3FP16FFNLayersDecode uploads the two this graph no longer reads.
@@ -639,7 +605,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         DataTransferMode.FIRST_EXECUTION, gateUpCat[layerIndex]);
             }
         }
-        if (cublasQkvProjection) {
+        if (nativeProjections) {
             // Same arrangement for QKV: wq/wk/wv stay declared above and Qwen3FP16FFNLayersDecode
             // uploads the three this graph no longer reads.
             if (consumeFromPrimary) {
@@ -680,7 +646,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // and the normalization, RoPE and cache-write tasks downstream are untouched. Same
         // contract as the other native projections: FP16 operands, FP32 accumulation, FP32
         // qkvResultBatch.
-        if (cublasQkvProjection) {
+        if (nativeProjections) {
             batchPrefillLayer.libraryTask(
                     tp + "qkvProj",
                     CuBlas::cublasGemmExFP16FP32,
@@ -754,9 +720,8 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 // the 16:8 group expansion cuDNN's single head count cannot express, then the
                 // library call, then the output back into attnOutFP16's [tok][qDim] layout.
                 // Same graph as the surrounding JIT tasks: a library task does observe their
-                // writes, so no extra graph boundary is needed.
-                batchPrefillLayer.transferToDevice(
-                        DataTransferMode.FIRST_EXECUTION, cudnnQ, cudnnK, cudnnV, cudnnOut);
+                // writes, so no extra graph boundary is needed. The staging quartet is declared
+                // once, by the graph that owns it, above.
                 batchPrefillLayer.task(
                         tp + "cudnn_pack_q",
                         CuDnnPrefillAttentionKernels::packQ,
@@ -804,46 +769,29 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         nEmbdHead,
                         batchSize,
                         qDim);
-                if (CUDNN_DEBUG && layerIndex == CUDNN_DEBUG_LAYER) {
-                    batchPrefillLayer.transferToHost(
-                            DataTransferMode.EVERY_EXECUTION,
-                            cudnnQ, cudnnK, cudnnV, cudnnOut,
-                            state.workspace.qkvResultBatch,
-                            state.workspace.wrapKeyCacheFP16,
-                            state.workspace.wrapValueCacheFP16,
-                            state.workspace.attnOutFP16);
-                }
             } else {
-            if (CUDNN_DEBUG && layerIndex == CUDNN_DEBUG_LAYER) {
-                batchPrefillLayer.transferToHost(
-                        DataTransferMode.EVERY_EXECUTION,
+                batchPrefillLayer.task(
+                        tp + "batch_attention",
+                        packedHalf2Attention
+                                ? TransformerPagedKvBatchPrefillKernels
+                                        ::batchedFlashAttentionFP16OutKVFP16PackedTilePaged
+                                : TransformerPagedKvBatchPrefillKernels
+                                        ::batchedFlashAttentionFP16OutKVFP16Paged,
+                        context,
+                        state.workspace.batchStartPosHolder,
                         state.workspace.qkvResultBatch,
                         state.workspace.wrapKeyCacheFP16,
                         state.workspace.wrapValueCacheFP16,
-                        state.workspace.attnOutFP16);
-            }
-            batchPrefillLayer.task(
-                    tp + "batch_attention",
-                    packedHalf2Attention
-                            ? TransformerPagedKvBatchPrefillKernels
-                                    ::batchedFlashAttentionFP16OutKVFP16PackedTilePaged
-                            : TransformerPagedKvBatchPrefillKernels
-                                    ::batchedFlashAttentionFP16OutKVFP16Paged,
-                    context,
-                    state.workspace.batchStartPosHolder,
-                    state.workspace.qkvResultBatch,
-                    state.workspace.wrapKeyCacheFP16,
-                    state.workspace.wrapValueCacheFP16,
-                    state.workspace.attnOutFP16,
-                    config.numberOfHeads(),
-                    nEmbdHead,
-                    kvDim,
-                    gqa,
-                    layerIndex,
-                    state.workspace.wrapBlockTable,
-                    state.kvBlockCfg,
-                    state.kvBlockStride,
-                    qDim);
+                        state.workspace.attnOutFP16,
+                        config.numberOfHeads(),
+                        nEmbdHead,
+                        kvDim,
+                        gqa,
+                        layerIndex,
+                        state.workspace.wrapBlockTable,
+                        state.kvBlockCfg,
+                        state.kvBlockStride,
+                        qDim);
             }
         } else {
             batchPrefillLayer.task(
@@ -884,7 +832,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         }
 
         // Output projection: [M=batch, N=dim, K=qDim]
-        if (cublasProjection) {
+        if (nativeProjections) {
             // gemmMMA computes C[m][n] = sum_k A[m][k] * B[n][k] with A and B both row-major
             // and B already stored transposed, i.e. C = A * B^T. cuBLAS is column-major, where
             // that same buffer layout reads as C' = B'^T * A' -- hence OP_T on the weight,
@@ -947,7 +895,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // reproduces that layout exactly -- output column c < hidDim comes from a gate row,
         // c >= hidDim from an up row -- so the fusion is preserved rather than split into two
         // calls. Same contract as woProj/w2Proj: FP16 operands, FP32 accumulation, FP32 output.
-        if (cublasGateUpProjection) {
+        if (nativeProjections) {
             batchPrefillLayer.libraryTask(
                     tp + "gateUpProj",
                     CuBlas::cublasGemmExFP16FP32,
@@ -978,19 +926,17 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     dim);
         }
 
-        batchPrefillLayer
-                .task(
-                        tp + "swiglu",
-                        TransformerBatchPrefillKernels::batchedFFNSwiGLUFP16Packed,
-                        context,
-                        state.workspace.wrapHbFP16Batch,
-                        state.workspace.gateUpResultBatch,
-                        hidDim)
-                ;
+        batchPrefillLayer.task(
+                tp + "swiglu",
+                TransformerBatchPrefillKernels::batchedFFNSwiGLUFP16Packed,
+                context,
+                state.workspace.wrapHbFP16Batch,
+                state.workspace.gateUpResultBatch,
+                hidDim);
         // Down projection: [M=batch, N=dim, K=hidDim]. Same contract as woProj -- FP16
         // operands, FP32 accumulation, FP32 w2Out -- and w2Resid still follows it, so the
         // residual is added after the projection exactly as before.
-        if (cublasW2Projection) {
+        if (nativeProjections) {
             batchPrefillLayer.libraryTask(
                     tp + "w2Proj",
                     CuBlas::cublasGemmExFP16FP32,
@@ -1025,7 +971,6 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 context,
                 state.workspace.wrapXBatch,
                 state.workspace.w2Out);
-
     }
 
     // @formatter:on
@@ -1092,14 +1037,10 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         WorkerGrid ewHidWorker = elementwiseGrid(batchSize * hidDim); // swiglu
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String p =
-                    graphPrefix
-                            + (i / layersPerGraph) * layersPerGraph
-                            + "."
-                            + taskPrefix(i);
+            String p = graphPrefix + (i / layersPerGraph) * layersPerGraph + "." + taskPrefix(i);
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApplyWorker);
-            if (!cublasQkvProjection) {
+            if (!nativeProjections) {
                 scheduler.addWorkerGrid(p + "qkvProj", mmaQkvWorker);
             }
             scheduler.addWorkerGrid(p + "batch_qk_rmsnorm", qkRmsNormWorker);
@@ -1112,16 +1053,16 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             } else {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }
-            if (!cublasProjection) {
+            if (!nativeProjections) {
                 scheduler.addWorkerGrid(p + "woProj", mmaDimWorker);
             }
             scheduler.addWorkerGrid(p + "batch_ffn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_ffn_rms_apply", ffnRmsApplyWorker);
-            if (!cublasGateUpProjection) {
+            if (!nativeProjections) {
                 scheduler.addWorkerGrid(p + "gateUpProj", mmaGateUpWorker);
             }
             scheduler.addWorkerGrid(p + "swiglu", ewHidWorker);
-            if (!cublasW2Projection) {
+            if (!nativeProjections) {
                 scheduler.addWorkerGrid(p + "w2Proj", mmaDimWorker);
             }
             scheduler.addWorkerGrid(p + "w2Resid", ewDimWorker);

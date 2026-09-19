@@ -19,9 +19,9 @@ public interface BatchPrefillTransformerLayerTaskGraphs {
 
     /**
      * A second family of layer graphs covering the same layers with an attention implementation
-     * that handles chunks a native first-chunk path cannot, or empty when the family does not
-     * build one. Its graphs bind their buffers from the primary family's, so they add graphs but
-     * no allocations.
+     * that handles chunks a native first-chunk path cannot, or empty when the family does not build
+     * one. Its graphs bind their buffers from the primary family's, so they add graphs but no
+     * allocations.
      */
     default List<ImmutableTaskGraph> getFallbackLayerImmutableTaskGraphs() {
         return List.of();

@@ -513,7 +513,7 @@ public class TransformerPagedKvBatchPrefillKernels {
 
         int batchIdx = groupId / nHeads;
         int h = groupId % nHeads;
-                // Padding row: no real query, and its key/value range was never allocated, so the
+        // Padding row: no real query, and its key/value range was never allocated, so the
         // paged reads below would address blocks this slot does not own. batchIdx comes from
         // groupIdx, so the whole workgroup takes this branch together and the localBarrier()s
         // further down are still reached uniformly.
@@ -644,7 +644,7 @@ public class TransformerPagedKvBatchPrefillKernels {
 
         int batchIdx = groupId / nHeads;
         int h = groupId % nHeads;
-                // Padding row: no real query, and its key/value range was never allocated, so the
+        // Padding row: no real query, and its key/value range was never allocated, so the
         // paged reads below would address blocks this slot does not own. batchIdx comes from
         // groupIdx, so the whole workgroup takes this branch together and the localBarrier()s
         // further down are still reached uniformly.

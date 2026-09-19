@@ -35,12 +35,16 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
     public BatchPrefillDecodeForwardTaskGraphLayout {
         if (batchLayerGraphs < 1 || batchLayerGraphs > N) {
             throw new IllegalArgumentException(
-                    "batch-prefill layer graphs must be between 1 and " + N + ", got "
+                    "batch-prefill layer graphs must be between 1 and "
+                            + N
+                            + ", got "
                             + batchLayerGraphs);
         }
         if (fallbackLayerGraphs < 0 || fallbackLayerGraphs > N) {
             throw new IllegalArgumentException(
-                    "fallback layer graphs must be between 0 and " + N + ", got "
+                    "fallback layer graphs must be between 0 and "
+                            + N
+                            + ", got "
                             + fallbackLayerGraphs);
         }
         if (decodeLayerGraphs < 1 || decodeLayerGraphs > N) {
@@ -82,8 +86,6 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
     public int logitsIdx() {
         return batchLayerGraphs + fallbackLayerGraphs + 2 + decodeLayerGraphs;
     }
-
-
 
     // @formatter:off
     /**
