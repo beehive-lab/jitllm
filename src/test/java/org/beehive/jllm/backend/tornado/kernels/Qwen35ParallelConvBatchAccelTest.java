@@ -119,7 +119,7 @@ public class Qwen35ParallelConvBatchAccelTest {
         }
         g.task(
                 "batch",
-                Qwen35BatchKernels::causalConv1dBatch,
+                Qwen35ReferenceKernels::causalConv1dBatch,
                 new KernelContext(),
                 in,
                 taps,
@@ -223,7 +223,7 @@ public class Qwen35ParallelConvBatchAccelTest {
                                     info)
                             .task(
                                     "conv",
-                                    Qwen35BatchKernels::causalConv1dBatch,
+                                    Qwen35ReferenceKernels::causalConv1dBatch,
                                     new KernelContext(),
                                     in,
                                     taps,

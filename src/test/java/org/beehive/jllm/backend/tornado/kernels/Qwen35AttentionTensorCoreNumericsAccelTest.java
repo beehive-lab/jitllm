@@ -374,7 +374,7 @@ public class Qwen35AttentionTensorCoreNumericsAccelTest {
                                 CAPACITY)
                         .task(
                                 "warp",
-                                Qwen35BatchKernels::attentionBatchFP16PagedTensorCore,
+                                Qwen35ReferenceKernels::attentionBatchFP16PagedTensorCore,
                                 new KernelContext(),
                                 info,
                                 q,
@@ -814,7 +814,7 @@ public class Qwen35AttentionTensorCoreNumericsAccelTest {
                                     stageB)
                             .task(
                                     "p",
-                                    Qwen35BatchKernels::attentionBatchFP16PagedTensorCore,
+                                    Qwen35ReferenceKernels::attentionBatchFP16PagedTensorCore,
                                     new KernelContext(),
                                     info,
                                     q,
@@ -937,7 +937,7 @@ public class Qwen35AttentionTensorCoreNumericsAccelTest {
                                 stage)
                         .task(
                                 "t",
-                                Qwen35BatchKernels::attentionBatchFP16PagedTensorCore,
+                                Qwen35ReferenceKernels::attentionBatchFP16PagedTensorCore,
                                 new KernelContext(),
                                 info,
                                 q,

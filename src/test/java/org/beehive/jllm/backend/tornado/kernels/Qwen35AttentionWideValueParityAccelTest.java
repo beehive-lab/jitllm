@@ -135,7 +135,7 @@ public class Qwen35AttentionWideValueParityAccelTest {
                                 scores)
                         .task(
                                 "original",
-                                Qwen35BatchKernels::attentionBatchFP16PagedScoredStaged,
+                                Qwen35ReferenceKernels::attentionBatchFP16PagedScoredStaged,
                                 new KernelContext(),
                                 info,
                                 q,
@@ -345,7 +345,7 @@ public class Qwen35AttentionWideValueParityAccelTest {
                                     scoresA)
                             .task(
                                     "p",
-                                    Qwen35BatchKernels::attentionBatchFP16PagedScoredStaged,
+                                    Qwen35ReferenceKernels::attentionBatchFP16PagedScoredStaged,
                                     new KernelContext(),
                                     info,
                                     q,

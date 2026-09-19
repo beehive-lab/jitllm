@@ -155,7 +155,7 @@ public class Qwen35AttentionScoredParityAccelTest {
                                 LOCAL)
                         .task(
                                 "scored",
-                                Qwen35BatchKernels::attentionBatchFP16PagedScored,
+                                Qwen35ReferenceKernels::attentionBatchFP16PagedScored,
                                 new KernelContext(),
                                 info,
                                 q,
@@ -306,7 +306,7 @@ public class Qwen35AttentionScoredParityAccelTest {
                                     scores)
                             .task(
                                     "p",
-                                    Qwen35BatchKernels::attentionBatchFP16PagedScored,
+                                    Qwen35ReferenceKernels::attentionBatchFP16PagedScored,
                                     new KernelContext(),
                                     info,
                                     q,

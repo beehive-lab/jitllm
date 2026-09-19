@@ -182,7 +182,7 @@ public class Qwen35Q4_0PairedNibbleDecoderAccelTest {
                         .transferToDevice(DataTransferMode.EVERY_EXECUTION, w, control, candidate)
                         .task(
                                 "control",
-                                Qwen35MMAKernels::dequantizeQ4_0ToFP16Tiled,
+                                Qwen35ReferenceKernels::dequantizeQ4_0ToFP16Tiled,
                                 new KernelContext(),
                                 w,
                                 control,
@@ -311,7 +311,7 @@ public class Qwen35Q4_0PairedNibbleDecoderAccelTest {
                                 .transferToDevice(DataTransferMode.FIRST_EXECUTION, w, scratch)
                                 .task(
                                         "d",
-                                        Qwen35MMAKernels::dequantizeQ4_0ToFP16Tiled,
+                                        Qwen35ReferenceKernels::dequantizeQ4_0ToFP16Tiled,
                                         new KernelContext(),
                                         w,
                                         scratch,
@@ -335,7 +335,7 @@ public class Qwen35Q4_0PairedNibbleDecoderAccelTest {
                                 .transferToDevice(DataTransferMode.FIRST_EXECUTION, a, w, scratch)
                                 .task(
                                         "d",
-                                        Qwen35MMAKernels::dequantizeQ4_0ToFP16Tiled,
+                                        Qwen35ReferenceKernels::dequantizeQ4_0ToFP16Tiled,
                                         new KernelContext(),
                                         w,
                                         scratch,

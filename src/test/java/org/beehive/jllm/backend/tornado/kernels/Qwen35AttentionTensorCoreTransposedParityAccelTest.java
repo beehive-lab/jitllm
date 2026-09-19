@@ -122,7 +122,7 @@ public class Qwen35AttentionTensorCoreTransposedParityAccelTest {
             case RETAINED ->
                     g.task(
                             "t",
-                            Qwen35BatchKernels::attentionBatchFP16PagedTensorCore,
+                            Qwen35ReferenceKernels::attentionBatchFP16PagedTensorCore,
                             new KernelContext(),
                             info,
                             q,
@@ -307,7 +307,7 @@ public class Qwen35AttentionTensorCoreTransposedParityAccelTest {
                 case RETAINED ->
                         g.task(
                                 "t",
-                                Qwen35BatchKernels::attentionBatchFP16PagedTensorCore,
+                                Qwen35ReferenceKernels::attentionBatchFP16PagedTensorCore,
                                 new KernelContext(),
                                 info,
                                 q,

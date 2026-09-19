@@ -67,8 +67,11 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     private static final int MATVEC_LOCAL = 128;
     private static final int ELEMENTWISE_LOCAL = 128;
 
-    /** Lanes per attention workgroup. One workgroup handles one (row, head). */
-    private static final int ATTENTION_LOCAL = 128;
+    /**
+     * Lanes per attention workgroup of the non-tensor-core kernels: the staged kernel's lane
+     * mapping is written for this width, and the warp kernel for four warps of it.
+     */
+    private static final int ATTENTION_LOCAL = Qwen35BatchKernels.ATTENTION_STAGE_LANES;
 
     private final Qwen35State state;
     private final Qwen35TornadoWeights weights;
@@ -975,10 +978,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                         "attention",
                         warpAttention(headDim)
                                 ? Qwen35BatchKernels::attentionBatchFP16PagedScoredWarp
-                                : ATTENTION_LOCAL == Qwen35BatchKernels.ATTENTION_STAGE_LANES
-                                        ? Qwen35BatchKernels
-                                                ::attentionBatchFP16PagedScoredStagedWide
-                                        : Qwen35BatchKernels::attentionBatchFP16PagedScored,
+                                : Qwen35BatchKernels::attentionBatchFP16PagedScoredStagedWide,
                         context,
                         state.workspace.batchStartPosHolder,
                         state.workspace.wrapAttnQBatch,

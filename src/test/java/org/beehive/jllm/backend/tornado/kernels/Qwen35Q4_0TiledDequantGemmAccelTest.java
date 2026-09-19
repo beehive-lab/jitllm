@@ -184,7 +184,7 @@ public class Qwen35Q4_0TiledDequantGemmAccelTest {
                         .transferToDevice(DataTransferMode.EVERY_EXECUTION, w, out)
                         .task(
                                 "dequant",
-                                Qwen35MMAKernels::dequantizeQ4_0ToFP16Tiled,
+                                Qwen35ReferenceKernels::dequantizeQ4_0ToFP16Tiled,
                                 new KernelContext(),
                                 w,
                                 out,
@@ -253,7 +253,7 @@ public class Qwen35Q4_0TiledDequantGemmAccelTest {
                         .transferToDevice(DataTransferMode.EVERY_EXECUTION, w, rowMajor, tiled)
                         .task(
                                 "rm",
-                                Qwen35MMAKernels::dequantizeQ4_0ToFP16,
+                                Qwen35ReferenceKernels::dequantizeQ4_0ToFP16,
                                 new KernelContext(),
                                 w,
                                 rowMajor,
@@ -261,7 +261,7 @@ public class Qwen35Q4_0TiledDequantGemmAccelTest {
                                 k)
                         .task(
                                 "t",
-                                Qwen35MMAKernels::dequantizeQ4_0ToFP16Tiled,
+                                Qwen35ReferenceKernels::dequantizeQ4_0ToFP16Tiled,
                                 new KernelContext(),
                                 w,
                                 tiled,
@@ -328,8 +328,8 @@ public class Qwen35Q4_0TiledDequantGemmAccelTest {
                         .task(
                                 "dequant",
                                 mismatchedProducer
-                                        ? Qwen35MMAKernels::dequantizeQ4_0ToFP16
-                                        : Qwen35MMAKernels::dequantizeQ4_0ToFP16Tiled,
+                                        ? Qwen35ReferenceKernels::dequantizeQ4_0ToFP16
+                                        : Qwen35ReferenceKernels::dequantizeQ4_0ToFP16Tiled,
                                 new KernelContext(),
                                 w,
                                 scratch,
@@ -463,7 +463,7 @@ public class Qwen35Q4_0TiledDequantGemmAccelTest {
                                 .transferToDevice(DataTransferMode.FIRST_EXECUTION, w, scratch)
                                 .task(
                                         "d",
-                                        Qwen35MMAKernels::dequantizeQ4_0ToFP16,
+                                        Qwen35ReferenceKernels::dequantizeQ4_0ToFP16,
                                         new KernelContext(),
                                         w,
                                         scratch,
@@ -475,7 +475,7 @@ public class Qwen35Q4_0TiledDequantGemmAccelTest {
                                 .transferToDevice(DataTransferMode.FIRST_EXECUTION, a, w, scratch)
                                 .task(
                                         "d",
-                                        Qwen35MMAKernels::dequantizeQ4_0ToFP16,
+                                        Qwen35ReferenceKernels::dequantizeQ4_0ToFP16,
                                         new KernelContext(),
                                         w,
                                         scratch,
@@ -497,7 +497,7 @@ public class Qwen35Q4_0TiledDequantGemmAccelTest {
                                 .transferToDevice(DataTransferMode.FIRST_EXECUTION, w, scratch)
                                 .task(
                                         "d",
-                                        Qwen35MMAKernels::dequantizeQ4_0ToFP16Tiled,
+                                        Qwen35ReferenceKernels::dequantizeQ4_0ToFP16Tiled,
                                         new KernelContext(),
                                         w,
                                         scratch,
@@ -509,7 +509,7 @@ public class Qwen35Q4_0TiledDequantGemmAccelTest {
                                 .transferToDevice(DataTransferMode.FIRST_EXECUTION, a, w, scratch)
                                 .task(
                                         "d",
-                                        Qwen35MMAKernels::dequantizeQ4_0ToFP16Tiled,
+                                        Qwen35ReferenceKernels::dequantizeQ4_0ToFP16Tiled,
                                         new KernelContext(),
                                         w,
                                         scratch,

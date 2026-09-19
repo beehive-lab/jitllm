@@ -123,7 +123,7 @@ public class Qwen35MMAQ4_0PrefetchParityAccelTest {
                                 DataTransferMode.EVERY_EXECUTION, a, w, original, candidate)
                         .task(
                                 "original",
-                                Qwen35MMAKernels::projectionMMAQ4_0Paired,
+                                Qwen35ReferenceKernels::projectionMMAQ4_0,
                                 new KernelContext(),
                                 a,
                                 w,

@@ -154,7 +154,7 @@ public class Qwen35Q4_1DequantGemmAccelTest {
                         .transferToDevice(DataTransferMode.EVERY_EXECUTION, w, out)
                         .task(
                                 "dequant",
-                                Qwen35MMAKernels::dequantizeQ4_1ToFP16,
+                                Qwen35ReferenceKernels::dequantizeQ4_1ToFP16,
                                 new KernelContext(),
                                 w,
                                 out,
@@ -241,7 +241,7 @@ public class Qwen35Q4_1DequantGemmAccelTest {
                                 k)
                         .task(
                                 "dequant",
-                                Qwen35MMAKernels::dequantizeQ4_1ToFP16,
+                                Qwen35ReferenceKernels::dequantizeQ4_1ToFP16,
                                 new KernelContext(),
                                 w,
                                 scratch,
@@ -359,7 +359,7 @@ public class Qwen35Q4_1DequantGemmAccelTest {
                                 .transferToDevice(DataTransferMode.FIRST_EXECUTION, w, scratch)
                                 .task(
                                         "d",
-                                        Qwen35MMAKernels::dequantizeQ4_1ToFP16,
+                                        Qwen35ReferenceKernels::dequantizeQ4_1ToFP16,
                                         new KernelContext(),
                                         w,
                                         scratch,
@@ -371,7 +371,7 @@ public class Qwen35Q4_1DequantGemmAccelTest {
                                 .transferToDevice(DataTransferMode.FIRST_EXECUTION, a, w, scratch)
                                 .task(
                                         "d",
-                                        Qwen35MMAKernels::dequantizeQ4_1ToFP16,
+                                        Qwen35ReferenceKernels::dequantizeQ4_1ToFP16,
                                         new KernelContext(),
                                         w,
                                         scratch,

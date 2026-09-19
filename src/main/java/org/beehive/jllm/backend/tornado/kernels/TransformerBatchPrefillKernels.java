@@ -696,24 +696,6 @@ public final class TransformerBatchPrefillKernels {
         normedXFFNFP16.set(gid, new HalfFloat(result));
     }
 
-    /**
-     * Fused SiLU(gate) * up after the two FFN matmuls. Operates on FP32 inputs (MMA writes FP32).
-     *
-     * <p>Worker: B*hiddenDim global threads, localSize=256.
-     */
-    public static void batchedFFNSwiGLU(
-            KernelContext context,
-            FloatArray wrapHbBatch,
-            FloatArray ffnGateResult,
-            FloatArray ffnUpResult,
-            int hiddenDim) {
-        int gid = context.globalIdx;
-        float g = ffnGateResult.get(gid);
-        float u = ffnUpResult.get(gid);
-        float silu = g / (1.0f + TornadoMath.exp(-g));
-        wrapHbBatch.set(gid, silu * u);
-    }
-
     private static final int WARP_SIZE = 32;
     private static final int BM = 128, BN = 128, BK = 16;
     private static final int WARPS_M = 4, WARPS_N = 2;
@@ -911,30 +893,6 @@ public final class TransformerBatchPrefillKernels {
             FloatArray delta) { // GEMM output
         int gid = context.globalIdx;
         residual.set(gid, residual.get(gid) + delta.get(gid));
-    }
-
-    // ── SwiGLU emitting FP16 ──────────────────────────────────────────────
-    // Replaces batchedFFNSwiGLU. Output is the A operand for the W2 GEMM.
-    // Worker: B*hiddenDim global threads, localSize=256.
-    public static void batchedFFNSwiGLUFP16(
-            KernelContext context,
-            HalfFloatArray wrapHbFP16Batch,
-            FloatArray ffnGateResult,
-            FloatArray ffnUpResult,
-            int hiddenDim) {
-        int gid = context.globalIdx;
-        float g = ffnGateResult.get(gid);
-        float u = ffnUpResult.get(gid);
-        float silu = g / (1.0f + TornadoMath.exp(-g));
-        wrapHbFP16Batch.set(gid, new HalfFloat(silu * u));
-    }
-
-    // ── FP32 → FP16 cast (Option B only, see Wo below) ────────────────────
-    // Worker: B*dim global threads, localSize=256.
-    public static void batchedConvertFP32toFP16(
-            KernelContext context, FloatArray in, HalfFloatArray out) {
-        int gid = context.globalIdx;
-        out.set(gid, new HalfFloat(in.get(gid)));
     }
 
     // ── Fused MMA projections ─────────────────────────────────────────────────

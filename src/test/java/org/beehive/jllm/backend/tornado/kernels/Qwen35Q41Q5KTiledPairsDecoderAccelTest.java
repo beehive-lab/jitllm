@@ -237,7 +237,7 @@ public class Qwen35Q41Q5KTiledPairsDecoderAccelTest {
         if (f == Format.Q4_1) {
             graph.task(
                             "control",
-                            Qwen35MMAKernels::dequantizeQ4_1ToFP16,
+                            Qwen35ReferenceKernels::dequantizeQ4_1ToFP16,
                             new KernelContext(),
                             w,
                             control,
@@ -257,7 +257,7 @@ public class Qwen35Q41Q5KTiledPairsDecoderAccelTest {
         } else {
             graph.task(
                             "control",
-                            Qwen35MMAKernels::dequantizeQ5_KToFP16,
+                            Qwen35ReferenceKernels::dequantizeQ5_KToFP16,
                             new KernelContext(),
                             w,
                             control,
@@ -460,8 +460,8 @@ public class Qwen35Q41Q5KTiledPairsDecoderAccelTest {
             g.task(
                     "d",
                     f == Format.Q4_1
-                            ? Qwen35MMAKernels::dequantizeQ4_1ToFP16
-                            : Qwen35MMAKernels::dequantizeQ5_KToFP16,
+                            ? Qwen35ReferenceKernels::dequantizeQ4_1ToFP16
+                            : Qwen35ReferenceKernels::dequantizeQ5_KToFP16,
                     new KernelContext(),
                     w,
                     scratch,
@@ -570,7 +570,7 @@ public class Qwen35Q41Q5KTiledPairsDecoderAccelTest {
                 if (f == Format.Q4_1) {
                     dc.task(
                             "d",
-                            Qwen35MMAKernels::dequantizeQ4_1ToFP16,
+                            Qwen35ReferenceKernels::dequantizeQ4_1ToFP16,
                             new KernelContext(),
                             w,
                             dOnly,
@@ -587,7 +587,7 @@ public class Qwen35Q41Q5KTiledPairsDecoderAccelTest {
                 } else {
                     dc.task(
                             "d",
-                            Qwen35MMAKernels::dequantizeQ5_KToFP16,
+                            Qwen35ReferenceKernels::dequantizeQ5_KToFP16,
                             new KernelContext(),
                             w,
                             dOnly,

@@ -144,7 +144,7 @@ public class Qwen35MMAQ5_KPairedParityAccelTest {
                                 DataTransferMode.EVERY_EXECUTION, a, w, original, candidate)
                         .task(
                                 "original",
-                                Qwen35MMAKernels::projectionMMAQ5_K,
+                                Qwen35ReferenceKernels::projectionMMAQ5_K,
                                 new KernelContext(),
                                 a,
                                 w,
@@ -278,7 +278,7 @@ public class Qwen35MMAQ5_KPairedParityAccelTest {
                             .transferToDevice(DataTransferMode.FIRST_EXECUTION, a, w)
                             .task(
                                     "p",
-                                    Qwen35MMAKernels::projectionMMAQ5_K,
+                                    Qwen35ReferenceKernels::projectionMMAQ5_K,
                                     new KernelContext(),
                                     a,
                                     w,
