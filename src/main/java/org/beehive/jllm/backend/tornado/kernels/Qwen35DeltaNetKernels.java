@@ -411,6 +411,91 @@ public final class Qwen35DeltaNetKernels {
         }
     }
 
+    /** Row parts a column's reductions are split across in {@link #deltaRuleSplit8}. */
+    public static final int DELTA_RULE_PARTS = 8;
+
+    // @formatter:off
+    /**
+     * {@link #deltaRuleSplit} with eight lanes a column instead of two: lane {@code (part, column)}
+     * owns rows {@code [part * 16, part * 16 + 16)} of its column, so each dependent chain is a
+     * quarter of the two-lane kernel's and the workgroup holds four times the warps. Lanes are laid
+     * out column-fastest ({@code tid = part * stateDim + column}), so a warp's loads of one row are
+     * 32 consecutive floats.
+     *
+     * <p>Arithmetic per element is the two-lane kernel's, expression for expression; the two
+     * reductions are sums of eight sixteen-row folds, combined in part order {@code ((p0 + p1) +
+     * p2) + ...} by every lane of a column alike, so the lanes of a column form bit-identical
+     * corrections. Not bit-identical to the two-lane kernel (a different association).
+     *
+     * <p>Worker: one workgroup of {@code 8 * stateDim} lanes per value head.
+     */
+    // @formatter:on
+    public static void deltaRuleSplit8(
+            KernelContext context,
+            FloatArray q,
+            FloatArray k,
+            FloatArray v,
+            FloatArray decay,
+            FloatArray beta,
+            FloatArray state,
+            FloatArray out,
+            int keyHeads,
+            int stateDim,
+            int stateOffset) {
+        int head = context.groupIdx;
+        int tid = context.localIdx;
+        int column = tid % stateDim;
+        int part = tid / stateDim;
+
+        float[] shared = context.allocateFloatLocalArray(DELTA_RULE_PARTS * stateDim);
+
+        int stateBase = stateOffset + head * stateDim * stateDim;
+        int kvBase = (head % keyHeads) * stateDim;
+        int valueBase = head * stateDim;
+
+        float g = decay.get(head);
+        float b = beta.get(head);
+
+        int rows = stateDim / DELTA_RULE_PARTS;
+        int rowStart = part * rows;
+        int rowEnd = rowStart + rows;
+
+        float partial = 0.0f;
+        for (int i = rowStart; i < rowEnd; i++) {
+            int index = stateBase + i * stateDim + column;
+            float decayed = state.get(index) * g;
+            state.set(index, decayed);
+            partial += decayed * k.get(kvBase + i);
+        }
+        shared[tid] = partial;
+        context.localBarrier();
+
+        float prediction = 0.0f;
+        for (int p = 0; p < DELTA_RULE_PARTS; p++) {
+            prediction += shared[p * stateDim + column];
+        }
+        float correction = (v.get(valueBase + column) - prediction) * b;
+        context.localBarrier();
+
+        float partialReadout = 0.0f;
+        for (int i = rowStart; i < rowEnd; i++) {
+            int index = stateBase + i * stateDim + column;
+            float updated = state.get(index) + k.get(kvBase + i) * correction;
+            state.set(index, updated);
+            partialReadout += updated * q.get(kvBase + i);
+        }
+        shared[tid] = partialReadout;
+        context.localBarrier();
+
+        if (part == 0) {
+            float readout = 0.0f;
+            for (int p = 0; p < DELTA_RULE_PARTS; p++) {
+                readout += shared[p * stateDim + column];
+            }
+            out.set(valueBase + column, readout);
+        }
+    }
+
     /** One lane per (value head, value column) — {@code valueHeads * stateDim} of them. */
     public static void deltaRule(
             KernelContext context,

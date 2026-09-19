@@ -827,11 +827,12 @@ public class Qwen35FFNLayers
 
     // @formatter:off
     /**
-     * Whether the delta rule splits each column's reduction across two lanes.
+     * Whether the delta rule splits each column's reduction across eight lanes.
      *
-     * <p>A property of the head's width: the split halves the row range, so the width must be even,
-     * and the workgroup it asks for is twice that width, which a device must accept. This family's
-     * value head is 128 wide, so the workgroup is 256.
+     * <p>A property of the head's width: the split cuts the rows into eight, so the width must be a
+     * multiple of eight, and the workgroup it asks for is eight times that width, which a device
+     * must accept (1024 lanes at most). This family's value head is 128 wide, so the workgroup is
+     * 1024.
      *
      * <p>Not a user choice and not a tuning knob. A geometry that does not satisfy it keeps the
      * one-lane-per-column kernel.
@@ -839,7 +840,8 @@ public class Qwen35FFNLayers
     // @formatter:on
     private boolean deltaRuleIsSplit() {
         int headDim = config.headValueDim();
-        return headDim % 2 == 0 && 2 * headDim <= 1024;
+        return headDim % Qwen35DeltaNetKernels.DELTA_RULE_PARTS == 0
+                && Qwen35DeltaNetKernels.DELTA_RULE_PARTS * headDim <= 1024;
     }
 
     // @formatter:off
@@ -1396,11 +1398,12 @@ public class Qwen35FFNLayers
                 keyDim);
 
         if (deltaRuleIsSplit()) {
-            // Two lanes a column, each taking half the rows. Same per-element arithmetic; the two
-            // reductions are a sum of two half folds, so this is not bit-identical.
+            // Eight lanes a column, each taking sixteen rows. Same per-element arithmetic; the
+            // two reductions are sums of eight folds, so this is not bit-identical to a one-lane
+            // column.
             layer.task(
                     tn("ssm_delta_rule"),
-                    Qwen35DeltaNetKernels::deltaRuleSplit,
+                    Qwen35DeltaNetKernels::deltaRuleSplit8,
                     context,
                     qwen35State.workspace.wrapSsmQ,
                     qwen35State.workspace.wrapSsmK,
@@ -1707,8 +1710,10 @@ public class Qwen35FFNLayers
         WorkerGrid deltaRule =
                 deltaRuleIsSplit()
                         ? WorkerGridFactory.genericWorker(
-                                config.numberOfValueHeads() * 2 * config.headValueDim(),
-                                2 * config.headValueDim())
+                                config.numberOfValueHeads()
+                                        * Qwen35DeltaNetKernels.DELTA_RULE_PARTS
+                                        * config.headValueDim(),
+                                Qwen35DeltaNetKernels.DELTA_RULE_PARTS * config.headValueDim())
                         : WorkerGridFactory.genericWorker(
                                 config.numberOfValueHeads() * config.headValueDim(),
                                 ELEMENTWISE_LOCAL);
