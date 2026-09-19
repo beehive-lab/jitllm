@@ -1785,6 +1785,20 @@ public final class TransformerBatchPrefillKernels {
         }
     }
 
+    // ── FP32 → FP16 cast ─────────────────────────────────────────────────────
+    /**
+     * Elementwise cast of a batch buffer to FP16, for a family whose next kernel takes
+     * half-precision input that no fused producer already writes (Gemma4's per-layer embedding
+     * scale).
+     *
+     * <p>Worker: B*dim global threads, localSize=256.
+     */
+    public static void batchedConvertFP32toFP16(
+            KernelContext context, FloatArray in, HalfFloatArray out) {
+        int gid = context.globalIdx;
+        out.set(gid, new HalfFloat(in.get(gid)));
+    }
+
     // ── SwiGLU over the packed gate/up buffer, emitting FP16 ─────────────────
 
     /**
