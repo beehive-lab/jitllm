@@ -172,11 +172,90 @@ b10874 where that comparison appears. It does **not** generalize to other models
 quantizations, other GPUs or to decode. A decode measurement is reported separately and
 deliberately not folded into any prefill ratio.
 
-<!-- PERF-TABLE -->
+### Measured
+
+RTX 5070 Ti (sm_120), driver 580.142, CUDA 13.0, JDK 21.0.2-open, TornadoVM `65f06c5d1`.
+Qwen3-0.6B FP16. Four rounds, variant order rotated, six full-workload repetitions per process
+with the first reserved as an untimed warmup, five measured; llama.cpp gets one discarded
+complete `llama-bench` invocation before each measured one. Peak foreign device occupancy was
+0 MiB on all 72 invocations, so nothing was excluded. Every figure is the **median** of 20
+retained samples.
+
+**Against pinned llama.cpp `e2d2c0d6a` / build b10874**, same model file, `-fa on -ctk f16
+-ctv f16`:
+
+| workload | jllm t/s | llama.cpp t/s | ratio | per round |
+| --- | ---: | ---: | ---: | --- |
+| pp512, `--batch-prefill-size 512` | 55,476 | 47,131 | **1.177×** | 1.177 / 1.190 / 1.178 / 1.169 |
+| pp300, `--batch-prefill-size 300` | 43,662 | 39,291 | **1.111×** | 1.114 / 1.122 / 1.099 / 1.116 |
+| pp300, `--batch-prefill-size 512` | 33,369 | 39,317 | 0.849× | 0.848 / 0.849 / 0.851 / 0.848 |
+
+The third row is the padding cost made explicit: a 512-wide chunk does 512 rows of work for 300
+tokens. Match the width to the prompt.
+
+llama.cpp's spread on these rows is 10–14%, and it is **entirely its first measured repetition**,
+which lands ~24% low in every round despite the discarded invocation before it. jllm's warmup is
+in-process, so all five of its samples are warm. Medians are used for that reason, and they are
+the conservative choice: llama.cpp's warm-only median differs from its all-sample median by 0.2%.
+
+**Multi-chunk prompts, against `-Djllm.prefill.native=false`** — the generated-kernel path this
+replaces, with both the JIT projections and the JIT attention:
+
+| workload | native t/s | generated-kernel t/s | ratio | per round |
+| --- | ---: | ---: | ---: | --- |
+| pp360, width 128 (1 native chunk of 3) | 13,622 | 6,001 | **2.270×** | 2.283 / 2.239 / 2.253 / 2.277 |
+| pp700, width 256 (1 of 3) | 9,496 | 6,308 | **1.505×** | 1.506 / 1.505 / 1.509 / 1.507 |
+| pp900, width 128 (1 of 8) | 6,226 | 3,901 | **1.596×** | 1.593 / 1.593 / 1.596 / 1.597 |
+
+**Decode, reported separately and never folded into a prefill ratio:**
+
+| tg128, width 512 | median t/s |
+| --- | ---: |
+| native | 320.6 |
+| `-Djllm.prefill.native=false` | 317.0 |
+| llama.cpp b10874 | 500.4 |
+
+**There is no decode regression.** The 1.1% difference favours the native build and its sign is
+consistent across all four rounds, but it sits within ~1.5 standard deviations of this machine's
+run-to-run spread and is **not** claimed as an improvement. jllm's decode being 0.64× llama.cpp
+is a pre-existing property of the decode path; nothing here touches it.
 
 ### Memory and setup cost
 
-<!-- MEM-TABLE -->
+Peak device occupancy, maximum over all rounds, and the same workload with the native path
+switched off:
+
+| workload | native | generated kernels | delta |
+| --- | ---: | ---: | ---: |
+| pp360, width 128 | 2,548 MiB | 1,824 MiB | +724 MiB |
+| pp700, width 256 | 2,568 MiB | 1,870 MiB | +698 MiB |
+| pp900, width 128 | 2,604 MiB | 1,880 MiB | +724 MiB |
+| tg128, width 512 | 2,538 MiB | 1,832 MiB | +706 MiB |
+
+For reference, llama.cpp peaks at 1,360 MiB on pp512 and 1,490 MiB on tg128.
+
+The cost is dominated by the two stacked weight sets, which are **copies**, not views: cuBLAS
+takes one B operand and the binding has no operand offset, so `[q|k|v]` and `[gate|up]` have to
+be contiguous. The originals stay resident because decode and the generated-kernel path still
+read them.
+
+| | Qwen3-0.6B, 28 layers |
+| --- | ---: |
+| stacked `[gate\|up]` | 336 MiB |
+| stacked `[q\|k\|v]` | 224 MiB |
+| cuDNN staging quartet | 8 MiB at width 512, 2 MiB at width 128 |
+| fallback family | +4 MiB — 7 graphs, no weight, workspace or cache duplicated |
+| **logical total** | **≈ 572 MiB** |
+
+The rest of the ~700 MiB is TornadoVM's per-buffer reservation granularity.
+
+**Setup cost: ≈ 1.0–1.3 s, once per execution plan** — 0.44–0.53 s to stack gate/up and
+0.52–0.79 s to stack QKV, both printed by the banner. Not per request and not per chunk. The
+fallback family adds none: it is built from arrays that already exist.
+
+Verified from `-Dtornado.print.bytecodes`: 243 distinct (graph, object) allocations across the
+seven primary graphs, **none duplicated**, and the fallback family allocates three small objects
+and copies nothing.
 
 ---
 
