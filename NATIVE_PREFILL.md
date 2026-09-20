@@ -504,6 +504,12 @@ If it cannot, the candidate does not work.
 Grouping is **bit-identical** over 64 teacher-forced decode-step logit vectors on two shapes,
 against a build with grouping set back to one layer per graph. The two reduction changes land at
 relative L2 3.3e-04 to 4.5e-04, which is the ordinary consequence of summing in a different order.
+**Gemma 4 has no numerical coverage on the machine this was validated on.** Its fixtures are not
+present, so every Gemma 4 gate skipped. That matters here because `Gemma4LogitsFP16Layer` has the
+same shape as the Granite logits layer that regressed — it installs its own soft-capped
+`vocab_proj` and inherits the base worker grid — and is covered by the same fix and by the
+fixture-independent contract test, but has not been checked against a host reference here.
+
 `Qwen3DecodeDispatchAccelTest` asserts that a built plan actually grouped its layer graphs and
 actually installed the shuffle-reducing kernels — each of the four per layer by task name, and the
 vocabulary projection by its worker grid, which are chosen by different classes and are therefore
