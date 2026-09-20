@@ -70,7 +70,11 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
      * the ordering hazard entirely.
      */
     private static boolean useSimd32Reduction() {
-        return SchedulerDetectionService.isSubgroupShuffle32Supported();
+        return SchedulerDetectionService.isSubgroupShuffle32Supported()
+                // Same claim, same kernel shape, a different device: see
+                // DeviceCapability.WARP_SHUFFLE_GEMV_FP16. The vocabulary projection is the
+                // largest single kernel in a decode token, so this is where it pays most.
+                || SchedulerDetectionService.isWarpShuffleGemvFp16Supported();
     }
 
     public LogitsFP16Layer(

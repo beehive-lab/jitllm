@@ -119,10 +119,11 @@ public final class DeviceCapability {
      *
      * <p>Granted on CUDA, where the shuffle is verified correct and where the two were measured
      * against each other: Qwen3-0.6B FP16 decode on an RTX 5070 Ti (sm_120), tg128 at depth zero,
-     * 344.1 tok/s with the shared-memory reduction against 393.9 with the shuffle, and at depth
-     * 2048 200.1 against 214.9. The logits agree with the shared-memory path to a relative L2 of
-     * 4.5e-04 over 64 teacher-forced decode steps, which is the ordinary consequence of reducing in
-     * a different order.
+     * 344.1 tok/s with the shared-memory reduction against 393.9 with the shuffle on the four layer
+     * kernels, and 414.7 once the vocabulary projection joins them; at depth 2048, 200.1, 214.9 and
+     * 221.0. The logits agree with the shared-memory path to a relative L2 of 4.5e-04 and 3.5e-04
+     * over 64 teacher-forced decode steps, which is the ordinary consequence of reducing in a
+     * different order.
      *
      * <p><b>This is a per-device answer and the older one disagreed.</b> {@code WARP_SHUFFLE}
      * carries a measurement from an RTX 5090 Laptop on Qwen3-1.7B where the shuffle was slower (141

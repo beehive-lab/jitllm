@@ -34,8 +34,15 @@ public class MatrixVectorGenericSimd32AccelTest {
     private static final float POISON = -999999f;
 
     @Test
-    public void matchesTheCpuReferenceOnMetalForVocabularyShapedDimensions() {
-        assumeTrue("not a Metal run", SchedulerDetectionService.isSubgroupShuffle32Supported());
+    public void matchesTheCpuReferenceWhereThisKernelIsSelectedForVocabularyShapedDimensions() {
+        // Wherever the vocabulary projection actually selects this kernel, not just on Metal.
+        // It was Metal-only while SUBGROUP_SHUFFLE_32 was the only grant; CUDA now selects it too
+        // through WARP_SHUFFLE_GEMV_FP16, and a CPU-reference check that skipped there would leave
+        // the shipping path unverified against anything tighter than an end-to-end tolerance.
+        assumeTrue(
+                "this device does not select the 32-lane shuffle reduction",
+                SchedulerDetectionService.isSubgroupShuffle32Supported()
+                        || SchedulerDetectionService.isWarpShuffleGemvFp16Supported());
 
         HalfFloatArray x = new HalfFloatArray(N);
         for (int i = 0; i < N; i++) {
