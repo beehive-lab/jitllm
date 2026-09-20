@@ -7,6 +7,7 @@ import org.beehive.jllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
 import org.beehive.jllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -71,10 +72,10 @@ public class Qwen3FP16FFNLayers
     private final boolean useWarpMatmul =
             SchedulerDetectionService.isWarpShuffleSupported()
                     || SchedulerDetectionService.isSubgroupShuffle32Supported()
-                    // Measured faster than the shared-memory reduction on this device class; see
-                    // DeviceCapability.WARP_SHUFFLE_GEMV_FP16 for the numbers and for why it is a
-                    // narrower grant than warp-shuffle correctness.
-                    || SchedulerDetectionService.isWarpShuffleGemvFp16Supported();
+                    // The decode-shaped preference, which is a workload question and not a
+                    // capability: see Fp16GemvReductionPolicy for the scope it covers and for what
+                    // the evidence behind it is and is not.
+                    || Fp16GemvReductionPolicy.preferShuffleReduction();
 
     public Qwen3FP16FFNLayers(
             String taskGraphName,
@@ -94,6 +95,23 @@ public class Qwen3FP16FFNLayers
         this.nEmbdGqa = nEmbdVGqa;
         this.gqa = config.numberOfHeads() / config.numberOfKeyValueHeads();
         setupFFNLayers();
+    }
+
+    // @formatter:off
+    /**
+     * The task name for one of the four matrix-vector kernels this family selects by reduction
+     * strategy, suffixed when the shuffle-reducing variant is the one installed.
+     *
+     * <p>The two variants used to share a task name and a worker grid, which made the selection
+     * invisible: nothing in a built plan, a profile or a grid scheduler could say which kernel a
+     * run had installed, so a build that quietly stopped selecting the shuffle went on reporting
+     * the same evidence while being a fifth slower. The suffix is what makes the selection a fact
+     * about the plan rather than a re-derivation of the policy that chose it, and it is why {@code
+     * Qwen3DecodeDispatchAccelTest} can assert on the kernels themselves.
+     */
+    // @formatter:on
+    protected final String reductionVariant(String taskName) {
+        return useWarpMatmul ? taskName + "_warp" : taskName;
     }
 
     @Override
@@ -139,7 +157,8 @@ public class Qwen3FP16FFNLayers
             String p = layerGraphName(i) + "." + layerTaskPrefix(i);
             // === Attention Block ===
             gridScheduler.addWorkerGrid(p + "attn_rms_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid(p + "attn_rms_qkv_projection", fusedQKVWorker);
+            gridScheduler.addWorkerGrid(
+                    p + reductionVariant("attn_rms_qkv_projection"), fusedQKVWorker);
             gridScheduler.addWorkerGrid(p + "qk_rmsnorm", qkRmsNormWorker);
             gridScheduler.addWorkerGrid(p + "rope_and_kv_cache", ropeWorker);
             gridScheduler.addWorkerGrid(
@@ -148,14 +167,15 @@ public class Qwen3FP16FFNLayers
             if (!isMetalBackend) {
                 gridScheduler.addWorkerGrid(p + "attention_combine", attentionCombineWorker);
             }
-            gridScheduler.addWorkerGrid(p + "attn_output_proj", matmul1Worker);
+            gridScheduler.addWorkerGrid(p + reductionVariant("attn_output_proj"), matmul1Worker);
             // === FFN Block ===
             gridScheduler.addWorkerGrid(p + "ffn_rms_reduce", rmsReduceWorker);
             if (shouldUseFinalNormalization()) {
                 gridScheduler.addWorkerGrid(p + "ffn_rms_finalize", rmsNormWorker);
             }
-            gridScheduler.addWorkerGrid(p + "rms_ffn_gate_up", fusedFFNW1W3Worker);
-            gridScheduler.addWorkerGrid(p + "ffn_down_proj", projectionTwoWorker);
+            gridScheduler.addWorkerGrid(
+                    p + reductionVariant("rms_ffn_gate_up"), fusedFFNW1W3Worker);
+            gridScheduler.addWorkerGrid(p + reductionVariant("ffn_down_proj"), projectionTwoWorker);
         }
         return gridScheduler;
     }
@@ -317,7 +337,7 @@ public class Qwen3FP16FFNLayers
         // Fused RMS Apply + QKV Projection
         if (useWarpMatmul) {
             unifiedLayer.task(
-                    tp + "attn_rms_qkv_projection",
+                    tp + reductionVariant("attn_rms_qkv_projection"),
                     Qwen3Kernels::fusedRmsNormQKVMatmulWarp,
                     context,
                     qwen3State.workspace.wrapX,
@@ -497,7 +517,7 @@ public class Qwen3FP16FFNLayers
         // Output Projection with Residual
         if (useWarpMatmul) {
             unifiedLayer.task(
-                    tp + "attn_output_proj",
+                    tp + reductionVariant("attn_output_proj"),
                     TransformerComputeKernelsLayered::matrixVectorGenericWithResidualSimd32,
                     context,
                     qwen3State.workspace.wrapXb,
@@ -547,7 +567,7 @@ public class Qwen3FP16FFNLayers
         // Fused RMS Apply + Gate/Up Projection + SiLU + GLU
         if (useWarpMatmul) {
             unifiedLayer.task(
-                    tp + "rms_ffn_gate_up",
+                    tp + reductionVariant("rms_ffn_gate_up"),
                     TransformerComputeKernelsLayered::fusedRmsNormFFNGateUpWarp,
                     context,
                     qwen3State.workspace.wrapX,
@@ -578,7 +598,7 @@ public class Qwen3FP16FFNLayers
         // Down Projection with Residual
         if (useWarpMatmul) {
             unifiedLayer.task(
-                    tp + "ffn_down_proj",
+                    tp + reductionVariant("ffn_down_proj"),
                     TransformerComputeKernelsLayered::matrixVectorGenericWithResidualSimd32,
                     context,
                     qwen3State.workspace.wrapHb,

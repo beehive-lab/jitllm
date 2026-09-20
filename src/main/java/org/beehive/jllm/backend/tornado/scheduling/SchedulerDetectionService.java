@@ -31,14 +31,15 @@ public class SchedulerDetectionService {
     }
 
     /**
-     * Whether this device reduces the FP16 matrix-vector kernels faster with a 32-lane warp
-     * butterfly than with shared memory. See {@link DeviceCapability#WARP_SHUFFLE_GEMV_FP16}, which
-     * is a narrower claim than {@link #isWarpShuffleSupported()}.
+     * Whether the shuffle-reducing FP16 matrix-vector kernels compute correct results on the active
+     * device. A support question; see {@link DeviceCapability#SHUFFLE_REDUCED_FP16_GEMV}. Whether
+     * to prefer them over their shared-memory twins is decided by {@link Fp16GemvReductionPolicy},
+     * which is what the layers branch on.
      */
-    public static boolean isWarpShuffleGemvFp16Supported() {
+    public static boolean isShuffleReducedFp16GemvSupported() {
         return TornadoDevices.current()
                 .capabilities()
-                .supports(DeviceCapability.WARP_SHUFFLE_GEMV_FP16);
+                .supports(DeviceCapability.SHUFFLE_REDUCED_FP16_GEMV);
     }
 
     public static boolean isSubgroupShuffle32Supported() {

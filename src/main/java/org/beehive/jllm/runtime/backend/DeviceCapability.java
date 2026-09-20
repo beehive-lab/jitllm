@@ -106,33 +106,30 @@ public final class DeviceCapability {
      */
     // @formatter:off
     /**
-     * A 32-lane warp butterfly reduction is the faster way to reduce this family's FP16
-     * matrix-vector kernels on this device.
+     * The shuffle-reducing FP16 matrix-vector kernels compute correct results on this device.
      *
-     * <p><b>Narrower than {@link #WARP_SHUFFLE} on purpose</b>, and for the same reason {@link
-     * #SUBGROUP_SHUFFLE_32} is: that capability is a statement about whether {@code
-     * simdShuffleDown} is <i>correct</i>, which is a question with a different answer per backend
-     * and which several unrelated call sites branch on. This one is a statement about whether the
-     * shuffle-reducing variants of four kernels are <i>faster</i> than their shared-memory twins —
-     * {@code fusedRmsNormQKVMatmulWarp}, {@code fusedRmsNormFFNGateUpWarp} and {@code
-     * matrixVectorGenericWithResidualSimd32} at the attention-output and FFN-down projections.
+     * <p><b>This is a support claim, not a preference.</b> It says the 32-lane butterfly in {@code
+     * fusedRmsNormQKVMatmulWarp}, {@code fusedRmsNormFFNGateUpWarp}, {@code
+     * matrixVectorGenericWithResidualSimd32} and {@code matrixVectorGenericSimd32} is lowered and
+     * evaluated correctly here — nothing about whether running them is a good idea. Whether to
+     * prefer them over their shared-memory twins is a workload question, and it lives in {@link
+     * org.beehive.jllm.backend.tornado.scheduling.Fp16GemvReductionPolicy}, which is what the
+     * layers actually branch on.
      *
-     * <p>Granted on CUDA, where the shuffle is verified correct and where the two were measured
-     * against each other: Qwen3-0.6B FP16 decode on an RTX 5070 Ti (sm_120), tg128 at depth zero,
-     * 344.1 tok/s with the shared-memory reduction against 393.9 with the shuffle on the four layer
-     * kernels, and 414.7 once the vocabulary projection joins them; at depth 2048, 200.1, 214.9 and
-     * 221.0. The logits agree with the shared-memory path to a relative L2 of 4.5e-04 and 3.5e-04
-     * over 64 teacher-forced decode steps, which is the ordinary consequence of reducing in a
-     * different order.
+     * <p>Granted on CUDA, where {@code simdShuffleDown} is correct and where the CPU-parity gates
+     * run these kernels against a host reference for every FP16 family. Withheld on OpenCL, whose
+     * backend compiles the shuffle and produces wrong answers. Metal makes the same support claim
+     * through {@link #SUBGROUP_SHUFFLE_32}, which predates this one and covers its own verified
+     * subset.
      *
-     * <p><b>This is a per-device answer and the older one disagreed.</b> {@code WARP_SHUFFLE}
-     * carries a measurement from an RTX 5090 Laptop on Qwen3-1.7B where the shuffle was slower (141
-     * to 134 tok/s), which is why it is granted nowhere. That measurement is not contradicted here
-     * — a different GPU, a different model, and taken before decode grouped its layer graphs. Both
-     * are kept, and this grant names the device class and workload it was taken on.
+     * <p><b>Deliberately not {@link #WARP_SHUFFLE}</b>, which conflates the same support question
+     * with a preference for a wider set of kernels — including Q8_0 paths that carry a contrary
+     * measurement — and which several unrelated call sites branch on. Separating them is what lets
+     * this grant be a plain statement of correctness.
      */
     // @formatter:on
-    public static final DeviceCapability WARP_SHUFFLE_GEMV_FP16 = of("warp-shuffle-gemv-fp16");
+    public static final DeviceCapability SHUFFLE_REDUCED_FP16_GEMV =
+            of("shuffle-reduced-fp16-gemv");
 
     public static final DeviceCapability PACKED_HALF2_MATH = of("packed-half2-math");
 

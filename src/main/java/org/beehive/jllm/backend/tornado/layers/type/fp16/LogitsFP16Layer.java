@@ -3,6 +3,7 @@ package org.beehive.jllm.backend.tornado.layers.type.fp16;
 import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jllm.backend.tornado.layers.AbstractLogitsTaskGraph;
+import org.beehive.jllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
 import org.beehive.jllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -94,10 +95,10 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
 
     private static boolean useSimd32Reduction() {
         return SchedulerDetectionService.isSubgroupShuffle32Supported()
-                // Same claim, same kernel shape, a different device: see
-                // DeviceCapability.WARP_SHUFFLE_GEMV_FP16. The vocabulary projection is the
-                // largest single kernel in a decode token, so this is where it pays most.
-                || SchedulerDetectionService.isWarpShuffleGemvFp16Supported();
+                // The decode-shaped preference. This class is shared, so the preference reaches
+                // every FP16 family whose logits layer is this one; Fp16GemvReductionPolicy lists
+                // them and says what the evidence covers.
+                || Fp16GemvReductionPolicy.preferShuffleReduction();
     }
 
     public LogitsFP16Layer(
@@ -223,22 +224,37 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
 
     // @formatter:on
 
+    // @formatter:off
+    /**
+     * The worker grid that pairs with a vocabulary projection kernel.
+     *
+     * <p>{@code matrixVectorGenericSimd32} assumes exactly one 32-lane workgroup per output row,
+     * the same assumption every other {@code Simd32} kernel makes; the shared-memory kernel scales
+     * the local size by {@code THREAD_SCALE_FOR_LOGITS} instead. The two share a task name, so the
+     * grid is the only thing that distinguishes them, and pairing it with the wrong kernel is
+     * silent: it produced 99.43% wrong logits on Granite F16 with nothing thrown anywhere.
+     *
+     * <p>Pure and package-visible so the pairing can be asserted without a model fixture; see
+     * {@code LogitsVocabularyGridContractTest}.
+     *
+     * @param shuffleReduced whether the kernel installed is the shuffle-reducing one. {@code false}
+     *     is the answer for any subclass that supplies its own {@code vocab_proj} -- Granite scales
+     *     by {@code logitScale}, Gemma 4 soft-caps -- because those kernels reduce through shared
+     *     memory.
+     */
+    // @formatter:on
+    static WorkerGrid1D vocabularyWorker(int vocabularySize, boolean shuffleReduced) {
+        int localSize = shuffleReduced ? 32 : LOCAL_WORK_GROUP_SIZE_ALLOC * THREAD_SCALE_FOR_LOGITS;
+        WorkerGrid1D worker = new WorkerGrid1D(vocabularySize * localSize);
+        worker.setLocalWork(localSize, 1, 1);
+        return worker;
+    }
+
     @Override
     public GridScheduler updateGridScheduler(GridScheduler tornadoForwardScheduler) {
         var logitsRMS = WorkerGridFactory.createRmsNormWorker(config.dim(), rmsLocalSize());
-        // matrixVectorGenericSimd32 assumes exactly one 32-lane workgroup per output row (the same
-        // assumption every other Simd32 kernel this capability gates makes); the generic kernel's
-        // worker scales the local size by THREAD_SCALE_FOR_LOGITS instead. Same task name either
-        // way - only the worker shape follows the kernel it is paired with, which is why this
-        // reads what setupLogitsTaskGraph installed rather than re-deriving it. A subclass that
-        // supplies its own vocab_proj gets the shared-memory grid its kernel needs.
-        int vocabLocalSize =
-                vocabularyProjectionReducesWithShuffle
-                        ? 32
-                        : LOCAL_WORK_GROUP_SIZE_ALLOC * THREAD_SCALE_FOR_LOGITS;
-        var vocabSizeRowMajor = config.vocabularySize() * vocabLocalSize;
-        var vocabWorker = new WorkerGrid1D(vocabSizeRowMajor);
-        vocabWorker.setLocalWork(vocabLocalSize, 1, 1);
+        var vocabWorker =
+                vocabularyWorker(config.vocabularySize(), vocabularyProjectionReducesWithShuffle);
         tornadoForwardScheduler.addWorkerGrid("logits.rms_reduce", rmsReduceWorker(logitsRMS));
         tornadoForwardScheduler.addWorkerGrid("logits.rms_apply_fp16", logitsRMS);
         tornadoForwardScheduler.addWorkerGrid("logits.vocab_proj", vocabWorker);
