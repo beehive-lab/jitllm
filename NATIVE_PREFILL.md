@@ -339,6 +339,13 @@ The rest of the ~700 MiB is TornadoVM's per-buffer reservation granularity.
 0.52–0.79 s to stack QKV, both printed by the banner. Not per request and not per chunk. The
 fallback family adds none: it is built from arrays that already exist.
 
+The capability probe adds to that, measured on the same machine: **56 ms** the first time a
+process asks about a fused-attention shape — that call also loads the JNI shim and creates the
+cuDNN handle — and **18 ms** for each further distinct chunk width. A width already asked about is
+answered from cache in 0.02 ms, so a second plan at the same width costs nothing. The cuBLAS
+availability question is answered during TornadoVM's runtime initialization, which a plan build
+performs regardless.
+
 Verified from `-Dtornado.print.bytecodes`: 243 distinct (graph, object) allocations across the
 seven primary graphs, **none duplicated**, and the fallback family allocates three small objects
 and copies nothing.
