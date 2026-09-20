@@ -70,7 +70,11 @@ public class Qwen3FP16FFNLayers
     // OpenCL selection is byte-for-byte unchanged.
     private final boolean useWarpMatmul =
             SchedulerDetectionService.isWarpShuffleSupported()
-                    || SchedulerDetectionService.isSubgroupShuffle32Supported();
+                    || SchedulerDetectionService.isSubgroupShuffle32Supported()
+                    // Measured faster than the shared-memory reduction on this device class; see
+                    // DeviceCapability.WARP_SHUFFLE_GEMV_FP16 for the numbers and for why it is a
+                    // narrower grant than warp-shuffle correctness.
+                    || SchedulerDetectionService.isWarpShuffleGemvFp16Supported();
 
     public Qwen3FP16FFNLayers(
             String taskGraphName,

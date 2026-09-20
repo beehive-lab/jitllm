@@ -122,6 +122,10 @@ public final class TornadoDevices {
         String name = platformName.toLowerCase(Locale.ROOT);
         if (type == TornadoVMBackendType.CUDA) {
             capabilities.add(DeviceCapability.TENSOR_CORE_MMA);
+            // The shuffle-reducing FP16 matrix-vector kernels, measured faster here and correct
+            // here. Deliberately not WARP_SHUFFLE, which is a broader claim several other call
+            // sites branch on and which carries a contrary measurement from another device.
+            capabilities.add(DeviceCapability.WARP_SHUFFLE_GEMV_FP16);
             // dp4a is registered for OpenCL and Metal too, and its Java body is a correct scalar
             // fallback everywhere, so the instruction half of this grant is about where the packed
             // path has been measured rather than about where it computes the right answer. The

@@ -104,6 +104,35 @@ public final class DeviceCapability {
      * statement about that combination, not about packed arithmetic generally. Metal keeps the
      * packed path and has not been measured against this question.
      */
+    // @formatter:off
+    /**
+     * A 32-lane warp butterfly reduction is the faster way to reduce this family's FP16
+     * matrix-vector kernels on this device.
+     *
+     * <p><b>Narrower than {@link #WARP_SHUFFLE} on purpose</b>, and for the same reason {@link
+     * #SUBGROUP_SHUFFLE_32} is: that capability is a statement about whether {@code
+     * simdShuffleDown} is <i>correct</i>, which is a question with a different answer per backend
+     * and which several unrelated call sites branch on. This one is a statement about whether the
+     * shuffle-reducing variants of four kernels are <i>faster</i> than their shared-memory twins —
+     * {@code fusedRmsNormQKVMatmulWarp}, {@code fusedRmsNormFFNGateUpWarp} and {@code
+     * matrixVectorGenericWithResidualSimd32} at the attention-output and FFN-down projections.
+     *
+     * <p>Granted on CUDA, where the shuffle is verified correct and where the two were measured
+     * against each other: Qwen3-0.6B FP16 decode on an RTX 5070 Ti (sm_120), tg128 at depth zero,
+     * 344.1 tok/s with the shared-memory reduction against 393.9 with the shuffle, and at depth
+     * 2048 200.1 against 214.9. The logits agree with the shared-memory path to a relative L2 of
+     * 4.5e-04 over 64 teacher-forced decode steps, which is the ordinary consequence of reducing in
+     * a different order.
+     *
+     * <p><b>This is a per-device answer and the older one disagreed.</b> {@code WARP_SHUFFLE}
+     * carries a measurement from an RTX 5090 Laptop on Qwen3-1.7B where the shuffle was slower (141
+     * to 134 tok/s), which is why it is granted nowhere. That measurement is not contradicted here
+     * — a different GPU, a different model, and taken before decode grouped its layer graphs. Both
+     * are kept, and this grant names the device class and workload it was taken on.
+     */
+    // @formatter:on
+    public static final DeviceCapability WARP_SHUFFLE_GEMV_FP16 = of("warp-shuffle-gemv-fp16");
+
     public static final DeviceCapability PACKED_HALF2_MATH = of("packed-half2-math");
 
     private final String name;

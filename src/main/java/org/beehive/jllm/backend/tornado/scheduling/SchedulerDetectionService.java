@@ -30,6 +30,17 @@ public class SchedulerDetectionService {
         return TornadoDevices.current().capabilities().supports(DeviceCapability.PACKED_HALF2_MATH);
     }
 
+    /**
+     * Whether this device reduces the FP16 matrix-vector kernels faster with a 32-lane warp
+     * butterfly than with shared memory. See {@link DeviceCapability#WARP_SHUFFLE_GEMV_FP16}, which
+     * is a narrower claim than {@link #isWarpShuffleSupported()}.
+     */
+    public static boolean isWarpShuffleGemvFp16Supported() {
+        return TornadoDevices.current()
+                .capabilities()
+                .supports(DeviceCapability.WARP_SHUFFLE_GEMV_FP16);
+    }
+
     public static boolean isSubgroupShuffle32Supported() {
         return TornadoDevices.current()
                 .capabilities()
