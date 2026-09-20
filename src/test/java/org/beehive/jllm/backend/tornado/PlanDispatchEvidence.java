@@ -217,6 +217,76 @@ public final class PlanDispatchEvidence {
                 primaryGraphs.size(), !jitProjection, cudnn, jitAttention, fallbackFamily);
     }
 
+    // @formatter:off
+    /**
+     * How a Qwen3 FP16 plan laid out its <b>decode</b> layer graphs, read off its grid scheduler.
+     *
+     * <p>Grid keys are {@code graphName.taskName}, and a grouped family names its graph after the
+     * first layer in the group and prefixes the later slots' tasks. So the number of distinct
+     * {@code layer_<n>} graphs is the number of submissions a token costs, and the highest slot
+     * prefix is how many layers share one. A property cannot say this: it says what was asked for,
+     * and the family folds the answer once at construction.
+     */
+    // @formatter:on
+    public record DecodeGrouping(int layerGraphs, int layersPerGraph) {}
+
+    private static final Pattern DECODE_GRAPH = Pattern.compile("^layer_(\\d+)\\.(?:l(\\d+)_)?.*$");
+
+    /** Reads {@link DecodeGrouping} off a built plan's scheduler. */
+    public static DecodeGrouping qwen3DecodeGrouping(GridScheduler scheduler) {
+        assertNotNull(
+                "no grid scheduler for the plan this run built, so its dispatch cannot be checked",
+                scheduler);
+        TreeSet<Integer> graphs = new TreeSet<>();
+        int maxSlot = 0;
+        for (String task : new TreeSet<>(scheduler.keySet())) {
+            Matcher m = DECODE_GRAPH.matcher(task);
+            if (!m.matches()) {
+                continue;
+            }
+            graphs.add(Integer.parseInt(m.group(1)));
+            if (m.group(2) != null) {
+                maxSlot = Math.max(maxSlot, Integer.parseInt(m.group(2)));
+            }
+        }
+        assertTrue("this plan has no decode layer graph at all", !graphs.isEmpty());
+        return new DecodeGrouping(graphs.size(), maxSlot + 1);
+    }
+
+    // @formatter:off
+    /**
+     * How a plan's vocabulary projection is configured to reduce, read off its grid scheduler.
+     *
+     * <p>{@code logits.vocab_proj} carries the same task name either way, so the name says nothing.
+     * The worker grid does: the shuffle-reducing kernel assumes exactly one 32-lane workgroup per
+     * output row, while the shared-memory kernel scales the local size by {@code
+     * THREAD_SCALE_FOR_LOGITS}. So a local size of 32 is the witness that {@code
+     * LogitsFP16Layer.useSimd32Reduction()} answered yes in the process that built the plan.
+     *
+     * @param localWork the configured local work size of {@code logits.vocab_proj}
+     * @param globalWork its configured global work size, which is one workgroup per vocabulary row
+     */
+    // @formatter:on
+    public record VocabularyProjection(long localWork, long globalWork) {
+
+        /** One 32-lane workgroup per row is the shuffle-reducing kernel's contract. */
+        public boolean shuffleReduced() {
+            return localWork == 32;
+        }
+    }
+
+    /** Reads {@link VocabularyProjection} off a built plan's scheduler. */
+    public static VocabularyProjection qwen3VocabularyProjection(GridScheduler scheduler) {
+        assertNotNull(
+                "no grid scheduler for the plan this run built, so its dispatch cannot be checked",
+                scheduler);
+        WorkerGrid grid = scheduler.get("logits.vocab_proj");
+        assertNotNull(
+                "this plan has no logits.vocab_proj grid: " + new TreeSet<>(scheduler.keySet()),
+                grid);
+        return new VocabularyProjection(grid.getLocalWork()[0], grid.getGlobalWork()[0]);
+    }
+
     /** The layers whose batched graph holds an attention-output projection, in index order. */
     private static List<Integer> attentionLayers(GridScheduler scheduler) {
         List<Integer> layers = new ArrayList<>();
