@@ -7,6 +7,10 @@ weights, and the first prefill chunk's attention becomes one fused cuDNN scaled-
 There is **no flag to turn this on.** It is selected automatically whenever the configuration
 supports it, and it silently keeps the generated kernels where it does not.
 
+Decode is a different problem and gets no vendor GEMM, but it was optimized and measured on the
+same device in the same campaign, so it is recorded here too — see **[Decode on
+CUDA](#decode-on-cuda)**.
+
 ---
 
 ## Using it
@@ -251,11 +255,11 @@ host links against it, and this is a lookup-order problem rather than a reason t
 
 ## Scope of the performance claims
 
-Everything measured here is **Qwen3-0.6B FP16 prefill**, on one machine (RTX 5070 Ti, driver
-580.142, CUDA 13.0), at the workloads listed, against pinned llama.cpp `e2d2c0d6a` / build
-b10874 where that comparison appears. It does **not** generalize to other models, other
-quantizations, other GPUs or to decode. A decode measurement is reported separately and
-deliberately not folded into any prefill ratio.
+Everything measured here is **Qwen3-0.6B FP16**, on one machine (RTX 5070 Ti, driver 580.142,
+CUDA 13.0), at the workloads listed, against pinned llama.cpp `e2d2c0d6a` / build b10874 where
+that comparison appears. It does **not** generalize to other models, other quantizations or other
+GPUs. Prefill and decode are measured separately and neither is ever folded into the other's
+ratio; this section is prefill, and [Decode on CUDA](#decode-on-cuda) is decode.
 
 ### Measured
 
@@ -293,18 +297,11 @@ replaces, with both the JIT projections and the JIT attention:
 | pp700, width 256 (1 of 3) | 9,496 | 6,308 | **1.505×** | 1.506 / 1.505 / 1.509 / 1.507 |
 | pp900, width 128 (1 of 8) | 6,226 | 3,901 | **1.596×** | 1.593 / 1.593 / 1.596 / 1.597 |
 
-**Decode, reported separately and never folded into a prefill ratio:**
-
-| tg128, width 512 | median t/s |
-| --- | ---: |
-| native | 320.6 |
-| `-Djllm.prefill.native=false` | 317.0 |
-| llama.cpp b10874 | 500.4 |
-
-**There is no decode regression.** The 1.1% difference favours the native build and its sign is
-consistent across all four rounds, but it sits within ~1.5 standard deviations of this machine's
-run-to-run spread and is **not** claimed as an improvement. jllm's decode being 0.64× llama.cpp
-is a pre-existing property of the decode path; nothing here touches it.
+**Decode is measured separately and never folded into a prefill ratio.** Enabling the native
+prefill path does not change it — 320.6 t/s against 317.0 with `-Djllm.prefill.native=false`, a
+1.1% difference whose sign is consistent across four rounds but which sits within ~1.5 standard
+deviations of this machine's spread and is **not** claimed as an improvement. The decode path was
+then optimized in its own right; those numbers are under [Decode on CUDA](#decode-on-cuda).
 
 ### Memory and setup cost
 
@@ -352,6 +349,66 @@ and copies nothing.
 
 ---
 
+## Decode on CUDA
+
+Decode emits one token at a time, so every projection is a matrix-vector product. A Qwen3-0.6B
+FP16 token streams **1151 MiB** of weights, which at this card's ~896 GB/s is a 1.286 ms floor.
+No vendor GEMM applies at one column; what is left to win is how the kernels reduce and how often
+the host waits for the device. Three changes, all selected automatically:
+
+- **Four transformer layers to a decode graph.** Every `TaskGraph.execute()` ends in a device
+  wait, and a profile put **29.8 gaps per token at a median of 22.8 µs — 97% of all device idle**,
+  one per graph submission. Twenty-eight layer graphs became seven, and a token's submissions went
+  from thirty to nine. Four rather than more: `TornadoTaskGraph` holds a fixed `byte[8192]` of
+  high-level bytecode per graph — *not* the buffer `tornado.tvm.maxbytecodesize` sizes — and
+  fourteen layers overflow it with a hard throw at plan construction. Seven fits and is 1.2%
+  faster; four keeps headroom for a family with a slightly richer layer.
+- **A warp-butterfly reduction for four layer matrix-vector kernels**, under a new
+  `DeviceCapability.WARP_SHUFFLE_GEMV_FP16`. The shuffle-reducing twins already existed but were
+  reachable only through `WARP_SHUFFLE`, which asserts shuffle *correctness*, is branched on by
+  unrelated call sites, is miscompiled on the OpenCL backend, and carries a contrary measurement
+  from a different GPU on a different model. The new grant is the narrow claim actually measured:
+  *these five FP16 GEMV kernels reduce faster with a 32-lane butterfly on this device class.*
+- **The vocabulary projection joins it.** Once the layer kernels moved it was the largest single
+  kernel in a token — 502 µs, 20.6% of GPU time, 311 MiB of the 1151 — and its shuffle-reducing
+  twin existed with a matching worker grid but was gated to Metal. It now runs at 842 GB/s,
+  against 619 before.
+
+None of the three allocates anything: same buffers, same tasks, fewer graphs, a different
+reduction. Peak device memory is identical to the MiB before and after them.
+
+### Measured
+
+Same machine and protocol as above. Four interleaved rounds in rotated order, five timed
+repetitions after an untimed full-workload warm-up, medians over twenty samples; all 24
+workload-rounds passed the foreign-occupancy exclusion.
+
+| tg128, batch 512 | before | after | llama.cpp b10874 | vs. before | vs. llama.cpp |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| depth 0 | 322.2 | **412.5** | 500.9 | **1.28×** | 0.82× |
+| depth 512 | 274.0 | **337.6** | 483.8 | **1.23×** | 0.70× |
+| depth 2048 | 191.3 | **221.5** | 436.6 | **1.16×** | 0.51× |
+
+Sample spread was ±0.1–0.3%, and per-round ratios against llama.cpp agree to the third decimal.
+
+**Decode is still slower than llama.cpp at every depth.** This took 0.68 ms off a 3.10 ms token at
+depth zero; matching llama.cpp needed 1.11 ms. What remains is concentrated in attention — 374 µs
+against llama.cpp's 200 for `flash_attn_ext_vec` plus its combine — which is why the shortfall
+grows with context: 0.43 ms/token at depth 0, 0.90 at 512, 2.22 at 2048. It is the kernel and not
+the partitioning policy: the existing eight split-KV partitions measured best at every depth
+tried, so closing the rest means a different attention kernel.
+
+### Correctness
+
+Grouping is **bit-identical** over 64 teacher-forced decode-step logit vectors on two shapes,
+against a build with grouping set back to one layer per graph. The two reduction changes land at
+relative L2 3.3e-04 to 4.5e-04, which is the ordinary consequence of summing in a different order.
+`Qwen3DecodeDispatchAccelTest` asserts that a built plan actually grouped its layer graphs and
+actually selected the shuffle-reducing kernels, reading both off the plan's own grid scheduler, so
+a silent fallback fails instead of being measured as though it had not happened.
+
+---
+
 ## Limitations
 
 - **Qwen3 FP16 only.** The other batch-prefill families are untouched. Nothing here is generic
@@ -367,6 +424,13 @@ and copies nothing.
   that still run on this path, and a prompt much shorter than the chosen width pays the full
   width in the fused attention, whose sequence lengths are fixed when the graph is built. Match
   `--batch-prefill-size` to the prompt where throughput matters.
+- **The decode changes are narrower still.** Layer grouping is applied to the Qwen3 FP16 decode
+  families only, and four layers per graph is a headroom choice against a fixed per-graph bytecode
+  buffer rather than a tuned optimum. The warp-butterfly reduction is granted on CUDA because that
+  is where it was measured; it is deliberately not the broader `WARP_SHUFFLE` grant, and an
+  OpenCL or Metal device reaches these kernels, or does not, through its own capabilities.
+- **Decode remains slower than llama.cpp** at every depth measured, and the shortfall grows with
+  context. See [Decode on CUDA](#decode-on-cuda).
 - **Requires an unreleased TornadoVM revision**, and two of its modules are not on Maven Central.
   This is a hard build prerequisite, not just a runtime one.
 - **The SONAME reordering is not upstream.** jllm builds and runs correctly without it; on a host
