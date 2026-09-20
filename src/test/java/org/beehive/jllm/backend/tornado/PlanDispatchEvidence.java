@@ -287,6 +287,80 @@ public final class PlanDispatchEvidence {
         return new VocabularyProjection(grid.getLocalWork()[0], grid.getGlobalWork()[0]);
     }
 
+    // @formatter:off
+    /**
+     * Which reduction each Qwen3 FP16 decode layer installed, read off the plan's grid scheduler by
+     * task name.
+     *
+     * <p>The four matrix-vector kernels a decode layer runs come in two forms that compute the same
+     * thing by reducing differently, and they used to share both a task name and a worker grid,
+     * which made the selection unobservable. {@code Qwen3FP16FFNLayers.reductionVariant} now
+     * suffixes the shuffle-reducing form with {@code _warp}, so the scheduler names which kernel
+     * the plan actually contains -- per layer and per kernel, not inferred from something else.
+     *
+     * @param layers how many distinct decode layers were seen
+     * @param shuffleReduced task names ending in {@code _warp}, across all layers
+     * @param sharedMemory the same four names without the suffix, across all layers
+     */
+    // @formatter:on
+    public record LayerReduction(int layers, int shuffleReduced, int sharedMemory) {
+
+        /** The four kernels a decode layer selects by reduction strategy. */
+        public static final List<String> KERNELS =
+                List.of(
+                        "attn_rms_qkv_projection",
+                        "attn_output_proj",
+                        "rms_ffn_gate_up",
+                        "ffn_down_proj");
+
+        /** Every layer installed all four shuffle-reducing kernels and none of their twins. */
+        public boolean allShuffleReduced() {
+            return layers > 0 && sharedMemory == 0 && shuffleReduced == layers * KERNELS.size();
+        }
+
+        public String describe() {
+            return "layers="
+                    + layers
+                    + " shuffleReduced="
+                    + shuffleReduced
+                    + " sharedMemory="
+                    + sharedMemory
+                    + " (expected "
+                    + layers * KERNELS.size()
+                    + " and 0)";
+        }
+    }
+
+    private static final Pattern DECODE_TASK =
+            Pattern.compile("^layer_(\\d+)\\.(?:l(\\d+)_)?(.+?)(_warp)?$");
+
+    /** Reads {@link LayerReduction} off a built plan's scheduler. */
+    public static LayerReduction qwen3DecodeLayerReduction(GridScheduler scheduler) {
+        assertNotNull(
+                "no grid scheduler for the plan this run built, so its dispatch cannot be checked",
+                scheduler);
+        TreeSet<String> layerSlots = new TreeSet<>();
+        int warp = 0;
+        int shared = 0;
+        for (String task : new TreeSet<>(scheduler.keySet())) {
+            Matcher m = DECODE_TASK.matcher(task);
+            if (!m.matches() || !LayerReduction.KERNELS.contains(m.group(3))) {
+                continue;
+            }
+            layerSlots.add(m.group(1) + "/" + (m.group(2) == null ? "0" : m.group(2)));
+            if (m.group(4) != null) {
+                warp++;
+            } else {
+                shared++;
+            }
+        }
+        assertTrue(
+                "this plan has no Qwen3 decode layer tasks at all: "
+                        + new TreeSet<>(scheduler.keySet()),
+                !layerSlots.isEmpty());
+        return new LayerReduction(layerSlots.size(), warp, shared);
+    }
+
     /** The layers whose batched graph holds an attention-output projection, in index order. */
     private static List<Integer> attentionLayers(GridScheduler scheduler) {
         List<Integer> layers = new ArrayList<>();
