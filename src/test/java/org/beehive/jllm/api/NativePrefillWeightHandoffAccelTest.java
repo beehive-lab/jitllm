@@ -1,10 +1,12 @@
 package org.beehive.jllm.api;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
+import org.beehive.jllm.backend.tornado.NativePrefillSupport;
 import org.beehive.jllm.golden.GoldenFixture;
 import org.beehive.jllm.golden.GoldenFixture.Fixture;
 import org.beehive.jllm.runtime.policy.ExecutionPolicy;
@@ -49,12 +51,25 @@ import org.junit.Test;
  * longer independently selectable — {@code NativePrefillSupport} answers for all four at once — so
  * flipping that single answer exercises all five weights together, which is both strictly more
  * coverage and the configuration that actually ships.
+ *
+ * <p><b>It proves it ran the path it claims.</b> Selection is a capability decision, so on a host
+ * without the tensor-core backend or without cuBLAS both halves of the comparison quietly select
+ * the generated kernels and agree perfectly while covering nothing. The resolved answer is asserted
+ * to differ between the two halves, and a host that cannot select the native path at all is an
+ * explicit skip rather than a green tick.
  */
 public class NativePrefillWeightHandoffAccelTest {
 
     private static final String GPU_PROPERTY = "use.tornadovm";
     private static final String NATIVE_PROPERTY = "jllm.prefill.native";
     private static final int BATCH = 128;
+
+    /**
+     * Qwen3-0.6B's attention shape at {@link #BATCH}, for the diagnostic in the skip message only.
+     * Nothing here depends on the fused attention: the handoff is about the projections.
+     */
+    private static final NativePrefillSupport.SdpaShape PROBE_SHAPE =
+            new NativePrefillSupport.SdpaShape(1, 16, BATCH, BATCH, 128, 0.088388f, true);
 
     @Test
     public void nativePrefillDecodesIdenticallyToTheJitPath() throws Exception {
@@ -67,6 +82,18 @@ public class NativePrefillWeightHandoffAccelTest {
         String previousNative = System.getProperty(NATIVE_PROPERTY);
         System.setProperty(GPU_PROPERTY, "true");
         try {
+            System.setProperty(NATIVE_PROPERTY, "true");
+            assumeTrue(
+                    "this host does not select the native prefill projections, so there is no"
+                            + " weight handoff to exercise: "
+                            + NativePrefillSupport.describe(true, PROBE_SHAPE),
+                    NativePrefillSupport.nativeProjections());
+            System.setProperty(NATIVE_PROPERTY, "false");
+            assertFalse(
+                    "the off-switch did not switch anything off, so both halves of this"
+                            + " comparison would run the same path and prove nothing",
+                    NativePrefillSupport.nativeProjections());
+
             String jit = generate(model, false);
             String nativePrefill = generate(model, true);
 

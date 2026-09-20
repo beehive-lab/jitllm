@@ -100,6 +100,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      */
     private final boolean nativeProjections;
 
+    /** The fused-attention shape this family resolved against; see {@link #sdpaShape}. */
+    private final NativePrefillSupport.SdpaShape sdpaShape;
+
     /**
      * Whether this PLAN uses cuDNN attention at all -- true in both families when the primary does,
      * which is what decides that a fallback family is needed. {@link #useCudnnAttention} is the
@@ -213,6 +216,28 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         return NativePrefillSupport.nativeProjections();
     }
 
+    // @formatter:off
+    /**
+     * The fused-attention call this family would make, as the capability probe needs to see it.
+     *
+     * <p>One batch of the whole chunk, one query head per attention head, query and key lengths
+     * both the chunk width -- which is what makes cuDNN's top-left causal mask the right mask --
+     * and the head dimension the adapters pack into. Built here rather than at the call site so the
+     * shape the probe answers for and the shape the task is given cannot drift apart.
+     */
+    // @formatter:on
+    static NativePrefillSupport.SdpaShape sdpaShape(Qwen3Configuration config, int batchSize) {
+        int headDim = config.numberOfHeadsValue();
+        return new NativePrefillSupport.SdpaShape(
+                1,
+                config.numberOfHeads(),
+                batchSize,
+                batchSize,
+                headDim,
+                (float) (1.0 / Math.sqrt(headDim)),
+                true);
+    }
+
     public Qwen3FP16LayersBatchPrefillMMA(
             Qwen3State state,
             Qwen3TornadoWeights weights,
@@ -227,28 +252,29 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.config = config;
         this.batchSize = batchSize;
         this.paddedBatch = (batchSize + 127) & ~127;
-        if (batchSize % 128 != 0) {
-            System.out.printf(
-                    "[jllm] prefill batch %d padded to %d for tensor-core tiles; GEMM efficiency is"
-                            + " %d/%d — use a multiple of 128 for best throughput.%n",
-                    batchSize, paddedBatch, batchSize, paddedBatch);
-        }
-        // The FP16 key/value cache is part of the supported configuration, not an extra switch:
-        // the cuDNN adapters read K/V straight out of it as FP16, and the gather that would be
-        // needed from an FP32 cache has never been written or validated. An FP32 KV session on
-        // this device keeps the JIT attention and loses nothing else -- the projections stay
-        // native, because they do not touch the cache.
-        this.cudnnAttention =
-                NativePrefillSupport.nativeAttention() && state.usesFp16KeyValueCache();
-        this.useCudnnAttention = this.cudnnAttention;
-        this.nativeProjections = nativeProjections();
-        this.layersPerGraph = Math.min(prefillLayersPerGraph(), config.numberOfLayers());
-        System.out.printf("[jllm] prefill acceleration: %s%n", NativePrefillSupport.describe());
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHead = config.numberOfHeadsValue();
         this.qDim = config.numberOfHeadsKey() * config.numberOfHeads();
         this.kvDim = config.numberOfHeadsValue() * nHeadKv;
         this.gqa = config.numberOfHeads() / nHeadKv;
+        // The FP16 key/value cache is part of the supported configuration, not an extra switch:
+        // the cuDNN adapters read K/V straight out of it as FP16, and the gather that would be
+        // needed from an FP32 cache has never been written or validated. An FP32 KV session on
+        // this device keeps the JIT attention and loses nothing else -- the projections stay
+        // native, because they do not touch the cache.
+        //
+        // The capability question is asked for THIS session's shape, not for the library in the
+        // abstract: a fused-SDPA implementation can be present and still decline this device or
+        // this tuple, and finding that out at execution time would be far too late.
+        boolean fp16Kv = state.usesFp16KeyValueCache();
+        this.sdpaShape = sdpaShape(config, batchSize);
+        this.cudnnAttention = fp16Kv && NativePrefillSupport.nativeAttention(sdpaShape);
+        this.useCudnnAttention = this.cudnnAttention;
+        this.nativeProjections = nativeProjections();
+        this.layersPerGraph = Math.min(prefillLayersPerGraph(), config.numberOfLayers());
+        System.out.printf(
+                "[jllm] prefill acceleration: %s%n",
+                NativePrefillSupport.describe(fp16Kv, sdpaShape));
         int cudnnElems = cudnnAttention ? qDim * batchSize : 0;
         this.cudnnQ = new HalfFloatArray(cudnnElems);
         this.cudnnK = new HalfFloatArray(cudnnElems);
@@ -317,10 +343,23 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     (System.nanoTime() - t0) / 1e9);
         }
         int groups = (config.numberOfLayers() + layersPerGraph - 1) / layersPerGraph;
-        if (nativeProjections && batchSize != paddedBatch) {
-            System.out.printf(
-                    "[jllm] prefill native GEMM rows: %d (chunk width) instead of %d (padded)%n",
-                    batchSize, paddedBatch);
+        // Padding advice belongs to the JIT projections and to them only. Their gemmMMA* grids are
+        // derived from paddedBatch, so a width that is not a multiple of 128 really does buy rows
+        // of arithmetic nobody reads. The native projections produce the chunk's rows instead, so
+        // repeating the advice there would send a user to round a width up for no reason.
+        if (batchSize != paddedBatch) {
+            if (nativeProjections) {
+                System.out.printf(
+                        "[jllm] prefill native GEMM rows: %d (chunk width) instead of %d"
+                                + " (padded)%n",
+                        batchSize, paddedBatch);
+            } else {
+                System.out.printf(
+                        "[jllm] prefill batch %d padded to %d for tensor-core tiles; GEMM"
+                                + " efficiency is %d/%d — use a multiple of 128 for best"
+                                + " throughput.%n",
+                        batchSize, paddedBatch, batchSize, paddedBatch);
+            }
         }
         if (layersPerGraph > 1) {
             System.out.printf(
@@ -359,6 +398,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.paddedBatch = primary.paddedBatch;
         this.cudnnAttention = primary.cudnnAttention;
         this.nativeProjections = primary.nativeProjections;
+        this.sdpaShape = primary.sdpaShape;
         this.layersPerGraph = primary.layersPerGraph;
         this.nHeadKv = primary.nHeadKv;
         this.nEmbdHead = primary.nEmbdHead;
@@ -753,13 +793,13 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         cudnnK,
                         cudnnV,
                         cudnnOut,
-                        1,
-                        config.numberOfHeads(),
-                        batchSize,
-                        batchSize,
-                        nEmbdHead,
-                        (float) (1.0 / Math.sqrt(nEmbdHead)),
-                        true);
+                        sdpaShape.batch(),
+                        sdpaShape.heads(),
+                        sdpaShape.seqQ(),
+                        sdpaShape.seqKv(),
+                        sdpaShape.headDim(),
+                        sdpaShape.scale(),
+                        sdpaShape.causal());
                 batchPrefillLayer.task(
                         tp + "cudnn_scatter",
                         CuDnnPrefillAttentionKernels::scatterAttnOut,

@@ -141,6 +141,82 @@ public final class PlanDispatchEvidence {
                 combine.size());
     }
 
+    // @formatter:off
+    /**
+     * Which batch-prefill implementation a Qwen3 FP16 plan was built with, read off its own grid
+     * scheduler.
+     *
+     * <p>The scheduler registers a worker grid for every JIT task the plan contains and for none of
+     * its library tasks, because a cuBLAS or cuDNN call has no grid to launch. That asymmetry is
+     * the evidence: a native projection is present as the <b>absence</b> of a {@code qkvProj} grid,
+     * and cuDNN attention as the presence of its three adapter grids where {@code batch_attention}
+     * would otherwise be. A system property cannot say this — it says what was asked for, and the
+     * capability probe may have answered no.
+     */
+    // @formatter:on
+    public record NativePrefillEvidence(
+            int primaryLayerGraphs,
+            boolean nativeProjections,
+            boolean cudnnAttention,
+            boolean jitAttentionInPrimary,
+            boolean batchedFallbackFamily) {
+
+        /** Every native component this plan selected, for a message that names what it built. */
+        public String describe() {
+            return "primaryLayerGraphs="
+                    + primaryLayerGraphs
+                    + " nativeProjections="
+                    + nativeProjections
+                    + " cudnnAttention="
+                    + cudnnAttention
+                    + " jitAttentionInPrimary="
+                    + jitAttentionInPrimary
+                    + " batchedFallbackFamily="
+                    + batchedFallbackFamily;
+        }
+    }
+
+    private static final Pattern PRIMARY_GRAPH = Pattern.compile("^batchPrefillLayer_(\\d+)\\..*$");
+
+    /** Reads {@link NativePrefillEvidence} off a built plan's scheduler. */
+    public static NativePrefillEvidence qwen3NativePrefill(GridScheduler scheduler) {
+        assertNotNull(
+                "no grid scheduler for the plan this run built, so its dispatch cannot be checked",
+                scheduler);
+        TreeSet<String> keys = new TreeSet<>(scheduler.keySet());
+        TreeSet<Integer> primaryGraphs = new TreeSet<>();
+        boolean cudnn = false;
+        boolean jitAttention = false;
+        boolean jitProjection = false;
+        boolean fallbackFamily = false;
+        for (String task : keys) {
+            if (task.startsWith("batchPrefillFallbackLayer_")) {
+                fallbackFamily = true;
+                continue;
+            }
+            Matcher matcher = PRIMARY_GRAPH.matcher(task);
+            if (!matcher.matches()) {
+                continue;
+            }
+            primaryGraphs.add(Integer.parseInt(matcher.group(1)));
+            if (task.endsWith("cudnn_pack_q")) {
+                cudnn = true;
+            } else if (task.endsWith("batch_attention")) {
+                jitAttention = true;
+            } else if (task.endsWith("qkvProj")
+                    || task.endsWith("gateUpProj")
+                    || task.endsWith("woProj")
+                    || task.endsWith("w2Proj")) {
+                jitProjection = true;
+            }
+        }
+        assertTrue(
+                "this plan has no batch-prefill layer graph at all: " + keys,
+                !primaryGraphs.isEmpty());
+        return new NativePrefillEvidence(
+                primaryGraphs.size(), !jitProjection, cudnn, jitAttention, fallbackFamily);
+    }
+
     /** The layers whose batched graph holds an attention-output projection, in index order. */
     private static List<Integer> attentionLayers(GridScheduler scheduler) {
         List<Integer> layers = new ArrayList<>();
