@@ -353,8 +353,16 @@ and copies nothing.
 
 Decode emits one token at a time, so every projection is a matrix-vector product. A Qwen3-0.6B
 FP16 token streams **1151 MiB** of weights, which at this card's ~896 GB/s is a 1.286 ms floor.
-No vendor GEMM applies at one column; what is left to win is how the kernels reduce and how often
-the host waits for the device. Three changes, all selected automatically:
+
+A GEMM can express a one-column product, so "no vendor GEMM applies" would be too strong. What is
+established is narrower and is about *these* bindings and *this* dispatch: llama.cpp's own CUDA
+backend rejects its cuBLAS path at one column — `ggml_cuda_should_use_mmvf` fires and it runs its
+hand-written `mul_mat_vec_f` instead — and TornadoVM's cuBLAS binding exposes no FP16 batched GEMV
+or batched GEMM at all, only `cublasSgemmStridedBatched` in FP32 and non-batched
+`cublasGemmExFP16`. Calling a vendor GEMM once per projection per layer was therefore never
+measured here, and nothing below claims it would lose. What was measured is how the generated
+kernels reduce and how often the host waits for the device. Three changes, all selected
+automatically:
 
 - **Four transformer layers to a decode graph.** Every `TaskGraph.execute()` ends in a device
   wait, and a profile put **29.8 gaps per token at a median of 22.8 µs — 97% of all device idle**,
@@ -363,12 +371,13 @@ the host waits for the device. Three changes, all selected automatically:
   high-level bytecode per graph — *not* the buffer `tornado.tvm.maxbytecodesize` sizes — and
   fourteen layers overflow it with a hard throw at plan construction. Seven fits and is 1.2%
   faster; four keeps headroom for a family with a slightly richer layer.
-- **A warp-butterfly reduction for four layer matrix-vector kernels**, under a new
-  `DeviceCapability.WARP_SHUFFLE_GEMV_FP16`. The shuffle-reducing twins already existed but were
-  reachable only through `WARP_SHUFFLE`, which asserts shuffle *correctness*, is branched on by
-  unrelated call sites, is miscompiled on the OpenCL backend, and carries a contrary measurement
-  from a different GPU on a different model. The new grant is the narrow claim actually measured:
-  *these five FP16 GEMV kernels reduce faster with a 32-lane butterfly on this device class.*
+- **A warp-butterfly reduction for four layer matrix-vector kernels.** The shuffle-reducing twins
+  already existed but were reachable only through `WARP_SHUFFLE`, which asserts shuffle
+  *correctness*, is branched on by unrelated call sites, is miscompiled on the OpenCL backend, and
+  carries a contrary measurement from a different GPU on a different model. Support for the new
+  kernels is now `DeviceCapability.SHUFFLE_REDUCED_FP16_GEMV` — a statement that they compute the
+  right answer — and the decision to *prefer* them is `Fp16GemvReductionPolicy`, which is a
+  workload question and is documented separately below.
 - **The vocabulary projection joins it.** Once the layer kernels moved it was the largest single
   kernel in a token — 502 µs, 20.6% of GPU time, 311 MiB of the 1151 — and its shuffle-reducing
   twin existed with a matching worker grid but was gated to Metal. It now runs at 842 GB/s,
@@ -376,6 +385,48 @@ the host waits for the device. Three changes, all selected automatically:
 
 None of the three allocates anything: same buffers, same tasks, fewer graphs, a different
 reduction. Peak device memory is identical to the MiB before and after them.
+
+### What the reduction preference selects, and where
+
+Support and preference are separate. `DeviceCapability.SHUFFLE_REDUCED_FP16_GEMV` says the
+shuffle-reducing kernels compute the right answer on a device; `Fp16GemvReductionPolicy` says
+whether to prefer them for this workload. The preference is not confined to Qwen3, because the
+vocabulary projection lives in a class six families share:
+
+| selection | chosen by | reaches |
+| --- | --- | --- |
+| the four layer matrix-vector kernels | `Qwen3FP16FFNLayers` | Qwen3 FP16 only, every plan shape, decode half |
+| the vocabulary projection | `LogitsFP16Layer` | Llama, Mistral, Phi-3, Devstral, Qwen2 and Qwen3 FP16 |
+| — | — | **not** Granite or Gemma 4, which install their own `vocab_proj` |
+
+Backends: CUDA. Metal reaches the same kernels through the older `SUBGROUP_SHUFFLE_32`, which is a
+correctness decision and not this one; OpenCL miscompiles the shuffle and is excluded.
+
+Measured across every FP16 model on the test machine that the selection reaches, tg128 at depth 0,
+three rounds, capability on against off:
+
+| model | what it selects | on/off |
+| --- | --- | ---: |
+| Qwen3-0.6B | layers + vocabulary | **1.191** |
+| Qwen2.5-0.5B | vocabulary | 1.044 |
+| Qwen2.5-1.5B, DeepSeek-R1-Distill-1.5B, Llama-3.2-1B | vocabulary | 1.011–1.012 |
+| Llama-3.2-3B | vocabulary | 1.005 |
+| Phi-3-mini-4k | vocabulary | 1.001 |
+| **Qwen3-4B** | layers + vocabulary | **0.990** |
+| Granite 3.2-2b, Granite 4.0-1b *(control)* | nothing | 1.000–1.001 |
+
+**Qwen3-4B is 1.0% slower with the preference on**, consistently across three rounds. The win
+shrinks as the reduced row grows — the butterfly's five shuffle steps are a fixed cost that longer
+rows amortise less well — and at 2560-wide rows across four kernels per layer it turns slightly
+negative. The preference is kept on anyway: 1.0% on one model against 19.1% on another and
+0.1–4.4% on the rest, and a dimension threshold fitted to one negative datapoint would be weaker
+evidence than the mechanism it claims to encode. The full table and the reasoning are in the
+campaign report.
+
+**The grant is not a per-device measurement.** It applies to every CUDA device and one has been
+measured. It is a backend-level default justified by the mechanism — the butterfly removes three
+barriers and a per-thread shared-memory round trip while leaving global memory traffic identical —
+and `Fp16GemvReductionPolicy` says exactly that.
 
 ### Measured
 
@@ -391,12 +442,62 @@ workload-rounds passed the foreign-occupancy exclusion.
 
 Sample spread was ±0.1–0.3%, and per-round ratios against llama.cpp agree to the third decimal.
 
-**Decode is still slower than llama.cpp at every depth.** This took 0.68 ms off a 3.10 ms token at
-depth zero; matching llama.cpp needed 1.11 ms. What remains is concentrated in attention — 374 µs
-against llama.cpp's 200 for `flash_attn_ext_vec` plus its combine — which is why the shortfall
-grows with context: 0.43 ms/token at depth 0, 0.90 at 512, 2.22 at 2048. It is the kernel and not
-the partitioning policy: the existing eight split-KV partitions measured best at every depth
-tried, so closing the rest means a different attention kernel.
+**Decode is still slower than llama.cpp at every depth**, and the reason is not the same at every
+depth. Comparable final-candidate profiles of both engines, windowed identically over the last 64
+decoded tokens, decompose the remaining difference per token as:
+
+| depth | total | idle | attention | projections | vocabulary | other | llama.cpp's kernel overlap |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | +347 µs | +134 | +267 | **−182** | **−39** | **−68** | +234 |
+| 512 | +898 µs | +215 | +734 | **−244** | **−39** | **−68** | +301 |
+| 2048 | +2224 µs | +201 | +2093 | **−314** | **−40** | **−67** | +351 |
+
+jllm is now **faster than llama.cpp on every kernel category except attention**, at every depth;
+those negative columns are what the three changes bought. Three terms remain. llama.cpp overlaps
+independent kernels within a token and jllm overlaps none, which is 234–351 µs. Nine graph
+submissions, each ending in a device wait, are 134–215 µs. Attention is +267 at depth 0 and +2093
+at depth 2048.
+
+So at depth zero attention is **44%** of the gap, not all of it: the kernel categories very nearly
+cancel there and what is left is dispatch. By depth 2048 attention is 94%. The figures above are
+profiled; profiling costs llama.cpp more per token than jllm (it launches 369 kernels to jllm's
+284), which compresses the depth-zero gap by about 81 µs against the unprofiled 428 µs and leaves
+the deeper two within 3 µs.
+
+On partitioning, the supported statement is narrower than "the kernel, not the policy": **eight
+split-KV partitions were the best of the values tested** — 1, 2, 4, 8 and 16, at depths 0, 512 and
+2048 — with a single fixed value chosen for the whole session. llama.cpp instead recomputes its
+split count per call from occupancy and the current KV length, and was observed using 2, 6 and 13
+at those three depths. Whether a context-dependent partition count would help here was not
+measured, and the proposal for the next step treats it as one of three coupled changes rather than
+as settled.
+
+### The next step, and why it is attention
+
+Not implemented here; recorded so the shape of the remaining work is on the record rather than
+rediscovered. At the shapes Qwen3-0.6B launches, the two decode attention kernels differ
+structurally:
+
+| | jllm `processHeadsFlashAttentionSplitKVFP16Paged` | llama.cpp `flash_attn_ext_vec` |
+| --- | --- | --- |
+| parallelised over | key positions only — one thread owns a whole 128-wide accumulator | key positions **and** head dimension — eight lanes share a key |
+| accumulator lives in | shared memory, 64 × 128 floats = **32 KiB per block** | registers, eight `half2` per thread |
+| static shared per block | 34052 B | 8448 B |
+| resident warps per SM | **6 of 48 (12.5%)** | 12 of 48 (25%) |
+| reductions | three serial 64-iteration loops on thread 0, four barriers | `__shfl_xor_sync` butterflies |
+| KV splits | fixed 8, a process-wide constant | 2, 6, 13 at depths 0, 512, 2048 — recomputed per call from occupancy |
+| effective bandwidth at depth 2048 | 188 GB/s (21% of peak) | 625 GB/s (70%) |
+
+GQA reuse is *not* a difference: both index the KV head as `head / gqa_ratio` and both therefore
+read each K and V element twice at `kvMul` 2.
+
+A rewrite that splits the head dimension across lanes, reduces with `simdShuffleDown` and sizes
+the split count from the configured context would, **if it matched llama.cpp exactly**, take decode
+to 0.89× at depth 0, 0.87× at 512 and 0.83× at 2048 — better, and still not parity, because
+attention is not the whole gap. The first thing to establish is whether TornadoVM can keep a
+per-lane accumulator in registers at all: `allocateFloatLocalArray` is shared memory, and a plain
+Java local array lowers to private memory unless Graal promotes it, which needs a constant length.
+If it cannot, the candidate does not work.
 
 ### Correctness
 
@@ -404,8 +505,10 @@ Grouping is **bit-identical** over 64 teacher-forced decode-step logit vectors o
 against a build with grouping set back to one layer per graph. The two reduction changes land at
 relative L2 3.3e-04 to 4.5e-04, which is the ordinary consequence of summing in a different order.
 `Qwen3DecodeDispatchAccelTest` asserts that a built plan actually grouped its layer graphs and
-actually selected the shuffle-reducing kernels, reading both off the plan's own grid scheduler, so
-a silent fallback fails instead of being measured as though it had not happened.
+actually installed the shuffle-reducing kernels — each of the four per layer by task name, and the
+vocabulary projection by its worker grid, which are chosen by different classes and are therefore
+checked separately. On the CUDA backend with the fixture present it **fails** rather than skips, so
+revoking the capability or dropping either selection is a failure and not a quiet pass.
 
 ---
 
@@ -426,9 +529,13 @@ a silent fallback fails instead of being measured as though it had not happened.
   `--batch-prefill-size` to the prompt where throughput matters.
 - **The decode changes are narrower still.** Layer grouping is applied to the Qwen3 FP16 decode
   families only, and four layers per graph is a headroom choice against a fixed per-graph bytecode
-  buffer rather than a tuned optimum. The warp-butterfly reduction is granted on CUDA because that
-  is where it was measured; it is deliberately not the broader `WARP_SHUFFLE` grant, and an
-  OpenCL or Metal device reaches these kernels, or does not, through its own capabilities.
+  buffer rather than a tuned optimum. The warp-butterfly *support* grant is CUDA-wide; the
+  *preference* that reads it is a backend-level default measured on one device, and it costs
+  Qwen3-4B 1.0% — see "What the reduction preference selects, and where".
+- **Attention is untouched and is where the remaining gap is at depth.** 44% of the depth-zero
+  difference against llama.cpp and 94% at depth 2048. The kernel holds a 128-float accumulator per
+  thread in shared memory, which caps it at 12.5% occupancy against llama.cpp's 25%, and its split
+  count is a fixed 8 where llama.cpp recomputes 2, 6 or 13 per call.
 - **Decode remains slower than llama.cpp** at every depth measured, and the shortfall grows with
   context. See [Decode on CUDA](#decode-on-cuda).
 - **Requires an unreleased TornadoVM revision**, and two of its modules are not on Maven Central.
