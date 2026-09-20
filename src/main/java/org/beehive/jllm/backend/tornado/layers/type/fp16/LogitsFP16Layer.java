@@ -69,6 +69,29 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
      * model run showed). Calling the (cheap, cached-inside) query directly at each use site avoids
      * the ordering hazard entirely.
      */
+    // @formatter:off
+    /**
+     * Set by {@link #setupLogitsTaskGraph} when it installs the shuffle-reducing vocabulary kernel,
+     * and read by {@link #updateGridScheduler} so that the worker grid follows the kernel that was
+     * actually installed instead of asking the same question a second time.
+     *
+     * <p><b>Why this is not just another {@link #useSimd32Reduction()} call.</b> Two subclasses
+     * override {@link #setupLogitsTaskGraph} and build their own {@code vocab_proj} — Granite
+     * scales by {@code logitScale}, Gemma 4 soft-caps — and neither overrides {@link
+     * #updateGridScheduler}. Deriving the grid from the capability therefore paired a 32-lane grid
+     * with their shared-memory kernels, which produced 99% wrong logits at up to 2.4e+08×
+     * tolerance, silently, with no error anywhere. Recording what was installed makes the
+     * shared-memory grid the default for any subclass that supplies its own kernel, which is both
+     * the safe answer and the correct one.
+     *
+     * <p>Deliberately has no field initializer. {@link AbstractLogitsTaskGraph}'s constructor calls
+     * {@link #setupLogitsTaskGraph} through {@code super(.)}; an initializer here would run
+     * afterwards and overwrite what that call recorded. Allocation-time {@code false} is the
+     * starting value, and the only write is the one inside the branch that installs the kernel.
+     */
+    // @formatter:on
+    private boolean vocabularyProjectionReducesWithShuffle;
+
     private static boolean useSimd32Reduction() {
         return SchedulerDetectionService.isSubgroupShuffle32Supported()
                 // Same claim, same kernel shape, a different device: see
@@ -154,6 +177,7 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
         // Same task name, same output contract either way; only the reduction kernel (and its
         // matching worker grid, in updateGridScheduler) differs, by device capability.
         if (useSimd32Reduction()) {
+            vocabularyProjectionReducesWithShuffle = true;
             logits.task(
                     "vocab_proj",
                     TransformerComputeKernelsLayered::matrixVectorGenericSimd32,
@@ -205,9 +229,13 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
         // matrixVectorGenericSimd32 assumes exactly one 32-lane workgroup per output row (the same
         // assumption every other Simd32 kernel this capability gates makes); the generic kernel's
         // worker scales the local size by THREAD_SCALE_FOR_LOGITS instead. Same task name either
-        // way - only the worker shape follows the kernel it is paired with.
+        // way - only the worker shape follows the kernel it is paired with, which is why this
+        // reads what setupLogitsTaskGraph installed rather than re-deriving it. A subclass that
+        // supplies its own vocab_proj gets the shared-memory grid its kernel needs.
         int vocabLocalSize =
-                useSimd32Reduction() ? 32 : LOCAL_WORK_GROUP_SIZE_ALLOC * THREAD_SCALE_FOR_LOGITS;
+                vocabularyProjectionReducesWithShuffle
+                        ? 32
+                        : LOCAL_WORK_GROUP_SIZE_ALLOC * THREAD_SCALE_FOR_LOGITS;
         var vocabSizeRowMajor = config.vocabularySize() * vocabLocalSize;
         var vocabWorker = new WorkerGrid1D(vocabSizeRowMajor);
         vocabWorker.setLocalWork(vocabLocalSize, 1, 1);
