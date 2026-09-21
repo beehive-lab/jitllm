@@ -124,4 +124,43 @@ public class OpenAIServerValidationTest {
     public void theEstimateRatioIsTheDocumentedOne() {
         assertEquals(4, OpenAIServer.ESTIMATED_CHARS_PER_TOKEN);
     }
+
+    // ---- request logging -----------------------------------------------------------------
+
+    @Test
+    public void theRequestSummaryCarriesWhatIdentifiesTheCall() {
+        String line =
+                OpenAIServer.requestSummary(
+                        "chatcmpl-7", "POST /v1/chat/completions", SERVED, 1234, 256, false);
+
+        assertTrue(line.contains("chatcmpl-7"));
+        assertTrue(line.contains("POST /v1/chat/completions"));
+        assertTrue(line.contains(SERVED));
+        assertTrue(line.contains("promptChars=1234"));
+        assertTrue(line.contains("maxTokens=256"));
+    }
+
+    @Test
+    public void aStreamingRequestIsMarkedAsSuch() {
+        assertTrue(
+                OpenAIServer.requestSummary("cmpl-1", "POST /v1/completions", SERVED, 10, 8, true)
+                        .contains("stream"));
+    }
+
+    @Test
+    public void aNonStreamingRequestIsNotMarkedStreaming() {
+        assertTrue(
+                !OpenAIServer.requestSummary("cmpl-1", "POST /v1/completions", SERVED, 10, 8, false)
+                        .contains("stream"));
+    }
+
+    /** An omitted model is legal, so the line has to say so rather than print "null". */
+    @Test
+    public void anAbsentModelIsRenderedReadably() {
+        String line =
+                OpenAIServer.requestSummary("cmpl-1", "POST /v1/completions", null, 10, 8, false);
+
+        assertTrue("should not print null: " + line, line.contains("(unset)"));
+        assertTrue(!line.contains("null"));
+    }
 }

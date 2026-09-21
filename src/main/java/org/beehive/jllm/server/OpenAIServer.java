@@ -220,6 +220,30 @@ public final class OpenAIServer {
     }
 
     /**
+     * One line describing an inbound completion request.
+     *
+     * <p>The server used to log nothing per request, which made a client's behaviour invisible:
+     * whether a prompt ever arrived, which model name it asked for, how large it was, and whether a
+     * reply was a rejection or a real generation all had to be inferred from the outside.
+     *
+     * @param id the response id this request will carry, so a log line and a reply can be paired
+     */
+    static String requestSummary(
+            String id, String path, String model, int promptChars, int maxTokens, boolean stream) {
+        return "[req "
+                + id
+                + "] "
+                + path
+                + " model="
+                + (model == null || model.isBlank() ? "(unset)" : model)
+                + " promptChars="
+                + promptChars
+                + " maxTokens="
+                + maxTokens
+                + (stream ? " stream" : "");
+    }
+
+    /**
      * Total characters of message text, the input to the prompt-size estimate.
      *
      * <p>Only {@link ChatContent.Text} carries characters a tokenizer would see here; a tool call
@@ -468,6 +492,10 @@ public final class OpenAIServer {
     }
 
     private void handleModels(HttpExchange ex) throws IOException {
+        System.err.println(
+                "[req] GET /v1/models -> "
+                        + servedModel
+                        + (contextLength > 0 ? " ctx=" + contextLength : " ctx=unknown"));
         sendJson(ex, 200, modelsPayload(servedModel, contextLength));
     }
 
@@ -525,26 +553,36 @@ public final class OpenAIServer {
         long seed = (long) Json.num(body, "seed", 1234);
         boolean stream = Json.bool(body, "stream", false);
 
-        String rejection =
-                validationError(
-                        Json.str(body, "model", null),
-                        servedModel,
-                        maxTokens,
-                        promptCharacters(messages),
-                        contextLength);
-        if (rejection != null) {
-            sendError(ex, 400, rejection);
-            return;
-        }
+        String requestedModel = Json.str(body, "model", null);
+        int promptChars = promptCharacters(messages);
+        String path = chat ? "POST /v1/chat/completions" : "POST /v1/completions";
 
         var req = new InferenceService.Request(messages, maxTokens, temperature, topP, seed);
         String id = (chat ? "chatcmpl-" : "cmpl-") + seq.incrementAndGet();
         long created = System.currentTimeMillis() / 1000;
+        String summary = requestSummary(id, path, requestedModel, promptChars, maxTokens, stream);
 
-        if (stream) {
-            streamResponse(ex, req, id, created, chat);
-        } else {
-            fullResponse(ex, req, id, created, chat);
+        String rejection =
+                validationError(requestedModel, servedModel, maxTokens, promptChars, contextLength);
+        if (rejection != null) {
+            System.err.println(summary + " -> 400 " + rejection);
+            sendError(ex, 400, rejection);
+            return;
+        }
+
+        System.err.println(summary);
+        long startNanos = System.nanoTime();
+        try {
+            if (stream) {
+                streamResponse(ex, req, id, created, chat);
+            } else {
+                fullResponse(ex, req, id, created, chat);
+            }
+        } finally {
+            // Generation is serialized, so this covers queue wait as well as the work itself —
+            // which is the number that explains a slow reply in a client.
+            System.err.printf(
+                    "[req %s] done in %.1fs%n", id, (System.nanoTime() - startNanos) / 1e9);
         }
     }
 
