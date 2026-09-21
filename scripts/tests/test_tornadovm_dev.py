@@ -100,6 +100,10 @@ class ArtifactVersionDerivation(unittest.TestCase):
     def test_jdk25_line_expects_the_jdk22plus_suffix(self):
         src = DEV.read_text()
         self.assertIn('if [ "$JDK" = 21 ]; then echo "-jdk21-dev"; else echo "-jdk22plus-dev"; fi', src)
+        # And the build itself takes TornadoVM's jdk22plus make target for JDK 25.
+        self.assertIn('if [ "$JDK" = 21 ]; then make BACKEND=$BACKEND; else make jdk22plus BACKEND=$BACKEND; fi', src)
+        # No bare mvn install repair path: a damaged repository is rebuilt through make.
+        self.assertNotRegex(src, r"mvn -q .*install")
 
     @staticmethod
     def _function_source(name):
@@ -215,6 +219,11 @@ class WorkflowRevisionPropagation(unittest.TestCase):
         self.assertEqual(action["inputs"]["backend"]["required"], True)
         self.assertIn("jdk", action["inputs"])
         self.assertIn("scripts/tornadovm-dev.sh setup --ref", yaml.dump(action))
+        # CI consumes the result file of the installation it prepared, never the shared
+        # `current` pointer, which another run could move after the lock is released.
+        self.assertIn("--result", yaml.dump(action))
+        self.assertNotIn("current/provenance.json", yaml.dump(action))
+        self.assertIn("install_dir", action["outputs"])
 
     def test_build_and_run_resolves_once_and_passes_it_everywhere(self):
         wf = self._load("build-and-run.yml")
@@ -250,12 +259,150 @@ class WorkflowRevisionPropagation(unittest.TestCase):
         on = wf[True] if True in wf else wf["on"]
         self.assertIn("tornadovm_ref", on["workflow_dispatch"]["inputs"])
 
+    def test_development_build_does_not_require_pom_agreement(self):
+        text = (REPO_ROOT / ".github" / "workflows" / "build-and-run.yml").read_text()
+        self.assertNotIn("update tornadovm.base.version", text)
+        self.assertIn('-Dtornadovm.version="$TORNADOVM_VERSION"', text)
+        self.assertIn('-Dmaven.repo.local="$MAVEN_REPO_LOCAL"', text)
+        self.assertIn("tornado-runtime", text)
+
     def test_release_workflows_verify_against_an_empty_repository(self):
         for name in ("prepare-release.yml", "bump-tornadovm-version.yml", "deploy-maven-central.yml"):
             text = (REPO_ROOT / ".github" / "workflows" / name).read_text()
             self.assertIn("-P release", text, name)
             self.assertIn('-Dmaven.repo.local="$(mktemp -d)"', text, name)
         self.assertIn("set-tornadovm-release.sh", (REPO_ROOT / ".github" / "workflows" / "prepare-release.yml").read_text())
+
+
+
+def fake_install(root, backend, jdk, sha, recipe, version, java_major=None, jars=("tornado-api", "tornado-runtime", "tornado-drivers-cuda"), repo_jars=None, corrupt=()):
+    """A prepared installation as setup would leave it: SDK jars, a repository holding the same
+    bytes (or missing/different ones, for the failure cases), and a provenance file."""
+    d = root / f"{backend}-jdk{jdk}" / f"{sha}-r{recipe}"
+    sdk = d / "TornadoVM" / "dist" / f"tornadovm-{version}-{backend}-linux-amd64" / f"tornadovm-{version}-{backend}"
+    (sdk / "share" / "java" / "tornado").mkdir(parents=True)
+    (sdk / "bin").mkdir()
+    repo = d / "m2" / "io" / "github" / "beehive-lab"
+    for j in jars:
+        content = f"{j}-{version}-{sha}".encode()
+        (sdk / "share" / "java" / "tornado" / f"{j}-{version}.jar").write_bytes(content)
+        if repo_jars is None or j in repo_jars:
+            (repo / j / version).mkdir(parents=True, exist_ok=True)
+            (repo / j / version / f"{j}-{version}.jar").write_bytes(content if j not in corrupt else b"other")
+    prov = {"ref": sha, "artifact_version": version, "backend": backend, "jdk": str(jdk), "java_major": str(java_major or jdk),
+            "java": f"openjdk version \"{java_major or jdk}\"", "recipe": recipe, "install_dir": str(d), "sdk_dir": str(sdk),
+            "maven_repo_local": str(d / "m2"), "built_at": "2026-09-21T00:00:00Z", "host": "test"}
+    (d / "provenance.json").write_text(json.dumps(prov))
+    return d
+
+
+class ArtifactConsistency(unittest.TestCase):
+    """build refuses an installation whose repository does not hold the SDK's own artifacts."""
+
+    SHA = "a" * 40
+
+    def _build_dry(self, install, env_extra=None):
+        env = {**os.environ, **(env_extra or {})}
+        return run([str(DEV), "build", "--install", str(install), "--dry-run"], env=env)
+
+    def test_cache_hit_builds_with_the_recorded_version_and_repository(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            major = run(["java", "-version"]).stderr.split('"')[1].split(".")[0]
+            d = fake_install(root, "cuda", major, self.SHA, "r1", f"6.1.1-jdk{'21' if major == '21' else '22plus'}-dev")
+            r = self._build_dry(d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(f"-Dtornadovm.version=6.1.1-jdk{'21' if major == '21' else '22plus'}-dev", r.stdout)
+            self.assertIn(f"-Dmaven.repo.local={d}/m2", r.stdout)
+
+    def test_a_newer_base_version_than_the_pom_default_is_used_as_produced(self):
+        # develop moved to 6.2.0: the build passes what the SDK produced, no POM edit required.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            major = run(["java", "-version"]).stderr.split('"')[1].split(".")[0]
+            v = f"6.2.0-jdk{'21' if major == '21' else '22plus'}-dev"
+            d = fake_install(root, "cuda", major, self.SHA, "r1", v)
+            r = self._build_dry(d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(f"-Dtornadovm.version={v}", r.stdout)
+
+    def test_missing_repository_artifacts_are_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            major = run(["java", "-version"]).stderr.split('"')[1].split(".")[0]
+            d = fake_install(root, "cuda", major, self.SHA, "r1", "6.1.1-jdk21-dev", repo_jars=("tornado-api",))
+            r = self._build_dry(d)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("tornado-runtime (missing", r.stderr)
+            self.assertIn("setup --ref", r.stderr)
+
+    def test_mismatched_repository_artifacts_are_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            major = run(["java", "-version"]).stderr.split('"')[1].split(".")[0]
+            d = fake_install(root, "cuda", major, self.SHA, "r1", "6.1.1-jdk21-dev", corrupt=("tornado-runtime",))
+            r = self._build_dry(d)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("tornado-runtime (repository jar differs", r.stderr)
+
+    def test_the_installations_jdk_line_must_match_the_running_java(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            major = run(["java", "-version"]).stderr.split('"')[1].split(".")[0]
+            other = "25" if major == "21" else "21"
+            d = fake_install(root, "cuda", other, self.SHA, "r1", f"6.1.1-jdk{'22plus' if other == '25' else '21'}-dev")
+            r = self._build_dry(d)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn(f"built for JDK {other}", r.stderr)
+
+
+class ConcurrentInstallationsDoNotMix(unittest.TestCase):
+    """Two revisions prepared on one line: a command bound to one installation reads that
+    installation's version, SDK and repository even while `current` is moved to the other."""
+
+    def test_bound_commands_ignore_a_moving_current_pointer(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            major = run(["java", "-version"]).stderr.split('"')[1].split(".")[0]
+            suffix = "21" if major == "21" else "22plus"
+            a = fake_install(root, "cuda", major, "a" * 40, "r1", f"6.1.1-jdk{suffix}-dev")
+            b = fake_install(root, "cuda", major, "b" * 40, "r1", f"6.2.0-jdk{suffix}-dev")
+            line = root / f"cuda-jdk{major}"
+            for current, bound in ((a, b), (b, a)):
+                (line / "current").unlink(missing_ok=True)
+                (line / "current").symlink_to(current.name)
+                # Bound to the OTHER installation: every field must come from it, not from current.
+                r = run([str(DEV), "build", "--install", str(bound), "--dry-run"])
+                self.assertEqual(r.returncode, 0, r.stderr)
+                bound_prov = json.loads((bound / "provenance.json").read_text())
+                self.assertIn(f"-Dtornadovm.version={bound_prov['artifact_version']}", r.stdout)
+                self.assertIn(f"-Dmaven.repo.local={bound}/m2", r.stdout)
+                self.assertNotIn(str(current / "m2"), r.stdout)
+                e = run([str(DEV), "env", "--install", str(bound)])
+                self.assertIn(bound_prov["sdk_dir"], e.stdout)
+                self.assertNotIn(json.loads((current / "provenance.json").read_text())["sdk_dir"], e.stdout)
+            # Unbound commands resolve current once, to an immutable directory.
+            (line / "current").unlink(); (line / "current").symlink_to(a.name)
+            e = run([str(DEV), "env", "--backend", "cuda", "--jdk", major, "--root", str(root)])
+            self.assertIn(str(a), e.stdout)
+            self.assertNotIn("current", e.stdout)
+
+    def test_setup_never_prunes_and_prune_is_explicit(self):
+        src = DEV.read_text()
+        self.assertNotIn("xargs -r rm -rf", src)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            major = run(["java", "-version"]).stderr.split('"')[1].split(".")[0]
+            a = fake_install(root, "cuda", major, "a" * 40, "r1", "6.1.1-jdk21-dev")
+            b = fake_install(root, "cuda", major, "b" * 40, "r1", "6.1.1-jdk21-dev")
+            line = root / f"cuda-jdk{major}"
+            (line / "current").symlink_to(a.name)
+            r = run([str(DEV), "prune", "--backend", "cuda", "--jdk", major, "--root", str(root)])
+            self.assertIn("would remove", r.stdout)
+            self.assertTrue(b.exists())
+            r = run([str(DEV), "prune", "--backend", "cuda", "--jdk", major, "--root", str(root), "--yes"])
+            self.assertFalse(b.exists())
+            self.assertTrue(a.exists())
 
 
 if __name__ == "__main__":

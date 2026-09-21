@@ -33,8 +33,11 @@ outputs:
     description: 'The SDK directory'
     value: ${{ steps.prepared.outputs.sdk_dir }}
   maven_repo_local:
-    description: 'The per-SDK Maven repository holding the matching artifacts'
+    description: "The installation's own Maven repository holding the matching artifacts"
     value: ${{ steps.prepared.outputs.maven_repo_local }}
+  install_dir:
+    description: 'The immutable installation directory this step prepared'
+    value: ${{ steps.prepared.outputs.install_dir }}
 
 # macOS ships bash 3.2; SDKMAN's scripts and this repository's scripts need bash 4+, so
 # macOS runners use Homebrew's bash (requires `brew install bash` on the runner).
@@ -51,16 +54,19 @@ runs:
         fi
         ROOT="${{ inputs.root }}"
         [ -n "$ROOT" ] || ROOT="${RUNNER_TOOL_CACHE}/tornadovm"
-        # The per-SDK Maven repository keeps concurrent runs of different revisions from
-        # overwriting one another's identical -dev coordinates in ~/.m2.
+        # The result file is this step's own copy of the provenance of the installation it
+        # prepared: the shared `current` pointer is not read again after the lock is released,
+        # so a concurrent run preparing another revision cannot redirect this one.
+        RESULT="${RUNNER_TEMP}/tornadovm-setup-$$.json"
         scripts/tornadovm-dev.sh setup --ref "${{ inputs.ref }}" --backend "${{ inputs.backend }}" \
-          --jdk "${{ inputs.jdk }}" --root "$ROOT" --isolated-repo
-        PROV="$ROOT/${{ inputs.backend }}-jdk${{ inputs.jdk }}/current/provenance.json"
-        python3 - "$PROV" "${{ inputs.ref }}" >> "$GITHUB_OUTPUT" <<'EOF'
+          --jdk "${{ inputs.jdk }}" --root "$ROOT" --result "$RESULT"
+        python3 - "$RESULT" "${{ inputs.ref }}" "${{ inputs.jdk }}" "${{ inputs.backend }}" >> "$GITHUB_OUTPUT" <<'EOF'
         import json, sys
         p = json.load(open(sys.argv[1]))
         assert p["ref"] == sys.argv[2], f"prepared {p['ref']} but the workflow asked for {sys.argv[2]}"
-        for k in ("artifact_version", "sdk_dir", "maven_repo_local"):
+        assert p["jdk"] == sys.argv[3] and p["java_major"] == sys.argv[3], f"prepared with java {p['java_major']} for jdk {p['jdk']}, asked for {sys.argv[3]}"
+        assert p["backend"] == sys.argv[4], f"prepared {p['backend']}, asked for {sys.argv[4]}"
+        for k in ("artifact_version", "sdk_dir", "maven_repo_local", "install_dir"):
             print(f"{k}={p[k]}")
         print(f"sha={p['ref']}")
         EOF
@@ -101,6 +107,7 @@ runs:
         echo "TORNADOVM_REF=${{ steps.prepared.outputs.sha }}" >> $GITHUB_ENV
         echo "TORNADOVM_VERSION=${{ steps.prepared.outputs.artifact_version }}" >> $GITHUB_ENV
         echo "MAVEN_REPO_LOCAL=${{ steps.prepared.outputs.maven_repo_local }}" >> $GITHUB_ENV
+        echo "TORNADOVM_INSTALL_DIR=${{ steps.prepared.outputs.install_dir }}" >> $GITHUB_ENV
         # One label that identifies the runtime: the artifact version alone (6.1.1-jdk21-dev) is
         # the same for every develop commit, so the label carries the commit too.
         SHORT=$(echo "${{ steps.prepared.outputs.sha }}" | cut -c1-12)

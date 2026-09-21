@@ -120,13 +120,17 @@ jobs:
         run: |
           set -euo pipefail
           # The TornadoVM coordinates are the ones the SDK built in the previous step produced
-          # (TORNADOVM_VERSION), resolved from that SDK's own Maven repository. The POM's
-          # development default for this JDK must agree with them, or the POM is stale.
-          POM_DEFAULT=$(./mvnw -q help:evaluate -Dexpression=tornadovm.version -DforceStdout)
-          if [ "$POM_DEFAULT" != "$TORNADOVM_VERSION" ]; then
-            echo "::error::pom.xml resolves tornadovm.version to $POM_DEFAULT on JDK ${{ matrix.jdk }}, but the SDK built from $TORNADOVM_REF produced $TORNADOVM_VERSION; update tornadovm.base.version"
-            exit 1
-          fi
+          # (TORNADOVM_VERSION), resolved from that installation's own Maven repository. What is
+          # checked is the produced artifact line, not agreement with the POM's development
+          # default: develop moving its base version is not an error here.
+          case "$TORNADOVM_VERSION" in
+            *-jdk$([ "${{ matrix.jdk }}" = 21 ] && echo 21 || echo 22plus)-dev) ;;
+            *) echo "::error::JDK ${{ matrix.jdk }} prepared TornadoVM $TORNADOVM_VERSION, which is not that JDK line's -dev artifact"; exit 1 ;;
+          esac
+          for a in tornado-api tornado-runtime; do
+            [ -f "$MAVEN_REPO_LOCAL/io/github/beehive-lab/$a/$TORNADOVM_VERSION/$a-$TORNADOVM_VERSION.jar" ] \
+              || { echo "::error::$a $TORNADOVM_VERSION is not in $MAVEN_REPO_LOCAL"; exit 1; }
+          done
           ./mvnw clean install -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
           JLLM_VERSION=$(./mvnw -q help:evaluate -Dexpression=project.version -DforceStdout)
           echo "jllm version: $JLLM_VERSION against TornadoVM $TORNADOVM_RUNTIME_ID"

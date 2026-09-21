@@ -171,20 +171,31 @@ eval "$(scripts/tornadovm-dev.sh env)"        # exports TORNADOVM_HOME and PATH 
 
 | task | command |
 |---|---|
-| Rebuild without touching TornadoVM | `scripts/tornadovm-dev.sh build clean package -DskipTests` (reuses the prepared SDK) |
+| Rebuild without touching TornadoVM | `scripts/tornadovm-dev.sh build clean package -DskipTests` (reuses the prepared installation) |
+| Build against one specific installation | `scripts/tornadovm-dev.sh build --install ~/.jllm/tornadovm/cuda-jdk21/<commit>-r<recipe> …` |
+| Remove old installations | `scripts/tornadovm-dev.sh prune --yes` (explicit; never automatic) |
 | Advance to the latest `develop` | `scripts/tornadovm-dev.sh refresh --backend cuda --jdk 21` |
 | Reproduce an exact revision | `scripts/tornadovm-dev.sh setup --ref <40-hex commit> --backend cuda --jdk 21` |
 | What is prepared | `scripts/tornadovm-dev.sh status` (revision, artifact version, JDK, backend, SDK path) |
 | Build a jllm release tag | check out the tag, then `./mvnw -P release -Dtornadovm.release.version=<X.Y.Z> clean package` — a release depends on a published TornadoVM release and refuses `-dev` coordinates |
 
-`scripts/tornadovm-dev.sh build` reuses the prepared environment; it never fetches or rebuilds
-TornadoVM on its own, and launching `jllm` never does either. Prepared SDKs live under
-`~/.jllm/tornadovm/<backend>-jdk<N>/<commit>-r<recipe>/` with a `provenance.json` each; the three
-newest are kept. Plain `./mvnw` also works once `setup` has run, because the POM's development
-default (`tornadovm.base.version` + `-jdk21-dev`/`-jdk22plus-dev`) names the coordinates `setup`
-installed — `build` passes the version it recorded and CI fails if the two ever disagree. Without
-a prepared environment, plain `./mvnw` fails to resolve `tornado-api:<version>-jdk21-dev`; that is
-the signal to run `setup`.
+`scripts/tornadovm-dev.sh build` is the reliable build entry point: it reuses the prepared
+installation, passes the exact artifact version that installation produced and that
+installation's own Maven repository to `./mvnw`, and never fetches or rebuilds TornadoVM on its
+own (launching `jllm` never does either). Installations live under
+`~/.jllm/tornadovm/<backend>-jdk<N>/<commit>-r<recipe>/` — the checkout, its SDK, its Maven
+repository (`m2/`) and a `provenance.json` — and are immutable; `current` is only a convenience
+pointer to the last one prepared, and nothing is deleted unless you run
+`scripts/tornadovm-dev.sh prune --yes` (which removes every installation on that line except
+`current`; do not run it while a build or an inference process is using an older one).
+
+**Plain `./mvnw` does not see these artifacts.** TornadoVM's develop artifacts carry the same
+coordinates for every commit (`6.1.1-jdk21-dev`), so they are kept in each installation's own
+repository rather than in `~/.m2`, and the POM's development default only names a version, it does
+not track develop. A plain `./mvnw` therefore needs `-Dmaven.repo.local=<installation>/m2
+-Dtornadovm.version=<its artifact_version>` (both printed by `scripts/tornadovm-dev.sh status`),
+which is exactly what `scripts/tornadovm-dev.sh build` adds; without them it fails to resolve
+`tornado-api:…-dev`, and that failure is the signal to use the helper.
 
 -----------
 
