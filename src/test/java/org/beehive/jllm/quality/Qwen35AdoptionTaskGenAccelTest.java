@@ -53,7 +53,17 @@ public class Qwen35AdoptionTaskGenAccelTest {
                 tasksFile != null && outFile != null);
         int batch = Integer.getInteger("jllm.eval.batch", 512);
         int maxTokens = Integer.getInteger("jllm.eval.maxTokens", 384);
+        String systemFile = System.getProperty("jllm.eval.system");
+        String systemText = systemFile == null ? null : Files.readString(Paths.get(systemFile));
 
+        // The FP16 control: the same code and runtime with the int8 pairs excluded through the
+        // test seam, so the projections run the FP16 dequantize-then-GEMM pair the int8 pair
+        // replaced. The meta line records which kernels actually ran in either case.
+        if ("fp16".equals(System.getProperty("jllm.eval.control"))) {
+            org.beehive.jllm.backend.tornado.layers.Qwen35BatchPrefillLayers
+                            .int8TaskFilterForTests =
+                    task -> false;
+        }
         System.setProperty("use.tornadovm", "true");
         System.setProperty("jllm.withPrefillDecode", "true");
         System.setProperty("jllm.prefillBatchSize", String.valueOf(batch));
@@ -69,10 +79,20 @@ public class Qwen35AdoptionTaskGenAccelTest {
                 .append(batch)
                 .append(", \"maxTokens\": ")
                 .append(maxTokens)
+                .append(", \"systemPromptChars\": ")
+                .append(systemText == null ? 0 : systemText.length())
                 .append(", \"gateUpKernel\": \"")
                 .append(
                         org.beehive.jllm.backend.tornado.PlanDispatchEvidence
                                 .batchedTaskKernelsIfAny(plan, "ffn_gate_proj"))
+                .append("\", \"downKernel\": \"")
+                .append(
+                        org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                                .batchedTaskKernelsIfAny(plan, "ffn_down_proj"))
+                .append("\", \"attnOutputKernel\": \"")
+                .append(
+                        org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                                .batchedTaskKernelsIfAny(plan, "attn_output_proj"))
                 .append("\"}}\n");
         try {
             int done = 0;
@@ -85,6 +105,11 @@ public class Qwen35AdoptionTaskGenAccelTest {
                 List<Integer> tokens = new ArrayList<>();
                 if (model.shouldAddBeginOfText()) {
                     tokens.add(chat.getBeginOfText());
+                }
+                if (systemText != null) {
+                    tokens.addAll(
+                            chat.encodeMessage(
+                                    new ChatFormat.Message(ChatFormat.Role.SYSTEM, systemText)));
                 }
                 tokens.addAll(
                         chat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, prompt)));
@@ -126,6 +151,10 @@ public class Qwen35AdoptionTaskGenAccelTest {
                         .append(id)
                         .append("\", \"promptTokens\": ")
                         .append(promptTokens.length)
+                        .append(", \"prefillChunks\": ")
+                        .append((prefix + batch - 1) / batch)
+                        .append(", \"partialTail\": ")
+                        .append(prefix % batch)
                         .append(", \"generated\": ")
                         .append(generated.size())
                         .append(", \"finish\": \"")
