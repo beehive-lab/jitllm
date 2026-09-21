@@ -278,10 +278,13 @@ class LlamaRunner:
     def _add_llama_args(self, cmd: List[str], args: argparse.Namespace) -> List[str]:
         """Add LLaMA-specific arguments to the command."""
         if getattr(args, "server", False):
-            # OpenAI server mode: the server parses only --model / --port / --gpu.
+            # OpenAI server mode: the server parses only --model / --port / --gpu / --ctx.
             srv = ["--model", args.model_path, "--port", str(getattr(args, "port", 8080))]
             if args.use_gpu:
                 srv.append("--gpu")
+            ctx = getattr(args, "ctx", 0)
+            if ctx:
+                srv += ["--ctx", str(ctx)]
             return cmd + srv
         if getattr(args, "bench", False):
             # llama-bench mode: model(s) + benchmark options only. If --bench-args already
@@ -490,6 +493,7 @@ def create_parser() -> argparse.ArgumentParser:
     server_group = parser.add_argument_group("OpenAI-compatible server")
     server_group.add_argument("--server", action="store_true", help="Run the OpenAI-compatible HTTP server instead of inference")
     server_group.add_argument("--port", type=int, default=8080, help="Server port (default 8080)")
+    server_group.add_argument("--ctx", type=int, default=0, help="Context length to serve, in tokens (default: the model's own; a larger request is clamped to it)")
 
     # Benchmark (llama-bench style)
     parser.add_argument(
