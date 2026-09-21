@@ -40,14 +40,34 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 die() { echo "tornadovm-dev: $*" >&2; exit 1; }
 
+# macOS has neither sha256sum nor flock (no util-linux); the same script must run there.
+sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
+sha256_file() { sha256_of < "$1"; }
+
+# One builder per line at a time: flock where it exists, otherwise an atomic mkdir lock that
+# is released on exit.
+take_lock() {
+  local lock=$1
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$lock"; flock 9
+  else
+    local d="$lock.d" waited=0
+    until mkdir "$d" 2>/dev/null; do
+      sleep 5; waited=$((waited + 5))
+      [ $waited -lt 7200 ] || die "could not take $d within two hours; remove it if no build is running"
+    done
+    trap 'rmdir "'"$d"'" 2>/dev/null' EXIT
+  fi
+}
+
 # The identity of everything in the recipe that can change what a build of the same commit
 # produces: this script, the JDK, and the Python that TornadoVM's bin/compile runs under.
 recipe_id() {
   {
-    sha256sum "${BASH_SOURCE[0]}" | cut -d' ' -f1
+    sha256_file "${BASH_SOURCE[0]}"
     "${JAVA_HOME:+$JAVA_HOME/bin/}java" -version 2>&1 | head -1
     python3 --version 2>&1
-  } | sha256sum | cut -c1-12
+  } | sha256_of | cut -c1-12
 }
 
 resolve_develop() {
@@ -123,13 +143,13 @@ EOF
 verify_or_install_artifacts() { # <install dir> <sdk dir> <version>
   local dir=$1 sdk=$2 v=$3 repo want have
   repo=$([ $ISOLATED = 1 ] && echo "$dir/m2" || echo "$HOME/.m2/repository")
-  want=$(sha256sum "$sdk/share/java/tornado/tornado-api-$v.jar" | cut -d' ' -f1)
-  have=$(sha256sum "$repo/io/github/beehive-lab/tornado-api/$v/tornado-api-$v.jar" 2>/dev/null | cut -d' ' -f1 || true)
+  want=$(sha256_file "$sdk/share/java/tornado/tornado-api-$v.jar")
+  have=$( [ -f "$repo/io/github/beehive-lab/tornado-api/$v/tornado-api-$v.jar" ] && sha256_file "$repo/io/github/beehive-lab/tornado-api/$v/tornado-api-$v.jar" || true)
   if [ "$want" != "$have" ]; then
     echo "tornadovm-dev: installing TornadoVM $v artifacts into $repo"
     ( cd "$dir/TornadoVM" && mvn -q -Dmaven.repo.local="$repo" -DskipTests install >/dev/null 2>&1 ) \
       || die "mvn install of the TornadoVM artifacts failed"
-    have=$(sha256sum "$repo/io/github/beehive-lab/tornado-api/$v/tornado-api-$v.jar" | cut -d' ' -f1)
+    have=$(sha256_file "$repo/io/github/beehive-lab/tornado-api/$v/tornado-api-$v.jar")
     [ "$want" = "$have" ] || die "installed tornado-api-$v.jar still differs from the SDK's"
   fi
 }
@@ -151,7 +171,7 @@ do_setup() {
   recipe=$(recipe_id)
   dir="$(line_dir)/$sha-r$recipe"
   mkdir -p "$(line_dir)"
-  exec 9>"$(line_dir)/.lock"; flock 9
+  take_lock "$(line_dir)/.lock"
   if [ -f "$dir/provenance.json" ] && [ -n "$(sdk_dir_of "$dir")" ]; then
     echo "tornadovm-dev: $BACKEND jdk$JDK $sha (recipe $recipe) already built"
   else
