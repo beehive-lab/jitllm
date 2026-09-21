@@ -81,4 +81,25 @@ public class DeviceDiscoveryAccelTest {
                 "Metal's display name should be self-describing enough for an error message",
                 device.displayName().isBlank());
     }
+
+    /**
+     * Actual accelerator execution, not a mocked limit: a CUDA device reports its threads-per-
+     * block limit, and the production model's eight-part delta rule (8 x 128 = 1024 lanes) is
+     * admitted only when that limit is at least 1024, which every CUDA device from compute
+     * capability 2.0 on reports. The mocked 256/512/1024 cases live in Qwen35DeltaRuleGeometryTest.
+     */
+    @org.junit.Test
+    public void theCudaDeviceReportsItsWorkgroupLimitAndAdmitsTheEightPartDeltaRule() {
+        org.beehive.jllm.runtime.backend.Device device =
+                org.beehive.jllm.backend.tornado.device.TornadoDevices.current();
+        org.junit.Assume.assumeTrue(
+                "not a CUDA device",
+                device.backend() == org.beehive.jllm.runtime.backend.BackendId.CUDA);
+        long limit = device.maxWorkGroupSize();
+        org.junit.Assert.assertTrue("CUDA reports a workgroup limit, got " + limit, limit >= 1024);
+        org.junit.Assert.assertEquals(
+                org.beehive.jllm.backend.tornado.layers.Qwen35FFNLayers.DeltaRuleGeometry.SPLIT8,
+                org.beehive.jllm.backend.tornado.layers.Qwen35FFNLayers.selectDeltaRuleGeometry(
+                        128, limit));
+    }
 }

@@ -292,6 +292,88 @@ public class Qwen35KernelAccelTest {
         for (int i = 0; i < VALUE_DIM; i++) {
             assertTrue("readout " + i + " is not finite", Float.isFinite(dout.get(i)));
         }
+
+        // The eight-part kernel on the same inputs: the same host bounds, and its FP64 distance
+        // no worse than the two-part kernel's by more than a small factor.
+        FloatArray dstate8 = toDevice(state);
+        FloatArray dout8 = new FloatArray(VALUE_DIM);
+        TaskGraph graph8 =
+                new TaskGraph("deltaSplit8")
+                        .transferToDevice(
+                                DataTransferMode.EVERY_EXECUTION,
+                                dq,
+                                dk,
+                                dv,
+                                ddecay,
+                                dbeta,
+                                dstate8,
+                                dout8)
+                        .task(
+                                "k",
+                                Qwen35DeltaNetKernels::deltaRuleSplit8,
+                                new KernelContext(),
+                                dq,
+                                dk,
+                                dv,
+                                ddecay,
+                                dbeta,
+                                dstate8,
+                                dout8,
+                                KEY_HEADS,
+                                STATE_DIM,
+                                0)
+                        .transferToHost(DataTransferMode.EVERY_EXECUTION, dout8, dstate8);
+        run(
+                graph8,
+                "k",
+                VALUE_HEADS * Qwen35DeltaNetKernels.DELTA_RULE_PARTS * STATE_DIM,
+                Qwen35DeltaNetKernels.DELTA_RULE_PARTS * STATE_DIM);
+        assertClose("eight-part delta readout", hostOut, dout8);
+        assertClose("eight-part delta state", hostState, dstate8);
+        double[] ref = deltaRuleFp64(q, k, v, decay, beta, state);
+        double e2 = 0, e8 = 0, den = 0;
+        for (int i = 0; i < VALUE_DIM; i++) {
+            e2 += (dout.get(i) - ref[i]) * (dout.get(i) - ref[i]);
+            e8 += (dout8.get(i) - ref[i]) * (dout8.get(i) - ref[i]);
+            den += ref[i] * ref[i];
+        }
+        System.out.printf(
+                java.util.Locale.ROOT,
+                "[delta] readout vs FP64: two-part relL2 %.3e, eight-part relL2 %.3e%n",
+                Math.sqrt(e2 / den),
+                Math.sqrt(e8 / den));
+        assertTrue("eight-part further from FP64 than two-part", e8 <= Math.max(4 * e2, 1e-20));
+    }
+
+    /** The delta rule's readout in FP64 from the same FP32 inputs. */
+    private static double[] deltaRuleFp64(
+            float[] q, float[] k, float[] v, float[] decay, float[] beta, float[] state) {
+        double[] out = new double[VALUE_DIM];
+        for (int h = 0; h < VALUE_HEADS; h++) {
+            int kvBase = (h % KEY_HEADS) * STATE_DIM;
+            double[][] s = new double[STATE_DIM][STATE_DIM];
+            for (int i = 0; i < STATE_DIM; i++) {
+                for (int c = 0; c < STATE_DIM; c++) {
+                    s[i][c] =
+                            (double) state[h * STATE_DIM * STATE_DIM + i * STATE_DIM + c]
+                                    * decay[h];
+                }
+            }
+            for (int c = 0; c < STATE_DIM; c++) {
+                double pred = 0;
+                for (int i = 0; i < STATE_DIM; i++) {
+                    pred += s[i][c] * k[kvBase + i];
+                }
+                double corr = (v[h * STATE_DIM + c] - pred) * beta[h];
+                double read = 0;
+                for (int i = 0; i < STATE_DIM; i++) {
+                    s[i][c] += k[kvBase + i] * corr;
+                    read += s[i][c] * q[kvBase + i];
+                }
+                out[h * STATE_DIM + c] = read;
+            }
+        }
+        return out;
     }
 
     @Test

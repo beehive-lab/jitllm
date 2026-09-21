@@ -49,6 +49,65 @@ public class TornadoDevicesTest {
     }
 
     @Test
+    public void int8MmaSupportAgreesWithTheResolvedCapability() {
+        assertEquals(
+                TornadoDevices.current()
+                        .capabilities()
+                        .supports(DeviceCapability.INT8_TENSOR_CORE_MMA),
+                TensorCoreSupport.isInt8MmaCapable());
+    }
+
+    /** The compute capability is read from the device's own description, or is unknown. */
+    @Test
+    public void theComputeCapabilityComesFromTheDeviceDescription() {
+        assertEquals(
+                120,
+                TornadoDevices.cudaComputeCapability("id=0x1\nDevice version   : CUDA 12.0\nx"));
+        assertEquals(89, TornadoDevices.cudaComputeCapability("Device version : CUDA 8.9"));
+        assertEquals(61, TornadoDevices.cudaComputeCapability("Device version: CUDA 6.1\n"));
+        assertEquals(-1, TornadoDevices.cudaComputeCapability("Device version : OpenCL 3.0"));
+        assertEquals(-1, TornadoDevices.cudaComputeCapability(""));
+        assertEquals(-1, TornadoDevices.cudaComputeCapability(null));
+    }
+
+    /**
+     * Each kernel family is granted by what the device executes, not by the backend's name: the
+     * tensor-core families (FP16 and int8) need compute capability 8.0, the packed-integer path
+     * 6.1, and an unreadable capability grants none of them. OpenCL and Metal never get them.
+     */
+    @Test
+    public void tensorCoreGrantsFollowTheComputeCapability() {
+        var cuda = uk.ac.manchester.tornado.api.enums.TornadoVMBackendType.CUDA;
+        var opencl = uk.ac.manchester.tornado.api.enums.TornadoVMBackendType.OPENCL;
+        var ampere =
+                TornadoDevices.capabilitiesOf(cuda, "NVIDIA CUDA", "Device version : CUDA 8.0");
+        assertTrue(ampere.supports(DeviceCapability.TENSOR_CORE_MMA));
+        assertTrue(ampere.supports(DeviceCapability.INT8_TENSOR_CORE_MMA));
+        assertTrue(ampere.supports(DeviceCapability.PACKED_INTEGER_DOT));
+        var blackwell =
+                TornadoDevices.capabilitiesOf(cuda, "NVIDIA CUDA", "Device version : CUDA 12.0");
+        assertTrue(blackwell.supports(DeviceCapability.INT8_TENSOR_CORE_MMA));
+        var turing =
+                TornadoDevices.capabilitiesOf(cuda, "NVIDIA CUDA", "Device version : CUDA 7.5");
+        assertFalse("no cp.async below 8.0", turing.supports(DeviceCapability.TENSOR_CORE_MMA));
+        assertFalse(turing.supports(DeviceCapability.INT8_TENSOR_CORE_MMA));
+        assertTrue("dp4a from 6.1", turing.supports(DeviceCapability.PACKED_INTEGER_DOT));
+        var maxwell =
+                TornadoDevices.capabilitiesOf(cuda, "NVIDIA CUDA", "Device version : CUDA 5.2");
+        assertFalse(maxwell.supports(DeviceCapability.PACKED_INTEGER_DOT));
+        var unknown = TornadoDevices.capabilitiesOf(cuda, "NVIDIA CUDA", "");
+        assertFalse(
+                "an unreadable device gets no architecture-gated grant",
+                unknown.supports(DeviceCapability.TENSOR_CORE_MMA));
+        assertFalse(unknown.supports(DeviceCapability.PACKED_INTEGER_DOT));
+        var cl = TornadoDevices.capabilitiesOf(opencl, "NVIDIA CUDA", "Device version : CUDA 12.0");
+        assertFalse(
+                "OpenCL never lowers the MMA intrinsics",
+                cl.supports(DeviceCapability.TENSOR_CORE_MMA));
+        assertFalse(cl.supports(DeviceCapability.PACKED_INTEGER_DOT));
+    }
+
+    @Test
     public void warpShuffleSupportAgreesWithTheResolvedCapability() {
         assertEquals(
                 TornadoDevices.current().capabilities().supports(DeviceCapability.WARP_SHUFFLE),

@@ -7,6 +7,10 @@ on:
         description: 'Release version (e.g., 0.2.3)'
         required: true
         type: string
+      tornadovm_release:
+        description: 'Published TornadoVM release this jllm release depends on (e.g. 6.2.0); must be on Maven Central and carry the APIs this code needs'
+        required: true
+        type: string
       previous_version:
         description: 'Previous version for changelog (e.g., 0.2.2)'
         required: true
@@ -21,6 +25,7 @@ env:
   VERSION: ${{ inputs.version }}
   PREV_VERSION: ${{ inputs.previous_version }}
   JAVA_VERSION: 21.0.2-open
+  JAVA_VERSION_25: 25.0.2-open
 
 jobs:
   prepare-release:
@@ -72,6 +77,32 @@ jobs:
           # the CI-friendly ${revision}${jdk.version.suffix} expression.
           sed -i 's|<revision>.*</revision>|<revision>${{ env.VERSION }}</revision>|' pom.xml
           echo "✅ Maven version updated to ${{ env.VERSION }}"
+
+      - name: Select the TornadoVM release this jllm release depends on
+        run: |
+          set -euo pipefail
+          if [[ ! "${{ inputs.tornadovm_release }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ tornadovm_release must be X.Y.Z (got '${{ inputs.tornadovm_release }}')"; exit 1
+          fi
+          scripts/set-tornadovm-release.sh "${{ inputs.tornadovm_release }}"
+          echo "✅ Releases now depend on TornadoVM ${{ inputs.tornadovm_release }}"
+
+      # Both artifact lines, each with an EMPTY local repository, so only Maven Central can
+      # satisfy the release coordinates: a -dev artifact a development build installed on this
+      # runner must not stand in for the release. A TornadoVM release that lacks the APIs this
+      # code uses fails here at compile time, before any branch or PR exists.
+      - name: Verify the release resolves and compiles against that TornadoVM release
+        run: |
+          set -euo pipefail
+          source "$HOME/.sdkman/bin/sdkman-init.sh"
+          for JV in "${{ env.JAVA_VERSION }}" "${{ env.JAVA_VERSION_25 }}"; do
+            sdk list java | grep -q "$JV" || sdk install java "$JV"
+            sdk use java "$JV" > /dev/null
+            echo "== $(java -version 2>&1 | head -1)"
+            ./mvnw -B -q -P release -Dgpg.skip=true -Dmaven.javadoc.skip=true \
+              -Dmaven.repo.local="$(mktemp -d)" clean package -DskipTests
+            echo "   jllm $(./mvnw -q help:evaluate -Dexpression=project.version -DforceStdout) against tornado-api $(./mvnw -q -P release help:evaluate -Dexpression=tornadovm.version -DforceStdout)"
+          done
 
       - name: Update README.md
         run: |

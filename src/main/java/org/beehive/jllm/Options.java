@@ -73,7 +73,8 @@ public record Options(
                 "  --top-p <float>               p value in top-p (nucleus) sampling in [0,1], default: auto-detected from model family");
         out.println("  --seed <long>                 random seed, default System.nanoTime()");
         out.println(
-                "  --max-tokens, -n <int>        number of steps to run for < 0 = limited by context length, default "
+                "  --max-tokens, -n <int>        capacity in positions, prompt plus generated tokens (the context"
+                        + " this run allocates; a prompt this long or longer is refused), default "
                         + DEFAULT_MAX_TOKENS);
         out.println(
                 "  --stream <boolean>            print tokens during generation; may cause encoding artifacts for non ASCII text, default true");

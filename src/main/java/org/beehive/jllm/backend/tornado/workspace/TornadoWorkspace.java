@@ -193,6 +193,42 @@ public final class TornadoWorkspace {
     public FloatArray wrapQGateBatch;
     public FloatArray wrapAttnQBatch;
     public FloatArray wrapAttnGateBatch;
+
+    /**
+     * Batched prefill attention's query-key dot products, one span per (chunk row, query head) of
+     * the context capacity, written and read within a single attention launch. Null unless the
+     * batched FP16 key/value path was built, which is the only reader.
+     */
+    public FloatArray wrapAttnScoresBatch;
+
+    /**
+     * FP16 staging for the tensor-core batched attention: per (16-query tile, head) workgroup, its
+     * queries and its probability tile, converted through global memory because the kernel language
+     * has no in-register float-to-half conversion. Allocated alongside the score scratch when the
+     * chunk is whole 16-row tiles.
+     */
+    public HalfFloatArray wrapAttnStageFP16;
+
+    /**
+     * One FP16 matrix of scratch for the batched prefill's dequantize-then-GEMM projections — the
+     * wide Q4_0 ones, the Q4_1 ffn_down and the Q5_K ssm_out — sized to the largest such matrix and
+     * reused by every projection of every layer graph in turn: each projection's dequantization
+     * writes it and its GEMM reads it before the next projection's dequantization runs, whatever
+     * the two matrices' sizes. Null unless the width takes that path.
+     */
+    public HalfFloatArray wrapDequantScratchFP16;
+
+    /**
+     * The int8 pair's scratch: the chunk's activations quantized to int8 with a scale per 32 (one
+     * buffer, requantized before each group of consumers in graph order), and one Q4_0 matrix
+     * decoded to int8 in the B-operand word layout with its FP32 block scales.
+     */
+    public uk.ac.manchester.tornado.api.types.arrays.ByteArray wrapQ8ActBatch;
+
+    public FloatArray wrapQ8ActScales;
+    public uk.ac.manchester.tornado.api.types.arrays.ByteArray wrapInt8WeightScratch;
+    public FloatArray wrapInt8WeightScales;
+
     public FloatArray wrapSsmQkvBatch;
     public FloatArray wrapSsmConvOutBatch;
     public FloatArray wrapSsmZBatch;

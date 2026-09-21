@@ -1,7 +1,15 @@
 name: Setup TornadoVM
-description: Build the project's pinned TornadoVM release once per backend and reuse across runs via a local sentinel. Exports TORNADOVM_HOME and updates PATH for all subsequent steps.
+description: >
+  Prepare the TornadoVM SDK at one exact revision for one backend and JDK, through the same
+  scripts/tornadovm-dev.sh that local development uses. Reuses a prepared identity
+  (revision + backend + JDK + build recipe) and otherwise builds it under a lock. Exports
+  TORNADOVM_HOME, TORNADOVM_REF, TORNADOVM_VERSION, TORNADOVM_RUNTIME_ID and
+  MAVEN_REPO_LOCAL for the later steps.
 
 inputs:
+  ref:
+    description: 'The exact TornadoVM commit (40 hex), resolved once by the calling workflow'
+    required: true
   backend:
     description: 'TornadoVM backend to build (opencl, cuda, or metal)'
     required: true
@@ -9,151 +17,72 @@ inputs:
     description: 'Major JDK version the SDK is built for (21 or 25)'
     required: false
     default: '21'
+  root:
+    description: 'Where prepared SDKs live on this runner (default: the runner tool cache)'
+    required: false
+    default: ''
 
-# macOS ships bash 3.2 (Apple keeps it frozen for GPLv3 reasons); SDKMAN's own scripts use
-# bash 4+ syntax (${var^^}) and crash under it, so every step below uses Homebrew's bash on
-# macOS runners instead (requires `brew install bash` on the runner) and plain "bash" on Linux.
-# GitHub's action-manifest parser doesn't support YAML anchors, so the expression is repeated
-# per step rather than shared via &shell/*shell. Composite actions have no top-level `env:`
-# either, so the pinned commit (see the "Resolve pinned TornadoVM commit" step) is threaded through
-# via $GITHUB_ENV/$GITHUB_OUTPUT rather than a shared constant.
+outputs:
+  sha:
+    description: 'The commit actually checked out and built'
+    value: ${{ steps.prepared.outputs.sha }}
+  artifact_version:
+    description: 'The Maven version the build produced (e.g. 6.1.1-jdk21-dev)'
+    value: ${{ steps.prepared.outputs.artifact_version }}
+  sdk_dir:
+    description: 'The SDK directory'
+    value: ${{ steps.prepared.outputs.sdk_dir }}
+  maven_repo_local:
+    description: "The installation's own Maven repository holding the matching artifacts"
+    value: ${{ steps.prepared.outputs.maven_repo_local }}
+  install_dir:
+    description: 'The immutable installation directory this step prepared'
+    value: ${{ steps.prepared.outputs.install_dir }}
+
+# macOS ships bash 3.2; SDKMAN's scripts and this repository's scripts need bash 4+, so
+# macOS runners use Homebrew's bash (requires `brew install bash` on the runner).
 runs:
   using: composite
   steps:
-    # The TornadoVM the project supports: the v6.0.0 release tag, matching pom.xml's
-    # tornadovm.base.version. Pinned to a tag rather than a branch head because "develop" silently
-    # advanced to 6.0.1-dev before, and removed TornadoVMBackendType.PTX, breaking every leg's
-    # compile with nothing here to say the version had moved.
-    #
-    # Moved off v5.2.0-jdk21 because that release could not run batched prefill on ANY backend:
-    # consumeFromDevice(producer, ...) resolved against the previously executed graph rather than
-    # the named one and imported its buffer unconditionally, so the second decode pass imported a
-    # null buffer and the next ALLOC dereferenced it. Fixed upstream in 8603a9fa2d (PR #996) and
-    # released in 6.0.0. 6.0.0 also fixes the sketch-phase LambdaForm hidden-class reader.
-    #
-    # Note the tag naming change: 6.0.0's own tag carries no -jdkNN suffix (5.x had v5.2.0-jdk21 /
-    # v5.2.0-jdk25), because 6.0.0 collapsed the per-JDK lines into jdk21 + jdk22plus.
-    #
-    # Moving to a newer TornadoVM is a maintainer decision, not a CI tweak — see
-    # docs/architecture/metal/START-HERE-MACOS.md's decision boundaries.
-    - name: Resolve pinned TornadoVM ref
-      shell: bash
-      run: |
-        echo "TORNADOVM_REF=v6.0.0" >> $GITHUB_ENV
-        echo "TORNADOVM_REF_DESC=v6.0.0 (release tag)" >> $GITHUB_ENV
-
-    - name: Report the pinned TornadoVM commit
-      id: tornado_sha
+    - name: Prepare TornadoVM ${{ inputs.ref }} (${{ inputs.backend }}, JDK ${{ inputs.jdk }})
+      id: prepared
       shell: ${{ runner.os == 'macOS' && '/opt/homebrew/bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
       run: |
-        echo "Building TornadoVM $TORNADOVM_REF_DESC"
-        echo "sha=$TORNADOVM_REF" >> $GITHUB_OUTPUT
-
-    - name: Check local build sentinel
-      id: sentinel
-      shell: ${{ runner.os == 'macOS' && '/opt/homebrew/bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
-      run: |
-        SENTINEL="$TORNADO_ROOT/.built-sha"
-        EXPECTED="${{ steps.tornado_sha.outputs.sha }}+jdk${{ inputs.jdk }}+recipe6"
-        echo "expected=$EXPECTED" >> $GITHUB_OUTPUT
-        if [ -f "$SENTINEL" ] && [ "$(cat $SENTINEL)" = "$EXPECTED" ]; then
-          echo "up-to-date=true" >> $GITHUB_OUTPUT
-        else
-          echo "up-to-date=false" >> $GITHUB_OUTPUT
+        set -euo pipefail
+        if ! [[ "${{ inputs.ref }}" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::ref must be a full 40-hex TornadoVM commit, got '${{ inputs.ref }}'"; exit 1
         fi
+        ROOT="${{ inputs.root }}"
+        [ -n "$ROOT" ] || ROOT="${RUNNER_TOOL_CACHE}/tornadovm"
+        # The result file is this step's own copy of the provenance of the installation it
+        # prepared: the shared `current` pointer is not read again after the lock is released,
+        # so a concurrent run preparing another revision cannot redirect this one.
+        RESULT="${RUNNER_TEMP}/tornadovm-setup-$$.json"
+        scripts/tornadovm-dev.sh setup --ref "${{ inputs.ref }}" --backend "${{ inputs.backend }}" \
+          --jdk "${{ inputs.jdk }}" --root "$ROOT" --result "$RESULT"
+        python3 - "$RESULT" "${{ inputs.ref }}" "${{ inputs.jdk }}" "${{ inputs.backend }}" >> "$GITHUB_OUTPUT" <<'EOF'
+        import json, sys
+        p = json.load(open(sys.argv[1]))
+        assert p["ref"] == sys.argv[2], f"prepared {p['ref']} but the workflow asked for {sys.argv[2]}"
+        assert p["jdk"] == sys.argv[3] and p["java_major"] == sys.argv[3], f"prepared with java {p['java_major']} for jdk {p['jdk']}, asked for {sys.argv[3]}"
+        assert p["backend"] == sys.argv[4], f"prepared {p['backend']}, asked for {sys.argv[4]}"
+        for k in ("artifact_version", "sdk_dir", "maven_repo_local", "install_dir"):
+            print(f"{k}={p[k]}")
+        print(f"sha={p['ref']}")
+        EOF
 
-    - name: Clone pinned TornadoVM ref
-      if: steps.sentinel.outputs.up-to-date != 'true'
-      shell: ${{ runner.os == 'macOS' && '/opt/homebrew/bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
-      run: |
-        rm -rf $TORNADO_ROOT
-        git clone --depth 1 --branch "$TORNADOVM_REF" \
-          https://github.com/beehive-lab/TornadoVM.git \
-          $TORNADO_ROOT
-        echo "Checked out $(cd $TORNADO_ROOT && git rev-parse HEAD)"
-
-    - name: Set up Python venv for TornadoVM
-      if: steps.sentinel.outputs.up-to-date != 'true'
-      shell: ${{ runner.os == 'macOS' && '/opt/homebrew/bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
-      run: |
-        python3 -m venv $TORNADO_ROOT/venv
-        source $TORNADO_ROOT/venv/bin/activate
-        python --version
-        # bin/pull_graal_jars.py imports these at module scope, and bin/compile imports it
-        # unconditionally — so without them the build fails before it starts. Installing them
-        # explicitly removes a hidden dependency on whatever the runner's interpreter happened
-        # to have.
-        python -m pip install --quiet --upgrade pip
-        python -m pip install --quiet requests tqdm
-
-    # graalJars is populated by TornadoVM's own bin/pull_graal_jars.py, which bin/compile invokes
-    # for a non-GraalVM jdk21 — it downloads the exact Graal set the pinned release expects
-    # (23.1.0; compiler-23.1.0.jar declares module jdk.internal.vm.compiler, which
-    # --upgrade-module-path then cleanly *replaces* the JDK's own copy with).
-    #
-    # This step used to seed the directory first with `cp $GRAAL_JARS/* graalJars/` from the
-    # runner-global /opt/graalJars. That is what broke standalone-inference on Metal:
-    # pull_graal_jars.py skips per *filename*, so the foreign jars were never displaced, the
-    # correct 23.1.0 jars were downloaded alongside them, and both were assembled into
-    # share/java/graalJars. The runner's copy carries a Graal packaged as module `tornado.graal`
-    # (the 6.0.x/develop flavour left over from before the version pin), so the boot layer ended
-    # up with org.graalvm.graphio in BOTH jdk.internal.vm.compiler and tornado.graal:
+    # Runs whether the SDK was just built or reused. The failure this guards against costs a
+    # whole job to discover and reports module names rather than files:
     #   java.lang.LayerInstantiationException: Package org.graalvm.graphio in both module
     #   jdk.internal.vm.compiler and module tornado.graal
-    # TornadoVM's own scripts/build-release-sdks.py clears graalJars/ before every build for
-    # exactly this reason. Do the same, and take the jars only from the pinned release —
-    # no dependence on runner-global state, nothing to clean by hand.
-    - name: Build TornadoVM
-      if: steps.sentinel.outputs.up-to-date != 'true'
-      shell: ${{ runner.os == 'macOS' && '/opt/homebrew/bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
-      run: |
-        cd $TORNADO_ROOT
-        rm -rf graalJars && mkdir -p graalJars
-        source venv/bin/activate
-        echo "=== Building TornadoVM for JDK ${{ inputs.jdk }} ==="
-        # `make BACKEND=...` alone is the jdk21 target: 6.0.0's Makefile passes
-        # `--jdk jdk21` from it, and bin/compile refuses a JAVA_HOME that is not JDK 21.
-        # Everything from 22 up is one profile, jdk22plus.
-        if [ "${{ inputs.jdk }}" = "21" ]; then
-          make BACKEND=${{ inputs.backend }}
-        else
-          make jdk22plus BACKEND=${{ inputs.backend }}
-        fi
-        echo "${{ steps.sentinel.outputs.expected }}" > .built-sha
-
-    - name: Find TornadoVM SDK directory
-      id: find_sdk
-      shell: ${{ runner.os == 'macOS' && '/opt/homebrew/bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
-      run: |
-        SDK_DIR=$(find $TORNADO_ROOT/dist -type d -maxdepth 3 -path "*/tornadovm-*-${{ inputs.backend }}" | head -n 1)
-        if [ -z "$SDK_DIR" ]; then
-          echo "::error::Could not locate TornadoVM SDK directory!"
-          find $TORNADO_ROOT/dist -maxdepth 5 -type d
-          exit 1
-        fi
-        echo "sdk_dir=$SDK_DIR" >> $GITHUB_OUTPUT
-
-    # Runs on both fresh build and sentinel hit, so a cached dist is checked too. The failure this
-    # guards against costs a whole job to discover and reports module names rather than files:
-    #   java.lang.LayerInstantiationException: Package org.graalvm.graphio in both module
-    #   jdk.internal.vm.compiler and module tornado.graal
-    #
-    # Either packaging is legitimate on its own — the 5.2.0 release line pulled Graal 23.1.0 whose
-    # compiler jar declares jdk.internal.vm.compiler, while 6.0.0 vendors its own tornado.graal
-    # module (tornado-graal-23.1.0.jar, alongside collections/truffle-compiler/word). What must
-    # never happen is BOTH in one dist, which is what seeding graalJars from the runner-global
-    # /opt/graalJars used to cause. So the invariant asserted here is that they do not mix, rather
-    # than which one is present — which is why the pin move from 5.2.0 to 6.0.0, flipping the dist
-    # from the upgrade-module packaging to the vendored one, needs no change here.
     - name: Verify the SDK's Graal jars do not mix packagings
       shell: ${{ runner.os == 'macOS' && '/opt/homebrew/bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
       run: |
-        GRAAL_DIR="${{ steps.find_sdk.outputs.sdk_dir }}/share/java/graalJars"
+        GRAAL_DIR="${{ steps.prepared.outputs.sdk_dir }}/share/java/graalJars"
         if [ ! -d "$GRAAL_DIR" ]; then
           echo "No graalJars directory in the built SDK; this TornadoVM vendors Graal elsewhere."
           exit 0
         fi
-        echo "Graal jars in the built SDK:"; ls -1 "$GRAAL_DIR"
         HAS_UPGRADE=0
         HAS_VENDORED=0
         for jar in "$GRAAL_DIR"/*.jar; do
@@ -165,26 +94,34 @@ runs:
           esac
         done
         if [ "$HAS_UPGRADE" = "1" ] && [ "$HAS_VENDORED" = "1" ]; then
-          echo "::error::graalJars contains BOTH a jdk.internal.vm.compiler jar and a tornado.graal jar. They both export org.graalvm.graphio, so the boot layer will refuse to start. This is what leaking runner-global jars into the build looks like."
+          echo "::error::graalJars contains BOTH a jdk.internal.vm.compiler jar and a tornado.graal jar. They both export org.graalvm.graphio, so the boot layer will refuse to start."
           exit 1
         fi
         echo "graalJars verified: a single Graal packaging, no split-package collision."
 
-    # Runs on both fresh build and sentinel hit — sets TORNADOVM_HOME and PATH
-    # for all subsequent steps in the calling workflow.
-    - name: Configure TornadoVM environment
+    - name: Configure TornadoVM environment and record provenance
       shell: ${{ runner.os == 'macOS' && '/opt/homebrew/bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
       run: |
-        FULL_SDK="${{ steps.find_sdk.outputs.sdk_dir }}"
-        echo "Detected TornadoVM SDK: $FULL_SDK"
-        # Persist for subsequent steps in the calling workflow.
+        FULL_SDK="${{ steps.prepared.outputs.sdk_dir }}"
         echo "TORNADOVM_HOME=$FULL_SDK" >> $GITHUB_ENV
+        echo "TORNADOVM_REF=${{ steps.prepared.outputs.sha }}" >> $GITHUB_ENV
+        echo "TORNADOVM_VERSION=${{ steps.prepared.outputs.artifact_version }}" >> $GITHUB_ENV
+        echo "MAVEN_REPO_LOCAL=${{ steps.prepared.outputs.maven_repo_local }}" >> $GITHUB_ENV
+        echo "TORNADOVM_INSTALL_DIR=${{ steps.prepared.outputs.install_dir }}" >> $GITHUB_ENV
+        # One label that identifies the runtime: the artifact version alone (6.1.1-jdk21-dev) is
+        # the same for every develop commit, so the label carries the commit too.
+        SHORT=$(echo "${{ steps.prepared.outputs.sha }}" | cut -c1-12)
+        echo "TORNADOVM_RUNTIME_ID=${{ steps.prepared.outputs.artifact_version }}+g$SHORT" >> $GITHUB_ENV
         echo "$FULL_SDK/bin" >> $GITHUB_PATH
         echo "$JAVA_HOME/bin" >> $GITHUB_PATH
-        # $GITHUB_ENV / $GITHUB_PATH only affect later steps, so also apply them to THIS
-        # shell for the verification below (otherwise `tornado` resolves to the sdkman
-        # wrapper and aborts with "TORNADOVM_HOME is not set").
         export TORNADOVM_HOME="$FULL_SDK"
         export PATH="$FULL_SDK/bin:$JAVA_HOME/bin:$PATH"
         which tornado || { echo "::error::tornado not in PATH"; exit 1; }
         tornado --devices
+        {
+          echo "### TornadoVM (${{ inputs.backend }}, JDK ${{ inputs.jdk }})"
+          echo "- commit: \`${{ steps.prepared.outputs.sha }}\`"
+          echo "- artifacts: \`${{ steps.prepared.outputs.artifact_version }}\`"
+          echo "- runtime id: \`${{ steps.prepared.outputs.artifact_version }}+g$SHORT\`"
+          echo "- SDK: \`$FULL_SDK\`"
+        } >> "$GITHUB_STEP_SUMMARY"

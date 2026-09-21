@@ -1,6 +1,7 @@
 package org.beehive.jllm.backend.tornado;
 
 import java.lang.foreign.MemorySegment;
+import java.util.stream.IntStream;
 import org.beehive.jllm.inference.Logits;
 import org.beehive.jllm.inference.state.Qwen2MoEState;
 import org.beehive.jllm.inference.state.State;
@@ -94,38 +95,61 @@ public final class TornadoBatchPrefillPass {
                 var embTable = weights.getTokenEmbeddingTable().asByteArray();
                 int dim = config.dim();
                 int blocksPerRow = (dim + Q8_0_BLOCK_SIZE - 1) / Q8_0_BLOCK_SIZE;
-                for (int b = 0; b < chunkSize; b++) {
-                    int tokenId = tokens[b];
-                    for (int j = 0; j < dim; j++) {
-                        int blockByteOffset =
-                                (tokenId * blocksPerRow + j / Q8_0_BLOCK_SIZE) * Q8_0_BLOCK_BYTES;
-                        float scale = embTable.getHalfFloat(blockByteOffset).getFloat32();
-                        float quant = embTable.get(blockByteOffset + 2 + j % Q8_0_BLOCK_SIZE);
-                        state.workspace.wrapXBatch.set(b * dim + j, quant * scale);
-                    }
-                }
+                // Rows in parallel: each row decodes its own token into its own span of the
+                // batch carrier, element by element as before.
+                IntStream.range(0, chunkSize)
+                        .parallel()
+                        .forEach(
+                                b -> {
+                                    int tokenId = tokens[b];
+                                    for (int j = 0; j < dim; j++) {
+                                        int blockByteOffset =
+                                                (tokenId * blocksPerRow + j / Q8_0_BLOCK_SIZE)
+                                                        * Q8_0_BLOCK_BYTES;
+                                        float scale =
+                                                embTable.getHalfFloat(blockByteOffset).getFloat32();
+                                        float quant =
+                                                embTable.get(
+                                                        blockByteOffset + 2 + j % Q8_0_BLOCK_SIZE);
+                                        state.workspace.wrapXBatch.set(b * dim + j, quant * scale);
+                                    }
+                                });
             }
             case Q4_0 -> {
                 // Retained: 18 bytes per 32 weights, an unsigned nibble recentred by eight. Decoded
                 // here into the FP32 batch carrier, as the Q8_0 branch above decodes its own — the
-                // batch activation graph then passes it through rather than converting.
+                // batch activation graph then passes it through rather than converting. Rows in
+                // parallel, each its own span, the same expression per element: a chunk of 2,048
+                // rows decoded one element at a time took longer than several of the layer
+                // graphs it precedes.
                 var embTable = weights.getTokenEmbeddingTable().asByteArray();
                 int dim = config.dim();
                 int blocksPerRow = (dim + Q4_0_BLOCK_SIZE - 1) / Q4_0_BLOCK_SIZE;
-                for (int b = 0; b < chunkSize; b++) {
-                    int tokenId = tokens[b];
-                    for (int j = 0; j < dim; j++) {
-                        int blockByteOffset =
-                                (tokenId * blocksPerRow + j / Q4_0_BLOCK_SIZE) * Q4_0_BLOCK_BYTES;
-                        float scale = embTable.getHalfFloat(blockByteOffset).getFloat32();
-                        int within = j % Q4_0_BLOCK_SIZE;
-                        int half = within / 16;
-                        int packed =
-                                embTable.get(blockByteOffset + 2 + (within - half * 16)) & 0xFF;
-                        int quant = half == 0 ? (packed & 0xF) : ((packed >> 4) & 0xF);
-                        state.workspace.wrapXBatch.set(b * dim + j, scale * (quant - 8));
-                    }
-                }
+                IntStream.range(0, chunkSize)
+                        .parallel()
+                        .forEach(
+                                b -> {
+                                    int tokenId = tokens[b];
+                                    for (int j = 0; j < dim; j++) {
+                                        int blockByteOffset =
+                                                (tokenId * blocksPerRow + j / Q4_0_BLOCK_SIZE)
+                                                        * Q4_0_BLOCK_BYTES;
+                                        float scale =
+                                                embTable.getHalfFloat(blockByteOffset).getFloat32();
+                                        int within = j % Q4_0_BLOCK_SIZE;
+                                        int half = within / 16;
+                                        int packed =
+                                                embTable.get(
+                                                                blockByteOffset
+                                                                        + 2
+                                                                        + (within - half * 16))
+                                                        & 0xFF;
+                                        int quant =
+                                                half == 0 ? (packed & 0xF) : ((packed >> 4) & 0xF);
+                                        state.workspace.wrapXBatch.set(
+                                                b * dim + j, scale * (quant - 8));
+                                    }
+                                });
             }
             default ->
                     throw new IllegalArgumentException(

@@ -57,8 +57,34 @@
                  reproduced here on Metal, and CI recorded the same NPE on its cuda and opencl
                  legs. 6.0.0 also carries the sketch-phase fix for the LambdaForm hidden-class
                  reader, which took out every F16 family on OpenCL.
-                 See docs/architecture/metal/SESSION-2026-09-04.md §1. -->
-        <tornadovm.base.version>6.1.0</tornadovm.base.version>
+                 See docs/architecture/metal/SESSION-2026-09-04.md §1.
+
+                 DEVELOPMENT builds depend on TornadoVM develop, whose artifacts are
+                 <base>-jdk21-dev / <base>-jdk22plus-dev and are not on Maven Central: they come
+                 from a local build of the chosen develop commit (scripts/tornadovm-dev.sh, which is
+                 also what CI runs), and that build is what says which version it produced. The
+                 values below are the development DEFAULT so that a plain ./mvnw works once the
+                 environment is prepared; scripts/tornadovm-dev.sh build and CI pass the produced
+                 version explicitly (-Dtornadovm.version=...) and CI fails if the two disagree,
+                 which is the signal to update tornadovm.base.version when develop moves on.
+
+                 The kernels on this branch need what develop carries since 65f06c5d162c36022f9d5724
+                 dd38b9784d85cfcc (2026-09-19): PRs #1091-#1094, #1098, #1099, #1101 (signed
+                 int-to-float conversion, private array zero-init, FP16 header selection,
+                 HalfFloat(short) bit reinterpretation, float-to-half value conversion, in-kernel
+                 reads of MMA accumulator elements, byte-offset int8 fragment loads).
+
+                 RELEASE builds (-P release) depend on a published TornadoVM release instead:
+                 tornadovm.release.version, set by the release workflows, replaces the base version
+                 and drops the -dev qualifier, and the enforcer below refuses a release build that
+                 has no such version or still resolves to -dev coordinates. A release also fails to
+                 compile if the chosen TornadoVM release lacks the APIs above: no published release
+                 carries them yet, so no jllm release can be cut from this branch until one does. -->
+        <tornadovm.base.version>6.1.1</tornadovm.base.version>
+        <!-- Empty in development; a published X.Y.Z under -P release (see prepare-release.yml). -->
+        <tornadovm.release.version/>
+        <!-- The qualifier TornadoVM's own develop builds carry; emptied by the release profile. -->
+        <tornadovm.dev.qualifier>-dev</tornadovm.dev.qualifier>
         <archunit.version>1.4.2</archunit.version>
         <jdk.version.suffix>-jdk21</jdk.version.suffix>
         <!-- TornadoVM's own JDK suffix, deliberately a SEPARATE property from
@@ -67,9 +93,9 @@
                  TornadoVM 6.0.0 collapsed its jdk25/jdk26/jdk27 lines into a single jdk22plus
                  profile and publishes only 6.0.0-jdk21 and 6.0.0-jdk22plus to Maven Central.
                  Tying the two together would silently rename jllm's own coordinates. -->
-        <tornadovm.version.suffix>-jdk21</tornadovm.version.suffix>
+        <tornadovm.jdk.suffix>-jdk21</tornadovm.jdk.suffix>
         <!-- CUDA backend is only available after 5.0.0 TornadoVM version -->
-        <tornadovm.version>${tornadovm.base.version}${tornadovm.version.suffix}</tornadovm.version>
+        <tornadovm.version>${tornadovm.base.version}${tornadovm.jdk.suffix}${tornadovm.dev.qualifier}</tornadovm.version>
         <!-- Compiler defaults (overridden by JDK profiles below) -->
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
@@ -330,8 +356,8 @@
                 <maven.compiler.source>21</maven.compiler.source>
                 <maven.compiler.target>21</maven.compiler.target>
                 <jdk.version.suffix>-jdk21</jdk.version.suffix>
-                <tornadovm.version.suffix>-jdk21</tornadovm.version.suffix>
-                <tornadovm.version>${tornadovm.base.version}${tornadovm.version.suffix}</tornadovm.version>
+                <tornadovm.jdk.suffix>-jdk21</tornadovm.jdk.suffix>
+                <tornadovm.version>${tornadovm.base.version}${tornadovm.jdk.suffix}${tornadovm.dev.qualifier}</tornadovm.version>
             </properties>
             <build>
                 <plugins>
@@ -354,7 +380,7 @@
         <!-- ─── JDK 25 ───────────────────────────────────────────────────────────
                  Auto-activates on JDK 25.
                  Publishes: jllm:${revision}-jdk25
-                 TornadoVM: ${tornadovm.base.version}-jdk22plus (see tornadovm.version.suffix)
+                 TornadoVM: ${tornadovm.base.version}-jdk22plus${tornadovm.dev.qualifier} (see tornadovm.jdk.suffix)
             ─────────────────────────────────────────────────────────────────────── -->
         <profile>
             <id>jdk25</id>
@@ -368,8 +394,8 @@
                 <!-- -jdk22plus, not -jdk25: TornadoVM 6.0.0 replaced its per-version jdk25 /
                          jdk26 / jdk27 profiles with one jdk22plus profile, so 6.0.0-jdk25 does not
                          exist on Maven Central. This project's own artifact stays -jdk25. -->
-                <tornadovm.version.suffix>-jdk22plus</tornadovm.version.suffix>
-                <tornadovm.version>${tornadovm.base.version}${tornadovm.version.suffix}</tornadovm.version>
+                <tornadovm.jdk.suffix>-jdk22plus</tornadovm.jdk.suffix>
+                <tornadovm.version>${tornadovm.base.version}${tornadovm.jdk.suffix}${tornadovm.dev.qualifier}</tornadovm.version>
             </properties>
         </profile>
 
@@ -378,9 +404,48 @@
             <properties>
                 <maven.javadoc.skip>false</maven.javadoc.skip>
                 <gpg.skip>false</gpg.skip>
+                <!-- A release depends on a published TornadoVM release: the base version becomes
+                         the chosen release and the -dev qualifier goes. This profile is listed after
+                         the JDK profiles, so these take precedence over their defaults. -->
+                <tornadovm.base.version>${tornadovm.release.version}</tornadovm.base.version>
+                <tornadovm.dev.qualifier/>
             </properties>
             <build>
                 <plugins>
+                    <!-- Refuse a release that has no concrete published TornadoVM release, or
+                             that would still resolve development coordinates. Whether the chosen
+                             release is actually published (and carries the APIs this branch needs)
+                             is checked by the release workflows, which build with an empty local
+                             repository so nothing can be satisfied by a local -dev install. -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-enforcer-plugin</artifactId>
+                        <version>3.5.0</version>
+                        <executions>
+                            <execution>
+                                <id>enforce-release-tornadovm</id>
+                                <goals>
+                                    <goal>enforce</goal>
+                                </goals>
+                                <phase>validate</phase>
+                                <configuration>
+                                    <rules>
+                                        <requireProperty>
+                                            <property>tornadovm.release.version</property>
+                                            <regex>[0-9]+\.[0-9]+\.[0-9]+</regex>
+                                            <regexMessage>tornadovm.release.version must be a published TornadoVM release X.Y.Z; a release cannot depend on a local develop build (-dev). Set it with -Dtornadovm.release.version=X.Y.Z (prepare-release.yml does).</regexMessage>
+                                        </requireProperty>
+                                        <requireProperty>
+                                            <property>tornadovm.version</property>
+                                            <regex>[0-9]+\.[0-9]+\.[0-9]+-jdk(21|22plus)</regex>
+                                            <regexMessage>A release must resolve TornadoVM release coordinates (X.Y.Z-jdk21 or X.Y.Z-jdk22plus), not development ones.</regexMessage>
+                                        </requireProperty>
+                                    </rules>
+                                    <fail>true</fail>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
                     <!-- Sources -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>

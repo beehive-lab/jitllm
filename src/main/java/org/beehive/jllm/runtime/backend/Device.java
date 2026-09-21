@@ -32,6 +32,16 @@ public interface Device {
     }
 
     /**
+     * The largest workgroup (threads per block) the device accepts, as the runtime reports it, or 0
+     * when unknown. A kernel whose lane mapping assumes an exact local size asks this before it is
+     * selected: a runtime that silently shrinks a workgroup does not run that kernel's arithmetic,
+     * it runs a different one.
+     */
+    default long maxWorkGroupSize() {
+        return 0L;
+    }
+
+    /**
      * Bytes of header this backend's native arrays carry in front of their elements.
      *
      * <p>A <b>layout</b> fact, not a capability: nothing branches on it, and the one caller needs

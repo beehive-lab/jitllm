@@ -83,9 +83,28 @@ public class JllmApp {
         } else {
             System.out.println(result.text());
         }
+        if (result.finishReason() == FinishReason.CONTEXT_FULL && result.generatedTokens() == 0) {
+            // The prompt alone filled the capacity --max-tokens sized: nothing was generated,
+            // and printing a zero-token metrics block was the only sign of it.
+            throw new IllegalArgumentException(
+                    contextFullMessage(result.promptTokens(), options.maxTokens()));
+        }
         if (SHOW_PERF_INTERACTIVE) {
             RunMetrics.printMetrics();
         }
+    }
+
+    /**
+     * The diagnostic for a prompt that leaves no room to generate: {@code --max-tokens} is the
+     * capacity in positions this run was sized for, prompt included.
+     */
+    static String contextFullMessage(int promptTokens, int maxTokens) {
+        return "the prompt is "
+                + promptTokens
+                + " tokens and --max-tokens "
+                + maxTokens
+                + " is the whole capacity (prompt plus generated tokens), so nothing could be"
+                + " generated; pass --max-tokens larger than the prompt";
     }
 
     /**
@@ -124,7 +143,9 @@ public class JllmApp {
 
             if (result.finishReason() == FinishReason.CONTEXT_FULL) {
                 System.err.println(
-                        "\n Ran out of context length...\n Increase context length with by passing to jllm --max-tokens XXX");
+                        "\n"
+                                + contextFullMessage(result.promptTokens(), options.maxTokens())
+                                + " (or start a new session)");
                 break;
             }
             if (SHOW_PERF_INTERACTIVE) {

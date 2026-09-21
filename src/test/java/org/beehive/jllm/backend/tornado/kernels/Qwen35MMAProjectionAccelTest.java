@@ -86,7 +86,7 @@ public class Qwen35MMAProjectionAccelTest {
             graph.transferToDevice(DataTransferMode.EVERY_EXECUTION, a, w, out);
             graph.task(
                     "projection",
-                    Qwen35MMAKernels::projectionMMAQ4_0,
+                    Qwen35ReferenceKernels::projectionMMAQ4_0,
                     new KernelContext(),
                     a,
                     w,
@@ -216,7 +216,7 @@ public class Qwen35MMAProjectionAccelTest {
         graph.transferToDevice(DataTransferMode.EVERY_EXECUTION, a, w, out);
         graph.task(
                 "projection",
-                Qwen35MMAKernels::projectionMMAQ5_K,
+                Qwen35ReferenceKernels::projectionMMAQ5_K,
                 new KernelContext(),
                 a,
                 w,
@@ -306,7 +306,7 @@ public class Qwen35MMAProjectionAccelTest {
                                 DataTransferMode.EVERY_EXECUTION, a, w1, w3, gateOut, upOut)
                         .task(
                                 "gate",
-                                Qwen35MMAKernels::projectionMMAQ4_0,
+                                Qwen35ReferenceKernels::projectionMMAQ4_0,
                                 new KernelContext(),
                                 a,
                                 w1,
@@ -316,7 +316,7 @@ public class Qwen35MMAProjectionAccelTest {
                                 k)
                         .task(
                                 "up",
-                                Qwen35MMAKernels::projectionMMAQ4_0,
+                                Qwen35ReferenceKernels::projectionMMAQ4_0,
                                 new KernelContext(),
                                 a,
                                 w3,
