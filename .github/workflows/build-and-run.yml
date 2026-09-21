@@ -211,7 +211,7 @@ jobs:
           jdk: '21'
 
       - name: Build and unit-test jllm
-        run: ./mvnw clean install
+        run: ./mvnw clean install -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
 
   standalone-inference-linux:
     if: github.repository == 'beehive-lab/jllm'
@@ -278,7 +278,7 @@ jobs:
 
       - name: Build jllm for this leg
         run: |
-          ./mvnw -q clean install -DskipTests
+          ./mvnw -q clean install -DskipTests -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
           echo "JLLM_VERSION=$(./mvnw help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_ENV
 
       - name: Clone the Quarkus LangChain4j extension
@@ -295,12 +295,12 @@ jobs:
           sed -i.bak 's/<gpu-llama3\.version>.*<\/gpu-llama3\.version>/<gpu-llama3.version>'$JLLM_VERSION'<\/gpu-llama3.version>/' pom.xml
           rm -f pom.xml.bak
           # -Dtornado activates the TornadoVM profile; -am builds only the gpu-llama3 module + deps
-          mvn -q clean install -pl integration-tests/gpu-llama3 -am -DskipTests -Dtornado
+          mvn -q clean install -pl integration-tests/gpu-llama3 -am -DskipTests -Dtornado -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
 
       - name: Verify jllm Dependency
         run: |
           cd ${{ github.workspace }}/quarkus-langchain4j/integration-tests/gpu-llama3
-          mvn dependency:tree | grep "io.github.beehive-lab:jllm:jar:$JLLM_VERSION"
+          mvn -Dmaven.repo.local="$MAVEN_REPO_LOCAL" dependency:tree | grep "io.github.beehive-lab:jllm:jar:$JLLM_VERSION"
 
       - name: Seed jllm model cache (avoid HuggingFace download on cold runners)
         shell: bash
@@ -476,7 +476,7 @@ jobs:
           jdk: '21'
 
       - name: Build
-        run: ./mvnw -q -B clean package -DskipTests
+        run: ./mvnw -q -B clean package -DskipTests -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
 
       - name: Gate Llama-3.2-1B-Instruct-Q8_0 on CUDA
         run: |
