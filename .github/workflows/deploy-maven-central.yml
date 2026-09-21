@@ -83,6 +83,14 @@ jobs:
         env:
           GPG_TTY: $(tty)
 
+      # The release profile refuses development coordinates, and an empty local repository
+      # makes Maven Central the only source of the TornadoVM release the POM names.
+      - name: Verify the TornadoVM release dependency resolves from Maven Central
+        run: |
+          ./mvnw -B -q -P release -Dgpg.skip=true -Dmaven.javadoc.skip=true \
+            -Dmaven.repo.local="$(mktemp -d)" dependency:resolve
+          echo "tornado-api $(./mvnw -q -P release help:evaluate -Dexpression=tornadovm.version -DforceStdout) resolved from Maven Central"
+
       - name: Deploy to Maven Central
         if: ${{ !inputs.dry_run }}
         run: |

@@ -41,8 +41,11 @@ jobs:
             echo "::error::version must be X.Y.Z (got '$VERSION')."
             exit 1
           fi
-          CURRENT=$(grep -oE '<tornadovm\.base\.version>[0-9.]+</tornadovm\.base\.version>' pom.xml | grep -oE '[0-9.]+')
-          echo "Current: $CURRENT — target: $VERSION"
+          # The RELEASE dependency, distinct from tornadovm.base.version: that one follows
+          # TornadoVM develop for development builds and may carry the same number as a
+          # release without meaning it, so a bump is judged against the release property.
+          CURRENT=$(sed -n 's:.*<tornadovm\.release\.version>\([0-9.]*\)</tornadovm\.release\.version>.*:\1:p' pom.xml | head -1)
+          echo "Current release dependency: '${CURRENT:-none}' — target: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "branch=bump-tornadovm-$VERSION" >> "$GITHUB_OUTPUT"
           if [ "$CURRENT" = "$VERSION" ]; then
@@ -71,12 +74,15 @@ jobs:
           distribution: temurin
           java-version: ${{ matrix.jdk }}
 
-      - name: Bump tornadovm.base.version (working copy only — committed later by open-pr)
-        run: |
-          sed -i "s|<tornadovm.base.version>[0-9.]\+</tornadovm.base.version>|<tornadovm.base.version>${{ needs.resolve-version.outputs.version }}</tornadovm.base.version>|" pom.xml
+      - name: Set tornadovm.release.version (working copy only — committed later by open-pr)
+        run: scripts/set-tornadovm-release.sh "${{ needs.resolve-version.outputs.version }}"
 
-      - name: Build against TornadoVM ${{ needs.resolve-version.outputs.version }} (JDK ${{ matrix.jdk }})
-        run: mvn -B clean package -DskipTests
+      # -P release with an EMPTY local repository: the coordinates must come from Maven
+      # Central, never from a -dev artifact a previous job installed on this runner. A release
+      # that lacks the APIs the kernels need fails here as a compile error, which is the
+      # honest outcome — stripping -dev off a version does not make a release compatible.
+      - name: Build against TornadoVM ${{ needs.resolve-version.outputs.version }} release coordinates (JDK ${{ matrix.jdk }})
+        run: mvn -B -P release -Dgpg.skip=true -Dmaven.javadoc.skip=true -Dmaven.repo.local="$(mktemp -d)" clean package -DskipTests
 
   open-pr:
     needs: [resolve-version, build]
@@ -89,18 +95,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Apply version bump
-        run: |
-          sed -i "s|<tornadovm.base.version>[0-9.]\+</tornadovm.base.version>|<tornadovm.base.version>${{ needs.resolve-version.outputs.version }}</tornadovm.base.version>|" pom.xml
+        run: scripts/set-tornadovm-release.sh "${{ needs.resolve-version.outputs.version }}"
 
       - name: Open pull request
         uses: peter-evans/create-pull-request@v6
         with:
-          commit-message: "Bump TornadoVM to ${{ needs.resolve-version.outputs.version }}"
+          commit-message: "Depend on TornadoVM release ${{ needs.resolve-version.outputs.version }} for releases"
           branch: ${{ needs.resolve-version.outputs.branch }}
           delete-branch: true
-          title: "Bump TornadoVM to ${{ needs.resolve-version.outputs.version }}"
+          title: "Depend on TornadoVM release ${{ needs.resolve-version.outputs.version }} for releases"
           body: |
-            Automated bump triggered by a new TornadoVM release.
+            Automated: a new TornadoVM release was published.
 
-            Verified in CI: `mvn clean package` succeeds against `tornado-api:${{ needs.resolve-version.outputs.version }}-jdk21` (JDK 21) and `tornado-api:${{ needs.resolve-version.outputs.version }}-jdk22plus` (JDK 25) — see the build job on this PR's checks.
+            Sets `tornadovm.release.version` (the dependency of `-P release` builds) to `${{ needs.resolve-version.outputs.version }}`. Development builds keep following TornadoVM develop through `scripts/tornadovm-dev.sh` and CI's resolved commit; `tornadovm.base.version` is not touched by this bump.
+
+            Verified in CI with an empty local Maven repository: `mvn -P release clean package` against `tornado-api:${{ needs.resolve-version.outputs.version }}-jdk21` (JDK 21) and `tornado-api:${{ needs.resolve-version.outputs.version }}-jdk22plus` (JDK 25).
           labels: dependencies

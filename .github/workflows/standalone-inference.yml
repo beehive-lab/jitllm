@@ -10,6 +10,10 @@ on:
       backend:
         required: true
         type: string
+      tornadovm_ref:
+        description: 'The exact TornadoVM commit the calling workflow resolved (40 hex)'
+        required: true
+        type: string
       runner_os:
         description: 'macOS or Linux, as the self-hosted runner label'
         required: true
@@ -42,9 +46,8 @@ jobs:
 
       - name: Setup TornadoVM
         uses: ./.github/actions/setup-tornadovm
-        env:
-          TORNADO_ROOT: ${{ runner.tool_cache }}/tornadovm/tornadovm-${{ inputs.backend }}-jdk21
         with:
+          ref: ${{ inputs.tornadovm_ref }}
           backend: ${{ inputs.backend }}
           jdk: '21'
 
@@ -53,7 +56,7 @@ jobs:
       # target/ belongs to whichever cell finished last -- and a JDK 25 target/ under a
       # JDK 21 run fails with UnsupportedClassVersionError halfway through the matrix.
       - name: Build jllm
-        run: ./mvnw -q clean install -DskipTests
+        run: ./mvnw -q clean install -DskipTests -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
 
       # RUNNER_TEMP survives between runs on a self-hosted runner, so the results file and the
       # metrics sidecars accumulate. A later run then judges rows recorded by an earlier one:

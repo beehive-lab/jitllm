@@ -72,8 +72,16 @@ done
 [ -n "$GPU" ]     || die "could not detect the GPU; pass --gpu"
 if [ -z "$TORNADOVM_VERSION" ]; then
     [ -n "$TORNADOVM_HOME" ] || die "TORNADOVM_HOME is unset; source setvars.sh or pass --tornadovm-version"
-    # dist directory name: tornadovm-<version>-full
-    TORNADOVM_VERSION="$(basename "$TORNADOVM_HOME" | sed -E 's/^tornadovm-//; s/-full$//')"
+    # An SDK prepared by scripts/tornadovm-dev.sh carries its provenance four levels up
+    # (<install>/TornadoVM/dist/<bundle>/<sdk>): the runtime id is the artifact version plus
+    # the commit, because the version alone names every develop commit alike.
+    PROV="$TORNADOVM_HOME/../../../../provenance.json"
+    if [ -f "$PROV" ]; then
+        TORNADOVM_VERSION="$(python3 -c "import json,sys;p=json.load(open(sys.argv[1]));print(p['artifact_version']+'+g'+p['ref'][:12])" "$PROV")"
+    else
+        # A released SDK: dist directory name tornadovm-<version>-full
+        TORNADOVM_VERSION="$(basename "$TORNADOVM_HOME" | sed -E 's/^tornadovm-//; s/-full$//')"
+    fi
 fi
 
 RESULTS_DIR="${RESULTS_DIR:-$REPO_ROOT/perf-results/gate-$(date +%Y%m%d-%H%M%S)}"
