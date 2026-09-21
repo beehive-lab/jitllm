@@ -246,7 +246,8 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     }
 
     private boolean int8Eligible(int n, int k) {
-        return state.workspace.wrapQ8ActBatch != null
+        return TensorCoreSupport.isInt8MmaCapable()
+                && state.workspace.wrapQ8ActBatch != null
                 && q40Pair(n, k)
                 && k % Qwen35Int8Kernels.I8_BK == 0
                 && (long) n * k <= state.workspace.wrapInt8WeightScratch.getSize();
@@ -255,7 +256,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     /** Whether the int8 pair quantizes activations of {@code k} columns at all. */
     private boolean int8Quantizes(int k) {
         return TENSOR_CORES
-                && TensorCoreSupport.isTensorCoreCapableBackend()
+                && TensorCoreSupport.isInt8MmaCapable()
                 && state.workspace.wrapQ8ActBatch != null
                 && Qwen35Configuration.dequantGemmWidth(batchSize)
                 && k % Qwen35Int8Kernels.I8_BK == 0;
@@ -2167,6 +2168,33 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     entry.getKey(),
                     WorkerGridFactory.genericWorker(entry.getValue(), ELEMENTWISE_LOCAL));
         }
+    }
+
+    /**
+     * One line saying which batched-prefill path this plan took, for the init diagnostics: counted
+     * from the tasks the builder registered, so it reports what was built.
+     */
+    public String describeDispatch() {
+        long int8 = int8DecodeTasks.size();
+        long fp16Pairs = dequantTasks.size();
+        long direct = mmaTasks.size();
+        if (int8 == 0 && fp16Pairs == 0 && direct == 0) {
+            return "scalar kernels (no tensor-core path at width " + batchSize + ")";
+        }
+        return "width "
+                + batchSize
+                + ": "
+                + int8
+                + " projections on the int8 tensor-core pair, "
+                + fp16Pairs
+                + " on the FP16 dequantize-then-GEMM pair, "
+                + direct
+                + " on the direct FP16 MMA kernels; tensor cores "
+                + (TENSOR_CORES && TensorCoreSupport.isTensorCoreCapableBackend()
+                        ? "enabled"
+                        : "disabled")
+                + ", int8 MMA "
+                + (TensorCoreSupport.isInt8MmaCapable() ? "available" : "unavailable");
     }
 
     /** Whether a projection was placed on either tensor-core path. */

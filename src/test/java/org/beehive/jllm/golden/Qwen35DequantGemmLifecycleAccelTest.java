@@ -69,7 +69,7 @@ public class Qwen35DequantGemmLifecycleAccelTest {
      * reported rather than asserted.
      */
     private static final boolean INT8 =
-            org.beehive.jllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend();
+            org.beehive.jllm.backend.tornado.TensorCoreSupport.isInt8MmaCapable();
 
     /** relL2, max |diff| and argmax agreement over the logits rows of two runs. */
     private static void reportRowDistance(String what, List<float[]> a, List<float[]> b) {

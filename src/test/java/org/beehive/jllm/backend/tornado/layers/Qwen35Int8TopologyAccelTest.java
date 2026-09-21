@@ -253,7 +253,7 @@ public class Qwen35Int8TopologyAccelTest {
     }
 
     private static void assumeInt8() {
-        assumeTrue("no tensor-core-capable device", TensorCoreSupport.isTensorCoreCapableBackend());
+        assumeTrue("no int8 tensor-core device", TensorCoreSupport.isInt8MmaCapable());
     }
 
     /** gate/up int8 with an FP16 down projection: SwiGLU's FP32 output is converted for it. */

@@ -54,11 +54,18 @@ public final class TornadoDevices {
             try {
                 var backend = TornadoRuntimeProvider.getTornadoRuntime().getBackend(0);
                 TornadoVMBackendType type = backend.getBackendType();
-                String platformName = backend.getDefaultDevice().getPlatformName();
+                var device = backend.getDefaultDevice();
+                String platformName = device.getPlatformName();
+                String deviceInfo = "";
+                try {
+                    deviceInfo = device.getPhysicalDevice().getDeviceInfo();
+                } catch (RuntimeException e) {
+                    // A device that cannot describe itself gets no architecture-gated grants.
+                }
                 return new ResolvedDevice(
                         backendId(type),
                         platformName,
-                        capabilitiesOf(type, platformName),
+                        capabilitiesOf(type, platformName, deviceInfo),
                         TornadoNativeArray.ARRAY_HEADER);
             } catch (RuntimeException | LinkageError e) {
                 // No accelerator present. The identity still has to be stable and comparable.
@@ -116,19 +123,30 @@ public final class TornadoDevices {
      *       not for warp shuffle in general. CUDA and OpenCL are unaffected by this grant.
      * </ul>
      */
-    private static DeviceCapabilities capabilitiesOf(
-            TornadoVMBackendType type, String platformName) {
+    static DeviceCapabilities capabilitiesOf(
+            TornadoVMBackendType type, String platformName, String deviceInfo) {
         Set<DeviceCapability> capabilities = new HashSet<>();
         String name = platformName.toLowerCase(Locale.ROOT);
         if (type == TornadoVMBackendType.CUDA) {
-            capabilities.add(DeviceCapability.TENSOR_CORE_MMA);
+            // Granted by what the device can execute, not by the backend alone: the tensor-core
+            // families need mma.sync m16n8k16 (FP16) / m16n8k32 (int8) with ldmatrix and
+            // cp.async, which is compute capability 8.0 and up; the packed-integer path needs
+            // dp4a, 6.1 and up. An unreadable capability grants nothing, and the scalar kernels
+            // run everywhere.
+            int sm = cudaComputeCapability(deviceInfo);
+            if (sm >= 80) {
+                capabilities.add(DeviceCapability.TENSOR_CORE_MMA);
+                capabilities.add(DeviceCapability.INT8_TENSOR_CORE_MMA);
+            }
             // dp4a is registered for OpenCL and Metal too, and its Java body is a correct scalar
             // fallback everywhere, so the instruction half of this grant is about where the packed
             // path has been measured rather than about where it computes the right answer. The
             // reduction half is not: the packed kernels reduce with simdShuffleDown, which OpenCL
             // miscompiles, so on that backend this grant would be wrong rather than merely
             // unmeasured. CUDA is the one backend where both halves hold.
-            capabilities.add(DeviceCapability.PACKED_INTEGER_DOT);
+            if (sm >= 61) {
+                capabilities.add(DeviceCapability.PACKED_INTEGER_DOT);
+            }
         }
         if (type != TornadoVMBackendType.METAL) {
             capabilities.add(DeviceCapability.SPLIT_KV_ATTENTION);
@@ -147,6 +165,24 @@ public final class TornadoDevices {
             capabilities.add(DeviceCapability.PACKED_HALF2_MATH);
         }
         return DeviceCapabilities.of(capabilities);
+    }
+
+    /**
+     * The CUDA compute capability as major*10+minor, read from the device's own description —
+     * TornadoVM's CUDA device reports it as "Device version : CUDA X.Y" — or -1 when it cannot be
+     * read. Package-private for the unit test.
+     */
+    static int cudaComputeCapability(String deviceInfo) {
+        if (deviceInfo == null) {
+            return -1;
+        }
+        java.util.regex.Matcher m =
+                java.util.regex.Pattern.compile("Device version\\s*:\\s*CUDA\\s+(\\d+)\\.(\\d+)")
+                        .matcher(deviceInfo);
+        if (!m.find()) {
+            return -1;
+        }
+        return Integer.parseInt(m.group(1)) * 10 + Integer.parseInt(m.group(2));
     }
 
     private record ResolvedDevice(

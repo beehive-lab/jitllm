@@ -34,7 +34,8 @@ record Config(
     boolean fullDump, boolean verboseInit,
     boolean showCommand, boolean executeAfterShow,
     String openclFlags, int maxWaitEvents, boolean verbose,
-    boolean bench, String benchArgs
+    boolean bench, String benchArgs,
+    boolean diagnosticScalarBatchedPrefill
 ) {}
 
 Config parseArgs(String[] args, List<Backend> installedBackends) {
@@ -70,9 +71,17 @@ Config parseArgs(String[] args, List<Backend> installedBackends) {
     boolean verbose = false;
     boolean bench = false;
     String benchArgs = "";
+    boolean diagnosticScalarBatchedPrefill = false;
+    boolean deprecatedTensorCores = false;
+    boolean deprecatedNoTensorCores = false;
 
     for (int i = 0; i < args.length; i++) {
         switch (args[i]) {
+            // Kernel selection is automatic (device capability and workload shape, in Java);
+            // the two old spellings are accepted for compatibility and kept out of --help.
+            case "--tensor-cores" -> deprecatedTensorCores = true;
+            case "--no-tensor-cores" -> deprecatedNoTensorCores = true;
+            case "--diagnostic-scalar-batched-prefill" -> diagnosticScalarBatchedPrefill = true;
             case "--model", "-m" -> modelPath = args[++i];
             case "--prompt", "-p" -> prompt = args[++i];
             case "--system-prompt", "-sp" -> systemPrompt = args[++i];
@@ -120,6 +129,20 @@ Config parseArgs(String[] args, List<Backend> installedBackends) {
         System.exit(1);
     }
 
+    if (deprecatedTensorCores && (deprecatedNoTensorCores || diagnosticScalarBatchedPrefill)) {
+        System.err.println("Error: --tensor-cores contradicts "
+                + (deprecatedNoTensorCores ? "--no-tensor-cores" : "--diagnostic-scalar-batched-prefill")
+                + "; kernel selection is automatic, drop --tensor-cores.");
+        System.exit(1);
+    }
+    if (deprecatedTensorCores) {
+        System.err.println("Warning: --tensor-cores is deprecated and does nothing; the tensor-core kernels are selected automatically where the device supports them.");
+    }
+    if (deprecatedNoTensorCores) {
+        System.err.println("Warning: --no-tensor-cores is deprecated; use --diagnostic-scalar-batched-prefill (a diagnostic, not a performance option).");
+        diagnosticScalarBatchedPrefill = true;
+    }
+
     if (profilerDumpDir == null) {
         profilerDumpDir = System.getenv("JLLM_ROOT") + "/profiler-log.json";
     }
@@ -149,7 +172,7 @@ Config parseArgs(String[] args, List<Backend> installedBackends) {
             stream, echo, interactive, instruct, useGpu, backend, backendOverridden, gpuMemory, heapMin, heapMax, directMemory,
             debug, profiler, profilerDumpDir, printBytecodes, threads, printKernel, fullDump,
             verboseInit, showCommand, executeAfterShow, openclFlags, maxWaitEvents, verbose,
-            bench, benchArgs);
+            bench, benchArgs, diagnosticScalarBatchedPrefill);
 }
 
 String parseAndScale(String memoryValue, int multiplier) {
@@ -208,6 +231,9 @@ void printUsage() {
               --show-command          Display the full Java command
               --execute-after-show    Execute after showing command
               --verbose, -v           Verbose output
+              --diagnostic-scalar-batched-prefill
+                                      Diagnostic only: qwen35 batched prefill on the scalar
+                                      kernels instead of the automatic tensor-core path
 
             Benchmark (llama-bench style):
               --bench                 Run the llama-bench-style benchmark instead of inference
@@ -330,6 +356,7 @@ List<String> buildCommand(Config cfg, String javaHome, String tornadoSdk, String
 
     if (cfg.useGpu()) cmd.add("-Duse.tornadovm=true");
     if (cfg.verboseInit()) cmd.add("-Djllm.EnableTimingForTornadoVMInit=true");
+    if (cfg.diagnosticScalarBatchedPrefill()) cmd.add("-Djllm.qwen35.tensorCores=false");
 
     // Debug flags
     cmd.add("-Dtornado.debug=" + cfg.debug());

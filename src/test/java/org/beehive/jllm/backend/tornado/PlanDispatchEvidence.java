@@ -414,7 +414,7 @@ public final class PlanDispatchEvidence {
                     pair
                             ? java.util.Set.of(
                                     org.beehive.jllm.backend.tornado.TensorCoreSupport
-                                                    .isTensorCoreCapableBackend()
+                                                    .isInt8MmaCapable()
                                             ? "gemmInt8BlockScaled"
                                             : "gemmMMATiledB")
                             : java.util.Set.of("projectionMMAQ4_0Prefetch"),

@@ -141,20 +141,50 @@ implementation 'io.github.beehive-lab:jllm:1.0.0-jdk25'
 - **[TornadoVM](https://github.com/beehive-lab/TornadoVM)** with an OpenCL, CUDA, or Metal backend. `jllm`/`jllm4j` auto-detect whichever backend your installed SDK was built with.
 - **GCC/G++ 13+** — to build TornadoVM's native components.
 
-### Get TornadoVM (SDKMAN!, recommended)
+### TornadoVM: released SDK for running, `develop` for building this branch
 
-TornadoVM is distributed via the [official website](https://www.tornadovm.org/downloads) and [SDKMAN!](https://sdkman.io/sdks/tornadovm/). Pick a package matching your OS, architecture, and backend (opencl, cuda, metal).
+A **released** TornadoVM SDK — from the [official website](https://www.tornadovm.org/downloads) or
+[SDKMAN!](https://sdkman.io/sdks/tornadovm/) (`sdk install tornadovm`) — runs the published jllm
+artifacts and the JBang catalog. **Building this branch from source is different:** its kernels
+use TornadoVM APIs that exist only on TornadoVM's `develop` branch (in-kernel reads of MMA
+accumulators, byte-offset int8 fragment loads, `cp.async` staging), so the build depends on
+`<version>-jdk21-dev` / `-jdk22plus-dev` artifacts that are not on Maven Central and do not come
+with SDKMAN. `scripts/tornadovm-dev.sh` prepares them the same way CI does.
+
+### Build from source (development)
 
 ```bash
-sdk install tornadovm
-tornado --devices        # verify
+git clone https://github.com/beehive-lab/jllm.git && cd jllm
+
+# 1. Fresh checkout: resolve upstream TornadoVM develop, build the SDK for your backend and JDK
+#    (cuda | opencl | metal; auto-detected if omitted), install its Maven artifacts, record what
+#    was built. Nothing here touches an SDK you installed yourself.
+scripts/tornadovm-dev.sh setup --backend cuda --jdk 21
+
+# 2. Build jllm against exactly that TornadoVM (./mvnw with -Dtornadovm.version=<what was built>)
+scripts/tornadovm-dev.sh build clean install -DskipTests
+
+# 3. Run with the matching SDK
+eval "$(scripts/tornadovm-dev.sh env)"        # exports TORNADOVM_HOME and PATH for this shell
+./jllm --gpu --model model.gguf --prompt "..."
 ```
 
-### Clone this repo
+| task | command |
+|---|---|
+| Rebuild without touching TornadoVM | `scripts/tornadovm-dev.sh build clean package -DskipTests` (reuses the prepared SDK) |
+| Advance to the latest `develop` | `scripts/tornadovm-dev.sh refresh --backend cuda --jdk 21` |
+| Reproduce an exact revision | `scripts/tornadovm-dev.sh setup --ref <40-hex commit> --backend cuda --jdk 21` |
+| What is prepared | `scripts/tornadovm-dev.sh status` (revision, artifact version, JDK, backend, SDK path) |
+| Build a jllm release tag | check out the tag, then `./mvnw -P release -Dtornadovm.release.version=<X.Y.Z> clean package` — a release depends on a published TornadoVM release and refuses `-dev` coordinates |
 
-```bash
-git clone https://github.com/beehive-lab/jllm.git
-```
+`scripts/tornadovm-dev.sh build` reuses the prepared environment; it never fetches or rebuilds
+TornadoVM on its own, and launching `jllm` never does either. Prepared SDKs live under
+`~/.jllm/tornadovm/<backend>-jdk<N>/<commit>-r<recipe>/` with a `provenance.json` each; the three
+newest are kept. Plain `./mvnw` also works once `setup` has run, because the POM's development
+default (`tornadovm.base.version` + `-jdk21-dev`/`-jdk22plus-dev`) names the coordinates `setup`
+installed — `build` passes the version it recorded and CI fails if the two ever disagree. Without
+a prepared environment, plain `./mvnw` fails to resolve `tornado-api:<version>-jdk21-dev`; that is
+the signal to run `setup`.
 
 -----------
 
@@ -295,7 +325,7 @@ usage: jllm [-h] --model MODEL_PATH [--prompt PROMPT] [-sp SYSTEM_PROMPT]
                      [--print-bytecodes] [--print-threads] [--print-kernel] [--full-dump] [--verbose-init]
                      [--show-command] [--execute-after-show]
                      [--with-prefill-decode] [--batch-prefill-size N] [--cuda-graphs]
-                     [--fp16-kv-cache] [--no-tensor-cores]
+                     [--fp16-kv-cache] [--diagnostic-scalar-batched-prefill]
                      [--opencl-flags FLAGS] [--max-wait-events N] [--verbose]
 
 LLaMA Configuration:  --prompt, -sp/--system-prompt, --temperature (0.0–2.0, default 0.1),
@@ -308,10 +338,15 @@ Hardware:             --gpu, --opencl/--cuda/--metal (auto-detected; force one o
                       backends), --gpu-memory (default 14GB), --heap-min/--heap-max (default 20g)
 Debug & Profiling:    --debug, --profiler, --profiler-dump-dir,
                       --print-bytecodes, --print-threads, --print-kernel, --full-dump, --verbose-init
+                      (device, granted kernel families and the batched-prefill path chosen),
+                      --diagnostic-scalar-batched-prefill (scalar kernels, for comparing numerics;
+                      the deprecated --no-tensor-cores maps to it with a warning)
 Command Display:      --show-command, --execute-after-show
-Prefill-Decode:       --with-prefill-decode, --batch-prefill-size N (batched prefill; on CUDA the
-                      Qwen3.8 Q4_0 projections and attention run on the tensor cores by default,
-                      --no-tensor-cores keeps the scalar kernels; widths 512-2048 are the fast ones)
+Prefill-Decode:       --with-prefill-decode, --batch-prefill-size N (batched prefill; kernel
+                      selection is automatic — on a CUDA device of compute capability 8.0+ the
+                      Qwen3.8 Q4_0 projections run on the int8 tensor-core pair, Q4_1/Q5_K on the
+                      FP16 pair, attention on the tensor cores; elsewhere the scalar kernels;
+                      widths 512-2048 are the fast ones)
 KV cache:             --fp16-kv-cache (half-precision key/value store; selects the tensor-core
                       attention for batched Qwen3.8 prefill)
 Advanced:             --cuda-graphs (CUDA backend only), --opencl-flags (default: -cl-denorms-are-zero

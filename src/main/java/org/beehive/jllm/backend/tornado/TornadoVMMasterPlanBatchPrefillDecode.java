@@ -68,6 +68,26 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
         this.executionPlan = createExecutionPlan();
         metrics.enableOn(executionPlan);
         long planCreationTime = System.nanoTime();
+        if (ENABLE_TORNADOVM_INIT_TIME) {
+            // The device the plan was built for and the kernel families it was granted, then
+            // the batched-prefill path the layer builder actually chose from them; the same
+            // facts the tests read off the plan, reported where a user can see them.
+            var device = org.beehive.jllm.backend.tornado.device.TornadoDevices.current();
+            LOGGER.log(
+                    System.Logger.Level.INFO,
+                    "TornadoVM device: {0} ({1}) capabilities {2}",
+                    device.displayName(),
+                    device.id().backend(),
+                    device.capabilities());
+            var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
+            if (layers
+                    instanceof org.beehive.jllm.backend.tornado.layers.Qwen35BatchPrefillLayers q) {
+                LOGGER.log(
+                        System.Logger.Level.INFO,
+                        "qwen35 batched prefill: {0}",
+                        q.describeDispatch());
+            }
+        }
 
         if (CUDA_GRAPHS) {
             executionPlan.withAllGraphs().withCUDAGraph();

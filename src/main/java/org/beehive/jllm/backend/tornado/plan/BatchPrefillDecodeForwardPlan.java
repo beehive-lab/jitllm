@@ -33,6 +33,9 @@ public class BatchPrefillDecodeForwardPlan extends ForwardPlan {
 
     private final BatchPrefillDecodeForwardTaskGraphLayout taskGraphLayout;
 
+    /** The batched prefill layers the plan was built from, for diagnostics of what they chose. */
+    private final BatchPrefillTransformerLayerTaskGraphs batchPrefillLayers;
+
     public BatchPrefillDecodeForwardPlan(
             Model model, BatchPrefillDecodeForwardPlanComponents components, int batchSize) {
         int N = model.configuration().numberOfLayers();
@@ -46,6 +49,7 @@ public class BatchPrefillDecodeForwardPlan extends ForwardPlan {
 
         BatchPrefillTransformerLayerTaskGraphs batchLayers =
                 components.batchPrefillTransformerLayers(batchSize);
+        this.batchPrefillLayers = batchLayers;
         all.addAll(batchLayers.getLayerImmutableTaskGraphs());
         batchLayers.updateGridScheduler(scheduler);
 
@@ -74,5 +78,9 @@ public class BatchPrefillDecodeForwardPlan extends ForwardPlan {
 
     public BatchPrefillDecodeForwardTaskGraphLayout getTaskGraphLayout() {
         return taskGraphLayout;
+    }
+
+    public BatchPrefillTransformerLayerTaskGraphs getBatchPrefillLayers() {
+        return batchPrefillLayers;
     }
 }

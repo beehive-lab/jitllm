@@ -29,10 +29,21 @@ public final class DeviceCapability {
     public static final DeviceCapability WARP_SHUFFLE = of("warp-shuffle");
 
     /**
-     * Tensor-core MMA intrinsics ({@code mmaLoadA/B}, {@code mma}, {@code mmaStore}) lower. CUDA
-     * only.
+     * The FP16 tensor-core kernel family runs: {@code mma.sync m16n8k16 f16->f32} with {@code
+     * ldmatrix} and {@code cp.async} staging ({@code mmaLoadA/B}, {@code mma}, {@code mmaStore},
+     * {@code asyncCopyToLocal}). CUDA on a device of compute capability 8.0 or newer: {@code
+     * cp.async} is Ampere's, and TornadoVM lowers the intrinsics nowhere else. A CUDA device below
+     * that keeps the scalar kernels.
      */
     public static final DeviceCapability TENSOR_CORE_MMA = of("tensor-core-mma");
+
+    /**
+     * The int8 tensor-core kernel family runs: {@code mma.sync m16n8k32 s8.s8.s32} with the same
+     * staging as {@link #TENSOR_CORE_MMA}, plus in-kernel reads of the int32 accumulators. The same
+     * device threshold (compute capability 8.0) — granted separately because it is a separate
+     * instruction and a separate arithmetic, and a kernel family asks for exactly what it needs.
+     */
+    public static final DeviceCapability INT8_TENSOR_CORE_MMA = of("int8-tensor-core-mma");
 
     /**
      * The multi-workgroup split-KV flash-decoding attention kernel JITs. Metal fails to, so Qwen3
