@@ -702,6 +702,216 @@ public class TransformerPagedKvKernels {
         }
     }
 
+    // @formatter:off
+    /**
+     * Lane-cooperative split-KV attention for a 128-wide head over an FP16 paged cache.
+     *
+     * <p>Same mathematics, same paged addressing and the same partial-output layout as {@link
+     * #processHeadsFlashAttentionSplitKVFP16Paged}, so {@code combineSplitKVAttention} reads it
+     * unchanged. What differs is who owns what.
+     *
+     * <h2>Work distribution</h2>
+     *
+     * <p>The kernel it replaces parallelises over <b>key positions only</b>: one thread takes one
+     * key and computes that key's entire 128-wide dot product and its entire 128-wide value
+     * accumulation alone. Every thread therefore needs a private 128-float accumulator, and 64 of
+     * them is 32 KiB of shared memory per block — 96% of that kernel's 34052-byte allocation, which
+     * caps it at three blocks per SM and six resident warps of a possible 48. Those rows are {@code
+     * headSize} floats apart and {@code 128 % 32 == 0}, so every lane of a warp addresses the same
+     * shared-memory bank on every one of the 256 accesses each key costs.
+     *
+     * <p>This one parallelises over <b>both</b>. A warp owns a strided subset of one split's keys;
+     * within a key all 32 lanes cooperate. Lane {@code L} owns head dimensions {@code 2L}, {@code
+     * 2L+1}, {@code 64+2L} and {@code 64+2L+1} — four dimensions, held in four named FP32 scalars,
+     * which the compiler keeps in registers because they are scalars and not an array it would have
+     * to spill. The query is four more scalars. Nothing per-key touches shared memory.
+     *
+     * <p>That pairing of dimensions is for coalescing: at {@code 2L} the warp's 32 {@code Half2}
+     * loads cover halves 0..63 of the key in one 128-byte transaction, and at {@code 64+2L} the
+     * other half.
+     *
+     * <p>Shared memory is used once, after the loop, to fold the warps' partial results together:
+     * {@code MAX_WARPS * 128} numerator floats plus a maximum and a denominator per warp. At four
+     * warps that is 2084 bytes against the replaced kernel's 34052.
+     *
+     * <h2>The reduction</h2>
+     *
+     * <p>Each lane's four products are folded by the five-step {@code simdShuffleDown} butterfly
+     * this codebase already uses for its FP16 matrix-vector kernels, which leaves the total in lane
+     * zero, and {@code simdBroadcastFirst} returns it to every lane — every lane needs the score,
+     * because every lane rescales its own accumulator by it. Six shuffles per key replace three
+     * barrier-fenced serial loops over 64 shared floats. The shuffles are warp-scoped in hardware,
+     * so several warps in one block do not interfere.
+     *
+     * <p>Lane divergence would depopulate them, so there is none: {@code startPos} and {@code
+     * endPos} depend only on the group, every lane of a warp runs the same trip count, and the
+     * early return is uniform across the block.
+     *
+     * <h2>Contracts this must not change</h2>
+     *
+     * <ul>
+     *   <li><b>Online softmax</b> in FP32, rescaling numerator and denominator together, with the
+     *       {@code m == -inf} guard so the first key never evaluates {@code exp(-inf - -inf)}. The
+     *       cross-warp fold repeats the same guard for a warp that received no keys.
+     *   <li><b>Empty splits</b> — a split past the end of the sequence runs no iterations in any
+     *       warp and writes numerator 0, {@code M = -inf} and {@code L = 0}, which the combine
+     *       reads as weight zero. Writing a finite zero rather than leaving the slot alone is what
+     *       keeps {@code 0 * NaN} out of the combine.
+     *   <li><b>Paged addressing, KV slot, GQA mapping and positionHolder</b> are the same calls
+     *       against the same block table, so no unallocated page is touched and no key past {@code
+     *       pos} is included.
+     * </ul>
+     *
+     * <p>Requires {@code headSize == 128} and a workgroup that is a whole number of warps, at most
+     * {@code MAX_WARPS}. The caller checks both; there is no fallback inside the kernel because a
+     * wrong grid would be silent rather than fatal.
+     */
+    // @formatter:on
+    public static void processHeadsFlashAttentionSplitKVFP16PagedLaneHead128(
+            KernelContext context,
+            FloatArray q,
+            HalfFloatArray key_cache,
+            HalfFloatArray value_cache,
+            FloatArray att,
+            int nHeads,
+            int headSize,
+            int kvDim,
+            int kvMul,
+            IntArray positionHolder,
+            int layer,
+            IntArray blockTable,
+            int blockCfg,
+            int blockStride,
+            int nSplits) {
+
+        final int MAX_WARPS = 16;
+        final int HEAD = 128;
+
+        int tid = context.localIdx;
+        int blockSize = context.localGroupSizeX;
+        int lane = tid & 31;
+        int warp = tid >> 5;
+        int nWarps = blockSize >> 5;
+
+        int g = context.groupIdx;
+        int h = g / nSplits;
+        int s = g % nSplits;
+
+        if (h >= nHeads) {
+            return;
+        }
+
+        int pos = positionHolder.get(0);
+        int slot = positionHolder.get(1);
+        int seqLen = pos + 1;
+        int chunk = (seqLen + nSplits - 1) / nSplits;
+        int startPos = s * chunk;
+        int endPos = Math.min(startPos + chunk, seqLen); // exclusive
+
+        int layerOff = KvBlockAddress.layerOffset(layer, kvDim, blockCfg);
+        int kvHeadIdx = h / kvMul;
+        float invSqrt = 1.0f / TornadoMath.sqrt(headSize);
+
+        int dA = lane * 2;
+        int dB = 64 + lane * 2;
+
+        int qBase = h * headSize;
+        float q0 = q.get(qBase + dA);
+        float q1 = q.get(qBase + dA + 1);
+        float q2 = q.get(qBase + dB);
+        float q3 = q.get(qBase + dB + 1);
+
+        float[] partial = context.allocateFloatLocalArray(MAX_WARPS * HEAD);
+        float[] mShared = context.allocateFloatLocalArray(MAX_WARPS);
+        float[] lShared = context.allocateFloatLocalArray(MAX_WARPS);
+
+        float acc0 = 0.0f;
+        float acc1 = 0.0f;
+        float acc2 = 0.0f;
+        float acc3 = 0.0f;
+        float m = Float.NEGATIVE_INFINITY;
+        float l = 0.0f;
+
+        for (int p = startPos + warp; p < endPos; p += nWarps) {
+            int base =
+                    KvBlockAddress.offset(
+                                    blockTable, slot, p, layerOff, kvDim, blockCfg, blockStride)
+                            + kvHeadIdx * headSize;
+
+            Half2 kA = key_cache.getHalf2(base + dA);
+            Half2 kB = key_cache.getHalf2(base + dB);
+            float part =
+                    q0 * Half2.lowFloat(kA)
+                            + q1 * Half2.highFloat(kA)
+                            + q2 * Half2.lowFloat(kB)
+                            + q3 * Half2.highFloat(kB);
+
+            part += context.simdShuffleDown(part, 16);
+            part += context.simdShuffleDown(part, 8);
+            part += context.simdShuffleDown(part, 4);
+            part += context.simdShuffleDown(part, 2);
+            part += context.simdShuffleDown(part, 1);
+            float score = context.simdBroadcastFirst(part) * invSqrt;
+
+            float newM = Math.max(m, score);
+            float corr = (m == Float.NEGATIVE_INFINITY) ? 0.0f : TornadoMath.exp(m - newM);
+            float e = TornadoMath.exp(score - newM);
+
+            Half2 vA = value_cache.getHalf2(base + dA);
+            Half2 vB = value_cache.getHalf2(base + dB);
+            acc0 = acc0 * corr + e * Half2.lowFloat(vA);
+            acc1 = acc1 * corr + e * Half2.highFloat(vA);
+            acc2 = acc2 * corr + e * Half2.lowFloat(vB);
+            acc3 = acc3 * corr + e * Half2.highFloat(vB);
+            l = l * corr + e;
+            m = newM;
+        }
+
+        int warpBase = warp * HEAD;
+        partial[warpBase + dA] = acc0;
+        partial[warpBase + dA + 1] = acc1;
+        partial[warpBase + dB] = acc2;
+        partial[warpBase + dB + 1] = acc3;
+        if (lane == 0) {
+            mShared[warp] = m;
+            lShared[warp] = l;
+        }
+        context.localBarrier();
+
+        int headBase = h * nSplits * (headSize + 2);
+        int outBase = headBase + s * headSize;
+        int mBase = headBase + nSplits * headSize;
+        int lBase = mBase + nSplits;
+
+        float blockMax = Float.NEGATIVE_INFINITY;
+        for (int w = 0; w < nWarps; w++) {
+            float mw = mShared[w];
+            if (mw > blockMax) {
+                blockMax = mw;
+            }
+        }
+        float denom = 0.0f;
+        for (int w = 0; w < nWarps; w++) {
+            float mw = mShared[w];
+            float f = (mw == Float.NEGATIVE_INFINITY) ? 0.0f : TornadoMath.exp(mw - blockMax);
+            denom += f * lShared[w];
+        }
+
+        for (int d = tid; d < headSize; d += blockSize) {
+            float sum = 0.0f;
+            for (int w = 0; w < nWarps; w++) {
+                float mw = mShared[w];
+                float f = (mw == Float.NEGATIVE_INFINITY) ? 0.0f : TornadoMath.exp(mw - blockMax);
+                sum += f * partial[w * HEAD + d];
+            }
+            att.set(outBase + d, sum);
+        }
+        if (tid == 0) {
+            att.set(mBase + s, blockMax);
+            att.set(lBase + s, denom);
+        }
+    }
+
     public static void processHeadsFlashAttentionSplitKVFP16Paged(
             KernelContext context,
             FloatArray q,

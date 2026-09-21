@@ -339,7 +339,7 @@ Advanced:             --cuda-graphs (CUDA backend only), --opencl-flags (default
 - ✅ **Cross-platform**: NVIDIA (OpenCL · CUDA), Intel (OpenCL), Apple (OpenCL · Metal).
 - ✅ **Serving** — OpenAI-compatible API, llama-bench-style benchmarking, tensor-core (MMA) batch prefill.
 - ✅ **Native batched prefill** (Qwen3 FP16, CUDA) — cuBLAS projections and a fused cuDNN first-chunk attention, selected automatically with no flag. See [`NATIVE_PREFILL.md`](NATIVE_PREFILL.md).
-- ✅ **Faster CUDA decode** (Qwen3 FP16) — grouped decode graphs and warp-butterfly matrix-vector reductions, also selected by device capability with no flag. See [Decode on CUDA](NATIVE_PREFILL.md#decode-on-cuda).
+- ✅ **Faster CUDA decode** (Qwen3 FP16) — grouped decode graphs, warp-butterfly matrix-vector reductions and a lane-cooperative attention kernel, all selected by device capability with no flag. See [Decode on CUDA](NATIVE_PREFILL.md#decode-on-cuda).
 - 🧩 **Coming next** — static batched decode, on-device sampling (preview; see [Serving](#-serving-openai-compatible-preview)).
 
 📄 [Transformer optimizations in TornadoVM](docs/TORNADOVM_TRANSFORMER_OPTIMIZATIONS.md) · ⚡ [Native batched prefill](NATIVE_PREFILL.md) · 🧭 [Project roadmap](docs/jllm-roadmap.md)

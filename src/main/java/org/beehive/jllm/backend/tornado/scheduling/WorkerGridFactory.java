@@ -55,6 +55,29 @@ public class WorkerGridFactory {
         return worker;
     }
 
+    // @formatter:off
+    /**
+     * One 32-lane warp per group, for the lane-cooperative attention kernel.
+     *
+     * <p>Deliberately not {@link #createAttentionWorker}: that one sizes the group from the head
+     * width ({@code min(headSize, 64)}), which is the shape the per-key kernel wants. The
+     * lane-cooperative kernel wants a whole number of warps whatever the head width, because its
+     * lane indices address head dimensions directly and its warp index strides the key range; a
+     * group that is not a multiple of 32 would silently compute a wrong answer rather than fail.
+     *
+     * @param warpsPerGroup how many warps share one (head, split). More warps put more independent
+     *     key streams in flight per block, which is what the kernel needs to hide KV-cache latency
+     *     at depth; the kernel folds them together itself.
+     */
+    // @formatter:on
+    public static WorkerGrid createLaneAttentionWorker(int groups, int warpsPerGroup) {
+        int local = warpsPerGroup * 32;
+        WorkerGrid worker = new WorkerGrid1D(groups * local);
+        worker.setGlobalWork(groups * local, 1, 1);
+        worker.setLocalWork(local, 1, 1);
+        return worker;
+    }
+
     /** FFN gate+up worker: combined projection */
     public static WorkerGrid createGateUpWorker(int hiddenDim) {
         int global = (2 * hiddenDim) * DEFAULT_WORK_GROUP_SIZE;

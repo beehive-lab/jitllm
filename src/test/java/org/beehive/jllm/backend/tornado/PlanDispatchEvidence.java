@@ -361,6 +361,64 @@ public final class PlanDispatchEvidence {
         return new LayerReduction(layerSlots.size(), warp, shared);
     }
 
+    // @formatter:off
+    /**
+     * Which decode attention kernel a Qwen3 FP16 plan installed, and on what grid.
+     *
+     * <p>The lane-cooperative kernel and the per-key kernel it replaces do not merely differ in
+     * speed: they partition the head across lanes differently, so running either on the other's
+     * worker grid computes a wrong answer without failing. The task name carries the selection
+     * ({@code attention_lane} against {@code attention}) and the local work size carries the shape,
+     * and both are asserted, because a plan with the right name and the wrong grid is the failure
+     * that would be silent.
+     *
+     * @param laneTasks decode layers whose attention task is the lane-cooperative one
+     * @param perKeyTasks decode layers still on the per-key kernel
+     * @param laneLocalWork the local work size registered for the lane task, or 0 if there is none
+     */
+    // @formatter:on
+    public record DecodeAttention(int laneTasks, int perKeyTasks, long laneLocalWork) {
+
+        public String describe() {
+            return "lane="
+                    + laneTasks
+                    + " perKey="
+                    + perKeyTasks
+                    + " laneLocalWork="
+                    + laneLocalWork;
+        }
+    }
+
+    private static final Pattern DECODE_ATTENTION =
+            Pattern.compile("^layer_(\\d+)\\.(?:l(\\d+)_)?attention(_lane)?$");
+
+    /** Reads {@link DecodeAttention} off a built plan's scheduler. */
+    public static DecodeAttention qwen3DecodeAttention(GridScheduler scheduler) {
+        assertNotNull(
+                "no grid scheduler for the plan this run built, so its dispatch cannot be checked",
+                scheduler);
+        int lane = 0;
+        int perKey = 0;
+        long laneLocal = 0;
+        for (String task : new TreeSet<>(scheduler.keySet())) {
+            Matcher m = DECODE_ATTENTION.matcher(task);
+            if (!m.matches()) {
+                continue;
+            }
+            if (m.group(3) != null) {
+                lane++;
+                laneLocal = scheduler.get(task).getLocalWork()[0];
+            } else {
+                perKey++;
+            }
+        }
+        assertTrue(
+                "this plan has no decode attention task at all: "
+                        + new TreeSet<>(scheduler.keySet()),
+                lane + perKey > 0);
+        return new DecodeAttention(lane, perKey, laneLocal);
+    }
+
     /** The layers whose batched graph holds an attention-output projection, in index order. */
     private static List<Integer> attentionLayers(GridScheduler scheduler) {
         List<Integer> layers = new ArrayList<>();

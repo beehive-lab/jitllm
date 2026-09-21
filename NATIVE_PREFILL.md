@@ -382,6 +382,14 @@ automatically:
   kernel in a token — 502 µs, 20.6% of GPU time, 311 MiB of the 1151 — and its shuffle-reducing
   twin existed with a matching worker grid but was gated to Metal. It now runs at 842 GB/s,
   against 619 before.
+- **Lane-cooperative split-KV attention** for a 128-wide head over an FP16 paged cache. The kernel
+  it replaces gives every thread a private 128-float accumulator in shared memory — 32 KiB of a
+  34052-byte block, six resident warps per SM of a possible 48, and all 32 lanes of a warp on one
+  bank for every one of the 256 shared accesses a key costs. The replacement gives lane *L* four
+  head dimensions in four FP32 scalars, reduces each key with the same `simdShuffleDown` butterfly
+  the matrix-vector kernels use, and touches no shared memory until sixteen warps fold their
+  results once at the end. 34 registers, 8320 bytes of shared memory, full occupancy; **2.99× to
+  4.82× faster than the kernel it replaces**, depending on depth.
 
 None of the three allocates anything: same buffers, same tasks, fewer graphs, a different
 reduction. Peak device memory is identical to the MiB before and after them.
@@ -434,76 +442,66 @@ Same machine and protocol as above. Four interleaved rounds in rotated order, fi
 repetitions after an untimed full-workload warm-up, medians over twenty samples; all 24
 workload-rounds passed the foreign-occupancy exclusion.
 
-| tg128, batch 512 | before | after | llama.cpp b10874 | vs. before | vs. llama.cpp |
+| tg128, batch 512 | before any decode work | after | llama.cpp b10874 | vs. before | vs. llama.cpp |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| depth 0 | 322.2 | **412.5** | 500.9 | **1.28×** | 0.82× |
-| depth 512 | 274.0 | **337.6** | 483.8 | **1.23×** | 0.70× |
-| depth 2048 | 191.3 | **221.5** | 436.6 | **1.16×** | 0.51× |
+| depth 0 | 322.2 | **458.2** | 500.1 | **1.42×** | **0.92×** |
+| depth 512 | 274.0 | **435.4** | 483.2 | **1.59×** | **0.90×** |
+| depth 2048 | 191.3 | **391.0** | 435.8 | **2.04×** | **0.90×** |
 
-Sample spread was ±0.1–0.3%, and per-round ratios against llama.cpp agree to the third decimal.
+Sample spread was ±0.1–0.3%, and per-round ratios against llama.cpp agree to the third decimal at
+every depth. The attention kernel alone accounts for 1.11×, 1.29× and 1.77× of those figures; the
+three earlier changes account for the rest.
 
-**Decode is still slower than llama.cpp at every depth**, and the reason is not the same at every
-depth. Comparable final-candidate profiles of both engines, windowed identically over the last 64
-decoded tokens, decompose the remaining difference per token as:
+**Decode is still slower than llama.cpp, by 8–10% at every depth.** Before the attention kernel it
+was 18–49%. What remains is dispatch, not arithmetic: jllm submits nine graphs per token and waits
+for each, which was 134–215 µs of idle, and llama.cpp overlaps independent kernels within a token
+where jllm overlaps none, which was a further 234–351 µs. Both are properties of how work is
+submitted rather than of any kernel.
 
-| depth | total | idle | attention | projections | vocabulary | other | llama.cpp's kernel overlap |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 | +347 µs | +134 | +267 | **−182** | **−39** | **−68** | +234 |
-| 512 | +898 µs | +215 | +734 | **−244** | **−39** | **−68** | +301 |
-| 2048 | +2224 µs | +201 | +2093 | **−314** | **−40** | **−67** | +351 |
+The decomposition those figures come from is per token, profiled, and identical in method for both
+engines — the merged union of kernel intervals in each category over a 64-token window. Three
+quantities must not be mixed when reading it: elapsed wall time, the merged union of kernel
+intervals, and the sum of kernel durations, which differ for llama.cpp because it overlaps
+kernels and never for jllm because it does not. The campaign reports carry the full table.
 
-jllm is now **faster than llama.cpp on every kernel category except attention**, at every depth;
-those negative columns are what the three changes bought. Three terms remain. llama.cpp overlaps
-independent kernels within a token and jllm overlaps none, which is 234–351 µs. Nine graph
-submissions, each ending in a device wait, are 134–215 µs. Attention is +267 at depth 0 and +2093
-at depth 2048.
+On partitioning, the supported statement is narrow: **eight split-KV partitions were the best of
+the values tested** — 1, 2, 4, 8 and 16 — with a single fixed value chosen for the whole session.
+llama.cpp instead recomputes its split count per call from occupancy and the current KV length, and
+was observed using 2, 6 and 13 at depths 0, 512 and 2048. The lane-cooperative kernel gets its
+parallelism from sixteen warps per split instead, which needs no per-token decision and no
+dependence on a configured context length that is not the current sequence length. Whether a
+context-aware split count would add anything on top of that is untested.
 
-So at depth zero attention is **44%** of the gap, not all of it: the kernel categories very nearly
-cancel there and what is left is dispatch. By depth 2048 attention is 94%. The figures above are
-profiled; profiling costs llama.cpp more per token than jllm (it launches 369 kernels to jllm's
-284), which compresses the depth-zero gap by about 81 µs against the unprofiled 428 µs and leaves
-the deeper two within 3 µs.
+### What remains
 
-On partitioning, the supported statement is narrower than "the kernel, not the policy": **eight
-split-KV partitions were the best of the values tested** — 1, 2, 4, 8 and 16, at depths 0, 512 and
-2048 — with a single fixed value chosen for the whole session. llama.cpp instead recomputes its
-split count per call from occupancy and the current KV length, and was observed using 2, 6 and 13
-at those three depths. Whether a context-dependent partition count would help here was not
-measured, and the proposal for the next step treats it as one of three coupled changes rather than
-as settled.
+Attention was the gap at depth and is no longer: the kernel is 1.4–1.5× faster than llama.cpp's own
+summed attention work. What is left is dispatch, and it is two separate things.
 
-### The next step, and why it is attention
+- **Nine submissions per token, each ending in a device wait** — 134–215 µs. Grouping took this
+  from thirty to nine and the remaining nine are the activation graph, seven layer graphs and the
+  logits graph. Fewer would mean either more layers per graph, which a fixed 8192-byte per-graph
+  bytecode buffer already caps at four, or a way to submit without waiting.
+- **No intra-token overlap** — 234–351 µs. Every kernel in a jllm token is serialised behind the
+  previous one; llama.cpp runs independent work concurrently. jllm's merged kernel union equals its
+  summed kernel time exactly, at every depth, which is the measurement that says so.
 
-Not implemented here; recorded so the shape of the remaining work is on the record rather than
-rediscovered. At the shapes Qwen3-0.6B launches, the two decode attention kernels differ
-structurally:
-
-| | jllm `processHeadsFlashAttentionSplitKVFP16Paged` | llama.cpp `flash_attn_ext_vec` |
-| --- | --- | --- |
-| parallelised over | key positions only — one thread owns a whole 128-wide accumulator | key positions **and** head dimension — eight lanes share a key |
-| accumulator lives in | shared memory, 64 × 128 floats = **32 KiB per block** | registers, eight `half2` per thread |
-| static shared per block | 34052 B | 8448 B |
-| resident warps per SM | **6 of 48 (12.5%)** | 12 of 48 (25%) |
-| reductions | three serial 64-iteration loops on thread 0, four barriers | `__shfl_xor_sync` butterflies |
-| KV splits | fixed 8, a process-wide constant | 2, 6, 13 at depths 0, 512, 2048 — recomputed per call from occupancy |
-| effective bandwidth at depth 2048 | 188 GB/s (21% of peak) | 625 GB/s (70%) |
-
-GQA reuse is *not* a difference: both index the KV head as `head / gqa_ratio` and both therefore
-read each K and V element twice at `kvMul` 2.
-
-A rewrite that splits the head dimension across lanes, reduces with `simdShuffleDown` and sizes
-the split count from the configured context would, **if it matched llama.cpp exactly**, take decode
-to 0.89× at depth 0, 0.87× at 512 and 0.83× at 2048 — better, and still not parity, because
-attention is not the whole gap. The first thing to establish is whether TornadoVM can keep a
-per-lane accumulator in registers at all: `allocateFloatLocalArray` is shared memory, and a plain
-Java local array lowers to private memory unless Graal promotes it, which needs a constant length.
-If it cannot, the candidate does not work.
+Neither is a kernel problem, so neither is addressed by writing a faster kernel.
 
 ### Correctness
 
 Grouping is **bit-identical** over 64 teacher-forced decode-step logit vectors on two shapes,
 against a build with grouping set back to one layer per graph. The two reduction changes land at
 relative L2 3.3e-04 to 4.5e-04, which is the ordinary consequence of summing in a different order.
+
+The attention kernel is checked against a **host reference** before any model runs it, by
+`LaneAttentionHead128AccelTest`: a three-pass FP32 softmax on the CPU over the same FP16 values the
+cache holds, so the only difference left is summation order. Eighteen sequence lengths chosen for
+the boundaries — one and two positions, either side of a warp, a page, the sixteen-warp stride and
+an even split, and 512 and 2048 — over a reversed page mapping and a nonzero KV slot, with grouped
+KV heads and three unrelated Q/K/V functions spanning two orders of magnitude. Relative L2 stays
+between 1.2e-07 and 7.2e-07. Shape and finiteness are asserted first, on the split partials as well
+as the combined output, including that an empty split writes `-inf`, a zero denominator and
+an explicit zero numerator rather than being left unwritten.
 **Gemma 4 has no numerical coverage on the machine this was validated on.** Its fixtures are not
 present, so every Gemma 4 gate skipped. That matters here because `Gemma4LogitsFP16Layer` has the
 same shape as the Granite logits layer that regressed — it installs its own soft-capped
@@ -538,10 +536,13 @@ revoking the capability or dropping either selection is a failure and not a quie
   buffer rather than a tuned optimum. The warp-butterfly *support* grant is CUDA-wide; the
   *preference* that reads it is a backend-level default measured on one device, and it costs
   Qwen3-4B 1.0% — see "What the reduction preference selects, and where".
-- **Attention is untouched and is where the remaining gap is at depth.** 44% of the depth-zero
-  difference against llama.cpp and 94% at depth 2048. The kernel holds a 128-float accumulator per
-  thread in shared memory, which caps it at 12.5% occupancy against llama.cpp's 25%, and its split
-  count is a fixed 8 where llama.cpp recomputes 2, 6 or 13 per call.
+- **The lane-cooperative attention kernel is narrower than the family.** It requires a 128-wide
+  head, an FP16 paged cache, the split-KV path and a backend whose warp shuffle is correct, and it
+  is selected only by the Qwen3 FP16 family. Every other head width, every other cache layout, the
+  packed-half2 variant, Metal's per-head path and every other model family keep the kernel they
+  had.
+- **What remains against llama.cpp is dispatch**, not arithmetic: nine submit-and-wait round trips
+  per token and no overlap between independent kernels within a token.
 - **Decode remains slower than llama.cpp** at every depth measured, and the shortfall grows with
   context. See [Decode on CUDA](#decode-on-cuda).
 - **Requires an unreleased TornadoVM revision**, and two of its modules are not on Maven Central.

@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import org.beehive.jllm.Options;
 import org.beehive.jllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
+import org.beehive.jllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jllm.golden.GoldenFixture;
 import org.beehive.jllm.golden.GoldenFixture.Fixture;
 import org.beehive.jllm.inference.state.State;
@@ -162,6 +163,34 @@ public class Qwen3DecodeDispatchAccelTest {
                                 + " shuffle-reducing variants: "
                                 + reduction.describe(),
                         reduction.allShuffleReduced());
+
+                // --- the decode attention kernel, and the grid it must be paired with -------
+                // Qwen3FP16FFNLayers passes config.numberOfHeadsValue() as nEmbdHead, which for
+                // this family equals headSize(); asking through the Configuration interface keeps
+                // the test off the concrete class.
+                if (LaneAttentionPolicy.laneCooperativeAttention(
+                        loaded.configuration().headSize())) {
+                    PlanDispatchEvidence.DecodeAttention attention =
+                            PlanDispatchEvidence.qwen3DecodeAttention(scheduler);
+                    assertEquals(
+                            "every decode layer must install the lane-cooperative attention kernel"
+                                    + " on this configuration: "
+                                    + attention.describe(),
+                            layers,
+                            attention.laneTasks());
+                    assertEquals(
+                            "no decode layer may be left on the per-key kernel: "
+                                    + attention.describe(),
+                            0,
+                            attention.perKeyTasks());
+                    assertEquals(
+                            "the lane-cooperative kernel partitions a 128-wide head across 32 lanes"
+                                    + " and strides the key range by warp, so its group must be exactly"
+                                    + " WARPS_PER_GROUP warps; any other size computes a wrong answer"
+                                    + " without failing",
+                            LaneAttentionPolicy.WARPS_PER_GROUP * 32L,
+                            attention.laneLocalWork());
+                }
 
                 // --- the vocabulary projection, which a different class selects -------------
                 PlanDispatchEvidence.VocabularyProjection vocab =

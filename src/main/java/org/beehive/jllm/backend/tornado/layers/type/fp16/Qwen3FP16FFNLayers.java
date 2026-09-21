@@ -8,6 +8,7 @@ import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered
 import org.beehive.jllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
+import org.beehive.jllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -77,6 +78,19 @@ public class Qwen3FP16FFNLayers
                     // the evidence behind it is and is not.
                     || Fp16GemvReductionPolicy.preferShuffleReduction();
 
+    // @formatter:off
+    /**
+     * Whether split-KV decode attention runs the lane-cooperative kernel. A precondition on the
+     * head width and a support claim about the warp shuffle, not a tuning knob: see {@link
+     * LaneAttentionPolicy}. False leaves every attention task exactly as it was.
+     *
+     * <p>Resolved once here rather than at each use site because the head width cannot change
+     * within a plan, and because the task name and its worker grid must agree — a 32-lane kernel on
+     * the 64-wide grid the per-key kernel uses would compute a wrong answer without failing.
+     */
+    // @formatter:on
+    private final boolean laneAttention;
+
     public Qwen3FP16FFNLayers(
             String taskGraphName,
             Qwen3State state,
@@ -94,6 +108,12 @@ public class Qwen3FP16FFNLayers
         this.nEmbdHead = nEmbdHeadV;
         this.nEmbdGqa = nEmbdVGqa;
         this.gqa = config.numberOfHeads() / config.numberOfKeyValueHeads();
+        // FP16 paged split-KV only; the packed-half2 variant and the FP32 cache keep their kernels.
+        this.laneAttention =
+                useFp16KVCache()
+                        && !packedHalf2Attention
+                        && !isMetalBackend
+                        && LaneAttentionPolicy.laneCooperativeAttention(nEmbdHead);
         setupFFNLayers();
     }
 
@@ -110,6 +130,19 @@ public class Qwen3FP16FFNLayers
      * Qwen3DecodeDispatchAccelTest} can assert on the kernels themselves.
      */
     // @formatter:on
+    // @formatter:off
+    /**
+     * The attention task's name, suffixed when the lane-cooperative kernel is the one installed.
+     *
+     * <p>Same reason as {@link #reductionVariant}: two kernels that share a task name are two
+     * kernels a built plan cannot tell apart, and this pair does not even share a worker grid, so a
+     * silent mismatch between them would be wrong rather than merely slow.
+     */
+    // @formatter:on
+    protected final String attentionTaskName() {
+        return laneAttention ? "attention_lane" : "attention";
+    }
+
     protected final String reductionVariant(String taskName) {
         return useWarpMatmul ? taskName + "_warp" : taskName;
     }
@@ -129,6 +162,12 @@ public class Qwen3FP16FFNLayers
                         config.numberOfHeads() * attentionSplits, nEmbdHead);
         WorkerGrid attentionCombineWorker =
                 WorkerGridFactory.createAttentionWorker(config.numberOfHeads(), nEmbdHead);
+        // One warp per (head, split) for the lane-cooperative kernel; unused when it is not
+        // selected, and deliberately a different shape from parallelAttentionWorker above.
+        WorkerGrid laneAttentionWorker =
+                WorkerGridFactory.createLaneAttentionWorker(
+                        config.numberOfHeads() * attentionSplits,
+                        LaneAttentionPolicy.WARPS_PER_GROUP);
         // attn_output_proj worker (output projection)
         int matmul1Global = config.dim() * LOCAL_WORK_GROUP_SIZE_ALLOC;
         WorkerGrid matmul1Worker =
@@ -162,8 +201,10 @@ public class Qwen3FP16FFNLayers
             gridScheduler.addWorkerGrid(p + "qk_rmsnorm", qkRmsNormWorker);
             gridScheduler.addWorkerGrid(p + "rope_and_kv_cache", ropeWorker);
             gridScheduler.addWorkerGrid(
-                    p + "attention",
-                    isMetalBackend ? attentionCombineWorker : parallelAttentionWorker);
+                    p + attentionTaskName(),
+                    laneAttention
+                            ? laneAttentionWorker
+                            : isMetalBackend ? attentionCombineWorker : parallelAttentionWorker);
             if (!isMetalBackend) {
                 gridScheduler.addWorkerGrid(p + "attention_combine", attentionCombineWorker);
             }
@@ -457,12 +498,15 @@ public class Qwen3FP16FFNLayers
             // wrapAttSplit.
             if (useFp16KVCache()) {
                 unifiedLayer.task(
-                        tp + "attention",
-                        packedHalf2Attention
+                        tp + attentionTaskName(),
+                        laneAttention
                                 ? TransformerPagedKvKernels
-                                        ::processHeadsFlashAttentionSplitKVFP16PackedPaged
-                                : TransformerPagedKvKernels
-                                        ::processHeadsFlashAttentionSplitKVFP16Paged,
+                                        ::processHeadsFlashAttentionSplitKVFP16PagedLaneHead128
+                                : packedHalf2Attention
+                                        ? TransformerPagedKvKernels
+                                                ::processHeadsFlashAttentionSplitKVFP16PackedPaged
+                                        : TransformerPagedKvKernels
+                                                ::processHeadsFlashAttentionSplitKVFP16Paged,
                         context,
                         qwen3State.workspace.wrapQ, // query vectors
                         qwen3State.workspace.wrapKeyCacheFP16, // key cache (FP16)
