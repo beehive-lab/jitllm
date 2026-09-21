@@ -460,6 +460,23 @@ public final class Qwen35State extends State {
                     TornadoWorkspaces.halfFloats(
                             Math.toIntExact((long) config.hiddenDim() * config.dim()));
         }
+        if (Qwen35Configuration.dequantGemmWidth(batch)) {
+            // The int8 pair's scratch, at the same widths: the activations of the widest input
+            // (hiddenDim) as bytes with a scale per 32, and one decoded Q4_0 matrix (the largest,
+            // hiddenDim x dim) with its FP32 block scales. Allocated like the FP16 scratch above,
+            // whatever the device; the layer builder dispatches to it only on the tensor cores.
+            workspace.wrapQ8ActBatch =
+                    TornadoWorkspaces.bytes(Math.toIntExact((long) batch * config.hiddenDim()));
+            workspace.wrapQ8ActScales =
+                    TornadoWorkspaces.floats(
+                            Math.toIntExact((long) batch * config.hiddenDim() / 32));
+            workspace.wrapInt8WeightScratch =
+                    TornadoWorkspaces.bytes(
+                            Math.toIntExact((long) config.hiddenDim() * config.dim()));
+            workspace.wrapInt8WeightScales =
+                    TornadoWorkspaces.floats(
+                            Math.toIntExact((long) config.hiddenDim() * config.dim() / 32));
+        }
         if (storageOptions().usesFp16KeyValueCache()) {
             // The capacity rounded up to whole 32-key tiles: the tensor-core kernels' transposed
             // regions are padded to them; the other kernels use the first contextLength of each

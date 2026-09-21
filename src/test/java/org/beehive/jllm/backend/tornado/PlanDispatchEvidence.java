@@ -122,11 +122,12 @@ public final class PlanDispatchEvidence {
             String prefix = "batchLayer_" + layer + ".";
             WorkerGrid dequant = scheduler.get(prefix + "attn_output_proj_dequant");
             assertNotNull("layer " + layer + " has no attn_output_proj_dequant task", dequant);
-            // The Q4_0 decoder takes one lane per packed byte: half the elements.
-            assertEquals(
-                    "layer " + layer + " dequantization lanes",
-                    (long) dim * attnDim / 2,
-                    dequant.getGlobalWork()[0]);
+            // The Q4_0 decoder takes one lane per packed byte: half the elements; the int8
+            // investigation's decoder a lane per word of four.
+            long attnLanes = dequant.getGlobalWork()[0];
+            assertTrue(
+                    "layer " + layer + " dequantization lanes " + attnLanes,
+                    attnLanes == (long) dim * attnDim / 2 || attnLanes == (long) dim * attnDim / 4);
             WorkerGrid gemm = scheduler.get(prefix + "attn_output_proj");
             assertEquals(
                     "layer " + layer + " GEMM rows of work",
@@ -185,12 +186,12 @@ public final class PlanDispatchEvidence {
             if (task.matches("batchLayer_\\d+\\.ffn_down_proj")) {
                 WorkerGrid dequant = scheduler.get(task + "_dequant");
                 assertNotNull(task + " has no dequantization task", dequant);
-                // Both decoders take a lane per packed byte; assertQwen35DequantGemmPairs pins
-                // the kernel names.
-                assertEquals(
-                        task + " dequantization lanes",
-                        (long) dim * hiddenDim / 2,
-                        dequant.getGlobalWork()[0]);
+                // Both decoders take a lane per packed byte (the int8 investigation's a lane
+                // per four); assertQwen35DequantGemmPairs pins the kernel names.
+                long lanes = dequant.getGlobalWork()[0];
+                assertTrue(
+                        task + " dequantization lanes " + lanes,
+                        lanes == (long) dim * hiddenDim / 2 || lanes == (long) dim * hiddenDim / 4);
                 WorkerGrid gemm = scheduler.get(task);
                 assertEquals(
                         task + " GEMM rows of work",
@@ -301,7 +302,11 @@ public final class PlanDispatchEvidence {
                         "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledBResidual",
                         "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledBSwiGLU",
                         "dequantizeQ4_1ToFP16TiledPairs+gemmMMATiledBResidual",
-                        "dequantizeQ5_KToFP16TiledPairs+gemmMMATiledBResidual");
+                        "dequantizeQ5_KToFP16TiledPairs+gemmMMATiledBResidual",
+                        // The int8 pair (Q4_0 projections on a tensor-core device).
+                        "decodeQ4_0ToInt8Tiled+gemmInt8BlockScaled",
+                        "decodeQ4_0ToInt8Tiled+gemmInt8BlockScaledResidual",
+                        "decodeQ4_0ToInt8Tiled+gemmInt8BlockScaledSwiGLU");
         java.util.Map<String, Integer> seen = new java.util.TreeMap<>();
         java.util.Set<String> tasks = new TreeSet<>();
         for (String key : scheduler.keySet()) {
@@ -387,10 +392,11 @@ public final class PlanDispatchEvidence {
                 WorkerGrid dequant = scheduler.get(key + "_dequant");
                 if (pair) {
                     assertNotNull(key + " has no decoder task", dequant);
-                    assertEquals(
-                            key + " decoder lanes",
-                            (long) kvDim * 5120 / 2,
-                            dequant.getGlobalWork()[0]);
+                    long kvLanes = dequant.getGlobalWork()[0];
+                    assertTrue(
+                            key + " decoder lanes " + kvLanes,
+                            kvLanes == (long) kvDim * 5120 / 2
+                                    || kvLanes == (long) kvDim * 5120 / 4);
                     assertEquals(
                             key + " GEMM rows of work",
                             (batchSize / 128) * 256L,
@@ -405,7 +411,13 @@ public final class PlanDispatchEvidence {
             java.util.Set<String> kernels = batchedTaskKernels(plan, task);
             assertEquals(
                     task + " kernel",
-                    java.util.Set.of(pair ? "gemmMMATiledB" : "projectionMMAQ4_0Prefetch"),
+                    pair
+                            ? java.util.Set.of(
+                                    org.beehive.jllm.backend.tornado.TensorCoreSupport
+                                                    .isTensorCoreCapableBackend()
+                                            ? "gemmInt8BlockScaled"
+                                            : "gemmMMATiledB")
+                            : java.util.Set.of("projectionMMAQ4_0Prefetch"),
                     kernels);
         }
     }

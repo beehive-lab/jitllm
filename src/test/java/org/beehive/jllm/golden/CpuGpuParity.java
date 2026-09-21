@@ -314,6 +314,9 @@ abstract class CpuGpuParity {
             }
 
             double relL2 = Math.sqrt(sqDiff / sqRef);
+            if (Boolean.getBoolean("jllm.parity.rows")) {
+                System.out.printf(java.util.Locale.ROOT, "[PARITY-ROW] %d relL2=%.5f%n", r, relL2);
+            }
             if (relL2 > worstRelL2) {
                 worstRelL2 = relL2;
                 worstRelL2Row = r;

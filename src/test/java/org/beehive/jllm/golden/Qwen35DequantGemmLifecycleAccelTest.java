@@ -63,6 +63,50 @@ public class Qwen35DequantGemmLifecycleAccelTest {
      */
     private static final int WIDTH = width();
 
+    /**
+     * On a tensor-core device the Q4_0 pairs are int8, whose arithmetic differs from the direct
+     * FP16 path's: prompt A is then compared by replay, and the distance to the direct path is
+     * reported rather than asserted.
+     */
+    private static final boolean INT8 =
+            org.beehive.jllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend();
+
+    /** relL2, max |diff| and argmax agreement over the logits rows of two runs. */
+    private static void reportRowDistance(String what, List<float[]> a, List<float[]> b) {
+        assertEquals(what + ": row counts", a.size(), b.size());
+        double num = 0, den = 0, maxAbs = 0;
+        int argmaxAgree = 0;
+        for (int r = 0; r < a.size(); r++) {
+            float[] x = a.get(r);
+            float[] y = b.get(r);
+            int ax = 0, ay = 0;
+            for (int i = 0; i < x.length; i++) {
+                double e = (double) x[i] - y[i];
+                num += e * e;
+                den += (double) y[i] * y[i];
+                maxAbs = Math.max(maxAbs, Math.abs(e));
+                if (x[i] > x[ax]) {
+                    ax = i;
+                }
+                if (y[i] > y[ay]) {
+                    ay = i;
+                }
+            }
+            if (ax == ay) {
+                argmaxAgree++;
+            }
+        }
+        System.out.printf(
+                java.util.Locale.ROOT,
+                "[lifecycle] %s: rows %d relL2 %.4f maxAbs %.4f argmax agreement %d/%d%n",
+                what,
+                a.size(),
+                Math.sqrt(num / den),
+                maxAbs,
+                argmaxAgree,
+                a.size());
+    }
+
     private static final int CONTEXT = 4 * WIDTH;
 
     private static int width() {
@@ -150,6 +194,7 @@ public class Qwen35DequantGemmLifecycleAccelTest {
             Run freshB;
             Run pairA;
             Run pairB;
+            Run pairA2 = null;
             java.util.Set<String> pairKernels;
             java.util.Set<String> alphaBetaKernels;
             java.util.Set<String> scanKernels;
@@ -171,6 +216,12 @@ public class Qwen35DequantGemmLifecycleAccelTest {
                 pairA = run(model, pairState, pairPlan, promptA);
                 reset(pairState, pairPlan, initialSeed);
                 pairB = run(model, pairState, pairPlan, promptB);
+                if (INT8) {
+                    // The int8 research path: prompt A once more after a reset, for the exact
+                    // replay comparison the direct FP16 path cannot provide across arithmetics.
+                    reset(pairState, pairPlan, initialSeed);
+                    pairA2 = run(model, pairState, pairPlan, promptA);
+                }
             } finally {
                 pairPlan.freeTornadoExecutionPlan();
             }
@@ -200,17 +251,35 @@ public class Qwen35DequantGemmLifecycleAccelTest {
             // with the residual. All interleaved through the one scratch in graph order.
             assertEquals(
                     "the pair combinations in this plan: " + dequantPairs,
-                    java.util.Set.of(
-                            "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledB",
-                            "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledBResidual",
-                            "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledBSwiGLU",
-                            "dequantizeQ4_1ToFP16TiledPairs+gemmMMATiledBResidual",
-                            "dequantizeQ5_KToFP16TiledPairs+gemmMMATiledBResidual"),
+                    INT8
+                            // The int8 investigation replaces the three Q4_0 pairs.
+                            ? java.util.Set.of(
+                                    "decodeQ4_0ToInt8Tiled+gemmInt8BlockScaled",
+                                    "decodeQ4_0ToInt8Tiled+gemmInt8BlockScaledResidual",
+                                    "decodeQ4_0ToInt8Tiled+gemmInt8BlockScaledSwiGLU",
+                                    "dequantizeQ4_1ToFP16TiledPairs+gemmMMATiledBResidual",
+                                    "dequantizeQ5_KToFP16TiledPairs+gemmMMATiledBResidual")
+                            : java.util.Set.of(
+                                    "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledB",
+                                    "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledBResidual",
+                                    "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledBSwiGLU",
+                                    "dequantizeQ4_1ToFP16TiledPairs+gemmMMATiledBResidual",
+                                    "dequantizeQ5_KToFP16TiledPairs+gemmMMATiledBResidual"),
                     dequantPairs.keySet());
             System.out.println("[lifecycle] dequant pairs " + dequantPairs);
 
             assertSameInput("pair vs direct, prompt A", pairA, directA);
-            assertRowsIdentical("pair vs direct, prompt A", pairA.rows(), directA.rows());
+            if (INT8) {
+                // Different arithmetic from the direct FP16 path: report the distance, assert
+                // the exact replay instead (same arithmetic, after a reset).
+                reportRowDistance(
+                        "int8 pair vs direct FP16, prompt A", pairA.rows(), directA.rows());
+                assertSameInput("int8 pair replay vs first run, prompt A", pairA2, pairA);
+                assertRowsIdentical(
+                        "int8 pair replay vs first run, prompt A", pairA2.rows(), pairA.rows());
+            } else {
+                assertRowsIdentical("pair vs direct, prompt A", pairA.rows(), directA.rows());
+            }
             assertSameInput("after reset vs fresh, prompt B", pairB, freshB);
             assertRowsIdentical("after reset vs fresh, prompt B", pairB.rows(), freshB.rows());
             assertTrue(

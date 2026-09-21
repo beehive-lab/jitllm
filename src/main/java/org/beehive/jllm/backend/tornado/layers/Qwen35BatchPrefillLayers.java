@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.stream.IntStream;
 import org.beehive.jllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jllm.backend.tornado.kernels.Qwen35BatchKernels;
+import org.beehive.jllm.backend.tornado.kernels.Qwen35Int8Kernels;
 import org.beehive.jllm.backend.tornado.kernels.Qwen35MMAKernels;
 import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
@@ -120,6 +121,15 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     /** The layer prefixes whose up projection writes SwiGLU's FP16 output from its epilogue. */
     private final java.util.Set<String> fusedSwigluLayers = new java.util.HashSet<>();
 
+    /** The layer prefixes that convert SwiGLU's FP32 output to FP16 in a task of their own. */
+    private final java.util.Set<String> hbConvertLayers = new java.util.HashSet<>();
+
+    /** The int8 pair's activation quantizations, with their lane counts. */
+    private final java.util.Map<String, Integer> quantizeTasks = new java.util.LinkedHashMap<>();
+
+    /** The int8 pair's weight decodes, with their lane counts (a lane per word). */
+    private final java.util.Map<String, Integer> int8DecodeTasks = new java.util.LinkedHashMap<>();
+
     /**
      * The F32 projections placed on the warp kernels, with their output counts: positive for a warp
      * per output, negative for a warp per 4 x 4 tile.
@@ -209,6 +219,132 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         return dequantGemmEligible(n, k) || kvPairEligible(n, k);
     }
 
+    /**
+     * Whether a Q4_0 projection of this shape takes the int8 pair rather than the FP16 pair: the
+     * int8 scratch was allocated (the width fills whole tiles), the FP16 pair's own eligibility
+     * holds, K is a whole number of 64-k rounds, the matrix fits the int8 scratch, and an
+     * activation the enclosing layer quantized for this K precedes it in task order (the caller's
+     * responsibility). Only Q4_0 asks; Q4_1 and Q5_K keep the FP16 pair, and the direct kernels
+     * keep every width the pairs do not take.
+     */
+    /**
+     * Test seam: which projections (by task name) may take the int8 path. Production accepts all;
+     * the topology tests narrow it to build the producer/consumer mixes that a shape-driven
+     * eligibility never produces on the real model, and check the buffers still line up.
+     */
+    public static volatile java.util.function.Predicate<String> int8TaskFilterForTests =
+            task -> true;
+
+    /**
+     * Diagnostic seam: the FP16 pair fed activations that were quantized and dequantized the way
+     * the int8 path quantizes them (normed chunk and attention output). Never set in production.
+     */
+    public static volatile boolean fakeQuantizeForTests = false;
+
+    private boolean int8Eligible(String task, int n, int k) {
+        return int8TaskFilterForTests.test(task) && int8Eligible(n, k);
+    }
+
+    private boolean int8Eligible(int n, int k) {
+        return state.workspace.wrapQ8ActBatch != null
+                && q40Pair(n, k)
+                && k % Qwen35Int8Kernels.I8_BK == 0
+                && (long) n * k <= state.workspace.wrapInt8WeightScratch.getSize();
+    }
+
+    /** Whether the int8 pair quantizes activations of {@code k} columns at all. */
+    private boolean int8Quantizes(int k) {
+        return TENSOR_CORES
+                && TensorCoreSupport.isTensorCoreCapableBackend()
+                && state.workspace.wrapQ8ActBatch != null
+                && Qwen35Configuration.dequantGemmWidth(batchSize)
+                && k % Qwen35Int8Kernels.I8_BK == 0;
+    }
+
+    /**
+     * The task quantizing an FP32 activation of {@code k} columns into the int8 scratch, one lane
+     * per element in 32-lane blocks, {@code batchSize * k} lanes. The scratch is one buffer: a
+     * quantization is read by the projections between it and the next one, in graph order.
+     */
+    private void quantizeActivation(TaskGraph graph, int layer, String task, FloatArray x, int k) {
+        quantizeTasks.put("batchLayer_" + layer + "." + task, batchSize * k);
+        graph.task(
+                task,
+                Qwen35Int8Kernels::quantizeActivationsQ8Warp,
+                context,
+                x,
+                state.workspace.wrapQ8ActBatch,
+                state.workspace.wrapQ8ActScales,
+                k);
+    }
+
+    /** The int8 pair: the decode of {@code w} into the int8 scratch, then the block-scaled GEMM. */
+    private void int8Projection(
+            TaskGraph graph,
+            String qualified,
+            String task,
+            ByteArray w,
+            FloatArray out,
+            FloatArray gate,
+            FloatArray hb,
+            int n,
+            int k,
+            Epilogue epilogue) {
+        int8DecodeTasks.put(qualified + "_dequant", n * k / 4);
+        gemmTasks.put(qualified, n);
+        graph.task(
+                task + "_dequant",
+                Qwen35Int8Kernels::decodeQ4_0ToInt8Tiled,
+                context,
+                w,
+                state.workspace.wrapInt8WeightScratch,
+                state.workspace.wrapInt8WeightScales,
+                n,
+                k);
+        switch (epilogue) {
+            case STORE ->
+                    graph.task(
+                            task,
+                            Qwen35Int8Kernels::gemmInt8BlockScaled,
+                            context,
+                            state.workspace.wrapQ8ActBatch,
+                            state.workspace.wrapQ8ActScales,
+                            state.workspace.wrapInt8WeightScratch,
+                            state.workspace.wrapInt8WeightScales,
+                            out,
+                            batchSize,
+                            n,
+                            k);
+            case RESIDUAL ->
+                    graph.task(
+                            task,
+                            Qwen35Int8Kernels::gemmInt8BlockScaledResidual,
+                            context,
+                            state.workspace.wrapQ8ActBatch,
+                            state.workspace.wrapQ8ActScales,
+                            state.workspace.wrapInt8WeightScratch,
+                            state.workspace.wrapInt8WeightScales,
+                            out,
+                            batchSize,
+                            n,
+                            k);
+            case SWIGLU ->
+                    graph.task(
+                            task,
+                            Qwen35Int8Kernels::gemmInt8BlockScaledSwiGLU,
+                            context,
+                            state.workspace.wrapQ8ActBatch,
+                            state.workspace.wrapQ8ActScales,
+                            state.workspace.wrapInt8WeightScratch,
+                            state.workspace.wrapInt8WeightScales,
+                            gate,
+                            hb,
+                            batchSize,
+                            n,
+                            k);
+        }
+    }
+
     private void q40Projection(
             TaskGraph graph,
             String qualified,
@@ -240,6 +376,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             int n,
             int k,
             Epilogue epilogue) {
+        if (int8Eligible(task, n, k) && epilogue != Epilogue.SWIGLU) {
+            int8Projection(graph, qualified, task, w, out, null, null, n, k, epilogue);
+            return;
+        }
         if (q40Pair(n, k)) {
             // One lane per packed byte: both nibbles decoded, two halves written.
             dequantTasks.put(qualified + "_dequant", n * k / 2);
@@ -645,6 +785,24 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     state.workspace.wrapGateBatch,
                     config.hiddenDim(),
                     config.dim());
+            if (int8Eligible("ffn_up_proj", config.hiddenDim(), config.dim())) {
+                // The int8 pair: the up GEMM writes silu(gate) * up in FP32 from its
+                // accumulators; the down projection quantizes that next, or converts it to FP16
+                // where it stays on the FP16 pair (the Q4_1 layers).
+                int8Projection(
+                        graph,
+                        "batchLayer_" + layer + ".ffn_up_proj",
+                        "ffn_up_proj",
+                        up.asByteArray(),
+                        null,
+                        state.workspace.wrapGateBatch,
+                        state.workspace.wrapHbBatch,
+                        config.hiddenDim(),
+                        config.dim(),
+                        Epilogue.SWIGLU);
+                fusedSwigluLayers.add("batchLayer_" + layer + ".");
+                return;
+            }
             if (hbFP16 && q40Pair(config.hiddenDim(), config.dim())) {
                 // The up GEMM writes silu(gate) * up as FP16 from its accumulators: no up matrix
                 // stored, no SwiGLU task.
@@ -722,6 +880,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
         normalize(
                 layer,
+                layerIndex,
                 "attn_rms_reduce",
                 "attn_rms_apply",
                 state.workspace.attnScaleBatch,
@@ -735,6 +894,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
         normalize(
                 layer,
+                layerIndex,
                 "ffn_rms_reduce",
                 "ffn_rms_apply",
                 state.workspace.ffnScaleBatch,
@@ -751,8 +911,18 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                         && mmaEligible(config.hiddenDim(), config.dim());
         // With the gate/up projections on the tensor cores and the down projection reading FP16,
         // SwiGLU writes the FP16 buffer itself and the conversion task below is not built.
+        boolean gateUpInt8 = int8Eligible("ffn_up_proj", config.hiddenDim(), config.dim());
+        boolean downInt8 =
+                downOnTensorCores
+                        && down.dataType() == DataType.Q4_0
+                        && int8Eligible("ffn_down_proj", config.dim(), config.hiddenDim());
+        // The int8 down projection quantizes SwiGLU's FP32 output, so SwiGLU must write FP32
+        // whenever the down projection is int8, whatever the gate/up pair did.
         boolean swigluWritesFP16 =
-                downOnTensorCores && mmaEligible(config.dim(), config.hiddenDim());
+                downOnTensorCores
+                        && mmaEligible(config.dim(), config.hiddenDim())
+                        && !gateUpInt8
+                        && !downInt8;
         fusedGateUpBatch(
                 layer,
                 layerIndex,
@@ -766,7 +936,15 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             // The input is SwiGLU's output rather than a normed chunk, so that is converted here
             // too, unless SwiGLU wrote it as FP16 already.
             boolean downResidualFused = false;
-            if (!swigluWritesFP16) {
+            if (downInt8) {
+                quantizeActivation(
+                        layer,
+                        layerIndex,
+                        "ffn_down_q8",
+                        state.workspace.wrapHbBatch,
+                        config.hiddenDim());
+            } else if (!swigluWritesFP16) {
+                hbConvertLayers.add("batchLayer_" + layerIndex + ".");
                 layer.task(
                         "ffn_down_fp16",
                         Qwen35MMAKernels::convertToFP16,
@@ -897,6 +1075,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     /** {@code normed[b] = weight ⊙ rms(x[b])} — a scale per row, then the apply. */
     private void normalize(
             TaskGraph layer,
+            int layerIndex,
             String reduce,
             String apply,
             FloatArray scaleBatch,
@@ -930,14 +1109,34 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 scaleBatch,
                 config.dim());
         if (TENSOR_CORES && TensorCoreSupport.isTensorCoreCapableBackend()) {
-            layer.task(
-                    apply + "_fp16",
-                    Qwen35MMAKernels::convertNormedToFP16,
-                    context,
+            if (fakeQuantizeForTests) {
+                layer.task(
+                        apply + "_fp16",
+                        Qwen35Int8Kernels::fakeQuantizeNormedToFP16,
+                        context,
+                        state.workspace.wrapNormedBatch,
+                        state.workspace.wrapNormedFP16Batch,
+                        config.dim(),
+                        state.workspace.batchStartPosHolder);
+            } else {
+                layer.task(
+                        apply + "_fp16",
+                        Qwen35MMAKernels::convertNormedToFP16,
+                        context,
+                        state.workspace.wrapNormedBatch,
+                        state.workspace.wrapNormedFP16Batch,
+                        config.dim(),
+                        state.workspace.batchStartPosHolder);
+            }
+        }
+        if (int8Quantizes(config.dim())) {
+            // The normed chunk quantized once for every Q4_0 projection that reads it.
+            quantizeActivation(
+                    layer,
+                    layerIndex,
+                    apply + "_q8",
                     state.workspace.wrapNormedBatch,
-                    state.workspace.wrapNormedFP16Batch,
-                    config.dim(),
-                    state.workspace.batchStartPosHolder);
+                    config.dim());
         }
     }
 
@@ -1179,12 +1378,24 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             // only by the residual pass that immediately follows each write. wrapXBatch, the
             // residual destination, is read and written by the add below and by nothing in
             // between.
-            layer.task(
-                    "attn_output_fp16",
-                    Qwen35MMAKernels::convertToFP16,
-                    context,
-                    state.workspace.wrapXbBatch,
-                    state.workspace.wrapHbFP16BatchMMA);
+            if (int8Eligible("attn_output_proj", config.dim(), attnDim)) {
+                quantizeActivation(
+                        layer, layerIndex, "attn_output_q8", state.workspace.wrapXbBatch, attnDim);
+            } else if (fakeQuantizeForTests) {
+                layer.task(
+                        "attn_output_fp16",
+                        Qwen35Int8Kernels::fakeQuantizeToFP16,
+                        context,
+                        state.workspace.wrapXbBatch,
+                        state.workspace.wrapHbFP16BatchMMA);
+            } else {
+                layer.task(
+                        "attn_output_fp16",
+                        Qwen35MMAKernels::convertToFP16,
+                        context,
+                        state.workspace.wrapXbBatch,
+                        state.workspace.wrapHbFP16BatchMMA);
+            }
             boolean fused = q40Pair(config.dim(), attnDim);
             q40Projection(
                     layer,
@@ -1601,6 +1812,14 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 layer.transferToDevice(
                         DataTransferMode.FIRST_EXECUTION, state.workspace.wrapDequantScratchFP16);
             }
+            if (state.workspace.wrapQ8ActBatch != null) {
+                layer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION,
+                        state.workspace.wrapQ8ActBatch,
+                        state.workspace.wrapQ8ActScales,
+                        state.workspace.wrapInt8WeightScratch,
+                        state.workspace.wrapInt8WeightScales);
+            }
         } else {
             layer.consumeFromDevice(
                     predecessor,
@@ -1625,6 +1844,14 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     valueStore(),
                     state.workspace.batchStartPosHolder);
             layer.consumeFromDevice(predecessor, state.workspace.wrapBlockTable);
+            if (state.workspace.wrapQ8ActBatch != null) {
+                layer.consumeFromDevice(
+                        predecessor,
+                        state.workspace.wrapQ8ActBatch,
+                        state.workspace.wrapQ8ActScales,
+                        state.workspace.wrapInt8WeightScratch,
+                        state.workspace.wrapInt8WeightScales);
+            }
             layer.consumeFromDevice(
                     predecessor,
                     state.workspace.wrapSsmQkvBatch,
@@ -1849,7 +2076,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             if (onTensorCores(prefix + "ffn_down_proj")) {
                 // Built only when SwiGLU did not write the FP16 buffer itself, i.e. when the
                 // gate/up projections are not on the tensor cores.
-                if (!onTensorCores(prefix + "ffn_gate_proj")) {
+                if (hbConvertLayers.contains(prefix)) {
                     scheduler.addWorkerGrid(prefix + "ffn_down_fp16", hbFP16Convert);
                 }
                 if (!gemmTasks.containsKey(prefix + "ffn_down_proj")) {
@@ -1915,7 +2142,9 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                         prefix + "attn_output_proj",
                         matVecWorker(prefix + "attn_output_proj", config.dim()));
                 if (onTensorCores(prefix + "attn_output_proj")) {
-                    scheduler.addWorkerGrid(prefix + "attn_output_fp16", attnOutputFP16Convert);
+                    if (!quantizeTasks.containsKey(prefix + "attn_output_q8")) {
+                        scheduler.addWorkerGrid(prefix + "attn_output_fp16", attnOutputFP16Convert);
+                    }
                     if (!gemmTasks.containsKey(prefix + "attn_output_proj")) {
                         scheduler.addWorkerGrid(prefix + "attn_output_residual", residualAdd);
                     }
@@ -1926,6 +2155,17 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         for (var entry : dequantTasks.entrySet()) {
             scheduler.addWorkerGrid(
                     entry.getKey(), WorkerGridFactory.genericWorker(entry.getValue(), GEMM_LOCAL));
+        }
+        // The int8 pair: a lane per decoded word, and a lane per quantized element in 32-lane
+        // blocks.
+        for (var entry : int8DecodeTasks.entrySet()) {
+            scheduler.addWorkerGrid(
+                    entry.getKey(), WorkerGridFactory.genericWorker(entry.getValue(), GEMM_LOCAL));
+        }
+        for (var entry : quantizeTasks.entrySet()) {
+            scheduler.addWorkerGrid(
+                    entry.getKey(),
+                    WorkerGridFactory.genericWorker(entry.getValue(), ELEMENTWISE_LOCAL));
         }
     }
 

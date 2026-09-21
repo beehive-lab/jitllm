@@ -289,6 +289,10 @@ public record Qwen35Configuration(
         // that take that path.
         if (dequantGemmWidth(batchSize)) {
             bytes += 2L * hiddenDim() * dim();
+            // The int8 pair's scratch beside it: the chunk's activations as bytes with a scale
+            // per 32, and one decoded matrix with its FP32 block scales.
+            bytes += (long) (batchSize * hiddenDim() * (1 + 4 / 32.0));
+            bytes += (long) (hiddenDim() * dim() * (1 + 4 / 32.0));
         }
         return bytes;
     }

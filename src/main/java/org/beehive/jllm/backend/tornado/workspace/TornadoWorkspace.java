@@ -202,6 +202,17 @@ public final class TornadoWorkspace {
      */
     public HalfFloatArray wrapDequantScratchFP16;
 
+    /**
+     * The int8 pair's scratch: the chunk's activations quantized to int8 with a scale per 32 (one
+     * buffer, requantized before each group of consumers in graph order), and one Q4_0 matrix
+     * decoded to int8 in the B-operand word layout with its FP32 block scales.
+     */
+    public uk.ac.manchester.tornado.api.types.arrays.ByteArray wrapQ8ActBatch;
+
+    public FloatArray wrapQ8ActScales;
+    public uk.ac.manchester.tornado.api.types.arrays.ByteArray wrapInt8WeightScratch;
+    public FloatArray wrapInt8WeightScales;
+
     public FloatArray wrapSsmQkvBatch;
     public FloatArray wrapSsmConvOutBatch;
     public FloatArray wrapSsmZBatch;

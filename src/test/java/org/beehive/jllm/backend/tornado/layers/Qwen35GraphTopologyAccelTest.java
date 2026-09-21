@@ -1055,9 +1055,11 @@ public class Qwen35GraphTopologyAccelTest {
                         "width 128 " + task + " GEMM column tiles",
                         5120L / 128,
                         gemm.getGlobalWork()[1]);
+                // The int8 decoder takes a lane per word of four weights; the FP16 decoder a
+                // lane per packed byte of two. On a tensor-core device the Q4_0 pairs are int8.
                 assertEquals(
                         "width 128 " + task + " dequantization lanes",
-                        5120L * wide.dim() / 2,
+                        5120L * wide.dim() / 4,
                         paired.get("batchLayer_" + layer + "." + task + "_dequant")
                                 .getGlobalWork()[0]);
             }
