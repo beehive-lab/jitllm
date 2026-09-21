@@ -311,19 +311,29 @@ public class Qwen35GraphTopologyAccelTest {
             assertEquals(task + " global work", keyHeads * keyDim, (int) grid.getGlobalWork()[0]);
             assertEquals(task + " local work", keyDim, (int) grid.getLocalWork()[0]);
         }
-        // The delta rule's dispatch: eight lanes a column is eight times the value head's width,
-        // one lane a column is the elementwise default. Asserted on the grid because the task name
-        // is the same either way.
-        int parts = org.beehive.jllm.backend.tornado.kernels.Qwen35DeltaNetKernels.DELTA_RULE_PARTS;
+        // The delta rule's dispatch follows the device's workgroup limit: eight lanes a column
+        // where 8 * width fits, two where only 2 * width fits, the elementwise default
+        // otherwise. Asserted on the grid because the task name is the same either way, and
+        // against the same decision the builder took for this device.
+        long limit =
+                org.beehive.jllm.backend.tornado.device.TornadoDevices.current().maxWorkGroupSize();
+        var geometry = Qwen35FFNLayers.selectDeltaRuleGeometry(valueDim, limit);
+        WorkerGrid expectedDelta = Qwen35FFNLayers.deltaRuleWorker(geometry, config);
         WorkerGrid delta = scheduler.get(prefix + "ssm_delta_rule");
         assertEquals(
-                "ssm_delta_rule global work",
-                valueHeads * parts * valueDim,
-                (int) delta.getGlobalWork()[0]);
+                "ssm_delta_rule global work (" + geometry + ", limit " + limit + ")",
+                expectedDelta.getGlobalWork()[0],
+                delta.getGlobalWork()[0]);
         assertEquals(
-                "ssm_delta_rule local work is eight lanes a column",
-                parts * valueDim,
-                (int) delta.getLocalWork()[0]);
+                "ssm_delta_rule local work (" + geometry + ")",
+                expectedDelta.getLocalWork()[0],
+                delta.getLocalWork()[0]);
+        if (limit >= 8L * valueDim) {
+            assertEquals(
+                    "a device admitting 8 x width takes the eight-part kernel",
+                    Qwen35FFNLayers.DeltaRuleGeometry.SPLIT8,
+                    geometry);
+        }
 
         WorkerGrid gated = scheduler.get(prefix + "ssm_gated_norm");
         assertEquals(

@@ -57,16 +57,20 @@ public final class TornadoDevices {
                 var device = backend.getDefaultDevice();
                 String platformName = device.getPlatformName();
                 String deviceInfo = "";
+                long maxWorkGroup = 0L;
                 try {
                     deviceInfo = device.getPhysicalDevice().getDeviceInfo();
+                    maxWorkGroup = maxWorkGroupOf(device.getPhysicalDevice());
                 } catch (RuntimeException e) {
-                    // A device that cannot describe itself gets no architecture-gated grants.
+                    // A device that cannot describe itself gets no architecture-gated grants
+                    // and no known workgroup limit.
                 }
                 return new ResolvedDevice(
                         backendId(type),
                         platformName,
                         capabilitiesOf(type, platformName, deviceInfo),
-                        TornadoNativeArray.ARRAY_HEADER);
+                        TornadoNativeArray.ARRAY_HEADER,
+                        maxWorkGroup);
             } catch (RuntimeException | LinkageError e) {
                 // No accelerator present. The identity still has to be stable and comparable.
                 // No accelerator: no native-array header either, which is what a caller mapping
@@ -185,11 +189,30 @@ public final class TornadoDevices {
         return Integer.parseInt(m.group(1)) * 10 + Integer.parseInt(m.group(2));
     }
 
+    /**
+     * The device's threads-per-block limit: the smallest of what it reports as its maximum
+     * workgroup size (one dimension) and its maximum threads per block, or 0 when it reports
+     * neither.
+     */
+    static long maxWorkGroupOf(uk.ac.manchester.tornado.api.TornadoTargetDevice physical) {
+        long limit = 0L;
+        long[] sizes = physical.getDeviceMaxWorkGroupSize();
+        if (sizes != null && sizes.length > 0 && sizes[0] > 0) {
+            limit = sizes[0];
+        }
+        int threads = physical.getMaxThreadsPerBlock();
+        if (threads > 0) {
+            limit = limit == 0 ? threads : Math.min(limit, threads);
+        }
+        return limit;
+    }
+
     private record ResolvedDevice(
             DeviceId id,
             String displayName,
             DeviceCapabilities capabilities,
-            long nativeArrayHeaderBytes)
+            long nativeArrayHeaderBytes,
+            long maxWorkGroupSize)
             implements Device {
 
         ResolvedDevice(
@@ -201,7 +224,22 @@ public final class TornadoDevices {
                     DeviceId.of(backend, platformName),
                     platformName,
                     capabilities,
-                    nativeArrayHeaderBytes);
+                    nativeArrayHeaderBytes,
+                    0L);
+        }
+
+        ResolvedDevice(
+                BackendId backend,
+                String platformName,
+                DeviceCapabilities capabilities,
+                long nativeArrayHeaderBytes,
+                long maxWorkGroupSize) {
+            this(
+                    DeviceId.of(backend, platformName),
+                    platformName,
+                    capabilities,
+                    nativeArrayHeaderBytes,
+                    maxWorkGroupSize);
         }
     }
 }

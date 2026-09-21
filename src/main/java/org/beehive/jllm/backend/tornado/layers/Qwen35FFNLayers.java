@@ -839,9 +839,61 @@ public class Qwen35FFNLayers
      */
     // @formatter:on
     private boolean deltaRuleIsSplit() {
-        int headDim = config.headValueDim();
-        return headDim % Qwen35DeltaNetKernels.DELTA_RULE_PARTS == 0
-                && Qwen35DeltaNetKernels.DELTA_RULE_PARTS * headDim <= 1024;
+        return deltaRuleGeometry() == DeltaRuleGeometry.SPLIT8;
+    }
+
+    /** The decode delta-rule kernel and the workgroup it is built for, one decision. */
+    public enum DeltaRuleGeometry {
+        /** {@code deltaRuleSplit8}: a workgroup of {@code 8 * headDim} lanes per value head. */
+        SPLIT8(Qwen35DeltaNetKernels.DELTA_RULE_PARTS),
+        /** {@code deltaRuleSplit}: a workgroup of {@code 2 * headDim} lanes per value head. */
+        SPLIT2(2),
+        /** {@code deltaRule}: a lane per column, the elementwise workgroup. */
+        LANE_PER_COLUMN(0);
+
+        final int parts;
+
+        DeltaRuleGeometry(int parts) {
+            this.parts = parts;
+        }
+
+        /** The workgroup the kernel needs, or 0 for the elementwise default. */
+        int localSize(int headDim) {
+            return parts * headDim;
+        }
+    }
+
+    // @formatter:off
+    /**
+     * Which delta-rule kernel a value head of {@code headDim} columns runs on a device whose
+     * largest workgroup is {@code maxWorkGroup} lanes (0 when the runtime did not say).
+     *
+     * <p>The split kernels map lanes to (part, column) exactly: lane {@code tid} of a workgroup of
+     * {@code parts * headDim} is part {@code tid / headDim}, column {@code tid % headDim}, and the
+     * parts meet through shared memory inside that workgroup. A runtime that cannot give the
+     * workgroup asked for shrinks it, and a shrunk workgroup does not run a slower version of the
+     * kernel, it runs a wrong one. So a split geometry is chosen only when the device reports a
+     * limit that admits it, in full; an unknown limit admits none. The eight-part kernel is
+     * preferred (measured +1.7-1.9% decode over the two-part one on this family's 128-wide head,
+     * closer to FP64); the two-part kernel is the fallback it replaced; the lane-per-column kernel
+     * needs no assumption beyond the elementwise workgroup and always runs.
+     */
+    // @formatter:on
+    public static DeltaRuleGeometry selectDeltaRuleGeometry(int headDim, long maxWorkGroup) {
+        for (DeltaRuleGeometry g :
+                new DeltaRuleGeometry[] {DeltaRuleGeometry.SPLIT8, DeltaRuleGeometry.SPLIT2}) {
+            if (headDim % g.parts == 0
+                    && maxWorkGroup > 0
+                    && g.localSize(headDim) <= maxWorkGroup) {
+                return g;
+            }
+        }
+        return DeltaRuleGeometry.LANE_PER_COLUMN;
+    }
+
+    private DeltaRuleGeometry deltaRuleGeometry() {
+        return selectDeltaRuleGeometry(
+                config.headValueDim(), TornadoDevices.current().maxWorkGroupSize());
     }
 
     // @formatter:off
@@ -1397,13 +1449,31 @@ public class Qwen35FFNLayers
                 (float) (1.0 / Math.sqrt(headK)),
                 keyDim);
 
-        if (deltaRuleIsSplit()) {
+        DeltaRuleGeometry geometry = deltaRuleGeometry();
+        if (geometry == DeltaRuleGeometry.SPLIT8) {
             // Eight lanes a column, each taking sixteen rows. Same per-element arithmetic; the
             // two reductions are sums of eight folds, so this is not bit-identical to a one-lane
             // column.
             layer.task(
                     tn("ssm_delta_rule"),
                     Qwen35DeltaNetKernels::deltaRuleSplit8,
+                    context,
+                    qwen35State.workspace.wrapSsmQ,
+                    qwen35State.workspace.wrapSsmK,
+                    qwen35State.workspace.wrapSsmV,
+                    qwen35State.workspace.wrapSsmAlpha,
+                    qwen35State.workspace.wrapSsmBeta,
+                    qwen35State.workspace.wrapDeltaState,
+                    qwen35State.workspace.wrapSsmOut,
+                    config.numberOfKeyHeads(),
+                    headV,
+                    recurrent * config.deltaNetStateSize());
+        } else if (geometry == DeltaRuleGeometry.SPLIT2) {
+            // Two lanes a column: the kernel the eight-part one replaced, for a device whose
+            // workgroup limit admits 2 * headDim but not 8 * headDim.
+            layer.task(
+                    tn("ssm_delta_rule"),
+                    Qwen35DeltaNetKernels::deltaRuleSplit,
                     context,
                     qwen35State.workspace.wrapSsmQ,
                     qwen35State.workspace.wrapSsmK,
@@ -1705,18 +1775,9 @@ public class Qwen35FFNLayers
         WorkerGrid gatedNormWide =
                 WorkerGridFactory.genericWorker(
                         config.numberOfValueHeads() * config.headValueDim(), config.headValueDim());
-        // One workgroup per value head either way; the split form gives each column two lanes,
-        // so the workgroup is twice the head's width rather than the elementwise default.
-        WorkerGrid deltaRule =
-                deltaRuleIsSplit()
-                        ? WorkerGridFactory.genericWorker(
-                                config.numberOfValueHeads()
-                                        * Qwen35DeltaNetKernels.DELTA_RULE_PARTS
-                                        * config.headValueDim(),
-                                Qwen35DeltaNetKernels.DELTA_RULE_PARTS * config.headValueDim())
-                        : WorkerGridFactory.genericWorker(
-                                config.numberOfValueHeads() * config.headValueDim(),
-                                ELEMENTWISE_LOCAL);
+        // The grid follows the same decision as the task: a workgroup of parts * headDim per
+        // value head for a split kernel, the elementwise default for the lane-per-column one.
+        WorkerGrid deltaRule = deltaRuleWorker(deltaRuleGeometry(), config);
 
         for (int layer = 0; layer < config.numberOfLayers(); layer++) {
             // The same graph and the same task qualification the tasks were built with; a
@@ -1797,5 +1858,17 @@ public class Qwen35FFNLayers
     /** One workgroup per output row, which is how every matrix-vector kernel here is written. */
     private static WorkerGrid matVecWorker(int rows) {
         return WorkerGridFactory.genericWorker(rows * MATVEC_LOCAL, MATVEC_LOCAL);
+    }
+
+    /** The delta-rule worker grid for a geometry: one workgroup per value head. */
+    static WorkerGrid deltaRuleWorker(DeltaRuleGeometry geometry, Qwen35Configuration config) {
+        int headDim = config.headValueDim();
+        if (geometry == DeltaRuleGeometry.LANE_PER_COLUMN) {
+            return WorkerGridFactory.genericWorker(
+                    config.numberOfValueHeads() * headDim, ELEMENTWISE_LOCAL);
+        }
+        return WorkerGridFactory.genericWorker(
+                config.numberOfValueHeads() * geometry.localSize(headDim),
+                geometry.localSize(headDim));
     }
 }
