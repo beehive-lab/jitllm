@@ -33,22 +33,40 @@ public class Qwen3FP16FFNLayersDecode extends Qwen3FP16FFNLayers {
 
     // @formatter:off
     /**
-     * Four transformer layers to a decode graph.
+     * Ten transformer layers to a decode graph.
      *
-     * <p>Decode submits a graph and waits for it, once per graph, per token. This family was
-     * submitting thirty: one activation graph, twenty-eight layer graphs and one logits graph. An
-     * nsys timeline of Qwen3-0.6B decoding at depth zero showed 29.8 inter-kernel gaps per token
-     * with a median of 22.8 us — 810 us of a 3.49 ms token, and 97% of all the idle on the device.
-     * The kernels were not the problem; the round trips between them were.
+     * <p>Decode submits a graph and waits for it, once per graph, per token: {@code
+     * TaskGraph.execute} is {@code taskGraphImpl.execute(frame).waitOn()}, with no way to defer the
+     * wait. This family was submitting thirty graphs — one activation, twenty-eight layers, one
+     * logits — and an nsys timeline showed 810 us of a 3.49 ms token going into the gaps between
+     * them. Grouping is what removes those gaps, by having fewer of them.
      *
-     * <p>Four rather than all twenty-eight: the same figure the batch-prefill side settled on, and
-     * one graph for the whole trunk would make every weight in the model a single graph's
-     * dependency set. Not a tuning property — see {@link Qwen3FP16FFNLayers#layersPerGraph()}.
+     * <p><b>Ten, and why not four.</b> Four was the figure the batch-prefill side settled on and
+     * was carried over here without being measured against alternatives. It is not a capacity
+     * limit: {@code TornadoTaskGraph} encodes a graph into a {@code private byte[8192]} that never
+     * grows, a decode layer costs about 620 bytes of it, and four layers use 2480 — 30%. Thirteen
+     * would fit. Measured in one interleaved session at four, seven and ten layers, tg128 reads
+     * 458.5 / 465.3 / <b>466.8</b> tok/s at depth 0, 435.4 / 441.3 / <b>443.1</b> at 512 and 391.1
+     * / 395.7 / <b>397.3</b> at 2048 — 1.6 to 1.8% over four, consistent across four rounds to the
+     * third decimal.
+     *
+     * <p>Ten rather than thirteen leaves a quarter of the buffer spare, which is what absorbs a
+     * layer gaining a task; {@code DecodeGraphBytecodeAccelTest} fails before that margin is gone.
+     * The gain is sublinear in the submissions removed — going from nine graphs a token to five
+     * removed 98 us of device idle, about 24 us per graph rather than the 47 us each one costs,
+     * because part of the per-launch host cost scales with the graph's size rather than with the
+     * number of launches.
+     *
+     * <p>Groups need not divide the layer count: twenty-eight layers become graphs of ten, ten and
+     * eight, and every name is derived through {@link Qwen3FP16FFNLayers#layerGraphName} rather
+     * than assumed. Not a tuning property — see {@link Qwen3FP16FFNLayers#layersPerGraph()}.
      */
     // @formatter:on
+    public static final int LAYERS_PER_GRAPH = 10;
+
     @Override
     protected int layersPerGraph() {
-        return 4;
+        return LAYERS_PER_GRAPH;
     }
 
     /**

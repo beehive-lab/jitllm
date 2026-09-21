@@ -731,8 +731,9 @@ public class TransformerPagedKvKernels {
      * other half.
      *
      * <p>Shared memory is used once, after the loop, to fold the warps' partial results together:
-     * {@code MAX_WARPS * 128} numerator floats plus a maximum and a denominator per warp. At four
-     * warps that is 2084 bytes against the replaced kernel's 34052.
+     * {@code MAX_WARPS * 128} numerator floats plus a maximum and a denominator per warp. At the
+     * sixteen warps this ships with that is 8320 bytes, against the replaced kernel's 34052 in its
+     * inner loop.
      *
      * <h2>The reduction</h2>
      *

@@ -34,6 +34,26 @@ public final class PlanDispatchEvidence {
     private PlanDispatchEvidence() {}
 
     /**
+     * The immutable task graphs of a plan shape this seam knows, or {@code null} for any other.
+     *
+     * <p>Same package-private reach as {@link #gridSchedulerIfAvailable}, for evidence that is
+     * about the graphs themselves rather than about what they dispatch.
+     */
+    public static java.util.List<uk.ac.manchester.tornado.api.ImmutableTaskGraph>
+            forwardPlanIfAvailable(TornadoVMMasterPlan plan) {
+        if (plan instanceof TornadoVMMasterPlanBatchPrefillDecode batched) {
+            return batched.batchPrefillDecodeForwardPlan.getImmutableTaskGraphs();
+        }
+        if (plan instanceof TornadoVMMasterPlanPrefillDecode prefillDecode) {
+            return prefillDecode.prefillDecodeForwardPlan.getImmutableTaskGraphs();
+        }
+        if (plan instanceof TornadoVMMasterPlanSingleToken singleToken) {
+            return singleToken.tornadoVMForwardPlan.getImmutableTaskGraphs();
+        }
+        return null;
+    }
+
+    /**
      * The grid scheduler of a plan shape this seam knows, or {@code null} for any other.
      *
      * <p>Null rather than a throw: callers that record this for whoever may want it must not fail a

@@ -57,7 +57,7 @@ public class WorkerGridFactory {
 
     // @formatter:off
     /**
-     * One 32-lane warp per group, for the lane-cooperative attention kernel.
+     * A whole number of 32-lane warps per group, for the lane-cooperative attention kernel.
      *
      * <p>Deliberately not {@link #createAttentionWorker}: that one sizes the group from the head
      * width ({@code min(headSize, 64)}), which is the shape the per-key kernel wants. The

@@ -41,12 +41,17 @@ public final class LaneAttentionPolicy {
     /**
      * Warps per (head, split), which is how many independent key streams a block keeps in flight.
      *
-     * <p>Not a free parameter. One warp per block was measured first and is 1.65x faster than the
-     * kernel it replaces at depth zero and 2.3x <b>slower</b> at depth 2048: with 16 heads and 8
-     * splits that is 128 warps on a 70-SM device, under two warps per SM, and every warp's loop
-     * carries a dependent chain of load, reduce, score, load, accumulate. There is nothing to hide
-     * the KV-cache latency behind. Four warps take the same grid to 512 warps and give each block
-     * four independent key streams, at a cost of 2084 bytes of shared memory for the fold.
+     * <p>Not a free parameter; it was screened. One warp per block was measured first and is 1.65x
+     * faster than the kernel it replaces at depth zero and 2.3x <b>slower</b> at depth 2048: with
+     * 16 heads and 8 splits that is 128 warps on a 70-SM device, under two warps per SM, and every
+     * warp's loop carries a dependent chain of load, reduce, score, load, accumulate, with nothing
+     * to hide the KV-cache latency behind. Four, eight, sixteen and thirty-two were then measured,
+     * and tg128 at depth 2048 reads 286.4, 351.0, <b>391.0</b> and 367.8 tok/s. Thirty-two
+     * regresses because a 512-thread block at 34 registers stops fitting three to an SM.
+     *
+     * <p>Sixteen warps take the grid to 2048 warps and give each block sixteen independent key
+     * streams, for 8320 bytes of shared memory in the end-of-block fold against the replaced
+     * kernel's 34052 bytes in its inner loop.
      */
     // @formatter:on
     public static final int WARPS_PER_GROUP = 16;

@@ -364,13 +364,15 @@ measured here, and nothing below claims it would lose. What was measured is how 
 kernels reduce and how often the host waits for the device. Three changes, all selected
 automatically:
 
-- **Four transformer layers to a decode graph.** Every `TaskGraph.execute()` ends in a device
-  wait, and a profile put **29.8 gaps per token at a median of 22.8 µs — 97% of all device idle**,
-  one per graph submission. Twenty-eight layer graphs became seven, and a token's submissions went
-  from thirty to nine. Four rather than more: `TornadoTaskGraph` holds a fixed `byte[8192]` of
-  high-level bytecode per graph — *not* the buffer `tornado.tvm.maxbytecodesize` sizes — and
-  fourteen layers overflow it with a hard throw at plan construction. Seven fits and is 1.2%
-  faster; four keeps headroom for a family with a slightly richer layer.
+- **Ten transformer layers to a decode graph.** Every `TaskGraph.execute()` ends in a device wait
+  — it is literally `taskGraphImpl.execute(frame).waitOn()` — and a profile put one idle gap per
+  graph submission, 47 µs each, with every other inter-kernel boundary at 0.1 µs. Twenty-eight
+  layer graphs became three, and a token's submissions went from thirty to five.
+  `TornadoTaskGraph` holds a fixed `byte[8192]` of high-level bytecode per graph — *not* the buffer
+  `tornado.tvm.maxbytecodesize` sizes — and a decode layer measures 620 bytes of it, so the hard
+  limit is thirteen layers, not four. Four, seven and ten were compared in one session: 458.5,
+  465.3 and 466.8 tok/s at depth 0 and the same ordering at 512 and 2048. Ten leaves a quarter of
+  the buffer spare, which `DecodeGraphBytecodeAccelTest` guards.
 - **A warp-butterfly reduction for four layer matrix-vector kernels.** The shuffle-reducing twins
   already existed but were reachable only through `WARP_SHUFFLE`, which asserts shuffle
   *correctness*, is branched on by unrelated call sites, is miscompiled on the OpenCL backend, and
@@ -442,15 +444,16 @@ Same machine and protocol as above. Four interleaved rounds in rotated order, fi
 repetitions after an untimed full-workload warm-up, medians over twenty samples; all 24
 workload-rounds passed the foreign-occupancy exclusion.
 
-| tg128, batch 512 | before any decode work | after | llama.cpp b10874 | vs. before | vs. llama.cpp |
+| tg128, batch 512 | four layers per graph | **shipped (ten)** | llama.cpp b10874 | vs. four | **vs. llama.cpp** |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| depth 0 | 322.2 | **458.2** | 500.1 | **1.42×** | **0.92×** |
-| depth 512 | 274.0 | **435.4** | 483.2 | **1.59×** | **0.90×** |
-| depth 2048 | 191.3 | **391.0** | 435.8 | **2.04×** | **0.90×** |
+| depth 0 | 458.5 | **466.8** | 500.1 | 1.018× | **0.934×** |
+| depth 512 | 435.4 | **443.1** | 483.3 | 1.018× | **0.917×** |
+| depth 2048 | 391.1 | **397.3** | 435.8 | 1.016× | **0.912×** |
 
-Sample spread was ±0.1–0.3%, and per-round ratios against llama.cpp agree to the third decimal at
-every depth. The attention kernel alone accounts for 1.11×, 1.29× and 1.77× of those figures; the
-three earlier changes account for the rest.
+One session, four interleaved rounds, medians over twenty samples; per-round ratios against
+llama.cpp agree to the third decimal at every depth. Against the head before any decode work —
+322.2, 274.0 and 191.3 tok/s, measured in an earlier session and not mixed into the table above —
+the totals are 1.45×, 1.62× and 2.08×.
 
 **Decode is still slower than llama.cpp, by 8–10% at every depth.** Before the attention kernel it
 was 18–49%. What remains is dispatch, not arithmetic: jllm submits nine graphs per token and waits
@@ -474,18 +477,28 @@ context-aware split count would add anything on top of that is untested.
 
 ### What remains
 
-Attention was the gap at depth and is no longer: the kernel is 1.4–1.5× faster than llama.cpp's own
-summed attention work. What is left is dispatch, and it is two separate things.
+Decode is within 7–9% of llama.cpp. What is left is **graph submission**, measured rather than
+inferred.
 
-- **Nine submissions per token, each ending in a device wait** — 134–215 µs. Grouping took this
-  from thirty to nine and the remaining nine are the activation graph, seven layer graphs and the
-  logits graph. Fewer would mean either more layers per graph, which a fixed 8192-byte per-graph
-  bytecode buffer already caps at four, or a way to submit without waiting.
-- **No intra-token overlap** — 234–351 µs. Every kernel in a jllm token is serialised behind the
-  previous one; llama.cpp runs independent work concurrently. jllm's merged kernel union equals its
-  summed kernel time exactly, at every depth, which is the measurement that says so.
+Per token at depth 0, both engines profiled identically: jllm issues **5 `cuGraphLaunch` and has
+5 idle gaps over 10 µs**, llama.cpp **1 and 1**. Every other inter-kernel boundary in jllm is
+0.09–0.25 µs, so the kernels inside a graph do run back to back; the idle is entirely at graph
+ends. jllm also spends 2022 µs per token inside `cuStreamSynchronize`, but **1947 µs of that is
+while the GPU is running something** — waiting for work that exists, which no submission change
+removes. Only ~76 µs of the sync is while the GPU is idle.
 
-Neither is a kernel problem, so neither is addressed by writing a faster kernel.
+Concurrency is not the lever it might look like. llama.cpp overlaps 367–754 µs of kernel work and
+jllm overlaps none, but a jllm decode token is a single dependent chain — each task consumes what
+the previous wrote — so there is no independent jllm work of consequence to overlap. That
+difference is not recoverable here.
+
+The remaining submissions cannot be merged further with what the runtime offers:
+`withAllGraphs()` is the same per-graph execute in a runtime loop, `withIntraPlanConcurrency()` is
+for independent graphs and would need cross-stream dependencies it does not add, and
+`TaskGraph.execute` is unconditionally `taskGraphImpl.execute(frame).waitOn()`. A standalone
+TornadoVM reproducer puts that wait at 25–44 µs per extra graph. Removing it needs a runtime change
+— splitting submission from completion behind an opt-in — which is recorded with a reproducer
+rather than carried as a private patch.
 
 ### Correctness
 
@@ -508,6 +521,8 @@ same shape as the Granite logits layer that regressed — it installs its own so
 `vocab_proj` and inherits the base worker grid — and is covered by the same fix and by the
 fixture-independent contract test, but has not been checked against a host reference here.
 
+`DecodeGraphBytecodeAccelTest` measures how much of the fixed per-graph bytecode buffer each graph
+encodes into, so the grouping's headroom is a number rather than a belief, and
 `Qwen3DecodeDispatchAccelTest` asserts that a built plan actually grouped its layer graphs and
 actually installed the shuffle-reducing kernels — each of the four per layer by task name, and the
 vocabulary projection by its worker grid, which are chosen by different classes and are therefore
@@ -531,9 +546,10 @@ revoking the capability or dropping either selection is a failure and not a quie
   that still run on this path, and a prompt much shorter than the chosen width pays the full
   width in the fused attention, whose sequence lengths are fixed when the graph is built. Match
   `--batch-prefill-size` to the prompt where throughput matters.
-- **The decode changes are narrower still.** Layer grouping is applied to the Qwen3 FP16 decode
-  families only, and four layers per graph is a headroom choice against a fixed per-graph bytecode
-  buffer rather than a tuned optimum. The warp-butterfly *support* grant is CUDA-wide; the
+- **The decode changes are narrower still.** Layer grouping is applied to the Qwen3 FP16 batched
+  decode family only, and ten layers per graph is the measured best of four, seven and ten against
+  a hard thirteen-layer ceiling, with the margin guarded by a test. The warp-butterfly *support*
+  grant is CUDA-wide; the
   *preference* that reads it is a backend-level default measured on one device, and it costs
   Qwen3-4B 1.0% — see "What the reduction preference selects, and where".
 - **The lane-cooperative attention kernel is narrower than the family.** It requires a 128-wide

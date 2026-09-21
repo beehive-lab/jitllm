@@ -7,6 +7,7 @@ import static org.junit.Assume.assumeTrue;
 import java.nio.file.Path;
 import org.beehive.jllm.Options;
 import org.beehive.jllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16FFNLayersDecode;
 import org.beehive.jllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
 import org.beehive.jllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jllm.golden.GoldenFixture;
@@ -75,8 +76,8 @@ public class Qwen3DecodeDispatchAccelTest {
     private static final int BATCH = 128;
     private static final int CONTEXT = 512;
 
-    /** What Qwen3FP16FFNLayersDecode.layersPerGraph() returns; see its javadoc for why four. */
-    private static final int EXPECTED_LAYERS_PER_GRAPH = 4;
+    /** The shipped grouping, read from the family rather than restated; see its javadoc for why. */
+    private static final int EXPECTED_LAYERS_PER_GRAPH = Qwen3FP16FFNLayersDecode.LAYERS_PER_GRAPH;
 
     @Test
     public void decodeGroupsItsLayerGraphsAndReducesWithTheShuffle() throws Exception {
