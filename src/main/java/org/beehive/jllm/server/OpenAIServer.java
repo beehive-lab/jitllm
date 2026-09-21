@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 import org.beehive.jllm.Options;
+import org.beehive.jllm.api.ChatContent;
 import org.beehive.jllm.api.ChatMessage;
 import org.beehive.jllm.api.ChatRole;
 import org.beehive.jllm.api.LocalModel;
@@ -143,6 +144,100 @@ public final class OpenAIServer {
      */
     static int resolveContextLength(int requested, int modelContextLength) {
         return requested > 0 ? Math.min(requested, modelContextLength) : modelContextLength;
+    }
+
+    /**
+     * Characters per token assumed when checking a prompt against the window.
+     *
+     * <p>An exact count needs the tokenizer, and this package cannot reach one: the facade path
+     * holds a {@link org.beehive.jllm.api.LocalModel}, whose surface is identity and configuration
+     * only. Four is deliberately generous — real text, and code especially, tokenizes to *more*
+     * tokens than this predicts — so the estimate errs toward accepting. It therefore catches a
+     * prompt that is grossly over the window and lets a marginal one through to the engine, which
+     * is the right way round for a guard that must never refuse a request that would have worked.
+     */
+    static final int ESTIMATED_CHARS_PER_TOKEN = 4;
+
+    /**
+     * Why this request cannot be served, or {@code null} when it can.
+     *
+     * <p>Every check here is one that used to be absent, and each absence produced a failure that
+     * looked like something else: a model name nobody validated meant a client asking for model A
+     * was answered by model B with no indication; a prompt past the window was accepted, ground for
+     * hours, and returned a successful response with an empty completion.
+     *
+     * @param requestedModel the request's {@code model} field, or {@code null} when absent
+     * @param servedModel the one model this server loaded
+     * @param maxTokens the request's output cap
+     * @param promptChars total characters of prompt content
+     * @param contextLength the window, or 0 when unknown (every context check is then skipped)
+     */
+    static String validationError(
+            String requestedModel,
+            String servedModel,
+            int maxTokens,
+            int promptChars,
+            int contextLength) {
+        if (requestedModel != null
+                && !requestedModel.isBlank()
+                && !requestedModel.equals(servedModel)) {
+            return "This server serves '"
+                    + servedModel
+                    + "', not '"
+                    + requestedModel
+                    + "'. One model is loaded per process; GET /v1/models reports which.";
+        }
+        if (contextLength <= 0) {
+            return null;
+        }
+        if (maxTokens >= contextLength) {
+            return "max_tokens "
+                    + maxTokens
+                    + " leaves no room for a prompt in a context of "
+                    + contextLength
+                    + " tokens.";
+        }
+        int estimatedPromptTokens = promptChars / ESTIMATED_CHARS_PER_TOKEN;
+        if (estimatedPromptTokens >= contextLength) {
+            return "prompt is about "
+                    + estimatedPromptTokens
+                    + " tokens ("
+                    + promptChars
+                    + " characters), which does not fit a context of "
+                    + contextLength
+                    + " tokens.";
+        }
+        if (estimatedPromptTokens + maxTokens >= contextLength) {
+            return "prompt (about "
+                    + estimatedPromptTokens
+                    + " tokens) plus max_tokens "
+                    + maxTokens
+                    + " exceeds the context of "
+                    + contextLength
+                    + " tokens.";
+        }
+        return null;
+    }
+
+    /**
+     * Total characters of message text, the input to the prompt-size estimate.
+     *
+     * <p>Only {@link ChatContent.Text} carries characters a tokenizer would see here; a tool call
+     * or result contributes its JSON through a different path and is not counted.
+     */
+    static int promptCharacters(List<ChatMessage> messages) {
+        int total = 0;
+        for (ChatMessage m : messages) {
+            if (m == null) {
+                continue;
+            }
+            for (ChatContent piece : m.content()) {
+                if (piece instanceof ChatContent.Text t && t.text() != null) {
+                    total += t.text().length();
+                }
+            }
+        }
+        return total;
     }
 
     /**
@@ -429,6 +524,18 @@ public final class OpenAIServer {
         float topP = (float) Json.num(body, "top_p", 0.95);
         long seed = (long) Json.num(body, "seed", 1234);
         boolean stream = Json.bool(body, "stream", false);
+
+        String rejection =
+                validationError(
+                        Json.str(body, "model", null),
+                        servedModel,
+                        maxTokens,
+                        promptCharacters(messages),
+                        contextLength);
+        if (rejection != null) {
+            sendError(ex, 400, rejection);
+            return;
+        }
 
         var req = new InferenceService.Request(messages, maxTokens, temperature, topP, seed);
         String id = (chat ? "chatcmpl-" : "cmpl-") + seq.incrementAndGet();
