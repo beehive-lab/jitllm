@@ -71,10 +71,23 @@ public class Qwen35GraphTopologyAccelTest {
 
     /** The same fixture with a chosen trunk depth, so a remainder group can be exercised. */
     private static Qwen35Configuration config(int trunkLayers) {
+        return config(trunkLayers, HIDDEN);
+    }
+
+    /** The same fixture with a chosen feed-forward width, so a GEMM-eligible one can be built. */
+    private static Qwen35Configuration config(int trunkLayers, int hidden) {
+        return config(trunkLayers, hidden, STATE_SIZE);
+    }
+
+    /**
+     * The same fixture with a chosen recurrent state width; the delta-net inner width scales with
+     * it so each value head's width — which is the width the scan's state has — equals it.
+     */
+    private static Qwen35Configuration config(int trunkLayers, int hidden, int stateSize) {
         return new Qwen35Configuration(
                 "Q8_0",
                 DIM,
-                HIDDEN,
+                hidden,
                 trunkLayers,
                 NEXTN_LAYERS,
                 HEADS,
@@ -83,10 +96,10 @@ public class Qwen35GraphTopologyAccelTest {
                 HEAD_DIM,
                 ATTENTION_INTERVAL,
                 CONV_KERNEL,
-                STATE_SIZE,
+                stateSize,
                 GROUPS,
                 VALUE_HEADS,
-                INNER,
+                VALUE_HEADS * stateSize,
                 16,
                 512,
                 32,
@@ -298,18 +311,29 @@ public class Qwen35GraphTopologyAccelTest {
             assertEquals(task + " global work", keyHeads * keyDim, (int) grid.getGlobalWork()[0]);
             assertEquals(task + " local work", keyDim, (int) grid.getLocalWork()[0]);
         }
-        // The delta rule's dispatch: two lanes a column is twice the value head's width, one lane
-        // a column is the elementwise default. Asserted on the grid because the task name is the
-        // same either way.
+        // The delta rule's dispatch follows the device's workgroup limit: eight lanes a column
+        // where 8 * width fits, two where only 2 * width fits, the elementwise default
+        // otherwise. Asserted on the grid because the task name is the same either way, and
+        // against the same decision the builder took for this device.
+        long limit =
+                org.beehive.jllm.backend.tornado.device.TornadoDevices.current().maxWorkGroupSize();
+        var geometry = Qwen35FFNLayers.selectDeltaRuleGeometry(valueDim, limit);
+        WorkerGrid expectedDelta = Qwen35FFNLayers.deltaRuleWorker(geometry, config);
         WorkerGrid delta = scheduler.get(prefix + "ssm_delta_rule");
         assertEquals(
-                "ssm_delta_rule global work",
-                valueHeads * 2 * valueDim,
-                (int) delta.getGlobalWork()[0]);
+                "ssm_delta_rule global work (" + geometry + ", limit " + limit + ")",
+                expectedDelta.getGlobalWork()[0],
+                delta.getGlobalWork()[0]);
         assertEquals(
-                "ssm_delta_rule local work is two lanes a column",
-                2 * valueDim,
-                (int) delta.getLocalWork()[0]);
+                "ssm_delta_rule local work (" + geometry + ")",
+                expectedDelta.getLocalWork()[0],
+                delta.getLocalWork()[0]);
+        if (limit >= 8L * valueDim) {
+            assertEquals(
+                    "a device admitting 8 x width takes the eight-part kernel",
+                    Qwen35FFNLayers.DeltaRuleGeometry.SPLIT8,
+                    geometry);
+        }
 
         WorkerGrid gated = scheduler.get(prefix + "ssm_gated_norm");
         assertEquals(
@@ -796,9 +820,11 @@ public class Qwen35GraphTopologyAccelTest {
      * kernel test could not see it: the kernel was correct, and nothing dispatched to it. This
      * asserts the production dispatch instead, on the same mixed model the rest of this class uses.
      *
-     * <p>{@code ffn_down_fp16} is the marker. The scalar path reads the SwiGLU output directly;
-     * only the tensor-core branch converts it first, so the task exists exactly when the projection
-     * is on the tensor cores.
+     * <p>{@code ffn_down_residual} is the marker. The scalar path folds the residual into its
+     * kernel; only the tensor-core branch, whose store overwrites, adds it as a pass of its own, so
+     * the task exists exactly when the projection is on the tensor cores. (The FP16 conversion
+     * {@code ffn_down_fp16} was the marker before SwiGLU learned to write the FP16 buffer itself
+     * when the gate/up projections are on the tensor cores too.)
      */
     // @formatter:on
     @Test
@@ -820,10 +846,10 @@ public class Qwen35GraphTopologyAccelTest {
                             + representation
                             + " and did not take the tensor-core path; its tasks are "
                             + tasks,
-                    tasks.contains("ffn_down_fp16"));
-            assertTrue(
-                    "layer " + layer + " has a tensor-core ffn_down without its residual pass",
                     tasks.contains("ffn_down_residual"));
+            assertFalse(
+                    "layer " + layer + " converts hb although SwiGLU wrote it as FP16",
+                    tasks.contains("ffn_down_fp16"));
         }
     }
 
@@ -918,7 +944,6 @@ public class Qwen35GraphTopologyAccelTest {
                             "ffn_gate_proj",
                             "ffn_up_proj",
                             "ffn_swiglu",
-                            "ffn_down_fp16",
                             "ffn_down_proj",
                             "ffn_down_residual"
                         }) {
@@ -992,7 +1017,120 @@ public class Qwen35GraphTopologyAccelTest {
                     "width 8 layer " + layer + " reached the tensor cores",
                     tasks.contains("ffn_gate_proj")
                             || tasks.contains("ffn_down_fp16")
+                            || tasks.contains("ffn_down_residual")
                             || tasks.contains("attn_output_fp16"));
+        }
+    }
+
+    // @formatter:off
+    /**
+     * Which Q4_0 projections take the dequantize-then-GEMM pair, and at which widths.
+     *
+     * <p>The pair needs the chunk to fill whole 128-row GEMM tiles and the projection to be at
+     * least 5,120 outputs wide, so with a 5,120-wide feed-forward: at width 128 the gate and up
+     * projections gain a {@code _dequant} task and the GEMM's two-dimensional grid, the 256-wide
+     * down projection stays on the direct kernel, and the scratch exists; at width 64 nothing
+     * changes and no scratch is allocated. The direct kernel's grid is what a projection left off
+     * the pair would carry, so the grid is asserted, not just the task name.
+     */
+    // @formatter:on
+    @Test
+    public void theBatchedPlanSelectsDequantizeThenGemmPerWidthAndWidthOfOutput() {
+        assumeTrue(
+                "no tensor-core-capable device",
+                org.beehive.jllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend());
+        Qwen35Configuration wide = config(TRUNK_LAYERS, 5120);
+        assertTrue(Qwen35Configuration.dequantGemmWidth(128));
+        assertFalse(Qwen35Configuration.dequantGemmWidth(64));
+
+        GridScheduler paired = new GridScheduler();
+        buildBatched(wide, 128).updateGridScheduler(paired);
+        for (int layer = 0; layer < TRUNK_LAYERS; layer++) {
+            List<String> tasks = batchTaskNames(paired, layer);
+            for (String task : new String[] {"ffn_gate_proj", "ffn_up_proj"}) {
+                assertTrue(
+                        "width 128 layer "
+                                + layer
+                                + " "
+                                + task
+                                + " has no dequantization: "
+                                + tasks,
+                        tasks.contains(task + "_dequant"));
+                WorkerGrid gemm = paired.get("batchLayer_" + layer + "." + task);
+                assertEquals(
+                        "width 128 " + task + " GEMM rows of work",
+                        (128 / 128) * 256L,
+                        gemm.getGlobalWork()[0]);
+                assertEquals(
+                        "width 128 " + task + " GEMM column tiles",
+                        5120L / 128,
+                        gemm.getGlobalWork()[1]);
+                // The int8 decoder takes a lane per word of four weights; the FP16 decoder a
+                // lane per packed byte of two. On a tensor-core device the Q4_0 pairs are int8.
+                assertEquals(
+                        "width 128 " + task + " dequantization lanes",
+                        5120L * wide.dim() / 4,
+                        paired.get("batchLayer_" + layer + "." + task + "_dequant")
+                                .getGlobalWork()[0]);
+            }
+            assertFalse(
+                    "width 128 layer " + layer + " put the 256-wide down projection on the pair",
+                    tasks.contains("ffn_down_proj_dequant"));
+            // On the pair the up GEMM writes silu(gate) * up itself: no SwiGLU task.
+            assertFalse(
+                    "width 128 layer " + layer + " kept a SwiGLU task beside the fused up GEMM",
+                    tasks.contains("ffn_swiglu"));
+        }
+
+        GridScheduler direct = new GridScheduler();
+        buildBatched(wide, 64).updateGridScheduler(direct);
+        for (int layer = 0; layer < TRUNK_LAYERS; layer++) {
+            List<String> tasks = batchTaskNames(direct, layer);
+            assertFalse(
+                    "width 64 layer " + layer + " took the pair: " + tasks,
+                    tasks.contains("ffn_gate_proj_dequant"));
+            assertEquals(
+                    "width 64 ffn_gate_proj direct grid",
+                    (64L / Qwen35MMAKernels.BM)
+                            * (5120 / Qwen35MMAKernels.BN)
+                            * Qwen35MMAKernels.LOCAL,
+                    direct.get("batchLayer_" + layer + ".ffn_gate_proj").getGlobalWork()[0]);
+        }
+    }
+
+    /**
+     * The batched delta-rule scan's dispatch by value-head width, which is the width of the scan's
+     * state: 128, this family's, takes the shared-state scan (32-lane groups); the fixture's 64
+     * keeps the per-lane scan (128-lane groups). Same task name either way, so the grid is what is
+     * asserted.
+     */
+    @Test
+    public void theBatchedDeltaRuleScanIsSharedForThe128WideState() {
+        for (int stateSize : new int[] {64, 128}) {
+            Qwen35Configuration config = config(TRUNK_LAYERS, HIDDEN, stateSize);
+            GridScheduler scheduler = new GridScheduler();
+            buildBatched(config, PREFILL_BATCH).updateGridScheduler(scheduler);
+            // On CUDA the 128-wide state takes the warp-per-column scan: a warp per column in
+            // 128-lane groups; the 64-wide one keeps the per-lane scan in 128-lane groups.
+            int expectedLocal = 128;
+            long expectedGlobal = (long) VALUE_HEADS * stateSize * (stateSize == 128 ? 32 : 1);
+            int found = 0;
+            for (int layer = 0; layer < TRUNK_LAYERS; layer++) {
+                WorkerGrid grid = scheduler.get("batchLayer_" + layer + ".ssm_delta_rule");
+                if (grid == null) {
+                    continue;
+                }
+                assertEquals(
+                        "state " + stateSize + " layer " + layer + " delta-rule global work",
+                        expectedGlobal,
+                        grid.getGlobalWork()[0]);
+                assertEquals(
+                        "state " + stateSize + " layer " + layer + " delta-rule local work",
+                        (long) expectedLocal,
+                        grid.getLocalWork()[0]);
+                found++;
+            }
+            assertTrue("no batched delta-rule scan built for state " + stateSize, found > 0);
         }
     }
 

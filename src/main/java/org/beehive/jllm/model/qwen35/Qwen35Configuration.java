@@ -277,6 +277,73 @@ public record Qwen35Configuration(
                         + 2L * numberOfValueHeads() // decay and beta
                         + 2L * deltaNetKeyDim() // the split queries and keys
                         + deltaNetValueDim(); // the split values
-        return perRow * batchSize * Float.BYTES;
+        // The attention scores of the batched FP16 key/value path, a span per (row, head) over
+        // the context capacity rounded up to whole key tiles. Counted whether or not that path is
+        // built: the prediction has to hold for the widest state this width can allocate.
+        perRow += (long) numberOfHeads() * attentionScoreKeys(contextLength());
+        long bytes = perRow * batchSize * Float.BYTES;
+        // The tensor-core attention's FP16 staging, per (16-query tile, head).
+        bytes += 2L * attentionStageHalves(batchSize, numberOfHeads());
+        // The dequantize-then-GEMM scratch: one FP16 copy of the largest projection matrix that
+        // takes the pair (gate/up and the Q4_1 ffn_down; the Q5_K ssm_out shares it), at the widths
+        // that take that path.
+        if (dequantGemmWidth(batchSize)) {
+            bytes += 2L * hiddenDim() * dim();
+            // The int8 pair's scratch beside it: the chunk's activations as bytes with a scale
+            // per 32, and one decoded matrix with its FP32 block scales.
+            bytes += (long) (batchSize * hiddenDim() * (1 + 4 / 32.0));
+            bytes += (long) (hiddenDim() * dim() * (1 + 4 / 32.0));
+        }
+        return bytes;
+    }
+
+    /** Queries one tile of the tensor-core batched attention covers. */
+    public static final int ATTENTION_TILE_ROWS = 16;
+
+    /** Halves of FP16 staging one (16-query tile, head) workgroup of that attention owns. */
+    public static final int ATTENTION_STAGE_HALVES_PER_TILE = 16 * 256 + 16 * 32;
+
+    /**
+     * Halves of the tensor-core attention's staging scratch for a width, or zero where the width is
+     * not whole 16-query tiles (and the attention falls back to the warp kernel).
+     */
+    public static long attentionStageHalves(int batchSize, int heads) {
+        if (batchSize <= 1 || batchSize % ATTENTION_TILE_ROWS != 0) {
+            return 0L;
+        }
+        return (long) (batchSize / ATTENTION_TILE_ROWS) * heads * ATTENTION_STAGE_HALVES_PER_TILE;
+    }
+
+    /** Keys one tile of the tensor-core batched attention stages. */
+    public static final int ATTENTION_TILE_KEYS = 32;
+
+    /**
+     * Keys the score scratch holds per (row, head): the context capacity rounded up to whole key
+     * tiles, the tensor-core kernels' transposed regions being padded to them.
+     */
+    public static int attentionScoreKeys(int contextLength) {
+        return (contextLength + ATTENTION_TILE_KEYS - 1)
+                / ATTENTION_TILE_KEYS
+                * ATTENTION_TILE_KEYS;
+    }
+
+    /**
+     * Key/value splits of this family's decode attention: one warp per (head, split), each split a
+     * contiguous slice of the positions. Thirty-two: at 24 heads that is 768 warps, which fills the
+     * device the kernel was measured on; screened 8/16/32 at depths 512 and 2048, 32 fastest at
+     * both (kernel + combine 28 / 44 us against 51 / 124 at eight). Sizes the split scratch.
+     */
+    public static final int DECODE_ATTENTION_SPLITS = 32;
+
+    /** Rows one tile of the batched FP16 GEMM covers; a width has to be a whole number of them. */
+    public static final int DEQUANT_GEMM_ROWS = 128;
+
+    /**
+     * Whether a prefill width takes the dequantize-then-GEMM path for its Q4_0 projections: the
+     * chunk has to fill whole 128-row GEMM tiles. The state allocates the scratch, the plan
+     * dispatches, and the memory model accounts, all from this one answer.
+     */
+    public static boolean dequantGemmWidth(int batchSize) {
+        return batchSize > 0 && batchSize % DEQUANT_GEMM_ROWS == 0;
     }
 }

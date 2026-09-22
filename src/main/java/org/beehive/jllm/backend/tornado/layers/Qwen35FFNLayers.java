@@ -71,10 +71,10 @@ public class Qwen35FFNLayers
     /** Lanes per workgroup for an elementwise task. */
     private static final int ELEMENTWISE_LOCAL = 128;
 
-    /** The widest head the split-KV wide-head kernel sizes its shared arrays for. */
+    /** The head width the split-KV warp kernel is written for: eight dimensions per lane. */
     private static final int SPLIT_KV_MAX_HEAD = 256;
 
-    /** Lanes per split-KV workgroup: the wide-head kernel indexes its shared arrays by lane. */
+    /** Lanes per split-KV workgroup: one warp per (head, split). */
     private static final int SPLIT_KV_LOCAL = 32;
 
     private final Qwen35State qwen35State;
@@ -785,37 +785,30 @@ public class Qwen35FFNLayers
     /**
      * How many KV splits this family's decode attention runs, or one for the per-head kernel.
      *
-     * <p>Split-KV decomposes each head's key/value range across {@code SPLIT_KV} workgroups and a
-     * combine pass, which is what turns two dozen workgroups into two dozen times eight on a device
-     * with far more multiprocessors than heads. It needs the wide-head kernel — this family's head
-     * is 256 and the shared 128-wide one cannot take it — and that kernel's shared arrays are
-     * indexed by lane, so it is launched with 32 lanes rather than the 64 {@code
-     * findOptimalLocalSize} would pick.
+     * <p>Split-KV decomposes each head's key/value range across {@code DECODE_ATTENTION_SPLITS}
+     * warps and a combine pass; the warp kernel walks its split's positions in order, each lane
+     * holding eight dimensions of the query, the key, the value and the output in registers, the
+     * score a shuffle-down sum. The launch is one warp per (head, split): {@code SPLIT_KV_LOCAL}
+     * lanes, and the kernel is written for a 256-wide head ({@code SPLIT_KV_MAX_HEAD}).
      *
-     * <p><b>The boundary.</b> {@code SPLIT_KV_MAX_HEAD} is the width the wide-head kernel sizes
-     * {@code q_shared} and {@code accShared} for, and the launch is fixed at {@code SPLIT_KV_LOCAL}
-     * lanes, so any head at or below that width addresses {@code tid * headSize < SPLIT_KV_LOCAL *
-     * SPLIT_KV_MAX_HEAD} and stays inside both. This family ships a 256-wide head and the kernel
-     * gate covers it at that width and at 128; a narrower head is admitted by the same arithmetic
-     * rather than by measurement, and a wider one is refused outright.
-     *
-     * <p>Restricted to <b>CUDA</b>, which is where this was measured and validated. FP16 key/value
-     * storage is an option rather than a backend property, so the capability alone would have
-     * admitted OpenCL, where nothing has run. The FP32 key/value path keeps the kernel it has, on
-     * every backend. One is not a special case: it selects the per-head kernel below.
+     * <p>Restricted to <b>CUDA</b>, whose warp shuffles are the verified ones and where this was
+     * measured. FP16 key/value storage is an option rather than a backend property, so the
+     * capability alone would have admitted OpenCL, where nothing has run. The FP32 key/value path
+     * keeps the kernel it has, on every backend. One is not a special case: it selects the per-head
+     * kernel.
      */
     // @formatter:on
     private int attentionSplits() {
         var device = org.beehive.jllm.backend.tornado.device.TornadoDevices.current();
         boolean eligible =
                 fp16Kv()
-                        && config.headSize() <= SPLIT_KV_MAX_HEAD
+                        && config.headSize() == SPLIT_KV_MAX_HEAD
                         && org.beehive.jllm.runtime.backend.BackendId.CUDA.equals(device.backend())
                         && device.capabilities()
                                 .supports(
                                         org.beehive.jllm.runtime.backend.DeviceCapability
                                                 .SPLIT_KV_ATTENTION);
-        return eligible ? org.beehive.jllm.inference.state.State.SPLIT_KV : 1;
+        return eligible ? Qwen35Configuration.DECODE_ATTENTION_SPLITS : 1;
     }
 
     /** Whether this state's key/value store is half precision. */
@@ -834,19 +827,73 @@ public class Qwen35FFNLayers
 
     // @formatter:off
     /**
-     * Whether the delta rule splits each column's reduction across two lanes.
+     * Whether the delta rule splits each column's reduction across eight lanes.
      *
-     * <p>A property of the head's width: the split halves the row range, so the width must be even,
-     * and the workgroup it asks for is twice that width, which a device must accept. This family's
-     * value head is 128 wide, so the workgroup is 256.
+     * <p>A property of the head's width: the split cuts the rows into eight, so the width must be a
+     * multiple of eight, and the workgroup it asks for is eight times that width, which a device
+     * must accept (1024 lanes at most). This family's value head is 128 wide, so the workgroup is
+     * 1024.
      *
      * <p>Not a user choice and not a tuning knob. A geometry that does not satisfy it keeps the
      * one-lane-per-column kernel.
      */
     // @formatter:on
     private boolean deltaRuleIsSplit() {
-        int headDim = config.headValueDim();
-        return headDim % 2 == 0 && 2 * headDim <= 1024;
+        return deltaRuleGeometry() == DeltaRuleGeometry.SPLIT8;
+    }
+
+    /** The decode delta-rule kernel and the workgroup it is built for, one decision. */
+    public enum DeltaRuleGeometry {
+        /** {@code deltaRuleSplit8}: a workgroup of {@code 8 * headDim} lanes per value head. */
+        SPLIT8(Qwen35DeltaNetKernels.DELTA_RULE_PARTS),
+        /** {@code deltaRuleSplit}: a workgroup of {@code 2 * headDim} lanes per value head. */
+        SPLIT2(2),
+        /** {@code deltaRule}: a lane per column, the elementwise workgroup. */
+        LANE_PER_COLUMN(0);
+
+        final int parts;
+
+        DeltaRuleGeometry(int parts) {
+            this.parts = parts;
+        }
+
+        /** The workgroup the kernel needs, or 0 for the elementwise default. */
+        int localSize(int headDim) {
+            return parts * headDim;
+        }
+    }
+
+    // @formatter:off
+    /**
+     * Which delta-rule kernel a value head of {@code headDim} columns runs on a device whose
+     * largest workgroup is {@code maxWorkGroup} lanes (0 when the runtime did not say).
+     *
+     * <p>The split kernels map lanes to (part, column) exactly: lane {@code tid} of a workgroup of
+     * {@code parts * headDim} is part {@code tid / headDim}, column {@code tid % headDim}, and the
+     * parts meet through shared memory inside that workgroup. A runtime that cannot give the
+     * workgroup asked for shrinks it, and a shrunk workgroup does not run a slower version of the
+     * kernel, it runs a wrong one. So a split geometry is chosen only when the device reports a
+     * limit that admits it, in full; an unknown limit admits none. The eight-part kernel is
+     * preferred (measured +1.7-1.9% decode over the two-part one on this family's 128-wide head,
+     * closer to FP64); the two-part kernel is the fallback it replaced; the lane-per-column kernel
+     * needs no assumption beyond the elementwise workgroup and always runs.
+     */
+    // @formatter:on
+    public static DeltaRuleGeometry selectDeltaRuleGeometry(int headDim, long maxWorkGroup) {
+        for (DeltaRuleGeometry g :
+                new DeltaRuleGeometry[] {DeltaRuleGeometry.SPLIT8, DeltaRuleGeometry.SPLIT2}) {
+            if (headDim % g.parts == 0
+                    && maxWorkGroup > 0
+                    && g.localSize(headDim) <= maxWorkGroup) {
+                return g;
+            }
+        }
+        return DeltaRuleGeometry.LANE_PER_COLUMN;
+    }
+
+    private DeltaRuleGeometry deltaRuleGeometry() {
+        return selectDeltaRuleGeometry(
+                config.headValueDim(), TornadoDevices.current().maxWorkGroupSize());
     }
 
     // @formatter:off
@@ -1151,18 +1198,10 @@ public class Qwen35FFNLayers
         }
 
         // @formatter:off
-        // The single-workgroup online-softmax kernel, on every backend.
-        //
-        // Not the split-KV (flash-decoding) kernel every other family decodes with: that one
-        // stages the query and a per-thread accumulator in local arrays fixed at 128 floats per
-        // head, and this family's head is 256 wide. Handing it a 256-wide head reads and writes
-        // past those arrays — an illegal address on CUDA, which surfaces as a poisoned context and
-        // an allocation failure several calls later rather than as a fault in the kernel that
-        // caused it. This kernel sizes its shared memory from the head width it is given.
-        //
-        // The cost is the parallelism the splits would have given: one workgroup per head rather
-        // than eight per head. A split-KV variant whose local arrays are sized from parameters
-        // would recover it, and belongs with a measurement rather than ahead of one.
+        // Split-KV decode attention, a warp per (head, split), where attentionSplits() admits it
+        // (FP16 store, a 256-wide head, CUDA); the single-workgroup online-softmax kernel
+        // otherwise. The single-workgroup kernel sizes its shared memory from the head width; the
+        // shared 128-wide split-KV kernel of the other families cannot take this family's head.
         // @formatter:on
         int splits = attentionSplits();
         if (splits > 1) {
@@ -1170,7 +1209,7 @@ public class Qwen35FFNLayers
             // wrapAttSplit in the compact layout the combine expects.
             layer.task(
                     tn("attention"),
-                    TransformerPagedKvKernels::processHeadsFlashAttentionSplitKVFP16PagedWideHead,
+                    TransformerPagedKvKernels::processHeadsFlashAttentionSplitKVFP16PagedWarp,
                     context,
                     qwen35State.workspace.wrapAttnQ,
                     qwen35State.workspace.wrapKeyCacheFP16,
@@ -1410,9 +1449,28 @@ public class Qwen35FFNLayers
                 (float) (1.0 / Math.sqrt(headK)),
                 keyDim);
 
-        if (deltaRuleIsSplit()) {
-            // Two lanes a column, each taking half the rows. Same per-element arithmetic; the two
-            // reductions are a sum of two half folds, so this is not bit-identical.
+        DeltaRuleGeometry geometry = deltaRuleGeometry();
+        if (geometry == DeltaRuleGeometry.SPLIT8) {
+            // Eight lanes a column, each taking sixteen rows. Same per-element arithmetic; the
+            // two reductions are sums of eight folds, so this is not bit-identical to a one-lane
+            // column.
+            layer.task(
+                    tn("ssm_delta_rule"),
+                    Qwen35DeltaNetKernels::deltaRuleSplit8,
+                    context,
+                    qwen35State.workspace.wrapSsmQ,
+                    qwen35State.workspace.wrapSsmK,
+                    qwen35State.workspace.wrapSsmV,
+                    qwen35State.workspace.wrapSsmAlpha,
+                    qwen35State.workspace.wrapSsmBeta,
+                    qwen35State.workspace.wrapDeltaState,
+                    qwen35State.workspace.wrapSsmOut,
+                    config.numberOfKeyHeads(),
+                    headV,
+                    recurrent * config.deltaNetStateSize());
+        } else if (geometry == DeltaRuleGeometry.SPLIT2) {
+            // Two lanes a column: the kernel the eight-part one replaced, for a device whose
+            // workgroup limit admits 2 * headDim but not 8 * headDim.
             layer.task(
                     tn("ssm_delta_rule"),
                     Qwen35DeltaNetKernels::deltaRuleSplit,
@@ -1683,11 +1741,9 @@ public class Qwen35FFNLayers
                         config.numberOfHeads() * (config.ropeDimensionCount() / 2), 32);
         WorkerGrid kvAppend = WorkerGridFactory.genericWorker(config.kvDim(), ELEMENTWISE_LOCAL);
         int splits = attentionSplits();
-        // Split-KV launches nHeads*splits workgroups of SPLIT_KV_LOCAL lanes -- the wide-head
-        // kernel indexes its per-lane shared arrays by localIdx, so the 64 lanes
-        // createAttentionWorker would choose for a 256-wide head would run past them -- followed by
-        // a combine pass of one workgroup per head. With splits == 1 the per-head kernel keeps the
-        // worker it has always had.
+        // Split-KV launches nHeads*splits warps of SPLIT_KV_LOCAL lanes, followed by a combine
+        // pass of one workgroup per head. With splits == 1 the per-head kernel keeps the worker it
+        // has always had.
         WorkerGrid attention =
                 splits > 1
                         ? WorkerGridFactory.genericWorker(
@@ -1719,16 +1775,9 @@ public class Qwen35FFNLayers
         WorkerGrid gatedNormWide =
                 WorkerGridFactory.genericWorker(
                         config.numberOfValueHeads() * config.headValueDim(), config.headValueDim());
-        // One workgroup per value head either way; the split form gives each column two lanes,
-        // so the workgroup is twice the head's width rather than the elementwise default.
-        WorkerGrid deltaRule =
-                deltaRuleIsSplit()
-                        ? WorkerGridFactory.genericWorker(
-                                config.numberOfValueHeads() * 2 * config.headValueDim(),
-                                2 * config.headValueDim())
-                        : WorkerGridFactory.genericWorker(
-                                config.numberOfValueHeads() * config.headValueDim(),
-                                ELEMENTWISE_LOCAL);
+        // The grid follows the same decision as the task: a workgroup of parts * headDim per
+        // value head for a split kernel, the elementwise default for the lane-per-column one.
+        WorkerGrid deltaRule = deltaRuleWorker(deltaRuleGeometry(), config);
 
         for (int layer = 0; layer < config.numberOfLayers(); layer++) {
             // The same graph and the same task qualification the tasks were built with; a
@@ -1809,5 +1858,17 @@ public class Qwen35FFNLayers
     /** One workgroup per output row, which is how every matrix-vector kernel here is written. */
     private static WorkerGrid matVecWorker(int rows) {
         return WorkerGridFactory.genericWorker(rows * MATVEC_LOCAL, MATVEC_LOCAL);
+    }
+
+    /** The delta-rule worker grid for a geometry: one workgroup per value head. */
+    static WorkerGrid deltaRuleWorker(DeltaRuleGeometry geometry, Qwen35Configuration config) {
+        int headDim = config.headValueDim();
+        if (geometry == DeltaRuleGeometry.LANE_PER_COLUMN) {
+            return WorkerGridFactory.genericWorker(
+                    config.numberOfValueHeads() * headDim, ELEMENTWISE_LOCAL);
+        }
+        return WorkerGridFactory.genericWorker(
+                config.numberOfValueHeads() * geometry.localSize(headDim),
+                geometry.localSize(headDim));
     }
 }

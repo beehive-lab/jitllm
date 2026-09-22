@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [ main ]
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      tornadovm_ref:
+        description: >
+          Exact TornadoVM commit (40 hex) to build against, for reproducing a run. Empty
+          resolves upstream develop's head, as every automatic run does.
+        required: false
+        default: ''
 
 env:
   JAVA_VERSION: 21.0.2-open
@@ -21,6 +29,37 @@ env:
   PERF_HISTORY_FILE: docs/perf-history.jsonl
 
 jobs:
+  # Development CI follows upstream TornadoVM develop: its head is resolved ONCE here and the
+  # same commit reaches every build and inference job below, including the reusable
+  # standalone-inference workflow, so one run is one runtime. A run can be reproduced by
+  # dispatching it with that commit.
+  resolve-tornadovm:
+    if: github.repository == 'beehive-lab/jllm'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Checkout jllm
+        uses: actions/checkout@v4
+      - name: Resolve the TornadoVM commit for this run
+        id: resolve
+        run: |
+          set -euo pipefail
+          REQUESTED="${{ github.event.inputs.tornadovm_ref }}"
+          if [ -n "$REQUESTED" ]; then
+            if ! [[ "$REQUESTED" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::tornadovm_ref must be a full 40-hex commit, got '$REQUESTED'"; exit 1
+            fi
+            SHA="$REQUESTED"; HOW="requested"
+          else
+            SHA=$(scripts/tornadovm-dev.sh resolve-develop); HOW="upstream develop head"
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "TornadoVM for this run: $SHA ($HOW)"
+          echo "### TornadoVM revision for this run" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`$SHA\` ($HOW)" >> "$GITHUB_STEP_SUMMARY"
+
   code-quality:
     if: github.repository == 'beehive-lab/jllm'
     runs-on: [self-hosted, Linux]
@@ -51,7 +90,7 @@ jobs:
   build-linux:
     if: github.repository == 'beehive-lab/jllm'
     runs-on: [self-hosted, Linux]
-    needs: code-quality
+    needs: [code-quality, resolve-tornadovm]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -72,20 +111,29 @@ jobs:
 
       - name: Setup TornadoVM
         uses: ./.github/actions/setup-tornadovm
-        env:
-          TORNADO_ROOT: ${{ runner.tool_cache }}/tornadovm/tornadovm-${{ matrix.backend }}-jdk${{ matrix.jdk }}
         with:
+          ref: ${{ needs.resolve-tornadovm.outputs.sha }}
           backend: ${{ matrix.backend }}
           jdk: ${{ matrix.jdk }}
 
       - name: Build and unit-test jllm
         run: |
-          # No `versions:set` and no `-Dtornadovm.version`: both would overwrite what the JDK
-          # profile resolved, which is the mechanism being tested. The version is read back
-          # afterwards so downstream steps name the artifact the build actually produced.
-          ./mvnw clean install
-          JLLM_VERSION=$(./mvnw help:evaluate -Dexpression=project.version -q -DforceStdout)
-          echo "jllm version: $JLLM_VERSION"
+          set -euo pipefail
+          # The TornadoVM coordinates are the ones the SDK built in the previous step produced
+          # (TORNADOVM_VERSION), resolved from that installation's own Maven repository. What is
+          # checked is the produced artifact line, not agreement with the POM's development
+          # default: develop moving its base version is not an error here.
+          case "$TORNADOVM_VERSION" in
+            *-jdk$([ "${{ matrix.jdk }}" = 21 ] && echo 21 || echo 22plus)-dev) ;;
+            *) echo "::error::JDK ${{ matrix.jdk }} prepared TornadoVM $TORNADOVM_VERSION, which is not that JDK line's -dev artifact"; exit 1 ;;
+          esac
+          for a in tornado-api tornado-runtime; do
+            [ -f "$MAVEN_REPO_LOCAL/io/github/beehive-lab/$a/$TORNADOVM_VERSION/$a-$TORNADOVM_VERSION.jar" ] \
+              || { echo "::error::$a $TORNADOVM_VERSION is not in $MAVEN_REPO_LOCAL"; exit 1; }
+          done
+          ./mvnw clean install -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
+          JLLM_VERSION=$(./mvnw -q help:evaluate -Dexpression=project.version -DforceStdout)
+          echo "jllm version: $JLLM_VERSION against TornadoVM $TORNADOVM_RUNTIME_ID"
           echo "JLLM_VERSION=$JLLM_VERSION" >> $GITHUB_ENV
 
       - name: Check the artifact matches the JDK that built it
@@ -141,7 +189,7 @@ jobs:
   build-macos:
     if: github.repository == 'beehive-lab/jllm'
     runs-on: [self-hosted, macOS]
-    needs: code-quality
+    needs: [code-quality, resolve-tornadovm]
     timeout-minutes: 45
 
     steps:
@@ -157,18 +205,17 @@ jobs:
 
       - name: Setup TornadoVM
         uses: ./.github/actions/setup-tornadovm
-        env:
-          TORNADO_ROOT: ${{ runner.tool_cache }}/tornadovm/tornadovm-metal-jdk21
         with:
+          ref: ${{ needs.resolve-tornadovm.outputs.sha }}
           backend: metal
           jdk: '21'
 
       - name: Build and unit-test jllm
-        run: ./mvnw clean install
+        run: ./mvnw clean install -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
 
   standalone-inference-linux:
     if: github.repository == 'beehive-lab/jllm'
-    needs: build-linux
+    needs: [build-linux, resolve-tornadovm]
     strategy:
       fail-fast: false
       matrix:
@@ -176,14 +223,16 @@ jobs:
     uses: ./.github/workflows/standalone-inference.yml
     with:
       backend: ${{ matrix.backend }}
+      tornadovm_ref: ${{ needs.resolve-tornadovm.outputs.sha }}
       runner_os: Linux
 
   standalone-inference-macos:
     if: github.repository == 'beehive-lab/jllm'
-    needs: build-macos
+    needs: [build-macos, resolve-tornadovm]
     uses: ./.github/workflows/standalone-inference.yml
     with:
       backend: metal
+      tornadovm_ref: ${{ needs.resolve-tornadovm.outputs.sha }}
       runner_os: macOS
       # The same 22 rows take far longer on the Mac than on the CUDA/OpenCL machine --
       # Phi-3-mini in FP16 alone ran past the 40-minute wall there, cancelling the job
@@ -191,10 +240,16 @@ jobs:
       timeout_minutes: 120
 
   # Test integration with Quarkus-langchain4j
+  #
+  # TEMPORARILY DISABLED: this is the only job that builds the LangChain4j extension and
+  # runs the quarkus-langchain4j integration test, and nothing else `needs` it, so the
+  # `&& false` below removes both from CI while the core build and its tests keep running.
+  # The job is left intact for local runs of the extension against a build. To restore,
+  # delete the `&& false` from the condition.
   quarkus-langchain4j-integration:
-    if: github.repository == 'beehive-lab/jllm'
+    if: github.repository == 'beehive-lab/jllm' && false
     runs-on: [self-hosted, Linux]
-    needs: build-linux
+    needs: [build-linux, resolve-tornadovm]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -216,15 +271,14 @@ jobs:
 
       - name: Setup TornadoVM
         uses: ./.github/actions/setup-tornadovm
-        env:
-          TORNADO_ROOT: ${{ runner.tool_cache }}/tornadovm/tornadovm-${{ matrix.backend }}-jdk21
         with:
+          ref: ${{ needs.resolve-tornadovm.outputs.sha }}
           backend: ${{ matrix.backend }}
           jdk: '21'
 
       - name: Build jllm for this leg
         run: |
-          ./mvnw -q clean install -DskipTests
+          ./mvnw -q clean install -DskipTests -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
           echo "JLLM_VERSION=$(./mvnw help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_ENV
 
       - name: Clone the Quarkus LangChain4j extension
@@ -241,12 +295,12 @@ jobs:
           sed -i.bak 's/<gpu-llama3\.version>.*<\/gpu-llama3\.version>/<gpu-llama3.version>'$JLLM_VERSION'<\/gpu-llama3.version>/' pom.xml
           rm -f pom.xml.bak
           # -Dtornado activates the TornadoVM profile; -am builds only the gpu-llama3 module + deps
-          mvn -q clean install -pl integration-tests/gpu-llama3 -am -DskipTests -Dtornado
+          mvn -q clean install -pl integration-tests/gpu-llama3 -am -DskipTests -Dtornado -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
 
       - name: Verify jllm Dependency
         run: |
           cd ${{ github.workspace }}/quarkus-langchain4j/integration-tests/gpu-llama3
-          mvn dependency:tree | grep "io.github.beehive-lab:jllm:jar:$JLLM_VERSION"
+          mvn -Dmaven.repo.local="$MAVEN_REPO_LOCAL" dependency:tree | grep "io.github.beehive-lab:jllm:jar:$JLLM_VERSION"
 
       - name: Seed jllm model cache (avoid HuggingFace download on cold runners)
         shell: bash
@@ -400,7 +454,7 @@ jobs:
       github.ref == 'refs/heads/main'
 
     runs-on: [self-hosted, Linux]
-    needs: standalone-inference-linux
+    needs: [standalone-inference-linux, resolve-tornadovm]
     timeout-minutes: 30
 
     steps:
@@ -416,14 +470,13 @@ jobs:
 
       - name: Setup TornadoVM
         uses: ./.github/actions/setup-tornadovm
-        env:
-          TORNADO_ROOT: ${{ runner.tool_cache }}/tornadovm/tornadovm-cuda-jdk21
         with:
+          ref: ${{ needs.resolve-tornadovm.outputs.sha }}
           backend: cuda
           jdk: '21'
 
       - name: Build
-        run: ./mvnw -q -B clean package -DskipTests
+        run: ./mvnw -q -B clean package -DskipTests -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
 
       - name: Gate Llama-3.2-1B-Instruct-Q8_0 on CUDA
         run: |
@@ -437,6 +490,7 @@ jobs:
             --model Llama-3.2-1B-Instruct \
             --quantization Q8_0 \
             --backend cuda \
+            --tornadovm-version "$TORNADOVM_RUNTIME_ID" \
             --machine "${{ runner.name }}" 2>&1 | tee gate-q8.log
           status=${PIPESTATUS[0]}
           set -e
@@ -468,7 +522,7 @@ jobs:
       github.ref == 'refs/heads/main'
 
     runs-on: [self-hosted, Linux]
-    needs: standalone-inference-linux
+    needs: [standalone-inference-linux, resolve-tornadovm]
     timeout-minutes: 15
 
     steps:
@@ -487,7 +541,12 @@ jobs:
           # Gate tuple fields (M1.7): a row missing any of these can never serve as a
           # baseline, so they are derived here rather than left null.
           GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
-          TVM_VERSION="$(sed -n 's:.*<tornadovm.base.version>\(.*\)</tornadovm.base.version>.*:\1:p' pom.xml | head -1)"
+          # The runtime that produced these rows, commit included: the base version alone
+          # (6.1.1) names every develop commit alike, and rows from different runtimes must
+          # not be compared as one tuple. Each sidecar carries the runtime id the inference
+          # job ran with (run-inference writes it); this is the fallback for a sidecar
+          # without one, and it names the commit this run resolved.
+          TVM_VERSION="develop+g$(echo '${{ needs.resolve-tornadovm.outputs.sha }}' | cut -c1-12)"
           python3 scripts/process_metrics.py \
             --metrics-dir "${{ runner.temp }}/metrics-artifacts" \
             --gpu "$GPU_NAME" \

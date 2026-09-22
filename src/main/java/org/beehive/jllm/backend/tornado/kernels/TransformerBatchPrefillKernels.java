@@ -696,24 +696,6 @@ public final class TransformerBatchPrefillKernels {
         normedXFFNFP16.set(gid, new HalfFloat(result));
     }
 
-    /**
-     * Fused SiLU(gate) * up after the two FFN matmuls. Operates on FP32 inputs (MMA writes FP32).
-     *
-     * <p>Worker: B*hiddenDim global threads, localSize=256.
-     */
-    public static void batchedFFNSwiGLU(
-            KernelContext context,
-            FloatArray wrapHbBatch,
-            FloatArray ffnGateResult,
-            FloatArray ffnUpResult,
-            int hiddenDim) {
-        int gid = context.globalIdx;
-        float g = ffnGateResult.get(gid);
-        float u = ffnUpResult.get(gid);
-        float silu = g / (1.0f + TornadoMath.exp(-g));
-        wrapHbBatch.set(gid, silu * u);
-    }
-
     private static final int WARP_SIZE = 32;
     private static final int BM = 128, BN = 128, BK = 16;
     private static final int WARPS_M = 4, WARPS_N = 2;
@@ -911,30 +893,6 @@ public final class TransformerBatchPrefillKernels {
             FloatArray delta) { // GEMM output
         int gid = context.globalIdx;
         residual.set(gid, residual.get(gid) + delta.get(gid));
-    }
-
-    // ── SwiGLU emitting FP16 ──────────────────────────────────────────────
-    // Replaces batchedFFNSwiGLU. Output is the A operand for the W2 GEMM.
-    // Worker: B*hiddenDim global threads, localSize=256.
-    public static void batchedFFNSwiGLUFP16(
-            KernelContext context,
-            HalfFloatArray wrapHbFP16Batch,
-            FloatArray ffnGateResult,
-            FloatArray ffnUpResult,
-            int hiddenDim) {
-        int gid = context.globalIdx;
-        float g = ffnGateResult.get(gid);
-        float u = ffnUpResult.get(gid);
-        float silu = g / (1.0f + TornadoMath.exp(-g));
-        wrapHbFP16Batch.set(gid, new HalfFloat(silu * u));
-    }
-
-    // ── FP32 → FP16 cast (Option B only, see Wo below) ────────────────────
-    // Worker: B*dim global threads, localSize=256.
-    public static void batchedConvertFP32toFP16(
-            KernelContext context, FloatArray in, HalfFloatArray out) {
-        int gid = context.globalIdx;
-        out.set(gid, new HalfFloat(in.get(gid)));
     }
 
     // ── Fused MMA projections ─────────────────────────────────────────────────
@@ -1827,6 +1785,20 @@ public final class TransformerBatchPrefillKernels {
         }
     }
 
+    // ── FP32 → FP16 cast ─────────────────────────────────────────────────────
+    /**
+     * Elementwise cast of a batch buffer to FP16, for a family whose next kernel takes
+     * half-precision input that no fused producer already writes (Gemma4's per-layer embedding
+     * scale).
+     *
+     * <p>Worker: B*dim global threads, localSize=256.
+     */
+    public static void batchedConvertFP32toFP16(
+            KernelContext context, FloatArray in, HalfFloatArray out) {
+        int gid = context.globalIdx;
+        out.set(gid, new HalfFloat(in.get(gid)));
+    }
+
     // ── SwiGLU over the packed gate/up buffer, emitting FP16 ─────────────────
 
     /**
@@ -2549,5 +2521,302 @@ public final class TransformerBatchPrefillKernels {
         if (localId == 0) {
             outputBatch.set(batchIdx * d + rowIdx, localSum[0]);
         }
+    }
+
+    // @formatter:off
+    /**
+     * {@link #batchedMatVecF32} with one warp per output instead of a 128-lane workgroup: four
+     * warps a block, each computing one (batch row, output row), no shared reduction.
+     *
+     * <p>Lane {@code l} of the warp plays the control's lanes {@code l, l + 32, l + 64, l + 96}:
+     * four partial sums, each over the input indices that lane walked ({@code l + 128 i}, {@code l
+     * + 32 + 128 i}, ...), each from zero with the same multiply-add expression, so each partial
+     * carries the bits the control's lane produced. The control then folds its 128 partials as a
+     * shared tree: stride 64 forms {@code p[i] + p[i + 64]}, stride 32 forms {@code (p[i] + p[i +
+     * 64]) + (p[i + 32] + p[i + 96])} for {@code i < 32}, and strides 16, 8, 4, 2, 1 add entry
+     * {@code i + stride} into entry {@code i}. Here {@code combined = (partial0 + partial2) +
+     * (partial1 + partial3)} reproduces the first two steps in the same operand order, and five
+     * shuffle-down additions (offsets 16, 8, 4, 2, 1, lane {@code i} adding lane {@code i +
+     * offset}) reproduce the rest; lane zero holds the control's {@code localSum[0]} and writes it.
+     * Every operand FP32; the output is raw-bit equal to the control's on the CUDA backend, where
+     * the shuffle is verified.
+     *
+     * <p>Worker: {@code activeRowsPadded * d * 32} lanes, local 128 (four outputs per block).
+     */
+    // @formatter:on
+    public static void batchedMatVecF32Warp(
+            KernelContext context,
+            FloatArray inputBatch,
+            FloatArray outputBatch,
+            FloatArray w,
+            int n,
+            int d,
+            int activeRows) {
+        int lane = context.localIdx & 31;
+        int output = (context.groupIdx << 2) + (context.localIdx >> 5);
+        int batchIdx = output / d;
+        int rowIdx = output - batchIdx * d;
+        if (batchIdx >= activeRows) {
+            return;
+        }
+        int inputOff = batchIdx * n;
+        int rowOff = rowIdx * n;
+
+        float partial0 = 0.0f;
+        float partial1 = 0.0f;
+        float partial2 = 0.0f;
+        float partial3 = 0.0f;
+        for (int j = lane; j < n; j += 128) {
+            partial0 += w.get(rowOff + j) * inputBatch.get(inputOff + j);
+        }
+        for (int j = lane + 32; j < n; j += 128) {
+            partial1 += w.get(rowOff + j) * inputBatch.get(inputOff + j);
+        }
+        for (int j = lane + 64; j < n; j += 128) {
+            partial2 += w.get(rowOff + j) * inputBatch.get(inputOff + j);
+        }
+        for (int j = lane + 96; j < n; j += 128) {
+            partial3 += w.get(rowOff + j) * inputBatch.get(inputOff + j);
+        }
+        float combined = (partial0 + partial2) + (partial1 + partial3);
+        combined += context.simdShuffleDown(combined, 16);
+        combined += context.simdShuffleDown(combined, 8);
+        combined += context.simdShuffleDown(combined, 4);
+        combined += context.simdShuffleDown(combined, 2);
+        combined += context.simdShuffleDown(combined, 1);
+        if (lane == 0) {
+            outputBatch.set(batchIdx * d + rowIdx, combined);
+        }
+    }
+
+    /** Rows and outputs of one warp's tile in {@link #batchedMatVecF32WarpTile}. */
+    public static final int MATVEC_TILE = 4;
+
+    // @formatter:off
+    /**
+     * {@link #batchedMatVecF32Warp} with a warp computing a {@link #MATVEC_TILE} x {@link
+     * #MATVEC_TILE} tile of (batch row, output row) pairs instead of one, so each input value and
+     * each weight a lane loads serves four multiply-adds instead of one.
+     *
+     * <p>Every (row, output) pair keeps the warp kernel's arithmetic exactly: lane {@code l}
+     * accumulates the same four partial sums over the same input indices in the same order, from
+     * zero, with the same multiply-add expression — only interleaved across the tile's sixteen
+     * pairs inside the {@code i} loop — then the same {@code (p0 + p2) + (p1 + p3)} and the same
+     * five shuffle-down additions. The outputs are raw-bit equal to the warp kernel's (asserted by
+     * the test). Requires {@code d % 4 == 0}; rows past {@code activeRows} are neither read nor
+     * written, and a warp whose whole row tile is past them returns.
+     *
+     * <p>Worker: {@code ceil(activeRowsPadded / 4) * (d / 4) * 32} lanes, local 128 (four tiles per
+     * block).
+     */
+    // @formatter:on
+    public static void batchedMatVecF32WarpTile(
+            KernelContext context,
+            FloatArray inputBatch,
+            FloatArray outputBatch,
+            FloatArray w,
+            int n,
+            int d,
+            int activeRows) {
+        int lane = context.localIdx & 31;
+        int tile = (context.groupIdx << 2) + (context.localIdx >> 5);
+        int outputTiles = d / MATVEC_TILE;
+        int rowTile = tile / outputTiles;
+        int row0 = rowTile * MATVEC_TILE;
+        int out0 = (tile - rowTile * outputTiles) * MATVEC_TILE;
+        if (row0 >= activeRows) {
+            return;
+        }
+        // Rows past the active count read row zero (finite, in bounds) and are not written.
+        int r1 = row0 + 1 < activeRows ? row0 + 1 : row0;
+        int r2 = row0 + 2 < activeRows ? row0 + 2 : row0;
+        int r3 = row0 + 3 < activeRows ? row0 + 3 : row0;
+        int in0 = row0 * n;
+        int in1 = r1 * n;
+        int in2 = r2 * n;
+        int in3 = r3 * n;
+        int w0 = out0 * n;
+        int w1 = w0 + n;
+        int w2 = w1 + n;
+        int w3 = w2 + n;
+
+        float p00a = 0.0f, p00b = 0.0f, p00c = 0.0f, p00d = 0.0f;
+        float p01a = 0.0f, p01b = 0.0f, p01c = 0.0f, p01d = 0.0f;
+        float p02a = 0.0f, p02b = 0.0f, p02c = 0.0f, p02d = 0.0f;
+        float p03a = 0.0f, p03b = 0.0f, p03c = 0.0f, p03d = 0.0f;
+        float p10a = 0.0f, p10b = 0.0f, p10c = 0.0f, p10d = 0.0f;
+        float p11a = 0.0f, p11b = 0.0f, p11c = 0.0f, p11d = 0.0f;
+        float p12a = 0.0f, p12b = 0.0f, p12c = 0.0f, p12d = 0.0f;
+        float p13a = 0.0f, p13b = 0.0f, p13c = 0.0f, p13d = 0.0f;
+        float p20a = 0.0f, p20b = 0.0f, p20c = 0.0f, p20d = 0.0f;
+        float p21a = 0.0f, p21b = 0.0f, p21c = 0.0f, p21d = 0.0f;
+        float p22a = 0.0f, p22b = 0.0f, p22c = 0.0f, p22d = 0.0f;
+        float p23a = 0.0f, p23b = 0.0f, p23c = 0.0f, p23d = 0.0f;
+        float p30a = 0.0f, p30b = 0.0f, p30c = 0.0f, p30d = 0.0f;
+        float p31a = 0.0f, p31b = 0.0f, p31c = 0.0f, p31d = 0.0f;
+        float p32a = 0.0f, p32b = 0.0f, p32c = 0.0f, p32d = 0.0f;
+        float p33a = 0.0f, p33b = 0.0f, p33c = 0.0f, p33d = 0.0f;
+
+        // Partial a: indices lane + 128 i; b: lane + 32 + 128 i; c: + 64; d: + 96 — the warp
+        // kernel's four loops, fused over i, each pair's product added to its own partial.
+        for (int j = lane; j < n; j += 128) {
+            float wa0 = w.get(w0 + j);
+            float wa1 = w.get(w1 + j);
+            float wa2 = w.get(w2 + j);
+            float wa3 = w.get(w3 + j);
+            float x0 = inputBatch.get(in0 + j);
+            float x1 = inputBatch.get(in1 + j);
+            float x2 = inputBatch.get(in2 + j);
+            float x3 = inputBatch.get(in3 + j);
+            p00a += wa0 * x0;
+            p01a += wa1 * x0;
+            p02a += wa2 * x0;
+            p03a += wa3 * x0;
+            p10a += wa0 * x1;
+            p11a += wa1 * x1;
+            p12a += wa2 * x1;
+            p13a += wa3 * x1;
+            p20a += wa0 * x2;
+            p21a += wa1 * x2;
+            p22a += wa2 * x2;
+            p23a += wa3 * x2;
+            p30a += wa0 * x3;
+            p31a += wa1 * x3;
+            p32a += wa2 * x3;
+            p33a += wa3 * x3;
+        }
+        for (int j = lane + 32; j < n; j += 128) {
+            float wa0 = w.get(w0 + j);
+            float wa1 = w.get(w1 + j);
+            float wa2 = w.get(w2 + j);
+            float wa3 = w.get(w3 + j);
+            float x0 = inputBatch.get(in0 + j);
+            float x1 = inputBatch.get(in1 + j);
+            float x2 = inputBatch.get(in2 + j);
+            float x3 = inputBatch.get(in3 + j);
+            p00b += wa0 * x0;
+            p01b += wa1 * x0;
+            p02b += wa2 * x0;
+            p03b += wa3 * x0;
+            p10b += wa0 * x1;
+            p11b += wa1 * x1;
+            p12b += wa2 * x1;
+            p13b += wa3 * x1;
+            p20b += wa0 * x2;
+            p21b += wa1 * x2;
+            p22b += wa2 * x2;
+            p23b += wa3 * x2;
+            p30b += wa0 * x3;
+            p31b += wa1 * x3;
+            p32b += wa2 * x3;
+            p33b += wa3 * x3;
+        }
+        for (int j = lane + 64; j < n; j += 128) {
+            float wa0 = w.get(w0 + j);
+            float wa1 = w.get(w1 + j);
+            float wa2 = w.get(w2 + j);
+            float wa3 = w.get(w3 + j);
+            float x0 = inputBatch.get(in0 + j);
+            float x1 = inputBatch.get(in1 + j);
+            float x2 = inputBatch.get(in2 + j);
+            float x3 = inputBatch.get(in3 + j);
+            p00c += wa0 * x0;
+            p01c += wa1 * x0;
+            p02c += wa2 * x0;
+            p03c += wa3 * x0;
+            p10c += wa0 * x1;
+            p11c += wa1 * x1;
+            p12c += wa2 * x1;
+            p13c += wa3 * x1;
+            p20c += wa0 * x2;
+            p21c += wa1 * x2;
+            p22c += wa2 * x2;
+            p23c += wa3 * x2;
+            p30c += wa0 * x3;
+            p31c += wa1 * x3;
+            p32c += wa2 * x3;
+            p33c += wa3 * x3;
+        }
+        for (int j = lane + 96; j < n; j += 128) {
+            float wa0 = w.get(w0 + j);
+            float wa1 = w.get(w1 + j);
+            float wa2 = w.get(w2 + j);
+            float wa3 = w.get(w3 + j);
+            float x0 = inputBatch.get(in0 + j);
+            float x1 = inputBatch.get(in1 + j);
+            float x2 = inputBatch.get(in2 + j);
+            float x3 = inputBatch.get(in3 + j);
+            p00d += wa0 * x0;
+            p01d += wa1 * x0;
+            p02d += wa2 * x0;
+            p03d += wa3 * x0;
+            p10d += wa0 * x1;
+            p11d += wa1 * x1;
+            p12d += wa2 * x1;
+            p13d += wa3 * x1;
+            p20d += wa0 * x2;
+            p21d += wa1 * x2;
+            p22d += wa2 * x2;
+            p23d += wa3 * x2;
+            p30d += wa0 * x3;
+            p31d += wa1 * x3;
+            p32d += wa2 * x3;
+            p33d += wa3 * x3;
+        }
+
+        float s00 = warpTreeF32(context, (p00a + p00c) + (p00b + p00d));
+        float s01 = warpTreeF32(context, (p01a + p01c) + (p01b + p01d));
+        float s02 = warpTreeF32(context, (p02a + p02c) + (p02b + p02d));
+        float s03 = warpTreeF32(context, (p03a + p03c) + (p03b + p03d));
+        float s10 = warpTreeF32(context, (p10a + p10c) + (p10b + p10d));
+        float s11 = warpTreeF32(context, (p11a + p11c) + (p11b + p11d));
+        float s12 = warpTreeF32(context, (p12a + p12c) + (p12b + p12d));
+        float s13 = warpTreeF32(context, (p13a + p13c) + (p13b + p13d));
+        float s20 = warpTreeF32(context, (p20a + p20c) + (p20b + p20d));
+        float s21 = warpTreeF32(context, (p21a + p21c) + (p21b + p21d));
+        float s22 = warpTreeF32(context, (p22a + p22c) + (p22b + p22d));
+        float s23 = warpTreeF32(context, (p23a + p23c) + (p23b + p23d));
+        float s30 = warpTreeF32(context, (p30a + p30c) + (p30b + p30d));
+        float s31 = warpTreeF32(context, (p31a + p31c) + (p31b + p31d));
+        float s32 = warpTreeF32(context, (p32a + p32c) + (p32b + p32d));
+        float s33 = warpTreeF32(context, (p33a + p33c) + (p33b + p33d));
+        if (lane == 0) {
+            int o0 = row0 * d + out0;
+            outputBatch.set(o0, s00);
+            outputBatch.set(o0 + 1, s01);
+            outputBatch.set(o0 + 2, s02);
+            outputBatch.set(o0 + 3, s03);
+            if (row0 + 1 < activeRows) {
+                int o1 = o0 + d;
+                outputBatch.set(o1, s10);
+                outputBatch.set(o1 + 1, s11);
+                outputBatch.set(o1 + 2, s12);
+                outputBatch.set(o1 + 3, s13);
+            }
+            if (row0 + 2 < activeRows) {
+                int o2 = o0 + 2 * d;
+                outputBatch.set(o2, s20);
+                outputBatch.set(o2 + 1, s21);
+                outputBatch.set(o2 + 2, s22);
+                outputBatch.set(o2 + 3, s23);
+            }
+            if (row0 + 3 < activeRows) {
+                int o3 = o0 + 3 * d;
+                outputBatch.set(o3, s30);
+                outputBatch.set(o3 + 1, s31);
+                outputBatch.set(o3 + 2, s32);
+                outputBatch.set(o3 + 3, s33);
+            }
+        }
+    }
+
+    /** The warp kernel's five shuffle-down additions; lane zero holds the sum. */
+    private static float warpTreeF32(KernelContext context, float combined) {
+        combined += context.simdShuffleDown(combined, 16);
+        combined += context.simdShuffleDown(combined, 8);
+        combined += context.simdShuffleDown(combined, 4);
+        combined += context.simdShuffleDown(combined, 2);
+        combined += context.simdShuffleDown(combined, 1);
+        return combined;
     }
 }

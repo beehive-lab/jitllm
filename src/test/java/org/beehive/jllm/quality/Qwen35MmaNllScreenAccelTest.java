@@ -1,5 +1,7 @@
 package org.beehive.jllm.quality;
 
+import static org.junit.Assert.assertEquals;
+
 import org.beehive.jllm.backend.tornado.PlanDispatchEvidence;
 import uk.ac.manchester.tornado.api.GridScheduler;
 
@@ -15,7 +17,7 @@ import uk.ac.manchester.tornado.api.GridScheduler;
  *
  * <p>Drive it with {@code -Djllm.nllScreen.batch=32} for the batched prefix, and with {@code
  * -Djllm.nllScreen.out=<file>} to write the per-passage report. Without the batch width the plan is
- * the single-token one, which has no batched projection to check, and this class fails rather than
+ * the single-token one, which has no batched projection to check, and this class skips rather than
  * scoring a path its name does not describe.
  *
  * <p><b>This is the repository's reused development screen, not independent quality validation.</b>
@@ -30,7 +32,32 @@ public class Qwen35MmaNllScreenAccelTest extends Qwen35NllScreenAccelTest {
     }
 
     @Override
+    protected boolean applies(int batch) {
+        return batch > 1;
+    }
+
+    @Override
     protected void verifyDispatch(GridScheduler grids, int batch, int dim) {
-        PlanDispatchEvidence.assertQwen35AttentionOutputOnTensorCores(grids, batch, dim);
+        // At the widths that fill whole GEMM tiles the projection runs as the dequantize-then-GEMM
+        // pair; below them, as the direct tensor-core kernel. Either way it is on the tensor cores.
+        if (org.beehive.jllm.model.qwen35.Qwen35Configuration.dequantGemmWidth(batch)) {
+            PlanDispatchEvidence.assertQwen35AttentionOutputOnDequantGemm(grids, batch, dim, 6144);
+        } else {
+            PlanDispatchEvidence.assertQwen35AttentionOutputOnTensorCores(grids, batch, dim);
+        }
+    }
+
+    @Override
+    protected void verifyBatchedScan(String kernel, int stateDim) {
+        // The 128-wide state on CUDA takes the warp-per-column scan; the same width elsewhere the
+        // shared-state one. The report names the kernel; this pins it to the dispatch rule.
+        String expected =
+                org.beehive.jllm.backend.tornado.kernels.Qwen35BatchKernels.deltaWarpEligible(
+                                        stateDim)
+                                && org.beehive.jllm.backend.tornado.TensorCoreSupport
+                                        .isTensorCoreCapableBackend()
+                        ? "deltaRuleScanWarp"
+                        : "deltaRuleScanShared";
+        assertEquals("batched delta-rule scan this screen scored", expected, kernel);
     }
 }

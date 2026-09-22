@@ -103,6 +103,10 @@ public class Qwen35NllScreenAccelTest {
         StringBuilder report = new StringBuilder();
         try {
             int batch = Integer.getInteger(BATCH_PROPERTY, 1);
+            if (!applies(batch)) {
+                System.out.println("[SKIP] " + getClass().getSimpleName() + " at batch " + batch);
+                assumeTrue("plan this screen describes not selected", false);
+            }
             if (batch > 1) {
                 // The plan is chosen from these, not from the state's width: sizing the state
                 // alone leaves the single-token plan in place.
@@ -150,14 +154,41 @@ public class Qwen35NllScreenAccelTest {
                                     .qwen35MmaBatchedTasks(grids)
                                     .size())
                     .append('\n');
-            // Which delta-rule kernel this plan dispatches, read from its own grid: two lanes a
-            // column registers twice the value head's width, one lane a column the elementwise
-            // default. Recorded so a screen's report says what it scored.
-            report.append("deltaRuleLocalWork=").append(deltaRuleLocalWork(grids)).append('\n');
+            // Which delta-rule kernels this plan dispatches, so a screen's report says what it
+            // scored. The batched scan ingests the prompt; the decode scan produces the scored
+            // rows. The grid alone cannot tell two batched scans of one geometry apart, so the
+            // batched kernel is read off the task graph by its method name, and the decode task's
+            // local work is labelled as the decode task's -- the batched one is never a stand-in.
+            report.append("batchedDeltaRuleKernel=")
+                    .append(batch > 1 ? batchedDeltaRuleKernel(plan) : "none")
+                    .append('\n');
+            report.append("batchedDeltaRuleLocalWork=")
+                    .append(deltaRuleLocalWork(grids, "batchLayer_"))
+                    .append('\n');
+            report.append("decodeDeltaRuleLocalWork=")
+                    .append(deltaRuleLocalWork(grids, "layer_"))
+                    .append('\n');
+            // The cache precision selects the attention kernel; this screen leaves the default in
+            // place, so the report says which one it scored rather than implying the benchmarked
+            // plan's.
+            report.append("fp16KvCache=").append(state.usesFp16KeyValueCache()).append('\n');
+            report.append("batchedAttentionKernel=")
+                    .append(
+                            batch > 1
+                                    ? org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                                            .batchedTaskKernels(plan, "attention")
+                                    : java.util.Set.of("none"))
+                    .append('\n');
             report.append("executionCombination=")
                     .append(org.beehive.jllm.auxiliary.RunMetrics.snapshot().executionCombination())
                     .append('\n');
             verifyDispatch(grids, batch, model.configuration().dim());
+            if (batch > 1) {
+                verifyBatchedScan(
+                        batchedDeltaRuleKernel(plan),
+                        ((org.beehive.jllm.model.qwen35.Qwen35Configuration) model.configuration())
+                                .headValueDim());
+            }
 
             double pooledNll = 0;
             long pooledTokens = 0;
@@ -286,17 +317,50 @@ public class Qwen35NllScreenAccelTest {
      * What this screen's own plan must be built with for its numbers to describe the path claimed.
      * Nothing here; the tensor-core subclass overrides it.
      */
-    /** Local work size of the plan's {@code ssm_delta_rule} task, or {@code -1} if it has none. */
-    private static long deltaRuleLocalWork(uk.ac.manchester.tornado.api.GridScheduler grids) {
+    /**
+     * What batched delta-rule scan the plan must have compiled for this screen's numbers to
+     * describe the path claimed. Nothing here; the tensor-core subclass overrides it.
+     */
+    protected void verifyBatchedScan(String kernel, int stateDim) {}
+
+    /**
+     * Local work size of the plan's {@code ssm_delta_rule} task in the graphs whose names start
+     * with {@code graphPrefix} ({@code batchLayer_} for the batched prefill, {@code layer_} for
+     * decode), or {@code -1} if there is none. Every layer's grid is the same, so the first is
+     * reported.
+     */
+    private static long deltaRuleLocalWork(
+            uk.ac.manchester.tornado.api.GridScheduler grids, String graphPrefix) {
         if (grids == null) {
             return -1;
         }
-        for (String key : grids.keySet()) {
-            if (key.endsWith(".ssm_delta_rule")) {
+        for (String key : new java.util.TreeSet<>(grids.keySet())) {
+            if (key.startsWith(graphPrefix) && key.endsWith(".ssm_delta_rule")) {
                 return grids.get(key).getLocalWork()[0];
             }
         }
         return -1;
+    }
+
+    /**
+     * The kernel method every batched layer's {@code ssm_delta_rule} task compiles, read off the
+     * plan's task graphs; fails if the layers disagree, since one screen scores one kernel.
+     */
+    static String batchedDeltaRuleKernel(TornadoVMMasterPlan plan) {
+        java.util.Set<String> kernels =
+                org.beehive.jllm.backend.tornado.PlanDispatchEvidence.batchedTaskKernels(
+                        plan, "ssm_delta_rule");
+        assertEquals("one batched delta-rule kernel across the layers", 1, kernels.size());
+        return kernels.iterator().next();
+    }
+
+    /**
+     * Whether this screen has anything to say at the given prefill width. The base screen scores
+     * any plan; a subclass that describes one particular plan declines the widths that select
+     * another, so a suite run without the property skips it rather than failing it.
+     */
+    protected boolean applies(int batch) {
+        return true;
     }
 
     protected void verifyDispatch(

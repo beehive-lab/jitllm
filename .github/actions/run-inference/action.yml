@@ -256,6 +256,7 @@ runs:
         python3 scripts/write_metrics_sidecar.py \
           --out "$SIDECAR" \
           backend="${{ inputs.backend }}" \
+          tornadovm_version="${TORNADOVM_RUNTIME_ID:-}" \
           task=llama-inference \
           model_file=${{ inputs.model_file }} \
           model=${{ inputs.model }} \

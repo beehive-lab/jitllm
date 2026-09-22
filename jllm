@@ -164,8 +164,8 @@ class LlamaRunner:
         if args.fp16_kv_cache:
             cmd.append("-Djllm.kvcache.fp16=true")
 
-        if args.tensor_cores:
-            cmd.append("-Djllm.qwen35.tensorCores=true")
+        if args.diagnostic_scalar_batched_prefill:
+            cmd.append("-Djllm.qwen35.tensorCores=false")
 
         # Debug options
         debug_config = []
@@ -462,7 +462,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--max-tokens",
         type=int,
         default=512,
-        help="Maximum number of tokens to generate",
+        help="Capacity in positions for this run: prompt plus generated tokens (sizes the context; a prompt this long or longer is refused)",
     )
     llm_group.add_argument(
         "--stream", type=bool, default=True, help="Enable streaming output"
@@ -497,10 +497,14 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Hold the key/value cache in half precision (halves its bandwidth and footprint; accumulation stays FP32)",
     )
+    # Kernel selection is automatic and lives in Java (device capability plus the workload's
+    # shape decide between the int8 tensor-core pair, the FP16 tensor-core kernels and the
+    # scalar kernels). The two spellings below survive for compatibility only and are kept
+    # out of --help: --tensor-cores is a no-op, --no-tensor-cores is the old name of the
+    # diagnostic override under "Debug and Profiling".
+    parser.add_argument("--tensor-cores", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
-        "--tensor-cores",
-        action="store_true",
-        help="Run the qwen35 Q4_0 projections that read the normed chunk on the tensor cores (FP16 multiplicands, FP32 accumulate)",
+        "--no-tensor-cores", dest="no_tensor_cores", action="store_true", help=argparse.SUPPRESS
     )
     bench_group = parser.add_argument_group("Benchmark (llama-bench style)")
     bench_group.add_argument(
@@ -538,6 +542,12 @@ def create_parser() -> argparse.ArgumentParser:
     # Debug and profiling
     debug_group = parser.add_argument_group("Debug and Profiling")
     debug_group.add_argument("--debug", action="store_true", help="Enable debug output")
+    debug_group.add_argument(
+        "--diagnostic-scalar-batched-prefill",
+        dest="diagnostic_scalar_batched_prefill",
+        action="store_true",
+        help="Diagnostic only: run the qwen35 batched prefill on the scalar (FP32) kernels instead of the automatically selected tensor-core path (int8 for eligible Q4_0 projections, FP16 otherwise). Slower; for comparing numerics",
+    )
     debug_group.add_argument(
         "--profiler", action="store_true", help="Enable TornadoVM profiler"
     )
@@ -667,11 +677,44 @@ def validate_backend_selection(args):
     sys.exit(1)
 
 
+def resolve_deprecated_tensor_core_flags(args):
+    """Fold the compatibility spellings into the diagnostic override, refusing contradictions.
+
+    --tensor-cores asked for what is now automatic and does nothing; --no-tensor-cores is the
+    former name of --diagnostic-scalar-batched-prefill. Both together contradict each other.
+    Returns the warnings to print, so the resolution can be tested without a launch.
+    """
+    warnings = []
+    scalar = args.diagnostic_scalar_batched_prefill or args.no_tensor_cores
+    if args.tensor_cores and scalar:
+        print(
+            "Error: --tensor-cores contradicts "
+            + ("--no-tensor-cores" if args.no_tensor_cores else "--diagnostic-scalar-batched-prefill")
+            + "; kernel selection is automatic, drop --tensor-cores.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if args.tensor_cores:
+        warnings.append(
+            "Warning: --tensor-cores is deprecated and does nothing; the tensor-core kernels are"
+            " selected automatically where the device supports them."
+        )
+    if args.no_tensor_cores:
+        warnings.append(
+            "Warning: --no-tensor-cores is deprecated; use --diagnostic-scalar-batched-prefill"
+            " (a diagnostic, not a performance option)."
+        )
+    args.diagnostic_scalar_batched_prefill = scalar
+    return warnings
+
+
 def main():
     """Main entry point."""
     load_env_from_script()
     parser = create_parser()
     args = parser.parse_args()
+    for warning in resolve_deprecated_tensor_core_flags(args):
+        print(warning, file=sys.stderr)
 
     # Set default profiler log path relative to JLLM_ROOT
     if args.profiler_dump_dir is None:
