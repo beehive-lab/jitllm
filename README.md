@@ -67,7 +67,7 @@ Grab a ready-to-run model from the [Hugging Face collections](#-model-collection
 
 jllm is growing into a **serving engine** — the vLLM-style path for the JVM:
 
-- 🌐 **OpenAI-compatible server** — `jllm --server` exposes `/v1/chat/completions` and `/v1/completions` with streaming and zero external dependencies. Point any OpenAI client at `localhost`.
+- 🌐 **OpenAI-compatible server** — `jllm --server` exposes `/v1/chat/completions` and `/v1/completions` with streaming and zero external dependencies. `/v1/models` reports the served context length, so clients size their prompts instead of guessing. Point any OpenAI client at `localhost`.
 - 🎯 **Tensor-core (MMA) batch prefill** on the CUDA backend, FP16 & Q8_0 — `--with-prefill-decode --batch-prefill-size N`.
 - 📈 **llama-bench-style benchmarking** — `jllm --bench` reports a pp/tg matrix with avg±stddev in md/csv/json/jsonl/sql. See [Running the CLI](#-running-the-cli) for the flag.
 - 🧮 **On-device greedy sampling** *(landing next)* — argmax on the GPU keeps logits device-side, cutting device→host traffic by ~500× per token. ([PR #134](https://github.com/beehive-lab/jllm/pull/134))
@@ -365,7 +365,7 @@ jllm --gpu --model beehive-llama-3.2-1b-instruct-fp16.gguf \
 usage: jllm [-h] --model MODEL_PATH [--prompt PROMPT] [-sp SYSTEM_PROMPT]
                      [--temperature TEMPERATURE] [--top-p TOP_P] [--seed SEED] [-n MAX_TOKENS]
                      [--stream STREAM] [--echo ECHO] [--suffix SUFFIX] [-i] [--instruct]
-                     [--server] [--port PORT] [--bench] [--bench-args BENCH_ARGS]
+                     [--server] [--port PORT] [--ctx CTX] [--bench] [--bench-args BENCH_ARGS]
                      [--gpu] [--opencl] [--cuda] [--metal]
                      [--gpu-memory GPU_MEMORY] [--heap-min HEAP_MIN] [--heap-max HEAP_MAX]
                      [--debug] [--profiler] [--profiler-dump-dir DIR]
@@ -379,7 +379,8 @@ LLaMA Configuration:  --prompt, -sp/--system-prompt, --temperature (0.0–2.0, d
                       --top-p (default 0.95), --seed, -n/--max-tokens (default 512),
                       --stream (default True), --echo (default False), --suffix (FIM/Codestral)
 Mode Selection:       -i/--interactive, --instruct (default)
-OpenAI server:        --server (run the HTTP server instead of inference), --port (default 8080)
+OpenAI server:        --server (run the HTTP server instead of inference), --port (default 8080),
+                      --ctx (context length to serve; default the model's own)
 Benchmark:            --bench (llama-bench-style matrix), --bench-args="..." (see Benchmarking below)
 Hardware:             --gpu, --opencl/--cuda/--metal (auto-detected; force one of the installed
                       backends), --gpu-memory (default 14GB), --heap-min/--heap-max (default 20g)

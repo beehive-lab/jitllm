@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 import org.beehive.jllm.Options;
+import org.beehive.jllm.api.ChatContent;
 import org.beehive.jllm.api.ChatMessage;
 import org.beehive.jllm.api.ChatRole;
 import org.beehive.jllm.api.LocalModel;
@@ -32,7 +33,8 @@ import org.beehive.jllm.runtime.backend.BackendId;
  * <ul>
  *   <li>{@code POST /v1/chat/completions} — chat, streaming (SSE) or full JSON.
  *   <li>{@code POST /v1/completions} — text completion (prompt as a single user turn).
- *   <li>{@code GET /v1/models} — the one served model.
+ *   <li>{@code GET /v1/models} — the one served model, with the context length it was loaded with,
+ *       so a client can size its token budget instead of guessing.
  *   <li>{@code GET /health} — liveness.
  * </ul>
  *
@@ -42,6 +44,10 @@ import org.beehive.jllm.runtime.backend.BackendId;
  * <pre>
  *   java. org.beehive.jllm.server.OpenAIServer --model model.gguf --port 8080 --gpu
  * </pre>
+ *
+ * <p>{@code --ctx N} sizes the KV cache and therefore the context the server advertises. It
+ * defaults to the model's own, which is what {@code ModelOptions} means by 0 and what the loaders
+ * already clamp a larger request down to.
  */
 public final class OpenAIServer {
 
@@ -57,19 +63,38 @@ public final class OpenAIServer {
         void close();
     }
 
+    /** Reported when the context length is not known — {@code /v1/models} then omits it. */
+    static final int UNKNOWN_CONTEXT_LENGTH = 0;
+
     private final Generator service;
     private final String servedModel;
     private final boolean gpu;
+    private final int contextLength;
     private int port;
     private final AtomicLong seq = new AtomicLong();
 
     public OpenAIServer(InferenceService service, String servedModel, boolean gpu) {
-        this(wrap(service), servedModel, gpu);
+        this(wrap(service), servedModel, gpu, UNKNOWN_CONTEXT_LENGTH);
+    }
+
+    /**
+     * @param contextLength tokens the model was loaded with, advertised on {@code /v1/models}; 0
+     *     when unknown, which omits the field rather than publishing a zero a client would believe
+     */
+    public OpenAIServer(
+            InferenceService service, String servedModel, boolean gpu, int contextLength) {
+        this(wrap(service), servedModel, gpu, contextLength);
     }
 
     /** Engine-backed: concurrent requests share one batch instead of one lock. */
     public OpenAIServer(EngineInferenceService service, String servedModel, boolean gpu) {
-        this(wrap(service), servedModel, gpu);
+        this(wrap(service), servedModel, gpu, UNKNOWN_CONTEXT_LENGTH);
+    }
+
+    /** Engine-backed, advertising the context length the batch was sized for. */
+    public OpenAIServer(
+            EngineInferenceService service, String servedModel, boolean gpu, int contextLength) {
+        this(wrap(service), servedModel, gpu, contextLength);
     }
 
     private static Generator wrap(InferenceService delegate) {
@@ -102,10 +127,163 @@ public final class OpenAIServer {
         };
     }
 
-    private OpenAIServer(Generator service, String servedModel, boolean gpu) {
+    private OpenAIServer(Generator service, String servedModel, boolean gpu, int contextLength) {
         this.service = service;
         this.servedModel = servedModel;
         this.gpu = gpu;
+        this.contextLength = contextLength;
+    }
+
+    /**
+     * The context length to load and advertise, following the rule the model loaders already use: a
+     * positive request is honoured but never beyond what the model itself supports, and anything
+     * else means the model's own.
+     *
+     * @param requested the {@code --ctx} value, or 0 when the flag was not given
+     * @param modelContextLength the context length the model declares
+     */
+    static int resolveContextLength(int requested, int modelContextLength) {
+        return requested > 0 ? Math.min(requested, modelContextLength) : modelContextLength;
+    }
+
+    /**
+     * Characters per token assumed when checking a prompt against the window.
+     *
+     * <p>An exact count needs the tokenizer, and this package cannot reach one: the facade path
+     * holds a {@link org.beehive.jllm.api.LocalModel}, whose surface is identity and configuration
+     * only. Four is deliberately generous — real text, and code especially, tokenizes to *more*
+     * tokens than this predicts — so the estimate errs toward accepting. It therefore catches a
+     * prompt that is grossly over the window and lets a marginal one through to the engine, which
+     * is the right way round for a guard that must never refuse a request that would have worked.
+     */
+    static final int ESTIMATED_CHARS_PER_TOKEN = 4;
+
+    /**
+     * Why this request cannot be served, or {@code null} when it can.
+     *
+     * <p>Every check here is one that used to be absent, and each absence produced a failure that
+     * looked like something else: a model name nobody validated meant a client asking for model A
+     * was answered by model B with no indication; a prompt past the window was accepted, ground for
+     * hours, and returned a successful response with an empty completion.
+     *
+     * @param requestedModel the request's {@code model} field, or {@code null} when absent
+     * @param servedModel the one model this server loaded
+     * @param maxTokens the request's output cap
+     * @param promptChars total characters of prompt content
+     * @param contextLength the window, or 0 when unknown (every context check is then skipped)
+     */
+    static String validationError(
+            String requestedModel,
+            String servedModel,
+            int maxTokens,
+            int promptChars,
+            int contextLength) {
+        if (requestedModel != null
+                && !requestedModel.isBlank()
+                && !requestedModel.equals(servedModel)) {
+            return "This server serves '"
+                    + servedModel
+                    + "', not '"
+                    + requestedModel
+                    + "'. One model is loaded per process; GET /v1/models reports which.";
+        }
+        if (contextLength <= 0) {
+            return null;
+        }
+        if (maxTokens >= contextLength) {
+            return "max_tokens "
+                    + maxTokens
+                    + " leaves no room for a prompt in a context of "
+                    + contextLength
+                    + " tokens.";
+        }
+        int estimatedPromptTokens = promptChars / ESTIMATED_CHARS_PER_TOKEN;
+        if (estimatedPromptTokens >= contextLength) {
+            return "prompt is about "
+                    + estimatedPromptTokens
+                    + " tokens ("
+                    + promptChars
+                    + " characters), which does not fit a context of "
+                    + contextLength
+                    + " tokens.";
+        }
+        if (estimatedPromptTokens + maxTokens >= contextLength) {
+            return "prompt (about "
+                    + estimatedPromptTokens
+                    + " tokens) plus max_tokens "
+                    + maxTokens
+                    + " exceeds the context of "
+                    + contextLength
+                    + " tokens.";
+        }
+        return null;
+    }
+
+    /**
+     * One line describing an inbound completion request.
+     *
+     * <p>The server used to log nothing per request, which made a client's behaviour invisible:
+     * whether a prompt ever arrived, which model name it asked for, how large it was, and whether a
+     * reply was a rejection or a real generation all had to be inferred from the outside.
+     *
+     * @param id the response id this request will carry, so a log line and a reply can be paired
+     */
+    static String requestSummary(
+            String id, String path, String model, int promptChars, int maxTokens, boolean stream) {
+        return "[req "
+                + id
+                + "] "
+                + path
+                + " model="
+                + (model == null || model.isBlank() ? "(unset)" : model)
+                + " promptChars="
+                + promptChars
+                + " maxTokens="
+                + maxTokens
+                + (stream ? " stream" : "");
+    }
+
+    /**
+     * Total characters of message text, the input to the prompt-size estimate.
+     *
+     * <p>Only {@link ChatContent.Text} carries characters a tokenizer would see here; a tool call
+     * or result contributes its JSON through a different path and is not counted.
+     */
+    static int promptCharacters(List<ChatMessage> messages) {
+        int total = 0;
+        for (ChatMessage m : messages) {
+            if (m == null) {
+                continue;
+            }
+            for (ChatContent piece : m.content()) {
+                if (piece instanceof ChatContent.Text t && t.text() != null) {
+                    total += t.text().length();
+                }
+            }
+        }
+        return total;
+    }
+
+    /**
+     * The {@code /v1/models} body: the OpenAI model shape plus {@code context_length}.
+     *
+     * <p>OpenAI does not specify a context field, so clients read one of a handful of de-facto
+     * spellings; {@code context_length} is the one OpenRouter established and the widest set of
+     * OpenAI-compatible clients already look for.
+     */
+    static Map<String, Object> modelsPayload(String servedModel, int contextLength) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("id", servedModel);
+        entry.put("object", "model");
+        entry.put("created", 0);
+        entry.put("owned_by", "jllm");
+        if (contextLength > 0) {
+            entry.put("context_length", contextLength);
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("object", "list");
+        body.put("data", List.of(entry));
+        return body;
     }
 
     public static void main(String[] args) throws IOException {
@@ -122,28 +300,34 @@ public final class OpenAIServer {
         // only a deployment whose traffic repeats its openings gets that trade back.
         int prefixEntries = Integer.getInteger("server.prefixCacheEntries", 0);
         boolean gpu = false;
+        // 0 means the model's own, the same thing it means to ModelOptions and the loaders.
+        // Serving a coding assistant from a small fixed window is the failure this replaces.
+        int ctx = 0;
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--model", "-m" -> modelPath = args[++i];
                 case "--port", "-p" -> port = Integer.parseInt(args[++i]);
                 case "--gpu" -> gpu = true;
                 case "--batch", "-b" -> batch = Integer.parseInt(args[++i]);
+                case "--ctx", "--context-length", "-c" -> ctx = Integer.parseInt(args[++i]);
                 default -> {}
             }
         }
         if (modelPath == null) {
             System.err.println(
                     "usage: OpenAIServer --model <model.gguf> [--port 8080] [--gpu]"
-                            + " [--batch B]");
+                            + " [--batch B] [--ctx N]");
             System.exit(1);
         }
         System.setProperty("jllm.enableTornadoVM", String.valueOf(gpu));
 
         Path path = Paths.get(modelPath);
         // interactive=true bypasses the --prompt-required check; the server never uses it.
+        // maxTokens is the load-time context length on this path: loadModel(Options) passes it
+        // straight through as such. 0 therefore asks for the model's own.
         Options options =
                 new Options(
-                        path, "server", null, null, true, 0.0f, 0.95f, 1234L, 512, false, false,
+                        path, "server", null, null, true, 0.0f, 0.95f, 1234L, ctx, false, false,
                         gpu, false, 1);
         System.err.println("[server] loading " + path.getFileName() + " (gpu=" + gpu + ") ...");
         String served = path.getFileName().toString().replaceAll("\\.gguf$", "");
@@ -163,21 +347,27 @@ public final class OpenAIServer {
             // Continuous batching is an engine-tier feature the public facade does not expose, so
             // this branch loads the model directly. Every other path goes through the facade.
             Model model = loadModel(options);
+            // The engine needs a concrete window; the facade path reads its own back after load.
+            int contextLength = resolveContextLength(ctx, model.configuration().contextLength());
             server =
                     new OpenAIServer(
                             new EngineInferenceService(
-                                    model, batch, maxQueued, options.maxTokens(), prefixEntries),
+                                    model, batch, maxQueued, contextLength, prefixEntries),
                             served,
-                            gpu);
+                            gpu,
+                            contextLength);
         } else {
             LocalModel model =
                     LocalModels.load(
                             path,
                             ModelOptions.builder()
-                                    .contextLength(options.maxTokens())
+                                    .contextLength(ctx)
                                     .backend(gpu ? null : BackendId.CPU)
                                     .build());
-            server = new OpenAIServer(new InferenceService(model), served, gpu);
+            // Authoritative: what the model was actually loaded with, after any clamping.
+            server =
+                    new OpenAIServer(
+                            new InferenceService(model), served, gpu, model.info().contextLength());
         }
         server.start(port);
     }
@@ -195,7 +385,11 @@ public final class OpenAIServer {
         Runtime.getRuntime().addShutdownHook(new Thread(service::close));
         http.start();
         System.err.println(
-                "[server] listening on http://localhost:" + port + "  model=" + servedModel);
+                "[server] listening on http://localhost:"
+                        + port
+                        + "  model="
+                        + servedModel
+                        + (contextLength > 0 ? "  ctx=" + contextLength : ""));
     }
 
     // ── Endpoints ─────────────────────────────────────────────────────────────
@@ -298,12 +492,11 @@ public final class OpenAIServer {
     }
 
     private void handleModels(HttpExchange ex) throws IOException {
-        Map<String, Object> entry = new LinkedHashMap<>();
-        entry.put("id", servedModel);
-        entry.put("object", "model");
-        entry.put("created", 0);
-        entry.put("owned_by", "jllm");
-        sendJson(ex, 200, Map.of("object", "list", "data", List.of(entry)));
+        System.err.println(
+                "[req] GET /v1/models -> "
+                        + servedModel
+                        + (contextLength > 0 ? " ctx=" + contextLength : " ctx=unknown"));
+        sendJson(ex, 200, modelsPayload(servedModel, contextLength));
     }
 
     @SuppressWarnings("unchecked")
@@ -360,14 +553,36 @@ public final class OpenAIServer {
         long seed = (long) Json.num(body, "seed", 1234);
         boolean stream = Json.bool(body, "stream", false);
 
+        String requestedModel = Json.str(body, "model", null);
+        int promptChars = promptCharacters(messages);
+        String path = chat ? "POST /v1/chat/completions" : "POST /v1/completions";
+
         var req = new InferenceService.Request(messages, maxTokens, temperature, topP, seed);
         String id = (chat ? "chatcmpl-" : "cmpl-") + seq.incrementAndGet();
         long created = System.currentTimeMillis() / 1000;
+        String summary = requestSummary(id, path, requestedModel, promptChars, maxTokens, stream);
 
-        if (stream) {
-            streamResponse(ex, req, id, created, chat);
-        } else {
-            fullResponse(ex, req, id, created, chat);
+        String rejection =
+                validationError(requestedModel, servedModel, maxTokens, promptChars, contextLength);
+        if (rejection != null) {
+            System.err.println(summary + " -> 400 " + rejection);
+            sendError(ex, 400, rejection);
+            return;
+        }
+
+        System.err.println(summary);
+        long startNanos = System.nanoTime();
+        try {
+            if (stream) {
+                streamResponse(ex, req, id, created, chat);
+            } else {
+                fullResponse(ex, req, id, created, chat);
+            }
+        } finally {
+            // Generation is serialized, so this covers queue wait as well as the work itself —
+            // which is the number that explains a slow reply in a client.
+            System.err.printf(
+                    "[req %s] done in %.1fs%n", id, (System.nanoTime() - startNanos) / 1e9);
         }
     }
 
