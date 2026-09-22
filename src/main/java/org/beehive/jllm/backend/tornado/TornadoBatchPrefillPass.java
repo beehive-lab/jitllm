@@ -59,6 +59,24 @@ public final class TornadoBatchPrefillPass {
         final Configuration config = model.configuration();
         final TornadoWeights weights = (TornadoWeights) model.weights();
 
+        // Which prefill family takes this chunk.
+        //
+        // cuDNN's causal mask aligns query i to key i, which is the right mask only when the
+        // query block IS the whole prefix. A chunk starting past zero has its queries at an
+        // offset into a longer key range, and the library binding exposes no bottom-right
+        // alignment to express that. A PARTIAL first chunk is fine: its queries still start at
+        // zero and the padded rows are defined.
+        //
+        // So a chunk past position 0 goes to the fallback family instead: the same layer
+        // pipeline, the same native projections over the same stacked weights, with the batched
+        // JIT paged attention that takes an arbitrary start position. It binds every buffer from
+        // the primary family, so it costs graphs and no memory, and it stays batched -- one graph
+        // set per chunk, not per token.
+        //
+        // The plan only builds that family when the primary uses cuDNN attention; where it does
+        // not, the primary already handles every chunk itself.
+        boolean useFallbackFamily = startPos != 0 && plan.hasBatchPrefillFallback();
+
         state.workspace.batchStartPosHolder.set(0, startPos);
         // The kernels launch a fixed batchSize rows; this tells them how many are real, so the
         // padding rows do not rotate, do not write KV, and cannot run past this layer's KV slice.
@@ -177,7 +195,11 @@ public final class TornadoBatchPrefillPass {
                     (System.nanoTime() - stageStart) / 1e6);
         }
 
-        plan.tornadoVMForwardBatchPrefill();
+        if (useFallbackFamily) {
+            plan.tornadoVMForwardBatchPrefillFallback();
+        } else {
+            plan.tornadoVMForwardBatchPrefill();
+        }
     }
 
     /**

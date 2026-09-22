@@ -4,6 +4,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
+import org.beehive.jllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
 import org.beehive.jllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -34,8 +35,17 @@ public class MatrixVectorGenericSimd32AccelTest {
     private static final float POISON = -999999f;
 
     @Test
-    public void matchesTheCpuReferenceOnMetalForVocabularyShapedDimensions() {
-        assumeTrue("not a Metal run", SchedulerDetectionService.isSubgroupShuffle32Supported());
+    public void matchesTheCpuReferenceWhereThisKernelIsSelectedForVocabularyShapedDimensions() {
+        // Wherever the vocabulary projection actually selects this kernel, not just on Metal.
+        // It was Metal-only while SUBGROUP_SHUFFLE_32 was the only grant; CUDA now selects it too
+        // through Fp16GemvReductionPolicy, and a CPU-reference check that skipped there would
+        // leave the shipping path unverified against anything tighter than an end-to-end
+        // tolerance. This is the same disjunction LogitsFP16Layer.useSimd32Reduction() evaluates,
+        // so the gate follows the selection rather than restating a device name.
+        assumeTrue(
+                "this device does not select the 32-lane shuffle reduction",
+                SchedulerDetectionService.isSubgroupShuffle32Supported()
+                        || Fp16GemvReductionPolicy.preferShuffleReduction());
 
         HalfFloatArray x = new HalfFloatArray(N);
         for (int i = 0; i < N; i++) {

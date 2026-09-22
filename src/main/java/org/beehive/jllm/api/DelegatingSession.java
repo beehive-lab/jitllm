@@ -116,6 +116,28 @@ final class DelegatingSession implements GenerationSession {
     }
 
     @Override
+    public org.beehive.jllm.runtime.backend.ExecutionInfo prepare() {
+        ensureUsable();
+        if (gpu) {
+            return runtime.plan().executionInfo();
+        }
+        return new org.beehive.jllm.runtime.backend.ExecutionInfo(
+                "CPU",
+                System.getProperty("os.arch")
+                        + " / "
+                        + Runtime.getRuntime().availableProcessors()
+                        + " logical processors",
+                "Java " + System.getProperty("java.version"),
+                "single-token",
+                1,
+                "FP32",
+                "CPU kernels (no tensor-core MMA)",
+                "CPU kernels",
+                false,
+                false);
+    }
+
+    @Override
     public GenerationResult generate(GenerationRequest request) {
         ensureUsable();
 

@@ -124,6 +124,22 @@
             <artifactId>tornado-api</artifactId>
             <version>${tornadovm.version}</version>
         </dependency>
+        <!-- The vendor-library bindings the batched prefill path compiles against: cuBLAS for
+             the four projections, cuDNN for the first chunk's fused attention. Both use the same
+             prepared SDK version and Maven repository as the API. The SDK supplies them at
+             runtime, so they are provided rather than shaded. -->
+        <dependency>
+            <groupId>io.github.beehive-lab</groupId>
+            <artifactId>tornado-cublas</artifactId>
+            <version>${tornadovm.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.github.beehive-lab</groupId>
+            <artifactId>tornado-cudnn</artifactId>
+            <version>${tornadovm.version}</version>
+            <scope>provided</scope>
+        </dependency>
         <dependency>
             <groupId>io.github.beehive-lab</groupId>
             <artifactId>tornado-runtime</artifactId>

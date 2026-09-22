@@ -76,6 +76,32 @@ public interface Configuration {
 
     // @formatter:off
     /**
+     * Bytes of <b>stacked</b> projection weights a native batch-prefill family keeps per layer.
+     *
+     * <p>Zero unless a family rewrites its projections as single library GEMMs over operands that
+     * have to be contiguous, which makes the stacked forms copies rather than views. The originals
+     * are not freed — other graphs still read them — so this is additional to the weight footprint
+     * and not a redistribution of it.
+     */
+    // @formatter:on
+    default long nativeStackedProjectionBytesPerLayer() {
+        return 0L;
+    }
+
+    // @formatter:off
+    /**
+     * Bytes of contiguous staging a native fused attention needs for one prefill chunk.
+     *
+     * <p>Zero unless a family bridges its own layout to a library's. Sized from the batch width and
+     * allocated once for the execution plan, not once per layer graph.
+     */
+    // @formatter:on
+    default long nativeAttentionStagingBytes(int batchSize) {
+        return 0L;
+    }
+
+    // @formatter:off
+    /**
      * Bytes of chunk-wide scratch a family allocates beyond what the generic batch staging covers.
      *
      * <p>Zero unless a family's batched graphs need buffers the generic ones cannot describe — a

@@ -23,6 +23,11 @@ public abstract class FloatTensor {
             Integer.getInteger("jllm.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
 
+    /** Configured SIMD width for tensor kernels; zero selects scalar execution. */
+    public static int vectorBitSize() {
+        return VECTOR_BIT_SIZE;
+    }
+
     // The use of Unsafe in this file is a temporary workaround to support native-image.
     static final Unsafe UNSAFE;
 

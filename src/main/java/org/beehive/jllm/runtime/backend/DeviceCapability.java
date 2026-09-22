@@ -115,6 +115,33 @@ public final class DeviceCapability {
      * statement about that combination, not about packed arithmetic generally. Metal keeps the
      * packed path and has not been measured against this question.
      */
+    // @formatter:off
+    /**
+     * The shuffle-reducing FP16 matrix-vector kernels compute correct results on this device.
+     *
+     * <p><b>This is a support claim, not a preference.</b> It says the 32-lane butterfly in {@code
+     * fusedRmsNormQKVMatmulWarp}, {@code fusedRmsNormFFNGateUpWarp}, {@code
+     * matrixVectorGenericWithResidualSimd32} and {@code matrixVectorGenericSimd32} is lowered and
+     * evaluated correctly here — nothing about whether running them is a good idea. Whether to
+     * prefer them over their shared-memory twins is a workload question, and it lives in {@link
+     * org.beehive.jllm.backend.tornado.scheduling.Fp16GemvReductionPolicy}, which is what the
+     * layers actually branch on.
+     *
+     * <p>Granted on CUDA, where {@code simdShuffleDown} is correct and where the CPU-parity gates
+     * run these kernels against a host reference for every FP16 family. Withheld on OpenCL, whose
+     * backend compiles the shuffle and produces wrong answers. Metal makes the same support claim
+     * through {@link #SUBGROUP_SHUFFLE_32}, which predates this one and covers its own verified
+     * subset.
+     *
+     * <p><b>Deliberately not {@link #WARP_SHUFFLE}</b>, which conflates the same support question
+     * with a preference for a wider set of kernels — including Q8_0 paths that carry a contrary
+     * measurement — and which several unrelated call sites branch on. Separating them is what lets
+     * this grant be a plain statement of correctness.
+     */
+    // @formatter:on
+    public static final DeviceCapability SHUFFLE_REDUCED_FP16_GEMV =
+            of("shuffle-reduced-fp16-gemv");
+
     public static final DeviceCapability PACKED_HALF2_MATH = of("packed-half2-math");
 
     private final String name;

@@ -35,7 +35,8 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 public interface TornadoVMMasterPlan {
 
     boolean ENABLE_TORNADOVM_INIT_TIME =
-            Boolean.parseBoolean(System.getProperty("jllm.EnableTimingForTornadoVMInit", "False"));
+            Boolean.getBoolean("jllm.verbose")
+                    || Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit");
 
     /** When {@code true}, {@code withCUDAGraph()} is called — CUDA backend only. */
     boolean CUDA_GRAPHS = Boolean.parseBoolean(System.getProperty("jllm.cudaGraphs", "false"));
@@ -137,6 +138,11 @@ public interface TornadoVMMasterPlan {
      * Creates the appropriate {@link TornadoExecutionPlan} instance for the given {@link Model} and
      * {@link State}.
      */
+    /** Describes an already prepared plan without executing a token. */
+    default org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+        throw new UnsupportedOperationException("This plan does not expose execution diagnostics");
+    }
+
     TornadoExecutionPlan createExecutionPlan();
 
     void forceCopyInReadOnlyData();

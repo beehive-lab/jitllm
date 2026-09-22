@@ -40,6 +40,18 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
     private static final System.Logger LOGGER =
             System.getLogger(TornadoVMMasterPlanBatchPrefillDecode.class.getName());
 
+    @Override
+    public org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+        var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
+        return PlanDiagnostics.describe(
+                state,
+                "batch-prefill-decode",
+                state.executionPolicy().prefillBatchSize(),
+                layers.describeProjections(),
+                layers.describeAttention(),
+                layers.describeNativeLibraries());
+    }
+
     private final State state;
     private final Model model;
     private final Configuration config;
@@ -170,15 +182,51 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
         }
         metrics.report(batchAct.execute());
 
-        for (int l = 0; l < config.numberOfLayers(); l++) {
+        // Over batch-prefill layer GRAPHS, not layers: a family may hold several layers in one
+        // graph, and the layout is what knows how many that leaves. Identical to a loop over
+        // layers whenever it builds one graph each.
+        for (int g = 0; g < taskGraphLayout.batchLayerGraphs(); g++) {
             var batchLayer =
                     executionPlan
-                            .withGraph(taskGraphLayout.batchLayerIdx(l))
+                            .withGraph(taskGraphLayout.batchLayerIdx(g))
                             .withGridScheduler(batchPrefillDecodeForwardPlan.getGridScheduler());
             if (CUDA_GRAPHS) {
                 batchLayer.withCUDAGraph();
             }
             metrics.report(batchLayer.execute());
+        }
+    }
+
+    /** Whether this plan carries a fallback batch-prefill family. */
+    public boolean hasBatchPrefillFallback() {
+        return taskGraphLayout.fallbackLayerGraphs() > 0;
+    }
+
+    /**
+     * Batch prefill through the fallback family: the same layers, with the attention implementation
+     * that handles a chunk whose queries do not start at position 0. The caller has already put
+     * this chunk's embeddings and its start position into state, exactly as for the primary path.
+     */
+    // @formatter:off
+    public void tornadoVMForwardBatchPrefillFallback() {
+        var batchAct =
+                executionPlan
+                        .withGraph(taskGraphLayout.batchActivationIdx())
+                        .withGridScheduler(batchPrefillDecodeForwardPlan.getGridScheduler());
+        if (CUDA_GRAPHS) {
+            batchAct.withCUDAGraph();
+        }
+        metrics.report(batchAct.execute());
+
+        for (int g = 0; g < taskGraphLayout.fallbackLayerGraphs(); g++) {
+            var layer =
+                    executionPlan
+                            .withGraph(taskGraphLayout.fallbackLayerIdx(g))
+                            .withGridScheduler(batchPrefillDecodeForwardPlan.getGridScheduler());
+            if (CUDA_GRAPHS) {
+                layer.withCUDAGraph();
+            }
+            metrics.report(layer.execute());
         }
     }
 

@@ -50,8 +50,18 @@ public class BatchPrefillDecodeForwardPlan extends ForwardPlan {
         BatchPrefillTransformerLayerTaskGraphs batchLayers =
                 components.batchPrefillTransformerLayers(batchSize);
         this.batchPrefillLayers = batchLayers;
-        all.addAll(batchLayers.getLayerImmutableTaskGraphs());
+        List<ImmutableTaskGraph> batchLayerGraphs = batchLayers.getLayerImmutableTaskGraphs();
+        all.addAll(batchLayerGraphs);
         batchLayers.updateGridScheduler(scheduler);
+
+        // The fallback family, when the primary builds one: the same layers with an attention
+        // implementation that handles a chunk starting past position 0. Its graphs bind their
+        // buffers from the primary's, so they cost graphs and no memory. Placed immediately after
+        // the primary so the decode side's producer names are unaffected.
+        List<ImmutableTaskGraph> fallbackLayerGraphs =
+                batchLayers.getFallbackLayerImmutableTaskGraphs();
+        all.addAll(fallbackLayerGraphs);
+        batchLayers.updateFallbackGridScheduler(scheduler);
 
         ActivationTaskGraph decodeAct =
                 components.batchDecodeActivation(batchLayers.getLastLayerTaskGraphID());
@@ -62,11 +72,15 @@ public class BatchPrefillDecodeForwardPlan extends ForwardPlan {
         List<ImmutableTaskGraph> decodeLayerGraphs = decodeLayers.getFFNLayerImmutableTaskGraphs();
         all.addAll(decodeLayerGraphs);
         decodeLayers.updateGridScheduler(scheduler);
-        // Read from the graphs the family actually built rather than assumed to be one per layer:
-        // a family may hold several layers in one graph, and every index after the decode layers
+        // Read from the graphs each family actually built rather than assumed to be one per
+        // layer: either side may hold several layers in one graph, and every index after them
         // depends on how many there are.
         this.taskGraphLayout =
-                new BatchPrefillDecodeForwardTaskGraphLayout(N, decodeLayerGraphs.size());
+                new BatchPrefillDecodeForwardTaskGraphLayout(
+                        N,
+                        batchLayerGraphs.size(),
+                        fallbackLayerGraphs.size(),
+                        decodeLayerGraphs.size());
 
         AbstractLogitsTaskGraph logits =
                 components.decodeLogits(decodeLayers.getLastFFNLayerTaskGraphID());

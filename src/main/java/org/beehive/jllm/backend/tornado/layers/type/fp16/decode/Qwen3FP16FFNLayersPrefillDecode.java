@@ -39,7 +39,7 @@ public class Qwen3FP16FFNLayersPrefillDecode extends Qwen3FP16FFNLayers {
 
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "decodeActivation" : "layer_" + (layerIndex - 1);
+        return (layerIndex == 0) ? "decodeActivation" : layerGraphName(layerIndex - 1);
     }
 
     @Override
@@ -47,7 +47,7 @@ public class Qwen3FP16FFNLayersPrefillDecode extends Qwen3FP16FFNLayers {
         if (layerIndex == 0) {
             return super.configureLayerDataTransfers(layer, 0);
         }
-        String pred = "layer_" + (layerIndex - 1);
+        String pred = layerGraphName(layerIndex - 1);
         layer.consumeFromDevice(
                 pred,
                 context,

@@ -30,6 +30,18 @@ public class SchedulerDetectionService {
         return TornadoDevices.current().capabilities().supports(DeviceCapability.PACKED_HALF2_MATH);
     }
 
+    /**
+     * Whether the shuffle-reducing FP16 matrix-vector kernels compute correct results on the active
+     * device. A support question; see {@link DeviceCapability#SHUFFLE_REDUCED_FP16_GEMV}. Whether
+     * to prefer them over their shared-memory twins is decided by {@link Fp16GemvReductionPolicy},
+     * which is what the layers branch on.
+     */
+    public static boolean isShuffleReducedFp16GemvSupported() {
+        return TornadoDevices.current()
+                .capabilities()
+                .supports(DeviceCapability.SHUFFLE_REDUCED_FP16_GEMV);
+    }
+
     public static boolean isSubgroupShuffle32Supported() {
         return TornadoDevices.current()
                 .capabilities()

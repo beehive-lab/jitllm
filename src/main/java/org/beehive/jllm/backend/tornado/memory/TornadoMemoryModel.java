@@ -2,6 +2,7 @@ package org.beehive.jllm.backend.tornado.memory;
 
 import java.util.ArrayList;
 import java.util.List;
+import org.beehive.jllm.backend.tornado.NativePrefillSupport;
 import org.beehive.jllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jllm.backend.tornado.plan.layout.TornadoGraphTopology;
 import org.beehive.jllm.model.Configuration;
@@ -67,6 +68,32 @@ public final class TornadoMemoryModel {
     }
 
     private TornadoMemoryModel() {}
+
+    // @formatter:off
+    /**
+     * Whether this session will resolve to a native batch-prefill family.
+     *
+     * <p>The same answer the planner asks for, so the prediction and the plan cannot disagree about
+     * which buffers exist. It reaches the capability probe, which dlopens cuBLAS — on a host that
+     * is about to build exactly that plan, and behind the tensor-core gate that makes it a no-op
+     * everywhere else.
+     *
+     * <p><b>The fallback family is deliberately not consulted.</b> It is a third layer graph family
+     * and it allocates three carriers and copies nothing: every weight, workspace and cache it
+     * touches is bound from the primary family's buffers. Letting a family count raise any
+     * multiplicity here would charge the session a second copy of the weights for graphs that share
+     * one.
+     *
+     * <p>Only the projections are consulted, not the fused attention. The attention probe needs a
+     * device and a batch width resolved, and the staging it would add is at most 8 MiB at the
+     * widest supported chunk — not worth threading a second capability question through the
+     * preflight to shave.
+     */
+    // @formatter:on
+    private static boolean nativePrefillSelected(ExecutionPolicy policy) {
+        return executionMode(policy) == ExecutionMode.BATCH_PREFILL_DECODE
+                && NativePrefillSupport.nativeProjections();
+    }
 
     /**
      * Predicts the device budget a configuration will consume, before anything is allocated.
@@ -165,6 +192,41 @@ public final class TornadoMemoryModel {
                             11 * header));
         }
 
+        // ── what a native batch-prefill family adds ──────────────────────────
+        // Measured rather than reasoned, from -Dtornado.print.bytecodes on Qwen3-0.6B FP16 at
+        // width 128, native on against native off:
+        //
+        //   batch-prefill graphs   914.5 -> 916.5 MiB   (+2.0, the staging quartet)
+        //   decode layer graphs      0.1 -> 560.1 MiB   (+560.0, five weights x 28 layers)
+        //   fallback family         absent -> 0.0 MiB   (three carriers, nothing uploaded)
+        //
+        // The stacked copies do not show up as growth in the prefill family because they displace
+        // exactly the five originals it stopped reading. Those five reappear in the decode family,
+        // which now uploads them itself -- so the cost of the native path is one extra copy of the
+        // projection weights, plus the staging, and that is what these two components describe.
+        boolean nativePrefill = nativePrefillSelected(policy);
+        long stackedPerLayer = config.nativeStackedProjectionBytesPerLayer();
+        if (nativePrefill && stackedPerLayer > 0) {
+            components.add(
+                    new MemoryComponent(
+                            "stacked projection weights (native prefill)",
+                            BufferClass.WEIGHTS_PER_LAYER,
+                            stackedPerLayer * config.numberOfLayers(),
+                            1,
+                            // Two stacked arrays per layer, each its own device buffer.
+                            2L * config.numberOfLayers() * header));
+            long staging = config.nativeAttentionStagingBytes(policy.prefillBatchSize());
+            if (staging > 0) {
+                components.add(
+                        new MemoryComponent(
+                                "fused attention staging (native prefill)",
+                                BufferClass.BATCH_STAGING,
+                                staging,
+                                1,
+                                4 * header));
+            }
+        }
+
         // ── control and result carriers ──────────────────────────────────────
         components.add(
                 new MemoryComponent(
@@ -190,8 +252,15 @@ public final class TornadoMemoryModel {
         // the same quantity, so Metal is capped at CONSERVATIVE rather than claiming EXACT from
         // CUDA-derived assumptions; every other backend keeps the topology-only rule.
         boolean measuredOnThisBackend = device.backend() != BackendId.METAL;
+        // A native batch-prefill family is NOT covered by the bisected multiplicity model above.
+        // Its two components are sized from direct allocation evidence, but the driver reservation
+        // that evidence sits inside has not been bisected for this path, and the per-layer rule it
+        // is added to over-counts a family whose decode graphs consume rather than upload. Both
+        // errors are in the safe direction, and an over-prediction that kept EXACT would be
+        // enforced: only EXACT refuses a load. So this path reports what it is -- conservative.
         MemoryPlan.Confidence confidence =
                 (measuredOnThisBackend
+                                && !nativePrefill
                                 && TornadoGraphTopology.verify(
                                         executionMode(policy), config.numberOfLayers()))
                         ? MemoryPlan.Confidence.EXACT
@@ -208,6 +277,7 @@ public final class TornadoMemoryModel {
                         + config.contextLength()
                         + "; kv "
                         + (kvBytesPerElement() == 2 ? "FP16" : "FP32")
+                        + (nativePrefill && stackedPerLayer > 0 ? "; native prefill" : "")
                         + "; native-array header "
                         + header
                         + " B");

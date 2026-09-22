@@ -11,9 +11,35 @@ import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
  * {@code LlamaQ8_0LayersBatchPrefillMMA} and {@code LlamaQ8_0LayersBatchPrefill}.
  */
 public interface BatchPrefillTransformerLayerTaskGraphs {
+    /** Projection implementation selected while building these graphs. */
+    default String describeProjections() {
+        return "JIT kernels (no tensor-core MMA)";
+    }
+
+    default String describeNativeLibraries() {
+        return "none";
+    }
+
+    default String describeAttention() {
+        return "JIT kernels";
+    }
+
     List<ImmutableTaskGraph> getLayerImmutableTaskGraphs();
 
     void updateGridScheduler(GridScheduler scheduler);
 
     String getLastLayerTaskGraphID();
+
+    /**
+     * A second family of layer graphs covering the same layers with an attention implementation
+     * that handles chunks a native first-chunk path cannot, or empty when the family does not build
+     * one. Its graphs bind their buffers from the primary family's, so they add graphs but no
+     * allocations.
+     */
+    default List<ImmutableTaskGraph> getFallbackLayerImmutableTaskGraphs() {
+        return List.of();
+    }
+
+    /** Registers the fallback family's worker grids; a no-op when there is no fallback family. */
+    default void updateFallbackGridScheduler(GridScheduler scheduler) {}
 }

@@ -149,7 +149,9 @@ artifacts and the JBang catalog. **Building this branch from source is different
 use TornadoVM APIs that exist only on TornadoVM's `develop` branch (in-kernel reads of MMA
 accumulators, byte-offset int8 fragment loads, `cp.async` staging), so the build depends on
 `<version>-jdk21-dev` / `-jdk22plus-dev` artifacts that are not on Maven Central and do not come
-with SDKMAN. `scripts/tornadovm-dev.sh` prepares them the same way CI does.
+with SDKMAN. The native prefill path also needs `tornado-cublas` and `tornado-cudnn`,
+which are built from the same revision and are not available on Maven Central.
+`scripts/tornadovm-dev.sh` prepares all of them the same way CI does.
 
 ### Build from source (development)
 
@@ -208,7 +210,7 @@ SDK was built with more than one backend, force one with `--opencl`, `--cuda` (N
 
 ```bash
 # Basic GPU inference — backend auto-detected
-./jllm --gpu --verbose-init \
+./jllm --gpu --verbose \
   --model beehive-llama-3.2-1b-instruct-fp16.gguf \
   --prompt "Explain the benefits of GPU acceleration."
 
@@ -258,7 +260,7 @@ Fully containerized GPU inference via pre-built images ([docker-gpullama3.java](
 docker run --rm -it --gpus all -v "$PWD":/data \
   beehivelab/gpullama3.java-nvidia-openjdk-opencl \
   /gpullama3/GPULlama3.java/llama-tornado \
-  --gpu --verbose-init \
+  --gpu --verbose \
   --model /data/Llama-3.2-1B-Instruct.FP16.gguf --prompt "Tell me a joke"
 ```
 
@@ -313,6 +315,40 @@ consuming the budget before changing anything.
 
 -----------
 
+## Run configuration at startup
+
+With `-v` / `--verbose`, the CLI prints an aligned summary to **stderr**, after preparing the session and before
+printing generated text. It shows the model filename, parameter count and file size,
+GGUF quantization alongside loaded weight types, device, TornadoVM version on GPU runs, execution mode, context
+capacity, batched prefill chunk width, KV-cache precision, MMA/tensor-core selection,
+native libraries, CUDA graphs, staged transfers, GPU allocation budget, and sampling settings.
+GPU memory estimates split weights, KV cache, and workspace (including staging and
+control buffers), with a total. These predict allocation-budget charges, not physical
+VRAM use; conservative predictions are labeled. CPU runs instead show common-pool worker
+parallelism plus the caller and the configured tensor/Q4 Vector API settings.
+Tensor-core and native-library details describe the selected prefill path; native
+libraries choose their own kernel algorithms.
+
+Startup timings separate model loading, plan construction, TornadoVM JIT precompilation,
+and initial device setup. Device setup includes uploads and execution (including CUDA
+graph capture when enabled), so it is **not** a pure transfer measurement. “Ready to
+generate” measures elapsed startup time through session preparation. Prefill and decode
+performance still appear after generation.
+
+Without `--verbose`, startup diagnostics are hidden and session preparation stays lazy;
+errors, warnings, generated text, and final performance metrics remain visible.
+Verbose output includes SDK location, dimensions/head counts, training context,
+execution path, and memory-estimate assumptions. Startup timings are printed once;
+the ending performance block contains only request metrics.
+
+`--verbose-init` remains a hidden deprecated alias for `--verbose`.
+For direct Java launches, use `-Djllm.verbose=true`; the legacy
+`-Djllm.EnableTimingForTornadoVMInit=true` setting remains supported.
+The summary is CLI-only; library callers can explicitly use `GenerationSession.prepare()`
+to prepare a session and obtain its execution settings without advancing its position.
+
+-----------
+
 ## 🔧 Embed in your own tools
 
 `--show-command` prints the exact Java + JVM invocation used under the hood, so you can replicate it in IntelliJ, Maven, Gradle, or any launcher:
@@ -333,7 +369,7 @@ usage: jllm [-h] --model MODEL_PATH [--prompt PROMPT] [-sp SYSTEM_PROMPT]
                      [--gpu] [--opencl] [--cuda] [--metal]
                      [--gpu-memory GPU_MEMORY] [--heap-min HEAP_MIN] [--heap-max HEAP_MAX]
                      [--debug] [--profiler] [--profiler-dump-dir DIR]
-                     [--print-bytecodes] [--print-threads] [--print-kernel] [--full-dump] [--verbose-init]
+                     [--print-bytecodes] [--print-threads] [--print-kernel] [--full-dump]
                      [--show-command] [--execute-after-show]
                      [--with-prefill-decode] [--batch-prefill-size N] [--cuda-graphs]
                      [--fp16-kv-cache] [--diagnostic-scalar-batched-prefill]
@@ -348,7 +384,7 @@ Benchmark:            --bench (llama-bench-style matrix), --bench-args="..." (se
 Hardware:             --gpu, --opencl/--cuda/--metal (auto-detected; force one of the installed
                       backends), --gpu-memory (default 14GB), --heap-min/--heap-max (default 20g)
 Debug & Profiling:    --debug, --profiler, --profiler-dump-dir,
-                      --print-bytecodes, --print-threads, --print-kernel, --full-dump, --verbose-init
+                      --print-bytecodes, --print-threads, --print-kernel, --full-dump
                       (device, granted kernel families and the batched-prefill path chosen),
                       --diagnostic-scalar-batched-prefill (scalar kernels, for comparing numerics;
                       the deprecated --no-tensor-cores maps to it with a warning)
@@ -382,6 +418,8 @@ Advanced:             --cuda-graphs (CUDA backend only), --opencl-flags (default
 - ✅ **Automatic backend detection** — `jllm`/`jllm4j` detect and use whichever backend (OpenCL, CUDA, or Metal) your installed TornadoVM SDK was built with; override with `--opencl`/`--cuda`/`--metal`.
 - ✅ **Cross-platform**: NVIDIA (OpenCL · CUDA), Intel (OpenCL), Apple (OpenCL · Metal).
 - ✅ **Serving** — OpenAI-compatible API, llama-bench-style benchmarking, tensor-core (MMA) batch prefill.
+- ✅ **Native batched prefill** (Qwen3 FP16, CUDA) — cuBLAS projections and a fused cuDNN first-chunk attention, selected automatically with no flag.
+- ✅ **Faster CUDA decode** (Qwen3 FP16) — grouped decode graphs, warp-butterfly matrix-vector reductions and a lane-cooperative attention kernel, all selected by device capability with no flag.
 - 🧩 **Coming next** — static batched decode, on-device sampling (preview; see [Serving](#-serving-openai-compatible-preview)).
 
 📄 [Transformer optimizations in TornadoVM](docs/TORNADOVM_TRANSFORMER_OPTIMIZATIONS.md) · 🧭 [Project roadmap](docs/jllm-roadmap.md)

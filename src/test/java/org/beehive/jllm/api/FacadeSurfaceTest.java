@@ -41,7 +41,7 @@ public class FacadeSurfaceTest {
         assertFalse(
                 "forward(token, position) is not part of the public surface",
                 methods.contains("forward"));
-        assertEquals(Set.of("generate", "position", "reset", "close"), methods);
+        assertEquals(Set.of("generate", "prepare", "position", "reset", "close"), methods);
     }
 
     @Test

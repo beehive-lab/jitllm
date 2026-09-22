@@ -137,3 +137,26 @@ class TensorCoreFlagCompatibility(unittest.TestCase):
                 args = parser.parse_args(argv)
                 launcher.resolve_deprecated_tensor_core_flags(args)
                 self.assertEqual(args.diagnostic_scalar_batched_prefill, expect)
+
+
+class VerbosityOptions(unittest.TestCase):
+    def test_verbose_aliases_and_quiet_default(self):
+        for flags, expected in [([], False), (["-v"], True), (["--verbose"], True)]:
+            args = launcher.create_parser().parse_args(["--model", "stub.gguf"] + flags)
+            self.assertEqual([], launcher.resolve_verbosity(args))
+            self.assertEqual(expected, args.verbose)
+
+    def test_deprecated_alias_enables_the_same_output_and_warns(self):
+        args = launcher.create_parser().parse_args(["--model", "stub.gguf", "--verbose-init"])
+        warnings = launcher.resolve_verbosity(args)
+        self.assertTrue(args.verbose)
+        self.assertEqual(1, len(warnings))
+        self.assertIn("deprecated", warnings[0])
+        self.assertIn("--verbose", warnings[0])
+
+    def test_help_exposes_only_the_new_verbosity_interface(self):
+        text = launcher.create_parser().format_help()
+        self.assertIn("--verbose", text)
+        self.assertIn("-v", text)
+        self.assertNotIn("--verbose-init", text)
+        self.assertNotIn("--no-startup-summary", text)
