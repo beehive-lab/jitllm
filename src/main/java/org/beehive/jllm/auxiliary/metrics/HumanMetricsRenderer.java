@@ -10,12 +10,7 @@ package org.beehive.jllm.auxiliary.metrics;
  *   -Djllm.metrics.output=stderr  (default, can be omitted)
  * </pre>
  *
- * <p>To also print TornadoVM initialisation timings (plan creation, JIT, weight copy-in),
- * additionally set:
- *
- * <pre>
- *   -Djllm.EnableTimingForTornadoVMInit=true
- * </pre>
+ * <p>Startup timings are printed once by the CLI before generation.
  */
 public final class HumanMetricsRenderer implements MetricsRenderer {
 
@@ -44,20 +39,6 @@ public final class HumanMetricsRenderer implements MetricsRenderer {
                     String.format(
                             "achieved tok/s: %.2f. Tokens: %d, seconds: %.2f%n",
                             s.totalRate(), s.totalCount(), s.totalDuration() / 1e9));
-        }
-
-        if (Boolean.parseBoolean(System.getProperty("jllm.EnableTimingForTornadoVMInit", "false"))
-                && s.tornadoPlanCreationDuration() > 0) {
-            sb.append(
-                    String.format(
-                            "GGUF Model Load: %.2f ms%n"
-                                    + "Compilation & CodeGen: %.2f ms%n"
-                                    + "Warmup: %.2f ms%n"
-                                    + "Read-only weights Copy-in: %.2f ms%n",
-                            s.loadDuration() / 1_000_000.0,
-                            s.tornadoPlanCreationDuration() / 1_000_000.0,
-                            s.tornadoJitDuration() / 1_000_000.0,
-                            s.tornadoReadOnlyWeightsCopyInDuration() / 1_000_000.0));
         }
 
         return sb.toString();

@@ -1,6 +1,8 @@
 package org.beehive.jllm;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.util.Locale;
 import java.util.Scanner;
 import org.beehive.jllm.api.FinishReason;
 import org.beehive.jllm.api.GenerationRequest;
@@ -11,6 +13,9 @@ import org.beehive.jllm.api.LocalModels;
 import org.beehive.jllm.api.ModelOptions;
 import org.beehive.jllm.api.TextGenerationModel;
 import org.beehive.jllm.auxiliary.RunMetrics;
+import org.beehive.jllm.format.GgufModelFacts;
+import org.beehive.jllm.runtime.backend.ExecutionInfo;
+import org.beehive.jllm.runtime.memory.MemoryPlan;
 import org.beehive.jllm.runtime.policy.ExecutionPolicy;
 
 /**
@@ -60,6 +65,60 @@ public class JllmApp {
                     "[deviceSample] ignored — requires GPU + greedy (temperature 0) + FP16 + Llama/Mistral/Qwen3");
             System.clearProperty("jllm.deviceSample");
         }
+    }
+
+    private static void printStartupSummary(
+            LocalModel model,
+            ExecutionInfo execution,
+            Options options,
+            ModelOptions modelOptions,
+            long modelLoadNs,
+            long startedNs) {
+        GgufModelFacts facts = null;
+        long bytes = -1;
+        try {
+            if (model.info().source() != null) {
+                facts = GgufModelFacts.read(model.info().source());
+                bytes = Files.size(model.info().source());
+            }
+        } catch (IOException e) {
+            // Optional file diagnostics must not prevent an already loaded model from running.
+        }
+        var initialMetrics = RunMetrics.snapshot();
+        MemoryPlan memory = null;
+        if (!execution.backend().equals("CPU")) {
+            try {
+                memory = LocalModels.preflight(options.modelPath(), modelOptions);
+            } catch (IOException | RuntimeException e) {
+                // Diagnostics are optional; preserve the successfully prepared session.
+            } finally {
+                // Metadata-only preflight uses the loader, which also records a load duration.
+                RunMetrics.setLoadDuration(initialMetrics.loadDuration());
+            }
+        }
+        String sampling =
+                options.temperature() == 0
+                        ? "greedy"
+                        : String.format(
+                                Locale.ROOT,
+                                "temperature %.3f / top-p %.3f / seed %d",
+                                options.temperature(),
+                                options.topp(),
+                                options.seed());
+        System.err.print(
+                new StartupSummary(
+                                model.info(),
+                                model.configuration(),
+                                execution,
+                                facts,
+                                bytes,
+                                sampling,
+                                modelLoadNs,
+                                System.nanoTime() - startedNs,
+                                initialMetrics,
+                                memory,
+                                true)
+                        .render());
     }
 
     /** The request shape both modes share; only the prompt and system prompt differ per turn. */
@@ -168,9 +227,21 @@ public class JllmApp {
                         .executionPolicy(ExecutionPolicy.fromSystemProperties())
                         .build();
 
+        long startedNs = System.nanoTime();
         try (LocalModel model = LocalModels.load(options.modelPath(), modelOptions)) {
+            long modelLoadNs = System.nanoTime() - startedNs;
             guardDeviceSample(model, options);
             try (GenerationSession session = ((TextGenerationModel) model).newSession()) {
+                if (Boolean.getBoolean("jllm.verbose")
+                        || Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit")) {
+                    printStartupSummary(
+                            model,
+                            session.prepare(),
+                            options,
+                            modelOptions,
+                            modelLoadNs,
+                            startedNs);
+                }
                 if (options.interactive()) {
                     runInteractive(session, options);
                 } else {

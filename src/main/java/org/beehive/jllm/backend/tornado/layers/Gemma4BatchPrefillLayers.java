@@ -60,6 +60,11 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 // @formatter:on
 public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTaskGraphs {
 
+    @Override
+    public String describeProjections() {
+        return "FP16 tensor-core MMA (quantized weights dequantized where needed)";
+    }
+
     /** One workgroup per token for the RMS reductions, as the other MMA prefill families use. */
     private static final int RMS_LOCAL_SIZE = 256;
 

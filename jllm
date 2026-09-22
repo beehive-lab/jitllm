@@ -149,7 +149,8 @@ class LlamaRunner:
         if args.use_gpu:
             cmd.append("-Duse.tornadovm=true")
 
-        if args.verbose_init:
+        if args.verbose:
+            cmd.append("-Djllm.verbose=true")
             cmd.append("-Djllm.EnableTimingForTornadoVMInit=true")
 
         if args.with_prefill_decode or args.batch_prefill_size is not None:
@@ -360,10 +361,10 @@ class LlamaRunner:
                 return 0
 
         if args.verbose:
-            print("Executing command:")
+            print("Executing command:", file=sys.stderr)
             for arg in cmd:
-                print(f"  {arg}")
-            print()
+                print(f"  {arg}", file=sys.stderr)
+            print(file=sys.stderr)
 
         # Execute the command
         try:
@@ -587,7 +588,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--verbose-init",
         dest="verbose_init",
         action="store_true",
-        help="Enable timers for TornadoVM initialization (jllm.EnableTimingForTornadoVMInit=true)",
+        help=argparse.SUPPRESS,
     )
 
     # Command display options
@@ -645,7 +646,8 @@ def create_parser() -> argparse.ArgumentParser:
         help="Maximum wait events for TornadoVM event pool",
     )
     advanced_group.add_argument(
-        "--verbose", "-v", action="store_true", help="Verbose output"
+        "--verbose", "-v", action="store_true",
+        help="Show startup configuration, initialization timings, and detailed diagnostics on stderr"
     )
 
     return parser
@@ -708,12 +710,20 @@ def resolve_deprecated_tensor_core_flags(args):
     return warnings
 
 
+def resolve_verbosity(args):
+    """Preserve the old initialization flag as a hidden alias for verbose output."""
+    if args.verbose_init:
+        args.verbose = True
+        return ["--verbose-init is deprecated; use --verbose (-v) instead."]
+    return []
+
+
 def main():
     """Main entry point."""
     load_env_from_script()
     parser = create_parser()
     args = parser.parse_args()
-    for warning in resolve_deprecated_tensor_core_flags(args):
+    for warning in resolve_verbosity(args) + resolve_deprecated_tensor_core_flags(args):
         print(warning, file=sys.stderr)
 
     # Set default profiler log path relative to JLLM_ROOT
@@ -748,21 +758,22 @@ def main():
     else:
         args.backend = runner.select_primary_backend(installed_backends)
 
-    # stderr, not stdout: --bench writes a machine-readable document there, and a trailing
-    # human-readable line makes the JSON unparseable.
-    if len(installed_backends) > 1:
-        names = ", ".join(b.value for b in installed_backends)
-        reason = f"requested via --{args.backend.value}" if overridden else "auto-selected"
-        print(
-            f"Detected TornadoVM backends: {names} (from {runner.tornado_sdk}/etc/tornado.backend) "
-            f"- using {args.backend.value} ({reason})",
-            file=sys.stderr,
-        )
-    else:
-        print(
-            f"Detected TornadoVM backend: {args.backend.value} (from {runner.tornado_sdk}/etc/tornado.backend)",
-            file=sys.stderr,
-        )
+    if args.verbose:
+        # stderr, not stdout: --bench writes a machine-readable document there, and a trailing
+        # human-readable line makes the JSON unparseable.
+        if len(installed_backends) > 1:
+            names = ", ".join(b.value for b in installed_backends)
+            reason = f"requested via --{args.backend.value}" if overridden else "auto-selected"
+            print(
+                f"Detected TornadoVM backends: {names} (from {runner.tornado_sdk}/etc/tornado.backend) "
+                f"- using {args.backend.value} ({reason})",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Detected TornadoVM backend: {args.backend.value} (from {runner.tornado_sdk}/etc/tornado.backend)",
+                file=sys.stderr,
+            )
 
     return runner.run(args)
 

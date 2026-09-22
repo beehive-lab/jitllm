@@ -66,6 +66,42 @@ public class FacadeParityAccelTest {
         }
     }
 
+    @Test
+    public void preparingGpuSessionDoesNotChangeGenerationOrPosition() throws Exception {
+        Path modelPath = fixtureOrSkip();
+        String previous = System.getProperty(GPU_PROPERTY);
+        System.setProperty(GPU_PROPERTY, "true");
+        try (LocalModel model =
+                LocalModels.load(modelPath, ModelOptions.builder().contextLength(128).build())) {
+            GenerationRequest request =
+                    GenerationRequest.builder()
+                            .prompt(PROMPT)
+                            .temperature(0)
+                            .maxNewTokens(16)
+                            .build();
+            String lazyText;
+            try (GenerationSession lazy = ((TextGenerationModel) model).newSession()) {
+                lazyText = lazy.generate(request).text();
+            }
+            try (GenerationSession prepared = ((TextGenerationModel) model).newSession()) {
+                var info = prepared.prepare();
+                assertNotEquals("CPU", info.backend());
+                assertEquals(info, prepared.prepare());
+                assertEquals(0, prepared.position());
+                assertEquals(lazyText, prepared.generate(request).text());
+                int position = prepared.position();
+                prepared.prepare();
+                assertEquals(position, prepared.position());
+                prepared.reset();
+                prepared.prepare();
+                assertEquals(0, prepared.position());
+                assertEquals(lazyText, prepared.generate(request).text());
+            }
+        } finally {
+            restore(previous);
+        }
+    }
+
     private void assertFacadeMatchesLegacy(boolean gpu) throws Exception {
         Path modelPath = fixtureOrSkip();
 

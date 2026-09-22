@@ -180,6 +180,19 @@ public class FacadeLifecycleTest {
     }
 
     @Test
+    public void preparationIsIdempotentAndRespectsSessionLifetime() {
+        try (TextGenerationModel model = model()) {
+            GenerationSession session = model.newSession();
+            assertEquals("CPU", session.prepare().backend());
+            assertEquals(session.prepare(), session.prepare());
+            assertEquals(0, session.position());
+            assertEquals("single-token", session.prepare().mode());
+            session.close();
+            assertThrows(IllegalStateException.class, session::prepare);
+        }
+    }
+
+    @Test
     public void closingWithALiveSessionThrowsAndNamesIt() {
         TextGenerationModel model = model();
         GenerationSession session = model.newSession();

@@ -28,6 +28,12 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
     private static final System.Logger LOGGER =
             System.getLogger(TornadoVMMasterPlanSingleToken.class.getName());
 
+    @Override
+    public org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+        return PlanDiagnostics.describe(
+                state, "single-token", 1, "JIT kernels (no tensor-core MMA)", "JIT kernels");
+    }
+
     private final State state;
     private final Model model;
     private final Configuration config;

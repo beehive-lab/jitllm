@@ -48,6 +48,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
  */
 public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLayerTaskGraphs {
 
+    @Override
+    public String describeProjections() {
+        return "FP16 tensor-core MMA (Q8_0 weights dequantized)";
+    }
+
     // Local size for the parallel RMS reductions (one workgroup per token).
     static final int RMS_LOCAL_SIZE = 256;
 
@@ -73,8 +78,10 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.config = config;
         this.batchSize = batchSize;
         this.paddedBatch = (batchSize + 127) & ~127;
-        if (batchSize % 128 != 0) {
-            System.out.printf(
+        if (batchSize % 128 != 0
+                && (Boolean.getBoolean("jllm.verbose")
+                        || Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit"))) {
+            System.err.printf(
                     "[jllm] prefill batch %d padded to %d for tensor-core tiles; "
                             + "GEMM efficiency is %d/%d — use a multiple of 128 for best throughput.%n",
                     batchSize, paddedBatch, batchSize, paddedBatch);
