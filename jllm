@@ -8,6 +8,7 @@ The backend is auto-detected from the installed TornadoVM SDK
 """
 
 import argparse
+import shlex
 import glob
 import os
 import subprocess
@@ -279,21 +280,34 @@ class LlamaRunner:
     def _add_llama_args(self, cmd: List[str], args: argparse.Namespace) -> List[str]:
         """Add LLaMA-specific arguments to the command."""
         if getattr(args, "server", False):
-            # OpenAI server mode: the server parses only --model / --port / --gpu.
-            srv = ["--model", args.model_path, "--port", str(getattr(args, "port", 8080))]
+            # HTTP options are separate from terminal prompts and sampling.
+            srv = ["--model", args.model_path, "--host", args.host, "--port", str(args.port),
+                   "--ctx-size", str(args.max_tokens), "--parallel", str(args.parallel),
+                   "--max-queued-requests", str(args.max_queued_requests),
+                   "--prefix-cache-entries", str(args.prefix_cache_entries)]
             if args.use_gpu:
                 srv.append("--gpu")
             return cmd + srv
         if getattr(args, "bench", False):
             # llama-bench mode: model(s) + benchmark options only. If --bench-args already
             # supplies -m, use those verbatim (don't also prepend --model → duplicate rows).
-            extra = args.bench_args.split() if args.bench_args else []
+            extra = shlex.split(args.bench_args) if args.bench_args else []
             bench_args = extra if ("-m" in extra or "--model" in extra) else ["-m", args.model_path] + extra
             # Without --gpu the benchmark measures the host forward pass; say so explicitly, or it
             # builds an accelerator plan and reports a GPU backend for a run the user asked to be
             # on the CPU.
             if not args.use_gpu and "--cpu" not in bench_args:
                 bench_args = bench_args + ["--cpu"]
+            for field, option in [("pp", "-p"), ("tg", "-n"), ("depth", "-d"), ("repetitions", "-r"), ("output", "-o")]:
+                value = getattr(args, field, None)
+                if value is not None:
+                    if option in extra:
+                        raise ValueError(f"{option} is specified both directly and in --bench-args")
+                    bench_args.extend([option, str(value)])
+            if args.batch_prefill_size is not None:
+                if "-b" in extra or "--batch-size" in extra:
+                    raise ValueError("Specify prefill width once (--batch-prefill-size or --bench-args -b)")
+                bench_args.extend(["-b", str(args.batch_prefill_size)])
             return cmd + bench_args
         llama_args = [
             "-m",
@@ -304,7 +318,7 @@ class LlamaRunner:
             str(args.top_p),
             "--seed",
             str(args.seed),
-            "--max-tokens",
+            "--ctx-size",
             str(args.max_tokens),
             "--stream",
             str(args.stream).lower(),
@@ -312,7 +326,11 @@ class LlamaRunner:
             str(args.echo).lower(),
         ]
 
-        if args.prompt:
+        if args.max_new_tokens is not None:
+            llama_args.extend(["--max-new-tokens", str(args.max_new_tokens)])
+        if args.suffix is not None:
+            llama_args.extend(["--suffix", args.suffix])
+        if args.prompt is not None:
             llama_args.extend(["-p", args.prompt])
 
         if args.system_prompt:
@@ -422,10 +440,83 @@ def load_env_from_script():
         sys.exit(1)
 
 
-def create_parser() -> argparse.ArgumentParser:
+class LegacyContextAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace.legacy_context = True
+
+
+def parse_bool(value):
+    if value.lower() not in {"true", "false"}:
+        raise argparse.ArgumentTypeError("expected true or false")
+    return value.lower() == "true"
+
+
+def parse_cli_args(argv):
+    commands = ("run", "chat", "serve", "bench")
+    if argv and argv[0].startswith("-") and argv[0] not in {"-h", "--help"}:
+        parser = create_parser()
+    else:
+        parser = argparse.ArgumentParser(prog="jllm", description="Run, chat with, serve, or benchmark a local model.")
+        sub = parser.add_subparsers(dest="command", required=True)
+        descriptions = {"run": "Generate one response", "chat": "Chat in the terminal",
+                        "serve": "Start the OpenAI-compatible HTTP API", "bench": "Measure inference performance"}
+        for command in commands:
+            sub.add_parser(command, parents=[create_parser(command)], add_help=False,
+                           help=descriptions[command], allow_abbrev=False)
+    args = parser.parse_args(argv)
+    supplied = {arg.split("=", 1)[0] for arg in argv if arg.startswith("-")}
+    mode = args.command or ("serve" if args.server else "bench" if args.bench else "chat" if args.interactive else "run")
+    args.command = mode
+    args.server, args.bench, args.interactive, args.instruct = (mode == v for v in ("serve", "bench", "chat", "run"))
+    if mode != "bench" and args.max_tokens <= 0:
+        parser.error("--ctx-size must be positive")
+    if args.max_new_tokens is not None and args.max_new_tokens <= 0:
+        parser.error("--max-new-tokens must be positive")
+    if mode == "run" and args.prompt is None:
+        parser.error("run requires --prompt")
+    if mode == "chat" and (args.prompt is not None or args.suffix is not None):
+        parser.error("chat reads prompts from the terminal; --prompt/--suffix are run-only")
+    if mode == "serve":
+        if not 0 <= args.port <= 65535 or not args.host.strip():
+            parser.error("serve requires a nonempty --host and --port in 0..65535")
+        if args.parallel < 1 or args.max_queued_requests < 1 or args.prefix_cache_entries < 0:
+            parser.error("--parallel and --max-queued-requests must be positive; --prefix-cache-entries must be non-negative")
+        if args.parallel > 1 and not args.use_gpu:
+            parser.error("--parallel > 1 requires --gpu")
+        if args.parallel > 1 and (args.with_prefill_decode or args.batch_prefill_size is not None or args.cuda_graphs or args.fp16_kv_cache):
+            parser.error("parallel serving requires FP32 KV cache and does not support --with-prefill-decode, --batch-prefill-size, or --cuda-graphs")
+        if args.parallel == 1 and args.prefix_cache_entries:
+            parser.error("--prefix-cache-entries requires --parallel > 1")
+    if mode in {"serve", "bench"} and (args.prompt is not None or args.system_prompt is not None or args.max_new_tokens is not None):
+        parser.error("prompt and generation-limit options belong to run/chat; serve receives them in HTTP requests")
+    if mode != "serve" and supplied & {"--port", "--host", "--parallel", "--max-queued-requests", "--prefix-cache-entries"}:
+        parser.error("HTTP server options require serve/--server")
+    if mode != "bench" and supplied & {"--pp", "--tg", "--depth", "--repetitions", "--output", "--bench-args"}:
+        parser.error("Benchmark options require bench/--bench")
+    if mode in {"serve", "bench"} and supplied & {"--temperature", "--top-p", "--seed", "--stream", "--echo", "--suffix"}:
+        parser.error("Generation options belong to run/chat; HTTP sampling is configured per request")
+    if mode == "bench" and supplied & {"--ctx-size", "-c", "--max-tokens", "-n"}:
+        parser.error("bench derives context from --pp/--tg/--depth; omit --ctx-size")
+    if mode == "bench":
+        for field in ("pp", "tg", "depth"):
+            value = getattr(args, field)
+            if value is not None:
+                try:
+                    if any(int(n) < 0 for n in value.split(",")): raise ValueError()
+                except ValueError:
+                    parser.error(f"--{field} requires comma-separated nonnegative integers")
+        if args.repetitions is not None and args.repetitions < 1:
+            parser.error("--repetitions must be positive")
+    if args.legacy_context:
+        print("--max-tokens/-n is deprecated; use --ctx-size/-c (context capacity).", file=sys.stderr)
+    return args
+
+
+def create_parser(command=None) -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
-        prog="jllm",
+        prog="jllm" + (" " + command if command else ""),
         description="GPU-accelerated LLM runner using TornadoVM",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         allow_abbrev=False,
@@ -433,7 +524,7 @@ def create_parser() -> argparse.ArgumentParser:
 
     # Required arguments
     parser.add_argument(
-        "--model",
+        "--model", "-m",
         dest="model_path",
         required=True,
         help="Path to the LLM gguf file (e.g., Llama-3.2-1B-Instruct-Q8_0.gguf)",
@@ -458,39 +549,46 @@ def create_parser() -> argparse.ArgumentParser:
         default=None,
         help="Random seed (default: current timestamp)",
     )
+    context_group = llm_group.add_mutually_exclusive_group()
+    context_group.add_argument("-c", "--ctx-size", dest="max_tokens", type=int, default=512,
+                               help="Context capacity in tokens, including prompt and generated text")
+    context_group.add_argument("-n", "--max-tokens", dest="max_tokens", type=int,
+                               default=argparse.SUPPRESS, action=LegacyContextAction,
+                               help=argparse.SUPPRESS)
+    llm_group.add_argument("--max-new-tokens", type=int, default=None,
+                           help="Maximum generated tokens per request/turn (default: context capacity)")
     llm_group.add_argument(
-        "-n",
-        "--max-tokens",
-        type=int,
-        default=512,
-        help="Capacity in positions for this run: prompt plus generated tokens (sizes the context; a prompt this long or longer is refused)",
+        "--stream", type=parse_bool, default=True, help="Enable streaming output"
     )
     llm_group.add_argument(
-        "--stream", type=bool, default=True, help="Enable streaming output"
-    )
-    llm_group.add_argument(
-        "--echo", type=bool, default=False, help="Echo the input prompt"
+        "--echo", type=parse_bool, default=False, help="Echo the input prompt"
     )
     llm_group.add_argument(
         "--suffix", help="Suffix for fill-in-the-middle request (Codestral)"
     )
 
     # Mode selection
-    mode_group = parser.add_argument_group("Mode Selection")
+    mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
-        "-i", "--interactive", action="store_true", help="Run in interactive/chat mode"
+        "-i", "--interactive", "--chat", action="store_true", help="Run in interactive/chat mode"
     )
     mode_group.add_argument(
         "--instruct",
         action="store_true",
-        default=True,
+        default=False,
         help="Run in instruction mode (default)",
     )
 
     # OpenAI-compatible server
     server_group = parser.add_argument_group("OpenAI-compatible server")
-    server_group.add_argument("--server", action="store_true", help="Run the OpenAI-compatible HTTP server instead of inference")
+    mode_group.add_argument("--server", "--serve", action="store_true", help="Run the OpenAI-compatible HTTP server instead of inference")
     server_group.add_argument("--port", type=int, default=8080, help="Server port (default 8080)")
+
+    server_group.add_argument("--host", default="127.0.0.1", help="HTTP bind address")
+    server_group.add_argument("--parallel", type=int, default=1,
+                              help="Concurrent request slots; >1 uses experimental FP16 Llama/Qwen3 GPU batching")
+    server_group.add_argument("--max-queued-requests", type=int, default=64, help="Maximum queued requests in parallel mode")
+    server_group.add_argument("--prefix-cache-entries", type=int, default=0, help="Cached prompt prefixes in parallel mode")
 
     # Benchmark (llama-bench style)
     parser.add_argument(
@@ -508,7 +606,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--no-tensor-cores", dest="no_tensor_cores", action="store_true", help=argparse.SUPPRESS
     )
     bench_group = parser.add_argument_group("Benchmark (llama-bench style)")
-    bench_group.add_argument(
+    mode_group.add_argument(
         "--bench",
         action="store_true",
         help="Run the llama-bench-style benchmark (bench.JllmBench) instead of inference",
@@ -518,6 +616,12 @@ def create_parser() -> argparse.ArgumentParser:
         default="",
         help='Extra benchmark options (use --bench-args="..."), e.g. "-p 512 -n 128 -d 0,4096 -r 5 -o md" (see JllmBench)',
     )
+
+    bench_group.add_argument("--pp", help="Comma-separated prompt prefill token counts")
+    bench_group.add_argument("--tg", help="Comma-separated decode token counts")
+    bench_group.add_argument("--depth", help="Comma-separated existing context depths")
+    bench_group.add_argument("--repetitions", type=int, help="Benchmark repetitions")
+    bench_group.add_argument("--output", choices=["md", "csv", "json", "jsonl", "sql"], help="Benchmark result format")
 
     # Hardware configuration
     hw_group = parser.add_argument_group("Hardware Configuration")
@@ -650,6 +754,32 @@ def create_parser() -> argparse.ArgumentParser:
         help="Show startup configuration, initialization timings, and detailed diagnostics on stderr"
     )
 
+    parser.set_defaults(command=command, legacy_context=False)
+    if command:
+        generation = {"prompt", "system_prompt", "temperature", "top_p", "seed", "max_new_tokens", "stream", "echo", "suffix"}
+        server = {"host", "port", "parallel", "max_queued_requests", "prefix_cache_entries"}
+        bench = {"bench_args", "pp", "tg", "depth", "repetitions", "output"}
+        modes = {"interactive", "instruct", "server", "bench"}
+        hidden = modes | (server if command != "serve" else set()) | (bench if command != "bench" else set())
+        if command in {"serve", "bench"}:
+            hidden |= generation
+        if command == "chat":
+            hidden |= {"prompt", "suffix"}
+        if command == "bench":
+            hidden |= {"max_tokens"}
+        for action in list(parser._actions):
+            if action.dest in hidden:
+                parser.set_defaults(**{action.dest: action.default})
+                parser._remove_action(action)
+                for group in parser._action_groups:
+                    if action in group._group_actions:
+                        group._group_actions.remove(action)
+                for group in parser._mutually_exclusive_groups:
+                    if action in group._group_actions:
+                        group._group_actions.remove(action)
+                for option in action.option_strings:
+                    parser._option_string_actions.pop(option, None)
+        parser._mutually_exclusive_groups = [g for g in parser._mutually_exclusive_groups if g._group_actions]
     return parser
 
 
@@ -721,8 +851,7 @@ def resolve_verbosity(args):
 def main():
     """Main entry point."""
     load_env_from_script()
-    parser = create_parser()
-    args = parser.parse_args()
+    args = parse_cli_args(sys.argv[1:])
     for warning in resolve_verbosity(args) + resolve_deprecated_tensor_core_flags(args):
         print(warning, file=sys.stderr)
 

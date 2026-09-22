@@ -359,7 +359,11 @@ public final class TokenGenerationLoop {
         long decodeStartNanos = System.nanoTime();
 
         // ── Decode ────────────────────────────────────────────────────────────
-        while (pos < actualMaxTokens) {
+        // A deduplicated BOS makes logits available one position earlier; it must not
+        // increase the requested output-token budget.
+        int generatedTokenBudget =
+                Math.max(0, actualMaxTokens - startPosition - promptTokens.size());
+        while (pos < actualMaxTokens && generatedTokens.size() < generatedTokenBudget) {
             var logits = InferenceCore.forwardJava(model, state, currentToken, pos);
             int nextToken = sampler.sampleToken(asLogits(logits));
 
@@ -425,7 +429,10 @@ public final class TokenGenerationLoop {
         int promptIndex = ingestion.firstIndex();
         int pos = startPosition;
 
-        while (pos < maxTokens) {
+        // A deduplicated BOS makes logits available one position earlier; it must not
+        // increase the requested output-token budget.
+        int generatedTokenBudget = Math.max(0, maxTokens - startPosition - promptTokens.size());
+        while (pos < maxTokens && generatedTokens.size() < generatedTokenBudget) {
 
             // Through the provider SPI, as generateTokensQwen3 and generateTokensPhi3 already do.
             // This loop serves llama, mistral and devstral; llama's and mistral's providers both

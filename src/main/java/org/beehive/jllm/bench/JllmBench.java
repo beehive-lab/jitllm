@@ -257,7 +257,9 @@ public class JllmBench {
                 new Options(
                         path, "bench", null, null, false, 0.0f, 1.0f, 42, maxCtx, false, false,
                         !cpu, batch > 1, batch);
+        long startedNs = System.nanoTime();
         Model model = loadModel(options);
+        long loadNs = System.nanoTime() - startedNs;
         State state = model.createNewState();
         // No plan on the CPU path: the host forward pass is the thing being measured, and building
         // one would both fail without an accelerator and misreport the backend.
@@ -265,6 +267,33 @@ public class JllmBench {
                 cpu ? null : TornadoVMMasterPlan.initializeTornadoVMPlan(state, model);
         ForwardPass hostForward =
                 cpu ? CpuForwardPasses.forArchitecture(model.architectureId()) : null;
+
+        if (org.beehive.jllm.integration.cli.StartupDiagnostics.verbose()) {
+            var execution =
+                    cpu
+                            ? new org.beehive.jllm.runtime.backend.ExecutionInfo(
+                                    "CPU",
+                                    System.getProperty("os.arch"),
+                                    "Java " + System.getProperty("java.version"),
+                                    "single-token",
+                                    1,
+                                    "FP32",
+                                    "CPU kernels",
+                                    "CPU kernels",
+                                    false,
+                                    false)
+                            : plan.executionInfo();
+            System.err.print(
+                    org.beehive.jllm.integration.cli.StartupDiagnostics.render(
+                            model,
+                            path,
+                            execution,
+                            "synthetic token workloads (no text sampling)",
+                            new org.beehive.jllm.integration.cli.ModelRunConfig(path, maxCtx, !cpu)
+                                    .modelOptions(),
+                            loadNs,
+                            startedNs));
+        }
 
         int vocab = model.configuration().vocabularySize();
         String name = path.getFileName().toString().replaceAll("\\.gguf$", "");

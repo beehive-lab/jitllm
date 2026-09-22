@@ -18,8 +18,8 @@ public class JllmAppContextFullTest {
     public void theDiagnosticNamesThePromptTheCapacityAndTheRemedy() {
         String message = JllmApp.contextFullMessage(296, 8);
         assertTrue(message, message.contains("296 tokens"));
-        assertTrue(message, message.contains("--max-tokens 8"));
-        assertTrue(message, message.contains("pass --max-tokens larger than the prompt"));
+        assertTrue(message, message.contains("--ctx-size 8"));
+        assertTrue(message, message.contains("pass --ctx-size larger than the prompt"));
     }
 
     @Test

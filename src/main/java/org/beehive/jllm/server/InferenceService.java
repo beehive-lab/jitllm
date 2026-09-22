@@ -31,6 +31,12 @@ public final class InferenceService {
         this.session = ((TextGenerationModel) model).newSession();
     }
 
+    public org.beehive.jllm.runtime.backend.ExecutionInfo prepare() {
+        synchronized (lock) {
+            return session.prepare();
+        }
+    }
+
     public LocalModel model() {
         return model;
     }
@@ -78,6 +84,8 @@ public final class InferenceService {
 
     /** Close the session; the model outlives it and is closed by the caller that loaded it. */
     public void close() {
-        session.close();
+        synchronized (lock) {
+            session.close();
+        }
     }
 }

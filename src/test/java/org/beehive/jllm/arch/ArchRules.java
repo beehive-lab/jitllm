@@ -212,6 +212,8 @@ public final class ArchRules {
     public static final Set<String> CLI_TYPES =
             Set.of("org.beehive.jllm.JllmApp", "org.beehive.jllm.Options");
 
+    public static final String CLI = "org.beehive.jllm.integration.cli";
+
     public static final String SERVER = "org.beehive.jllm.server";
 
     /**
@@ -244,7 +246,8 @@ public final class ArchRules {
                                                 d -> {
                                                     String n = d.getTargetClass().getName();
                                                     return CLI_TYPES.contains(n)
-                                                            || n.startsWith(SERVER + ".");
+                                                            || n.startsWith(SERVER + ".")
+                                                            || n.startsWith(CLI + ".");
                                                 }));
     }
 
@@ -297,6 +300,7 @@ public final class ArchRules {
     private static boolean isIntegration(JavaClass c) {
         String outer = c.getName().split("\\$")[0];
         return CLI_TYPES.contains(outer)
+                || inPackage(c, CLI)
                 || inPackage(c, SERVER)
                 || inPackage(c, EXAMPLES)
                 || inPackage(c, GENERATION);

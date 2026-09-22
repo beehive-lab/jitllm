@@ -93,7 +93,7 @@ public final class EngineInferenceService implements AutoCloseable {
         // One state builds the plan; the per-slot addressing comes from the block table, so the
         // lease that state held goes straight back to the pool once the buffers are bound.
         this.planLease = manager.acquire(blockTokens);
-        State state = model.createNewState(planLease);
+        State state = State.withPrefillBatchSize(batchSize, () -> model.createNewState(planLease));
         this.executor = new TornadoBatchExecutor(model, state, store, batchSize, blocksPerSlot);
         planLease.close();
 
@@ -109,6 +109,10 @@ public final class EngineInferenceService implements AutoCloseable {
         this.driver = new Thread(this::drive, "engine-step");
         this.driver.setDaemon(true);
         this.driver.start();
+    }
+
+    public org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+        return executor.executionInfo();
     }
 
     public Model model() {

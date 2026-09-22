@@ -67,7 +67,7 @@ Grab a ready-to-run model from the [Hugging Face collections](#-model-collection
 
 jllm is growing into a **serving engine** — the vLLM-style path for the JVM:
 
-- 🌐 **OpenAI-compatible server** — `jllm --server` exposes `/v1/chat/completions` and `/v1/completions` with streaming and zero external dependencies. Point any OpenAI client at `localhost`.
+- 🌐 **OpenAI-compatible server** — `jllm serve` exposes `/v1/chat/completions` and `/v1/completions` with streaming and zero external dependencies. Point any OpenAI client at `localhost`.
 - 🎯 **Tensor-core (MMA) batch prefill** on the CUDA backend, FP16 & Q8_0 — `--with-prefill-decode --batch-prefill-size N`.
 - 📈 **llama-bench-style benchmarking** — `jllm --bench` reports a pp/tg matrix with avg±stddev in md/csv/json/jsonl/sql. See [Running the CLI](#-running-the-cli) for the flag.
 - 🧮 **On-device greedy sampling** *(landing next)* — argmax on the GPU keeps logits device-side, cutting device→host traffic by ~500× per token. ([PR #134](https://github.com/beehive-lab/jllm/pull/134))
@@ -358,49 +358,60 @@ jllm --gpu --model beehive-llama-3.2-1b-instruct-fp16.gguf \
   --prompt "tell me a joke" --show-command
 ```
 
-<details>
-<summary>📋 Full command-line options (<code>jllm --help</code>)</summary>
+Each command has focused help:
 
-```
-usage: jllm [-h] --model MODEL_PATH [--prompt PROMPT] [-sp SYSTEM_PROMPT]
-                     [--temperature TEMPERATURE] [--top-p TOP_P] [--seed SEED] [-n MAX_TOKENS]
-                     [--stream STREAM] [--echo ECHO] [--suffix SUFFIX] [-i] [--instruct]
-                     [--server] [--port PORT] [--bench] [--bench-args BENCH_ARGS]
-                     [--gpu] [--opencl] [--cuda] [--metal]
-                     [--gpu-memory GPU_MEMORY] [--heap-min HEAP_MIN] [--heap-max HEAP_MAX]
-                     [--debug] [--profiler] [--profiler-dump-dir DIR]
-                     [--print-bytecodes] [--print-threads] [--print-kernel] [--full-dump]
-                     [--show-command] [--execute-after-show]
-                     [--with-prefill-decode] [--batch-prefill-size N] [--cuda-graphs]
-                     [--fp16-kv-cache] [--diagnostic-scalar-batched-prefill]
-                     [--opencl-flags FLAGS] [--max-wait-events N] [--verbose]
-
-LLaMA Configuration:  --prompt, -sp/--system-prompt, --temperature (0.0–2.0, default 0.1),
-                      --top-p (default 0.95), --seed, -n/--max-tokens (default 512),
-                      --stream (default True), --echo (default False), --suffix (FIM/Codestral)
-Mode Selection:       -i/--interactive, --instruct (default)
-OpenAI server:        --server (run the HTTP server instead of inference), --port (default 8080)
-Benchmark:            --bench (llama-bench-style matrix), --bench-args="..." (see Benchmarking below)
-Hardware:             --gpu, --opencl/--cuda/--metal (auto-detected; force one of the installed
-                      backends), --gpu-memory (default 14GB), --heap-min/--heap-max (default 20g)
-Debug & Profiling:    --debug, --profiler, --profiler-dump-dir,
-                      --print-bytecodes, --print-threads, --print-kernel, --full-dump
-                      (device, granted kernel families and the batched-prefill path chosen),
-                      --diagnostic-scalar-batched-prefill (scalar kernels, for comparing numerics;
-                      the deprecated --no-tensor-cores maps to it with a warning)
-Command Display:      --show-command, --execute-after-show
-Prefill-Decode:       --with-prefill-decode, --batch-prefill-size N (batched prefill; kernel
-                      selection is automatic — on a CUDA device of compute capability 8.0+ the
-                      Qwen3.8 Q4_0 projections run on the int8 tensor-core pair, Q4_1/Q5_K on the
-                      FP16 pair, attention on the tensor cores; elsewhere the scalar kernels;
-                      widths 512-2048 are the fast ones)
-KV cache:             --fp16-kv-cache (half-precision key/value store; selects the tensor-core
-                      attention for batched Qwen3.8 prefill)
-Advanced:             --cuda-graphs (CUDA backend only), --opencl-flags (default: -cl-denorms-are-zero
-                      -cl-no-signed-zeros -cl-finite-math-only), --max-wait-events (default 32000), --verbose/-v
+```bash
+./jllm --help
+./jllm run --help
+./jllm chat --help
+./jllm serve --help
+./jllm bench --help
 ```
 
-</details>
+| Command | Purpose | Key options |
+| --- | --- | --- |
+| `run` | Generate one response, then exit | `--prompt`, `--system-prompt`, `--max-new-tokens` |
+| `chat` | Terminal conversation using one persistent session | `--system-prompt`, `--max-new-tokens` per turn |
+| `serve` | OpenAI-compatible HTTP API | `--host`, `--port`, `--parallel`, `--max-queued-requests`, `--prefix-cache-entries` |
+| `bench` | Repeated prefill/decode workloads | `--pp`, `--tg`, `--depth`, `--repetitions`, `--output` |
+
+Model, GPU/backend selection, KV precision, execution policy, and `-v`/`--verbose`
+are shared. `--ctx-size` (`-c`) sets context capacity for run/chat/serve;
+`--max-new-tokens` separately limits generated tokens in run/chat. The default context
+is 512 tokens, and the default generation limit is the context capacity.
+Benchmark context is derived from its workload sizes and depths.
+
+```bash
+./jllm run -m model.gguf --gpu -c 4096 --max-new-tokens 128 --prompt "Explain SIMD."
+./jllm chat -m model.gguf --gpu -c 4096 --max-new-tokens 128
+./jllm serve -m model.gguf --gpu -c 4096 --host 127.0.0.1 --port 8080 -v
+./jllm bench -m model.gguf --gpu --pp 128,512 --tg 64 --depth 0,4096 --repetitions 3 --output json
+```
+
+Existing flag-based invocations remain supported: default/`--instruct` → `run`,
+`--interactive`/`--chat`/`-i` → `chat`, `--server` → `serve`, and `--bench` → `bench`.
+Conflicting modes and options for another command are rejected. `--max-tokens`/`-n`
+remains a deprecated **context-capacity** alias; it has not been repurposed as an output
+limit. HTTP `max_tokens` keeps its existing generated-token meaning. Legacy
+`--bench-args="..."` still accepts benchmark arguments, including quoted values.
+
+Serving binds to loopback by default and prints its actual address and port when ready.
+Use `--host 0.0.0.0` explicitly for all IPv4 interfaces. Clients submit conversation
+history in each HTTP request; `chat` retains terminal conversation history locally.
+
+`serve --parallel N` counts **request slots**, whereas `--batch-prefill-size N` counts
+**prompt tokens per chunk**. One request slot uses the regular facade and honors its
+prefill policy. More than one slot enables the existing experimental continuous-batch
+engine: CUDA tensor-core devices, FP16 Llama/Qwen3 weights, FP32 KV cache, and greedy (`temperature=0`) requests
+only. Prefill chunking and CUDA graphs are rejected in that mode because this executor
+does not implement them. JIT/device setup remains lazy there and is labeled accordingly
+in verbose output; its memory estimate is unavailable. Prefix caching requires parallel
+mode and is disabled by default.
+
+`serve -v` and `bench -v` use the same startup report as terminal generation. Server
+request sampling and benchmark token workloads are labeled appropriately; reports stay
+on stderr so HTTP responses and benchmark JSON/CSV stay separate.
+
 
 ```bash
 # Peek at what TornadoVM is doing

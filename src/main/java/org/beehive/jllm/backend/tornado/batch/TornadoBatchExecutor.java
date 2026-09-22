@@ -82,6 +82,28 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
     private boolean closed;
 
     /**
+     * The continuous-batch plan compiles lazily on the first step, independently of master plans.
+     */
+    public org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+        var backend =
+                uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider.getTornadoRuntime()
+                        .getBackend(0);
+        var module = TornadoExecutionPlan.class.getModule().getDescriptor();
+        String version = module == null ? "unknown" : module.rawVersion().orElse("unknown");
+        return new org.beehive.jllm.runtime.backend.ExecutionInfo(
+                backend.getBackendType().name(),
+                backend.getDefaultDevice().getPhysicalDevice().getDeviceName(),
+                "TornadoVM " + version,
+                "continuous-batch-decode",
+                1,
+                store.keyPoolFP16() == null ? "FP32" : "FP16",
+                "FP16 tensor-core MMA",
+                "JIT kernels",
+                false,
+                false);
+    }
+
+    /**
      * @param model the model to decode with — FP16 Llama or Qwen3
      * @param state a state built against the engine's lease-backed KV, sized for this batch
      * @param store the shared KV store the engine's manager owns; its table is what the kernels
@@ -95,6 +117,13 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         TornadoWeights weights = (TornadoWeights) model.weights();
         boolean isQwen3 = config instanceof Qwen3Configuration;
 
+        if (!org.beehive.jllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend()) {
+            throw new IllegalArgumentException(
+                    "Parallel serving requires a CUDA device with tensor-core MMA support");
+        }
+        if (!(state instanceof LlamaState) && !(state instanceof Qwen3State)) {
+            throw new IllegalArgumentException("Parallel serving supports FP16 Llama/Qwen3 only");
+        }
         this.batchSize = batchSize;
         this.blocksPerSlot = blocksPerSlot;
         if (!(storage instanceof TornadoKvStore store)) {
@@ -102,6 +131,9 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
                     "the Tornado batch executor needs TornadoVM-backed"
                             + " key/value storage, got "
                             + storage.getClass().getName());
+        }
+        if (store.keyPool() == null || store.valuePool() == null) {
+            throw new IllegalArgumentException("Parallel serving requires FP32 KV cache");
         }
         this.store = store;
         this.dim = config.dim();

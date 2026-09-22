@@ -1,4 +1,4 @@
-package org.beehive.jllm;
+package org.beehive.jllm.integration.cli;
 
 import static org.junit.Assert.*;
 

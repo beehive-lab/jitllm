@@ -1,4 +1,4 @@
-package org.beehive.jllm;
+package org.beehive.jllm.integration.cli;
 
 import java.util.Locale;
 import java.util.concurrent.ForkJoinPool;
@@ -95,7 +95,13 @@ record StartupSummary(
         }
         row(out, "KV cache", execution.kvCache());
         if (gpu) {
-            row(out, "MMA / tensor cores", execution.prefillKernels() + " (prefill)");
+            row(
+                    out,
+                    "MMA / tensor cores",
+                    execution.prefillKernels()
+                            + (execution.mode().equals("continuous-batch-decode")
+                                    ? " (batched prefill/decode)"
+                                    : " (prefill)"));
             row(out, "Native libraries", execution.nativeLibraries());
             row(out, "CUDA graphs", execution.cudaGraphs() ? "on" : "off");
             row(out, "Staged transfers", execution.stagedTransfers() ? "on" : "off");
@@ -129,12 +135,12 @@ record StartupSummary(
         out.append("\n  Initialization\n");
         row(out, "Model load", milliseconds(modelLoadNs));
         if (gpu) {
-            row(out, "Plan construction", milliseconds(timings.tornadoPlanCreationDuration()));
-            row(out, "JIT precompilation", milliseconds(timings.tornadoJitDuration()));
+            row(out, "Plan construction", setupTime(timings.tornadoPlanCreationDuration()));
+            row(out, "JIT precompilation", setupTime(timings.tornadoJitDuration()));
             row(
                     out,
                     "Initial device setup",
-                    milliseconds(timings.tornadoReadOnlyWeightsCopyInDuration())
+                    setupTime(timings.tornadoReadOnlyWeightsCopyInDuration())
                             + " (uploads + execution / graph capture)");
         }
         row(out, "Ready to generate", milliseconds(readyNs));
@@ -171,6 +177,10 @@ record StartupSummary(
         if (verbose) {
             row(out, "Estimate assumptions", memory.confidence() + " / " + memory.assumptions());
         }
+    }
+
+    private static String setupTime(long ns) {
+        return ns > 0 ? milliseconds(ns) : "not measured (lazy execution)";
     }
 
     private static String milliseconds(long ns) {
