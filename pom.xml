@@ -82,7 +82,7 @@
                  carries them yet, so no jllm release can be cut from this branch until one does. -->
         <tornadovm.base.version>6.1.1</tornadovm.base.version>
         <!-- Empty in development; a published X.Y.Z under -P release (see prepare-release.yml). -->
-        <tornadovm.release.version/>
+        <tornadovm.release.version>7.0.0</tornadovm.release.version>
         <!-- The qualifier TornadoVM's own develop builds carry; emptied by the release profile. -->
         <tornadovm.dev.qualifier>-dev</tornadovm.dev.qualifier>
         <archunit.version>1.4.2</archunit.version>
