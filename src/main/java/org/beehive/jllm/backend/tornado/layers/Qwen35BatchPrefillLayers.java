@@ -48,6 +48,20 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 // @formatter:on
 public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTaskGraphs {
 
+    @Override
+    public String describeProjections() {
+        if (int8DecodeTasks.isEmpty() && dequantTasks.isEmpty() && mmaTasks.isEmpty()) {
+            return "JIT kernels (no tensor-core MMA at width " + batchSize + ")";
+        }
+        return "tensor-core projections: "
+                + int8DecodeTasks.size()
+                + " INT8 / "
+                + dequantTasks.size()
+                + " dequantized FP16 / "
+                + mmaTasks.size()
+                + " direct FP16";
+    }
+
     // @formatter:off
     /**
      * Whether this family's eligible batched projections run on the tensor cores.

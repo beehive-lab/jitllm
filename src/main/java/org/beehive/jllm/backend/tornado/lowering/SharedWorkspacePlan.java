@@ -34,6 +34,13 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  */
 public final class SharedWorkspacePlan implements TornadoVMMasterPlan, InvocationBoundary {
 
+    @Override
+    public org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+        synchronized (lock) {
+            return shared.executionInfo();
+        }
+    }
+
     private final TornadoVMMasterPlan shared;
     private final Object lock;
     private final IntArray control;

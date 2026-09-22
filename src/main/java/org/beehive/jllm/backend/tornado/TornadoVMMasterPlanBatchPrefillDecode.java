@@ -40,6 +40,18 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
     private static final System.Logger LOGGER =
             System.getLogger(TornadoVMMasterPlanBatchPrefillDecode.class.getName());
 
+    @Override
+    public org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+        var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
+        return PlanDiagnostics.describe(
+                state,
+                "batch-prefill-decode",
+                state.executionPolicy().prefillBatchSize(),
+                layers.describeProjections(),
+                layers.describeAttention(),
+                layers.describeNativeLibraries());
+    }
+
     private final State state;
     private final Model model;
     private final Configuration config;

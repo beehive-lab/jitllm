@@ -11,6 +11,19 @@ import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
  * {@code LlamaQ8_0LayersBatchPrefillMMA} and {@code LlamaQ8_0LayersBatchPrefill}.
  */
 public interface BatchPrefillTransformerLayerTaskGraphs {
+    /** Projection implementation selected while building these graphs. */
+    default String describeProjections() {
+        return "JIT kernels (no tensor-core MMA)";
+    }
+
+    default String describeNativeLibraries() {
+        return "none";
+    }
+
+    default String describeAttention() {
+        return "JIT kernels";
+    }
+
     List<ImmutableTaskGraph> getLayerImmutableTaskGraphs();
 
     void updateGridScheduler(GridScheduler scheduler);

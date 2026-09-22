@@ -26,6 +26,17 @@ public interface GenerationSession extends AutoCloseable {
      */
     GenerationResult generate(GenerationRequest request);
 
+    /**
+     * Prepares execution before the first request and returns the selected settings. Repeated calls
+     * reuse the prepared plan and do not advance or reset the sequence. Implementations without
+     * diagnostics may throw {@link UnsupportedOperationException}.
+     */
+    @Experimental
+    default org.beehive.jllm.runtime.backend.ExecutionInfo prepare() {
+        throw new UnsupportedOperationException(
+                "This session does not expose execution diagnostics");
+    }
+
     /** How much of the context this sequence has consumed, in tokens. */
     int position();
 

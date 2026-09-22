@@ -56,6 +56,32 @@ import uk.ac.manchester.tornado.cudnn.CuDnn;
  */
 public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLayerTaskGraphs {
 
+    private static void logInitialization(String format, Object... args) {
+        if (Boolean.getBoolean("jllm.verbose")
+                || Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit")) {
+            System.err.printf(java.util.Locale.ROOT, format, args);
+        }
+    }
+
+    @Override
+    public String describeProjections() {
+        return nativeProjections
+                ? "library-selected (MMA use not confirmed)"
+                : "FP16 tensor-core MMA";
+    }
+
+    @Override
+    public String describeNativeLibraries() {
+        return nativeProjections
+                ? (cudnnAttention ? "cuBLAS, cuDNN (first-chunk attention)" : "cuBLAS")
+                : (cudnnAttention ? "cuDNN (first-chunk attention)" : "none");
+    }
+
+    @Override
+    public String describeAttention() {
+        return cudnnAttention ? "cuDNN first chunk; JIT for subsequent chunks" : "JIT kernels";
+    }
+
     // Local size for the parallel RMS reductions (one workgroup per token).
     static final int RMS_LOCAL_SIZE = 256;
 
@@ -272,7 +298,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.useCudnnAttention = this.cudnnAttention;
         this.nativeProjections = nativeProjections();
         this.layersPerGraph = Math.min(prefillLayersPerGraph(), config.numberOfLayers());
-        System.out.printf(
+        logInitialization(
                 "[jllm] prefill acceleration: %s%n",
                 NativePrefillSupport.describe(fp16Kv, sdpaShape));
         int cudnnElems = cudnnAttention ? qDim * batchSize : 0;
@@ -288,7 +314,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             cudnnK.init(zero);
             cudnnV.init(zero);
             cudnnOut.init(zero);
-            System.out.printf(
+            logInitialization(
                     "[jllm] prefill attention: cuDNN SDPA for the first chunk, batched JIT paged"
                             + " attention for the rest; staging %d MiB, one set shared by every"
                             + " batch-prefill graph%n",
@@ -308,7 +334,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 }
                 gateUpCat[l] = cat;
             }
-            System.out.printf(
+            logInitialization(
                     "[jllm] prefill gate/up: cuBLAS, %d stacked weights, %d MiB extra resident,"
                             + " built in %.2f s%n",
                     config.numberOfLayers(),
@@ -329,7 +355,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 for (int i = 0; i < wv.getSize(); i++) cat.set(at++, wv.get(i));
                 qkvCat[l] = cat;
             }
-            System.out.printf(
+            logInitialization(
                     "[jllm] prefill QKV: cuBLAS, %d stacked weights (%d|%d|%d cols), %d MiB extra"
                             + " resident, built in %.2f s%n",
                     config.numberOfLayers(),
@@ -349,12 +375,12 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // repeating the advice there would send a user to round a width up for no reason.
         if (batchSize != paddedBatch) {
             if (nativeProjections) {
-                System.out.printf(
+                logInitialization(
                         "[jllm] prefill native GEMM rows: %d (chunk width) instead of %d"
                                 + " (padded)%n",
                         batchSize, paddedBatch);
             } else {
-                System.out.printf(
+                logInitialization(
                         "[jllm] prefill batch %d padded to %d for tensor-core tiles; GEMM"
                                 + " efficiency is %d/%d — use a multiple of 128 for best"
                                 + " throughput.%n",
@@ -362,7 +388,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             }
         }
         if (layersPerGraph > 1) {
-            System.out.printf(
+            logInitialization(
                     "[jllm] prefill layer grouping: %d layers per graph, %d graphs instead of %d%n",
                     layersPerGraph, groups, config.numberOfLayers());
         }
@@ -417,7 +443,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         .mapToObj(this::createBatchPrefillLayerTaskGraph)
                         .map(TaskGraph::snapshot)
                         .toList();
-        System.out.printf(
+        logInitialization(
                 "[jllm] prefill fallback family: %d graphs, JIT paged attention, all buffers bound"
                         + " from the primary family%n",
                 groups);
