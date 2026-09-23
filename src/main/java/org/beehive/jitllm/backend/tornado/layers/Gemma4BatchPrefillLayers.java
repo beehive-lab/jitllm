@@ -20,6 +20,7 @@ import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.WorkerGrid3D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 import uk.ac.manchester.tornado.api.types.HalfFloat;
+import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 // @formatter:off
@@ -121,6 +122,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     private final Gemma4Configuration config;
     private final KernelContext context = new KernelContext();
     private final int batchSize;
+
     private final int paddedBatch;
 
     private final int nHead;
@@ -300,6 +302,33 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         }
     }
 
+    // @formatter:off
+    /**
+     * This layer's RoPE pair: uploaded by the first layer of its kind, bound from that graph by
+     * every later one.
+     *
+     * <p>From that graph and not the previous one: a graph that declares an array none of its tasks
+     * reads never allocates it, and a sliding layer's graph never reads the full-attention pair.
+     * Without this every layer graph held its own device copy of its pair.
+     */
+    // @formatter:on
+    private void bindRopeTables(
+            TaskGraph layer, boolean isSwa, FloatArray freqCisReal, FloatArray freqCisImag) {
+        int firstUser = -1;
+        for (int l = 0; l < config.numberOfLayers(); l++) {
+            if (config.isSwa(l) == isSwa) {
+                firstUser = l;
+                break;
+            }
+        }
+        String graphName = layer.getTaskGraphName();
+        if (graphName.equals("batchPrefillLayer_" + firstUser)) {
+            layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, freqCisReal, freqCisImag);
+        } else {
+            layer.consumeFromDevice("batchPrefillLayer_" + firstUser, freqCisReal, freqCisImag);
+        }
+    }
+
     /** The packed [q|k|v] row stride this layer's projection writes. */
     private int qkvStride(int layerIndex) {
         int headDim = config.headDim(layerIndex);
@@ -372,11 +401,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             layer.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION,
                     pleModelProjF16,
-                    weights.perLayerProjNorm.asFloatArray(),
-                    weights.freqCisRealSwa.asFloatArray(),
-                    weights.freqCisImagSwa.asFloatArray(),
-                    weights.freqCisRealFull.asFloatArray(),
-                    weights.freqCisImagFull.asFloatArray());
+                    weights.perLayerProjNorm.asFloatArray());
             layer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
         } else {
             String pred = "batchPrefillLayer_" + (layerIndex - 1);
@@ -441,6 +466,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     weights.layerOutputScale[layerIndex].asFloatArray());
         }
 
+        bindRopeTables(layer, isSwa, freqCisReal, freqCisImag);
         if (layerIndex == 0) {
             appendPleSetup(layer);
         }
@@ -533,6 +559,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     kvDim,
                     stride,
                     cacheBaseOffset);
+
         } else {
             if (!DEQUANT_PROJECTIONS && allQ8(weights.wqLayered[layerIndex])) {
                 layer.task(

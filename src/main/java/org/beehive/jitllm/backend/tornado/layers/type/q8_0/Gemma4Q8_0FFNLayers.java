@@ -205,6 +205,21 @@ public class Gemma4Q8_0FFNLayers
         return layerTaskPrefix(layerIndex) + task;
     }
 
+    // @formatter:off
+    /**
+     * The layer graph before the one holding {@code layerIndex}, or {@code null} for the first.
+     *
+     * <p>Every import names its producer. TornadoVM resolves a graph's unnamed imports against the
+     * graph that ran before it only when the graph has no named import at all, so one named import
+     * — a RoPE table from the first layer of its kind, a weight from a batch-prefill graph — would
+     * silently leave the activation and the scratch buffers unlinked.
+     */
+    // @formatter:on
+    private String previousGraphName(int layerIndex) {
+        int first = layerIndex - layerIndex % LAYERS_PER_GRAPH;
+        return first == 0 ? null : layerGraphName(first - LAYERS_PER_GRAPH);
+    }
+
     private boolean firstLayerOfGraph(int layerIndex) {
         return layerIndex % LAYERS_PER_GRAPH == 0;
     }
@@ -227,6 +242,7 @@ public class Gemma4Q8_0FFNLayers
                 new java.util.ArrayList<>();
         for (int first = 0; first < layers; first += LAYERS_PER_GRAPH) {
             TaskGraph graph = new TaskGraph(layerGraphName(first));
+            java.util.Arrays.fill(ropeBound, false);
             int last = Math.min(first + LAYERS_PER_GRAPH, layers) - 1;
             for (int layer = first; layer <= last; layer++) {
                 appendLayer(graph, layer);
@@ -263,34 +279,16 @@ public class Gemma4Q8_0FFNLayers
         if (firstLayerOfGraph(layerIndex)) {
             String producer = layerIndex == 0 ? activationGraphName() : null;
             if (producer == null) {
+                producer = previousGraphName(layerIndex);
+            }
+            if (producer == null) {
                 unifiedLayer.consumeFromDevice(gemma4State.workspace.wrapX);
             } else {
                 unifiedLayer.consumeFromDevice(producer, gemma4State.workspace.wrapX);
             }
         }
-        unifiedLayer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weightArray(weights.wqLayered[layerIndex]),
-                weightArray(weights.wkLayered[layerIndex]),
-                weightArray(weights.wvLayered[layerIndex]),
-                weightArray(weights.woLayered[layerIndex]),
-                weights.attnQNorm[layerIndex].asFloatArray(),
-                weights.attnKNorm[layerIndex].asFloatArray(),
-                weights.attnPostNorm[layerIndex].asFloatArray(),
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weightArray(weights.w1Layered[layerIndex]),
-                weightArray(weights.w3Layered[layerIndex]),
-                weightArray(weights.w2Layered[layerIndex]),
-                weights.ffnPostNorm[layerIndex].asFloatArray(),
-                weightArray(weights.perLayerInpGate[layerIndex]),
-                weightArray(weights.perLayerProj[layerIndex]),
-                weights.perLayerPostNorm[layerIndex].asFloatArray());
-        if (weights.layerOutputScale[layerIndex] != null) {
-            unifiedLayer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION,
-                    weights.layerOutputScale[layerIndex].asFloatArray());
-        }
+        bindLayerWeights(unifiedLayer, layerIndex);
+        bindRopeTables(unifiedLayer, layerIndex);
         unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
 
         if (layerIndex == 0) {
@@ -412,6 +410,7 @@ public class Gemma4Q8_0FFNLayers
                     headDim,
                     kvDim,
                     cacheBaseOffset);
+
         } else {
             unifiedLayer.task(
                     tn(layerIndex, "rope_q_only"),
@@ -778,6 +777,101 @@ public class Gemma4Q8_0FFNLayers
                 perLayerTotal);
     }
 
+    // @formatter:off
+    /**
+     * This layer's weights: uploaded here in the single-token plan, and in the batched plan bound
+     * from the batch-prefill graph of the same layer, which uploaded them already.
+     *
+     * <p>A weight bound with {@code transferToDevice} in two graphs of one execution plan gets a
+     * device buffer in each, so the batched plan used to hold every projection twice. Only what
+     * that prefill graph hands to one of its own tasks can be bound from it — a weight it declares
+     * and no task reads is never allocated, and a consumer of it reads zeros — so the two
+     * per-layer-embedding projections, which the prefill reads as FP16 copies, stay uploaded here.
+     */
+    // @formatter:on
+    private void bindLayerWeights(TaskGraph unifiedLayer, int layerIndex) {
+        java.util.List<Object> shared = new java.util.ArrayList<>();
+        shared.add(weights.rms_att_weightLayered[layerIndex].asFloatArray());
+        shared.add(weightArray(weights.wqLayered[layerIndex]));
+        shared.add(weightArray(weights.woLayered[layerIndex]));
+        shared.add(weights.attnQNorm[layerIndex].asFloatArray());
+        shared.add(weights.attnPostNorm[layerIndex].asFloatArray());
+        shared.add(weights.rms_ffn_weightLayered[layerIndex].asFloatArray());
+        shared.add(weightArray(weights.w1Layered[layerIndex]));
+        shared.add(weightArray(weights.w3Layered[layerIndex]));
+        shared.add(weightArray(weights.w2Layered[layerIndex]));
+        shared.add(weights.ffnPostNorm[layerIndex].asFloatArray());
+        shared.add(weights.perLayerPostNorm[layerIndex].asFloatArray());
+        if (config.hasOwnKv(layerIndex)) {
+            shared.add(weightArray(weights.wkLayered[layerIndex]));
+            shared.add(weightArray(weights.wvLayered[layerIndex]));
+            shared.add(weights.attnKNorm[layerIndex].asFloatArray());
+        }
+        if (weights.layerOutputScale[layerIndex] != null) {
+            shared.add(weights.layerOutputScale[layerIndex].asFloatArray());
+        }
+        if (batchedPlan) {
+            unifiedLayer.consumeFromDevice("batchPrefillLayer_" + layerIndex, shared.toArray());
+        } else {
+            unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, shared.toArray());
+        }
+        unifiedLayer.transferToDevice(
+                DataTransferMode.FIRST_EXECUTION,
+                weightArray(weights.perLayerInpGate[layerIndex]),
+                weightArray(weights.perLayerProj[layerIndex]));
+    }
+
+    /** Which RoPE pairs the graph being built has bound already: sliding, full. */
+    private final boolean[] ropeBound = new boolean[2];
+
+    // @formatter:off
+    /**
+     * This layer's RoPE pair, bound once per graph and uploaded once per plan.
+     *
+     * <p>The tables are the same arrays for every layer of a kind, and a graph that binds an array
+     * without declaring where it comes from gets its own device copy. The first layer of a kind
+     * uploads its pair — or, in the batched plan, the first batch-prefill layer of that kind
+     * already did — and every other graph binds it from there. From that graph and not another: a
+     * graph that declares an array none of its tasks reads never allocates it.
+     */
+    // @formatter:on
+    private void bindRopeTables(TaskGraph unifiedLayer, int layerIndex) {
+        boolean isSwa = config.isSwa(layerIndex);
+        int kind = isSwa ? 0 : 1;
+        if (ropeBound[kind]) {
+            return;
+        }
+        ropeBound[kind] = true;
+        Object[] pair =
+                isSwa
+                        ? new Object[] {
+                            weights.freqCisRealSwa.asFloatArray(),
+                            weights.freqCisImagSwa.asFloatArray()
+                        }
+                        : new Object[] {
+                            weights.freqCisRealFull.asFloatArray(),
+                            weights.freqCisImagFull.asFloatArray()
+                        };
+        int firstUser = firstLayerOfKind(isSwa);
+        if (batchedPlan) {
+            unifiedLayer.consumeFromDevice("batchPrefillLayer_" + firstUser, pair);
+        } else if (layerGraphName(firstUser).equals(layerGraphName(layerIndex))) {
+            unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, pair);
+        } else {
+            unifiedLayer.consumeFromDevice(layerGraphName(firstUser), pair);
+        }
+    }
+
+    /** The first layer that attends with a sliding window, or the first that attends fully. */
+    private int firstLayerOfKind(boolean isSwa) {
+        for (int l = 0; l < config.numberOfLayers(); l++) {
+            if (config.isSwa(l) == isSwa) {
+                return l;
+            }
+        }
+        throw new IllegalStateException("no layer attends with isSwa=" + isSwa);
+    }
+
     /** Configure data transfers for first and subsequent layers. */
     protected TaskGraph configureLayerDataTransfers(TaskGraph unifiedLayer, int layerIndex) {
         // Per graph, not per layer. A graph that both transfers a buffer in and consumes it from
@@ -798,13 +892,15 @@ public class Gemma4Q8_0FFNLayers
                     gemma4State.workspace.tempPostFfn,
                     gemma4State.workspace.tempPostPle);
             unifiedLayer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION,
-                    weightArray(weights.perLayerModelProj),
-                    weights.perLayerProjNorm.asFloatArray(),
-                    weights.freqCisRealSwa.asFloatArray(),
-                    weights.freqCisImagSwa.asFloatArray(),
-                    weights.freqCisRealFull.asFloatArray(),
-                    weights.freqCisImagFull.asFloatArray());
+                    DataTransferMode.FIRST_EXECUTION, weightArray(weights.perLayerModelProj));
+            if (batchedPlan) {
+                // Read by the first batch-prefill graph's own setup, which uploaded it.
+                unifiedLayer.consumeFromDevice(
+                        "batchPrefillLayer_0", weights.perLayerProjNorm.asFloatArray());
+            } else {
+                unifiedLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, weights.perLayerProjNorm.asFloatArray());
+            }
             unifiedLayer.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION,
                     context,
@@ -822,6 +918,7 @@ public class Gemma4Q8_0FFNLayers
             bindKeyValueCache(unifiedLayer);
         } else {
             unifiedLayer.consumeFromDevice(
+                    previousGraphName(layerIndex),
                     context,
                     gemma4State.workspace.wrapXb,
                     gemma4State.workspace.wrapXb2,
