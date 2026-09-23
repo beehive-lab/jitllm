@@ -30,6 +30,7 @@ public class ArrayHalfFloatTensorTest {
             full.setFloat(i, i + 0.5f);
         }
         full.copyTo(0, half, 0, 4);
-        assertEquals(0.5f * 0.5f + 1.5f * 1.5f + 2.5f * 2.5f + 3.5f * 3.5f, full.dot(0, half, 0, 4), 0f);
+        assertEquals(
+                0.5f * 0.5f + 1.5f * 1.5f + 2.5f * 2.5f + 3.5f * 3.5f, full.dot(0, half, 0, 4), 0f);
     }
 }

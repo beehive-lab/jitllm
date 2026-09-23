@@ -54,10 +54,7 @@ public class Qwen3Q8_0FFNLayersDecode extends Qwen3Q8_0FFNLayers {
                     qwen3State.workspace.wrapHb);
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, state.workspace.wrapAttSplit);
             // KV cache already allocated by batch prefill; relay from decode activation graph.
-            layer.consumeFromDevice(
-                    "decodeActivation",
-                    keyCache(),
-                    valueCache());
+            layer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
             layer.consumeFromDevice("decodeActivation", state.workspace.wrapBlockTable);
         } else {
             String pred = "layer_" + (layerIndex - 1);
