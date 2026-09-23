@@ -26,19 +26,6 @@ import org.beehive.jllm.tensor.standard.FloatTensor;
 public abstract class State {
 
     /**
-     * When set ({@code -Djllm.kvcache.fp16=true}), model states that support it additionally
-     * allocate half-precision KV caches, and the NVIDIA decode path reads/writes those instead of
-     * the FP32 ones (halving KV bandwidth; accumulation stays FP32).
-     *
-     * <p><b>Read where the arrays are allocated, and where a pool is sized — nowhere else.</b> The
-     * key/value representation is <i>storage</i>, not policy, so it does not live in {@code
-     * ExecutionPolicy}; and a consumer that wants to know what a state actually holds asks {@link
-     * #usesFp16KeyValueCache()} rather than re-deriving it from a property. The two answers are not
-     * always the same: a leased state holds whatever the pool was built with.
-     */
-    @Deprecated public static final boolean USE_FP16_KV = Boolean.getBoolean("jllm.kvcache.fp16");
-
-    /**
      * How this state's key/value storage is shaped, resolved <b>per construction</b>.
      *
      * <p>Defaulted from the properties so the CLI, the benchmark harness and every existing test
@@ -497,10 +484,15 @@ public abstract class State {
         // One sequence's private table, identity-mapped: logical block i is physical block i.
         // Addressed only at slot 0 — it is sized blocksPerSeq, so no larger slot fits in it.
         TornadoWorkspaces.identityBlockTable(workspace, blocksPerSeq);
-        TornadoWorkspaces.privateKeyValueFP32(workspace, kvElements);
         if (useFp16) {
+            // One representation only. Every path that reaches an FP16 state binds the FP16
+            // pair (the support rule refuses the rest), so an FP32 pair beside it would be
+            // host memory nothing reads. Left null, a binding that forgot the representation
+            // fails when the graph is built rather than reading zeros.
             workspace.wrapKeyCacheFP16 = TornadoWorkspaces.zeroedHalfFloats(kvElements);
             workspace.wrapValueCacheFP16 = TornadoWorkspaces.zeroedHalfFloats(kvElements);
+        } else {
+            TornadoWorkspaces.privateKeyValueFP32(workspace, kvElements);
         }
         return false;
     }
@@ -509,8 +501,8 @@ public abstract class State {
      * Whether this state's key/value cache is held in half precision.
      *
      * <p>Answered from what was <b>allocated</b>, not from the property that requested it. Every
-     * reader used to write {@code State.USE_FP16_KV && state.workspace.wrapKeyCacheFP16 != null} —
-     * the property <i>and</i> the null check, because the property alone is not the truth: a family
+     * reader used to write {@code USE_FP16_KV && state.workspace.wrapKeyCacheFP16 != null} — the
+     * property <i>and</i> the null check, because the property alone is not the truth: a family
      * whose state has no FP16 arrays, or a leased state whose pool was built in FP32, holds FP32
      * whatever the property says. Asking the state removes both the global read and the chance of
      * writing only half of that condition.
@@ -572,6 +564,17 @@ public abstract class State {
 
     // Abstract method - subclasses implement their specific allocation logic and sizes
     protected abstract StateFields createStateFields(Configuration config);
+
+    /**
+     * A host key/value tensor in the representation this state's storage selects: half precision
+     * for an FP16 cache, single precision otherwise. The CPU forward pass reads and writes it
+     * through {@code FloatTensor}, so accumulation stays FP32 either way.
+     */
+    protected final org.beehive.jllm.tensor.standard.FloatTensor allocateKeyValue(int... dims) {
+        return storageOptions.usesFp16KeyValueCache()
+                ? org.beehive.jllm.tensor.standard.ArrayHalfFloatTensor.allocate(dims)
+                : org.beehive.jllm.tensor.standard.ArrayFloatTensor.allocate(dims);
+    }
 
     /** The host tensors a family allocates during construction. */
     static class StateFields {

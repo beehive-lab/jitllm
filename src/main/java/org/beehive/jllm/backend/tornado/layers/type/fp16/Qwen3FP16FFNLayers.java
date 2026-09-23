@@ -760,6 +760,18 @@ public class Qwen3FP16FFNLayers
         return (layerIndex == 0) ? "activationUpdate" : layerGraphName(layerIndex - 1);
     }
 
+    /** The key cache every graph of this family binds: FP16 when the state holds one. */
+    protected Object keyCache() {
+        return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    /** The value cache, following {@link #keyCache()}. */
+    protected Object valueCache() {
+        return useFp16KVCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
+    }
+
     /** Configure data transfers for first and subsequent layers */
     protected TaskGraph configureLayerDataTransfers(TaskGraph unifiedLayer, int layerIndex) {
         Object keyCache =

@@ -56,9 +56,9 @@ import uk.ac.manchester.tornado.cudnn.CuDnn;
  */
 public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLayerTaskGraphs {
 
+    /** Legacy detail; the startup report's native-library and MMA lines cover it under -v. */
     private static void logInitialization(String format, Object... args) {
-        if (Boolean.getBoolean("jllm.verbose")
-                || Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit")) {
+        if (Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit")) {
             System.err.printf(java.util.Locale.ROOT, format, args);
         }
     }
@@ -238,8 +238,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      * but hands to no task is never uploaded and the consumer binds a buffer nothing wrote. Both
      * sides ask this one method; see {@code Qwen3FP16FFNLayersDecode.weightsNotProvidedBySource}.
      */
-    public static boolean nativeProjections() {
-        return NativePrefillSupport.nativeProjections();
+    public static boolean nativeProjections(
+            org.beehive.jllm.runtime.policy.ExecutionPolicy policy) {
+        return NativePrefillSupport.nativeProjections(policy);
     }
 
     // @formatter:off
@@ -294,13 +295,14 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // this tuple, and finding that out at execution time would be far too late.
         boolean fp16Kv = state.usesFp16KeyValueCache();
         this.sdpaShape = sdpaShape(config, batchSize);
-        this.cudnnAttention = fp16Kv && NativePrefillSupport.nativeAttention(sdpaShape);
+        this.cudnnAttention =
+                fp16Kv && NativePrefillSupport.nativeAttention(state.executionPolicy(), sdpaShape);
         this.useCudnnAttention = this.cudnnAttention;
-        this.nativeProjections = nativeProjections();
+        this.nativeProjections = nativeProjections(state.executionPolicy());
         this.layersPerGraph = Math.min(prefillLayersPerGraph(), config.numberOfLayers());
         logInitialization(
                 "[jllm] prefill acceleration: %s%n",
-                NativePrefillSupport.describe(fp16Kv, sdpaShape));
+                NativePrefillSupport.describe(state.executionPolicy(), fp16Kv, sdpaShape));
         int cudnnElems = cudnnAttention ? qDim * batchSize : 0;
         this.cudnnQ = new HalfFloatArray(cudnnElems);
         this.cudnnK = new HalfFloatArray(cudnnElems);

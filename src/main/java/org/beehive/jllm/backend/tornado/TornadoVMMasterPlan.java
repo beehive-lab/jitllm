@@ -34,9 +34,11 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  */
 public interface TornadoVMMasterPlan {
 
-    boolean ENABLE_TORNADOVM_INIT_TIME =
-            Boolean.getBoolean("jllm.verbose")
-                    || Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit");
+    /**
+     * The deprecated per-stage initialization log lines. {@code --verbose} reports the same facts
+     * once, in the startup report, so it no longer enables these; only the legacy property does.
+     */
+    boolean ENABLE_TORNADOVM_INIT_TIME = Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit");
 
     /** When {@code true}, {@code withCUDAGraph()} is called — CUDA backend only. */
     boolean CUDA_GRAPHS = Boolean.parseBoolean(System.getProperty("jllm.cudaGraphs", "false"));
@@ -94,6 +96,12 @@ public interface TornadoVMMasterPlan {
 
     private static TornadoVMMasterPlan buildPlan(State state, Model model, MetricsSink sink) {
         TornadoVMMasterPlan plan;
+
+        // Every GPU plan passes here, the facade's and the harness's alike, so an FP16 cache the
+        // selected layers do not implement is refused before any device buffer exists. The facade
+        // has already asked at load; this covers the callers that build a state themselves.
+        Fp16KeyValueSupport.require(model, state.executionPolicy(), state.storageOptions(), true);
+        NativeLibrarySupport.require(model, state.executionPolicy(), true);
 
         // The lowering's opt-in is consulted here, in the one factory every caller reaches, rather
         // than at each construction site. It was branched at two sites before — the API session and

@@ -98,4 +98,10 @@ public class OpenAIServerContextLengthTest {
                 List.of("id", "object", "created", "owned_by", "context_length"),
                 List.copyOf(entry.keySet()));
     }
+
+    @Test
+    public void theEnginePathAsksTheLoaderForTheModelsOwnWindowWhenNoneIsGiven() {
+        assertEquals(-1, OpenAIServer.loaderContextLength(0));
+        assertEquals(8192, OpenAIServer.loaderContextLength(8192));
+    }
 }

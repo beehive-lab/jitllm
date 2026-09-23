@@ -168,24 +168,45 @@ public class MistralFP16FFNLayers
 
         // Precomputed RoPE tables: the frequencies come from the model's own rope_theta (and
         // any Llama 3.1 frequency scaling) instead of a constant baked into the kernel.
-        unifiedLayer.task(
-                "rope_and_kv_cache",
-                TransformerPagedKvKernels::ropeRotationWithCacheCopyPrecomputedPaged,
-                context,
-                state.workspace.positionHolder,
-                state.workspace.wrapQ,
-                state.workspace.wrapK,
-                state.workspace.wrapV,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                weights.freq_cis_realFlat.asFloatArray(),
-                weights.freq_cis_imagFlat.asFloatArray(),
-                config.kvDim(),
-                config.headSize(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride);
+        if (useFp16KVCache()) {
+            unifiedLayer.task(
+                    "rope_and_kv_cache",
+                    TransformerPagedKvKernels::ropeRotationWithCacheCopyPrecomputedFP16Paged,
+                    context,
+                    state.workspace.positionHolder,
+                    state.workspace.wrapQ,
+                    state.workspace.wrapK,
+                    state.workspace.wrapV,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    weights.freq_cis_realFlat.asFloatArray(),
+                    weights.freq_cis_imagFlat.asFloatArray(),
+                    config.kvDim(),
+                    config.headSize(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        } else {
+            unifiedLayer.task(
+                    "rope_and_kv_cache",
+                    TransformerPagedKvKernels::ropeRotationWithCacheCopyPrecomputedPaged,
+                    context,
+                    state.workspace.positionHolder,
+                    state.workspace.wrapQ,
+                    state.workspace.wrapK,
+                    state.workspace.wrapV,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    weights.freq_cis_realFlat.asFloatArray(),
+                    weights.freq_cis_imagFlat.asFloatArray(),
+                    config.kvDim(),
+                    config.headSize(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        }
 
         configureAttention(unifiedLayer, layerIndex);
 
@@ -306,8 +327,8 @@ public class MistralFP16FFNLayers
                     state.workspace.wrapQ,
                     state.workspace.wrapK,
                     state.workspace.wrapV,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.wrapAtt,
                     state.workspace.wrapHb,
                     state.workspace.wrapXbFP16,
@@ -326,8 +347,8 @@ public class MistralFP16FFNLayers
                     state.workspace.wrapQ,
                     state.workspace.wrapK,
                     state.workspace.wrapV,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.wrapAtt,
                     state.workspace.wrapHb,
                     state.workspace.positionHolder,
@@ -341,6 +362,29 @@ public class MistralFP16FFNLayers
     }
 
     private TaskGraph configureAttention(TaskGraph unifiedLayer, int layerIndex) {
+        if (useFp16KVCache()) {
+            // Flash attention over the half-precision cache (FP32 accumulation). Mistral runs
+            // the non-NVIDIA scheduler for its FP32 path; the FP16 cache takes the flash kernel
+            // the other Llama-family layers use, which only needs a CUDA device.
+            return unifiedLayer.task(
+                    "attention",
+                    TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
+                    context,
+                    state.workspace.wrapQ,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    state.workspace.wrapXb,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    config.kvDim(),
+                    config.kvMul(),
+                    state.workspace.positionHolder,
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        }
+
         if (schedulerType == SchedulerType.NVIDIA) {
             return unifiedLayer.task(
                     "attention",
@@ -380,6 +424,29 @@ public class MistralFP16FFNLayers
                     state.kvBlockStride);
         }
     }
+
     // @formatter:on
 
+    /** The key cache every graph of this family binds: FP16 when the state holds one. */
+    protected Object keyCache() {
+        return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    /** The value cache, following {@link #keyCache()}. */
+    protected Object valueCache() {
+        return useFp16KVCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
+    }
+
+    /**
+     * The FP16 cache on CUDA, whatever the scheduler: Mistral keeps the non-NVIDIA scheduler for
+     * its FP32 attention, and its FP16 path uses kernels that need a CUDA device, not that
+     * scheduler.
+     */
+    @Override
+    protected boolean useFp16KVCache() {
+        return state.usesFp16KeyValueCache()
+                && org.beehive.jllm.backend.tornado.Fp16KeyValueSupport.nvidiaDevice();
+    }
 }

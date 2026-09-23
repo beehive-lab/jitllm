@@ -94,6 +94,24 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     }
 
     // @formatter:off
+    /**
+     * Whether the cache is half precision: the representation the state holds, which the decode
+     * layers after this prefill bind as well. Batched prefill runs on the tensor-core device only.
+     */
+    private boolean useFp16KVCache() {
+        return state.usesFp16KeyValueCache();
+    }
+
+    private Object keyCache() {
+        return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    private Object valueCache() {
+        return useFp16KVCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
+    }
+
     private TaskGraph createBatchPrefillLayerTaskGraph(int layerIndex) {
         String graphName = "batchPrefillLayer_" + layerIndex;
         if (layerIndex == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
@@ -113,8 +131,8 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.workspace.ffnScaleBatch,
                     state.workspace.wrapXbFP16Batch,
                     state.workspace.qkvResultBatch,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.normedXFFNFP16,
                     state.workspace.gateUpResultBatch,
                     state.workspace.attnOutFP16,
@@ -138,8 +156,8 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.workspace.ffnScaleBatch,
                     state.workspace.wrapXbFP16Batch,
                     state.workspace.qkvResultBatch,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.normedXFFNFP16,
                     state.workspace.gateUpResultBatch,
                     state.workspace.attnOutFP16,
@@ -216,44 +234,87 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 kvDim,
                 dim);
 
-        batchPrefillLayer.task(
-                "batch_rope_kv",
-                TransformerPagedKvBatchPrefillKernels::batchedRopeWithKVCachePackedPaged,
-                context,
-                state.workspace.batchStartPosHolder,
-                state.workspace.qkvResultBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                weights.freq_cis_realFlat.asFloatArray(),
-                weights.freq_cis_imagFlat.asFloatArray(),
-                kvDim,
-                config.headSize(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride,
-                dim);
+        // Same fused QKV layout and FP16 attention output as the FP16-weight layers, so the
+        // half-precision cache takes their kernels: the weights never reach these two tasks.
+        if (useFp16KVCache()) {
+            batchPrefillLayer.task(
+                    "batch_rope_kv",
+                    TransformerPagedKvBatchPrefillKernels::batchedRopeWithKVCachePackedFP16Paged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.qkvResultBatch,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    weights.freq_cis_realFlat.asFloatArray(),
+                    weights.freq_cis_imagFlat.asFloatArray(),
+                    kvDim,
+                    config.headSize(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
 
-        // Register-partitioned P·V accumulation + direct FP16 emission
-        // (replaces batchedFlashAttention + attnCast).
-        batchPrefillLayer.task(
-                "batch_attention",
-                TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionFP16OutPaged,
-                context,
-                state.workspace.batchStartPosHolder,
-                state.workspace.qkvResultBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                state.workspace.attnOutFP16,
-                config.numberOfHeads(),
-                config.headSize(),
-                kvDim,
-                config.kvMul(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride,
-                dim);
+            // Register-partitioned P·V accumulation + direct FP16 emission
+            // (replaces batchedFlashAttention + attnCast).
+            batchPrefillLayer.task(
+                    "batch_attention",
+                    TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionFP16OutKVFP16Paged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.qkvResultBatch,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    state.workspace.attnOutFP16,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    kvDim,
+                    config.kvMul(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        } else {
+            batchPrefillLayer.task(
+                    "batch_rope_kv",
+                    TransformerPagedKvBatchPrefillKernels::batchedRopeWithKVCachePackedPaged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.qkvResultBatch,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    weights.freq_cis_realFlat.asFloatArray(),
+                    weights.freq_cis_imagFlat.asFloatArray(),
+                    kvDim,
+                    config.headSize(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+
+            // Register-partitioned P·V accumulation + direct FP16 emission
+            // (replaces batchedFlashAttention + attnCast).
+            batchPrefillLayer.task(
+                    "batch_attention",
+                    TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionFP16OutPaged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.qkvResultBatch,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    state.workspace.attnOutFP16,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    kvDim,
+                    config.kvMul(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        }
 
         batchPrefillLayer.task(
                 "woProj",
@@ -329,10 +390,7 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
         // Persist wrapXBatch for the next layer, and KV cache so the decode
         // layers can consume it via the activation graph pass-through.
-        batchPrefillLayer.persistOnDevice(
-                state.workspace.wrapXBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache);
+        batchPrefillLayer.persistOnDevice(state.workspace.wrapXBatch, keyCache(), valueCache());
 
         return batchPrefillLayer;
     }

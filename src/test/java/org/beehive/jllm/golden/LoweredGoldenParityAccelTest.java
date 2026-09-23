@@ -19,6 +19,11 @@ import org.junit.Test;
  */
 public class LoweredGoldenParityAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     /** Bounds copied from {@code CpuGpuParity} so the criterion is the same one. */
     private static final double F16_ATOL = 1.5e-2;
 

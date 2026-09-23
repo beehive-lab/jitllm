@@ -68,6 +68,7 @@ public final class ExecutionPolicy {
     private final OptionalInt splitKvPartitions;
     private final boolean packedHalf2Attention;
     private final boolean scalarFp16KeyValueReads;
+    private final boolean nativeLibraries;
 
     private ExecutionPolicy(
             PhaseStrategy phaseStrategy,
@@ -75,7 +76,9 @@ public final class ExecutionPolicy {
             SamplingResidency samplingResidency,
             OptionalInt splitKvPartitions,
             boolean packedHalf2Attention,
-            boolean scalarFp16KeyValueReads) {
+            boolean scalarFp16KeyValueReads,
+            boolean nativeLibraries) {
+        this.nativeLibraries = nativeLibraries;
         this.packedHalf2Attention = packedHalf2Attention;
         this.scalarFp16KeyValueReads = scalarFp16KeyValueReads;
         this.phaseStrategy = Objects.requireNonNull(phaseStrategy, "phaseStrategy");
@@ -114,7 +117,8 @@ public final class ExecutionPolicy {
                 .samplingResidency(base.samplingResidency)
                 .splitKvPartitions(base.splitKvPartitions)
                 .packedHalf2Attention(base.packedHalf2Attention)
-                .scalarFp16KeyValueReads(base.scalarFp16KeyValueReads);
+                .scalarFp16KeyValueReads(base.scalarFp16KeyValueReads)
+                .nativeLibraries(base.nativeLibraries);
     }
 
     /**
@@ -142,7 +146,38 @@ public final class ExecutionPolicy {
                                 : OptionalInt.empty())
                 .packedHalf2Attention(Boolean.getBoolean("jllm.attention.deepHalf2"))
                 .scalarFp16KeyValueReads(Boolean.getBoolean("jllm.kvcache.fp16.scalar"))
+                .nativeLibraries(nativeLibrariesFromProperties())
                 .build();
+    }
+
+    /** The property that asks for vendor native libraries: {@code -Djllm.nativeLibraries=true}. */
+    public static final String NATIVE_LIBRARIES_PROPERTY = "jllm.nativeLibraries";
+
+    /**
+     * The earlier spelling, from when the native prefill libraries were on by default. Honoured
+     * when set; the default is now off.
+     */
+    public static final String LEGACY_NATIVE_PREFILL_PROPERTY = "jllm.prefill.native";
+
+    private static boolean nativeLibrariesFromProperties() {
+        String current = System.getProperty(NATIVE_LIBRARIES_PROPERTY);
+        String legacy = System.getProperty(LEGACY_NATIVE_PREFILL_PROPERTY);
+        if (current != null
+                && legacy != null
+                && Boolean.parseBoolean(current) != Boolean.parseBoolean(legacy)) {
+            throw new IllegalArgumentException(
+                    "-D"
+                            + NATIVE_LIBRARIES_PROPERTY
+                            + "="
+                            + current
+                            + " and -D"
+                            + LEGACY_NATIVE_PREFILL_PROPERTY
+                            + "="
+                            + legacy
+                            + " disagree; drop "
+                            + LEGACY_NATIVE_PREFILL_PROPERTY);
+        }
+        return Boolean.parseBoolean(current != null ? current : legacy);
     }
 
     public PhaseStrategy phaseStrategy() {
@@ -178,6 +213,16 @@ public final class ExecutionPolicy {
         return scalarFp16KeyValueReads;
     }
 
+    /**
+     * Whether vendor native libraries (cuBLAS, cuDNN) may replace JIT kernels where an
+     * implementation exists. Off by default: the JIT kernels run every supported configuration, and
+     * the native path is experimental, narrower, and needs more device memory (stacked projection
+     * copies beside the weights).
+     */
+    public boolean nativeLibraries() {
+        return nativeLibraries;
+    }
+
     @Override
     public boolean equals(Object other) {
         if (this == other) {
@@ -191,7 +236,8 @@ public final class ExecutionPolicy {
                 && samplingResidency == that.samplingResidency
                 && splitKvPartitions.equals(that.splitKvPartitions)
                 && packedHalf2Attention == that.packedHalf2Attention
-                && scalarFp16KeyValueReads == that.scalarFp16KeyValueReads;
+                && scalarFp16KeyValueReads == that.scalarFp16KeyValueReads
+                && nativeLibraries == that.nativeLibraries;
     }
 
     @Override
@@ -202,7 +248,8 @@ public final class ExecutionPolicy {
                 samplingResidency,
                 splitKvPartitions,
                 packedHalf2Attention,
-                scalarFp16KeyValueReads);
+                scalarFp16KeyValueReads,
+                nativeLibraries);
     }
 
     @Override
@@ -219,6 +266,8 @@ public final class ExecutionPolicy {
                 + packedHalf2Attention
                 + ", scalarFp16Kv="
                 + scalarFp16KeyValueReads
+                + ", nativeLibraries="
+                + nativeLibraries
                 + "]";
     }
 
@@ -230,8 +279,15 @@ public final class ExecutionPolicy {
         private OptionalInt splitKvPartitions = OptionalInt.empty();
         private boolean packedHalf2Attention;
         private boolean scalarFp16KeyValueReads;
+        private boolean nativeLibraries;
 
         private Builder() {}
+
+        /** Allow vendor native libraries where implemented; experimental, off by default. */
+        public Builder nativeLibraries(boolean nativeLibraries) {
+            this.nativeLibraries = nativeLibraries;
+            return this;
+        }
 
         public Builder packedHalf2Attention(boolean packedHalf2Attention) {
             this.packedHalf2Attention = packedHalf2Attention;
@@ -274,7 +330,8 @@ public final class ExecutionPolicy {
                     samplingResidency,
                     splitKvPartitions,
                     packedHalf2Attention,
-                    scalarFp16KeyValueReads);
+                    scalarFp16KeyValueReads,
+                    nativeLibraries);
         }
     }
 
@@ -295,8 +352,10 @@ public final class ExecutionPolicy {
         private final SamplingResidency samplingResidency;
         private final OptionalInt splitKvPartitions;
         private final boolean splitKvSet;
+        private final Boolean nativeLibraries;
 
         private Overrides(Builder builder) {
+            this.nativeLibraries = builder.nativeLibraries;
             this.phaseStrategy = builder.phaseStrategy;
             this.prefillBatchSize = builder.prefillBatchSize;
             this.samplingResidency = builder.samplingResidency;
@@ -318,7 +377,8 @@ public final class ExecutionPolicy {
             return phaseStrategy == null
                     && prefillBatchSize == null
                     && samplingResidency == null
-                    && !splitKvSet;
+                    && !splitKvSet
+                    && nativeLibraries == null;
         }
 
         /** The model's policy with this session's fields applied. */
@@ -346,6 +406,9 @@ public final class ExecutionPolicy {
             if (splitKvSet) {
                 builder.splitKvPartitions(splitKvPartitions);
             }
+            if (nativeLibraries != null) {
+                builder.nativeLibraries(nativeLibraries);
+            }
             return builder.build();
         }
 
@@ -361,6 +424,8 @@ public final class ExecutionPolicy {
                             + samplingResidency
                             + ", splitKv="
                             + (splitKvSet ? String.valueOf(splitKvPartitions) : "unset")
+                            + ", nativeLibraries="
+                            + nativeLibraries
                             + "]";
         }
 
@@ -371,8 +436,15 @@ public final class ExecutionPolicy {
             private SamplingResidency samplingResidency;
             private OptionalInt splitKvPartitions = OptionalInt.empty();
             private boolean splitKvSet;
+            private Boolean nativeLibraries;
 
             private Builder() {}
+
+            /** Allow or forbid vendor native libraries for this session. */
+            public Builder nativeLibraries(boolean nativeLibraries) {
+                this.nativeLibraries = nativeLibraries;
+                return this;
+            }
 
             public Builder phaseStrategy(PhaseStrategy phaseStrategy) {
                 this.phaseStrategy = Objects.requireNonNull(phaseStrategy, "phaseStrategy");

@@ -54,10 +54,7 @@ public class LlamaQ8_0FFNLayersDecode extends LlamaQ8_0FFNLayers {
                     state.workspace.wrapV,
                     state.workspace.wrapAtt,
                     state.workspace.wrapHb);
-            layer.consumeFromDevice(
-                    "decodeActivation",
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache);
+            layer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
             layer.consumeFromDevice("decodeActivation", state.workspace.wrapBlockTable);
         } else {
             String pred = "layer_" + (layerIndex - 1);
@@ -69,8 +66,8 @@ public class LlamaQ8_0FFNLayersDecode extends LlamaQ8_0FFNLayers {
                     state.workspace.wrapQ,
                     state.workspace.wrapK,
                     state.workspace.wrapV,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.wrapAtt,
                     state.workspace.wrapHb,
                     state.workspace.positionHolder);

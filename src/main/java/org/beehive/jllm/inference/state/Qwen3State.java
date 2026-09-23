@@ -79,11 +79,11 @@ public final class Qwen3State extends State {
 
         // Key-value cache with Qwen3 dimensions
         fields.keyCache =
-                Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength(), nEmbdGqa))
+                Stream.generate(() -> allocateKeyValue(config.contextLength(), nEmbdGqa))
                         .limit(config.numberOfLayers())
                         .toArray(FloatTensor[]::new);
         fields.valueCache =
-                Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength(), nEmbdGqa))
+                Stream.generate(() -> allocateKeyValue(config.contextLength(), nEmbdGqa))
                         .limit(config.numberOfLayers())
                         .toArray(FloatTensor[]::new);
 

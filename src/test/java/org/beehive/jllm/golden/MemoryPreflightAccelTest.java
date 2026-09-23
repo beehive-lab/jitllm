@@ -19,6 +19,11 @@ import org.junit.Test;
 
 public class MemoryPreflightAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     private static final String GPU_PROPERTY = "use.tornadovm";
     private static final String BUDGET = "tornado.device.memory";
 
@@ -131,7 +136,8 @@ public class MemoryPreflightAccelTest {
     }
 
     /**
-     * Batched prefill must predict more than single-token, and say where the difference comes from.
+     * Batched prefill must predict more than single-token, and say where the difference comes from:
+     * its staging buffers, since the weights are shared between its two graph families.
      */
     @Test
     public void batchedPrefillPredictsItsExtraCost() throws Exception {
@@ -155,22 +161,51 @@ public class MemoryPreflightAccelTest {
         assertTrue(
                 "batched prefill must predict more than single-token",
                 batched.predictedBudgetBytes() > single.predictedBudgetBytes());
+        // The decode graphs consume the weights the batched-prefill graphs uploaded, so the plan
+        // holds them once (measured: this model runs batched in a 2600 MB budget, where counting
+        // them twice predicted 4.2 GB). What batched prefill adds is its staging, not a copy.
+        assertEquals("the weights are not charged twice", 0L, batched.duplicationBytes());
         assertTrue(
-                "and the difference must be reported as duplication rather than hidden",
-                batched.duplicationBytes() > 0);
+                "the extra is batch staging",
+                logicalBytesOf(batched, org.beehive.jllm.runtime.memory.BufferClass.BATCH_STAGING)
+                        > 0);
+        // Key/value storage is compared on its own: single-token Llama F16 is the lowered tuple,
+        // so it reserves the shared pool and its scratch block, while batched prefill keeps a
+        // private cache. The two differ by exactly that one block, and by nothing else.
+        long kvBlockBytes =
+                2L
+                        * org.beehive.jllm.runtime.memory.KeyValueReservation.BLOCK_SIZE_TOKENS
+                        * 16 // layers
+                        * 512 // kvDim
+                        * 4; // FP32
         assertEquals(
-                "the logical bytes barely change; it is the multiplicity that does",
-                single.logicalBytes() / 1048576,
+                "a single pooled session costs its private cache plus the scratch block",
+                logicalBytesOf(batched, org.beehive.jllm.runtime.memory.BufferClass.KV_CACHE)
+                        + kvBlockBytes,
+                logicalBytesOf(single, org.beehive.jllm.runtime.memory.BufferClass.KV_CACHE));
+        assertEquals(
+                "the other logical bytes barely change; it is the multiplicity that does",
+                (single.logicalBytes()
+                                - logicalBytesOf(
+                                        single,
+                                        org.beehive.jllm.runtime.memory.BufferClass.KV_CACHE))
+                        / 1048576,
                 (batched.logicalBytes()
-                                - batched.components().stream()
-                                        .filter(
-                                                c ->
-                                                        c.bufferClass()
-                                                                == org.beehive.jllm.runtime.memory
-                                                                        .BufferClass.BATCH_STAGING)
-                                        .mapToLong(c -> c.logicalBytes())
-                                        .sum())
+                                - logicalBytesOf(
+                                        batched,
+                                        org.beehive.jllm.runtime.memory.BufferClass.KV_CACHE)
+                                - logicalBytesOf(
+                                        batched,
+                                        org.beehive.jllm.runtime.memory.BufferClass.BATCH_STAGING))
                         / 1048576);
+    }
+
+    private static long logicalBytesOf(
+            MemoryPlan plan, org.beehive.jllm.runtime.memory.BufferClass bufferClass) {
+        return plan.components().stream()
+                .filter(c -> c.bufferClass() == bufferClass)
+                .mapToLong(c -> c.logicalBytes())
+                .sum();
     }
 
     /**

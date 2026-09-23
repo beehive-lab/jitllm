@@ -203,42 +203,82 @@ public class Phi3FP16FFNLayers
                 LOCAL_WORK_GROUP_SIZE_ALLOC);
 
         // Fused Phi3 RoPE Rotation + KV Cache Write
-        unifiedLayer.task(
-                "rope_and_kv_cache",
-                Phi3PagedKvKernels::ropeRotationWithCacheCopyPhi3Paged,
-                context,
-                phi3State.workspace.positionHolder, // current position
-                phi3State.workspace.wrapQ, // Q vectors (in/out, rotated)
-                phi3State.workspace.wrapK, // K vectors (in/out, rotated)
-                phi3State.workspace.wrapV, // V vectors (in only)
-                phi3State.workspace.wrapKeyCache, // key cache (out)
-                phi3State.workspace.wrapValueCache, // value cache (out)
-                config.numberOfKeyValueHeads(), // nHeadKv
-                config.headSize(), // head dimension
-                config.kvDim(), // kvDim
-                layerIndex, // layer index for cache offset
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride); // max sequence length
+        if (useFp16KVCache()) {
+            unifiedLayer.task(
+                    "rope_and_kv_cache",
+                    Phi3PagedKvKernels::ropeRotationWithCacheCopyPhi3FP16Paged,
+                    context,
+                    phi3State.workspace.positionHolder, // current position
+                    phi3State.workspace.wrapQ, // Q vectors (in/out, rotated)
+                    phi3State.workspace.wrapK, // K vectors (in/out, rotated)
+                    phi3State.workspace.wrapV, // V vectors (in only)
+                    phi3State.workspace.wrapKeyCacheFP16, // key cache (out)
+                    phi3State.workspace.wrapValueCacheFP16, // value cache (out)
+                    config.numberOfKeyValueHeads(), // nHeadKv
+                    config.headSize(), // head dimension
+                    config.kvDim(), // kvDim
+                    layerIndex, // layer index for cache offset
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride); // max sequence length
+        } else {
+            unifiedLayer.task(
+                    "rope_and_kv_cache",
+                    Phi3PagedKvKernels::ropeRotationWithCacheCopyPhi3Paged,
+                    context,
+                    phi3State.workspace.positionHolder, // current position
+                    phi3State.workspace.wrapQ, // Q vectors (in/out, rotated)
+                    phi3State.workspace.wrapK, // K vectors (in/out, rotated)
+                    phi3State.workspace.wrapV, // V vectors (in only)
+                    state.workspace.wrapKeyCache, // key cache (out)
+                    state.workspace.wrapValueCache, // value cache (out)
+                    config.numberOfKeyValueHeads(), // nHeadKv
+                    config.headSize(), // head dimension
+                    config.kvDim(), // kvDim
+                    layerIndex, // layer index for cache offset
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride); // max sequence length
+        }
 
         // Flash Attention
-        unifiedLayer.task(
-                "attention",
-                TransformerPagedKvKernels::processHeadsFlashAttentionPaged,
-                context,
-                phi3State.workspace.wrapQ, // query vectors
-                phi3State.workspace.wrapKeyCache, // key cache
-                phi3State.workspace.wrapValueCache, // value cache
-                phi3State.workspace.wrapXb, // output: attention result
-                config.numberOfHeads(), // nHeads
-                config.headSize(), // headSize
-                config.kvDim(), // kvDim
-                config.kvMul(), // kvMul (nHeads / nHeadKv)
-                phi3State.workspace.positionHolder, // position
-                layerIndex, // layer index
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride); // context length
+        if (useFp16KVCache()) {
+            unifiedLayer.task(
+                    "attention",
+                    TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
+                    context,
+                    phi3State.workspace.wrapQ, // query vectors
+                    phi3State.workspace.wrapKeyCacheFP16, // key cache
+                    phi3State.workspace.wrapValueCacheFP16, // value cache
+                    phi3State.workspace.wrapXb, // output: attention result
+                    config.numberOfHeads(), // nHeads
+                    config.headSize(), // headSize
+                    config.kvDim(), // kvDim
+                    config.kvMul(), // kvMul (nHeads / nHeadKv)
+                    phi3State.workspace.positionHolder, // position
+                    layerIndex, // layer index
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride); // context length
+        } else {
+            unifiedLayer.task(
+                    "attention",
+                    TransformerPagedKvKernels::processHeadsFlashAttentionPaged,
+                    context,
+                    phi3State.workspace.wrapQ, // query vectors
+                    state.workspace.wrapKeyCache, // key cache
+                    state.workspace.wrapValueCache, // value cache
+                    phi3State.workspace.wrapXb, // output: attention result
+                    config.numberOfHeads(), // nHeads
+                    config.headSize(), // headSize
+                    config.kvDim(), // kvDim
+                    config.kvMul(), // kvMul (nHeads / nHeadKv)
+                    phi3State.workspace.positionHolder, // position
+                    layerIndex, // layer index
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride); // context length
+        }
 
         // Output Projection with Residual
         if (useSimd32) {
@@ -351,8 +391,8 @@ public class Phi3FP16FFNLayers
                     phi3State.workspace.wrapQ,
                     phi3State.workspace.wrapK,
                     phi3State.workspace.wrapV,
-                    phi3State.workspace.wrapKeyCache,
-                    phi3State.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     phi3State.workspace.wrapAtt,
                     phi3State.workspace.wrapHb,
                     phi3State.workspace.wrapHbG,
@@ -372,8 +412,8 @@ public class Phi3FP16FFNLayers
                     phi3State.workspace.wrapQ,
                     phi3State.workspace.wrapK,
                     phi3State.workspace.wrapV,
-                    phi3State.workspace.wrapKeyCache,
-                    phi3State.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     phi3State.workspace.wrapAtt,
                     phi3State.workspace.wrapHb,
                     phi3State.workspace.positionHolder,
@@ -385,6 +425,18 @@ public class Phi3FP16FFNLayers
         }
         return unifiedLayer;
     }
+
     // @formatter:on
 
+    /** The key cache every graph of this family binds: FP16 when the state holds one. */
+    protected Object keyCache() {
+        return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    /** The value cache, following {@link #keyCache()}. */
+    protected Object valueCache() {
+        return useFp16KVCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
+    }
 }

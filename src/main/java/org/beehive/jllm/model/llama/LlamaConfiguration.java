@@ -16,6 +16,19 @@ public record LlamaConfiguration(
         float ropeTheta)
         implements Configuration {
 
+    /**
+     * One: batched prefill lays out a prefill and a decode family of per-layer graphs, but the
+     * decode graphs consume the weights the prefill graphs uploaded (their {@code
+     * weightSourceGraphName}), so the plan holds the weights once. Measured: Llama-3.2-1B F16
+     * batched prefill runs in a 2600 MB budget and Qwen3-8B F16 in 17 GB, where counting the
+     * weights twice predicted 4.2 GB and 29.2 GB and refused the second. The native prefill path's
+     * stacked projection copies are a separate component, not this count.
+     */
+    @Override
+    public int weightBindingFamilies(int layerGraphFamilies) {
+        return 1;
+    }
+
     @Override
     public String quantization() {
         return quantization;

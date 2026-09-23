@@ -18,6 +18,11 @@ import org.junit.Test;
  */
 public class Gemma4Q4_0ParityAccelTest extends CpuGpuParity {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     @Test
     public void gemma4E2bQ4_0CpuGpuParity() throws Exception {
         assertParity(Fixture.GEMMA_4_E2B_Q4_0, Q4_0_PACKED_ACTIVATION);

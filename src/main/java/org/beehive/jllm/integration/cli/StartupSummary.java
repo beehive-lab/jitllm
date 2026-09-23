@@ -1,4 +1,4 @@
-package org.beehive.jllm;
+package org.beehive.jllm.integration.cli;
 
 import java.util.Locale;
 import java.util.concurrent.ForkJoinPool;
@@ -23,6 +23,7 @@ record StartupSummary(
         long readyNs,
         RunMetricsSnapshot timings,
         MemoryPlan memory,
+        int concurrentSessions,
         boolean verbose) {
 
     String render() {
@@ -51,7 +52,8 @@ record StartupSummary(
                             + " attention heads / "
                             + shape.keyValueHeads()
                             + " KV heads");
-            row(out, "Training context", shape.maxContextLength() + " tokens");
+            trainingContext(shape)
+                    .ifPresent(tokens -> row(out, "Training context", tokens + " tokens"));
             if (gpu && timings.executionPath() != null) {
                 row(out, "Execution path", timings.executionPath());
             }
@@ -90,12 +92,21 @@ record StartupSummary(
                                 .collect(Collectors.joining(", ")));
         row(out, "Execution", execution.mode());
         row(out, "Context", model.contextLength() + " tokens");
+        if (concurrentSessions > 0) {
+            row(out, "Concurrent sessions", concurrentSessions);
+        }
         if (execution.prefillBatchSize() > 1) {
             row(out, "Prefill chunk", execution.prefillBatchSize() + " tokens");
         }
         row(out, "KV cache", execution.kvCache());
         if (gpu) {
-            row(out, "MMA / tensor cores", execution.prefillKernels() + " (prefill)");
+            row(
+                    out,
+                    "MMA / tensor cores",
+                    execution.prefillKernels()
+                            + (execution.mode().equals("continuous-batch-decode")
+                                    ? " (batched prefill/decode)"
+                                    : " (prefill)"));
             row(out, "Native libraries", execution.nativeLibraries());
             row(out, "CUDA graphs", execution.cudaGraphs() ? "on" : "off");
             row(out, "Staged transfers", execution.stagedTransfers() ? "on" : "off");
@@ -129,12 +140,12 @@ record StartupSummary(
         out.append("\n  Initialization\n");
         row(out, "Model load", milliseconds(modelLoadNs));
         if (gpu) {
-            row(out, "Plan construction", milliseconds(timings.tornadoPlanCreationDuration()));
-            row(out, "JIT precompilation", milliseconds(timings.tornadoJitDuration()));
+            row(out, "Plan construction", setupTime(timings.tornadoPlanCreationDuration()));
+            row(out, "JIT precompilation", setupTime(timings.tornadoJitDuration()));
             row(
                     out,
                     "Initial device setup",
-                    milliseconds(timings.tornadoReadOnlyWeightsCopyInDuration())
+                    setupTime(timings.tornadoReadOnlyWeightsCopyInDuration())
                             + " (uploads + execution / graph capture)");
         }
         row(out, "Ready to generate", milliseconds(readyNs));
@@ -173,8 +184,24 @@ record StartupSummary(
         }
     }
 
+    private static String setupTime(long ns) {
+        return ns > 0 ? milliseconds(ns) : "not measured (lazy execution)";
+    }
+
     private static String milliseconds(long ns) {
         return String.format(Locale.ROOT, "%.2f ms", ns / 1e6);
+    }
+
+    /**
+     * The model's own maximum sequence length, when its family records one. Llama, Mistral and
+     * Devstral configurations do not, and throw; a diagnostic report must not fail the run for it.
+     */
+    private static java.util.OptionalInt trainingContext(ModelConfiguration shape) {
+        try {
+            return java.util.OptionalInt.of(shape.maxContextLength());
+        } catch (UnsupportedOperationException notRecorded) {
+            return java.util.OptionalInt.empty();
+        }
     }
 
     private static void row(StringBuilder out, String label, Object value) {

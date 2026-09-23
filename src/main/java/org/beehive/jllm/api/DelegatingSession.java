@@ -66,6 +66,13 @@ final class DelegatingSession implements GenerationSession {
     private final EncodedPrefix encodedContext = new EncodedPrefix();
 
     /**
+     * Tokens the next prompt-form turn must feed before its own: a previous answer whose reasoning
+     * was dropped from the cache, and — after a family that cannot rewind was reset — everything
+     * before it. Empty when the cache already holds the whole history.
+     */
+    private List<Integer> carriedHistory = List.of();
+
+    /**
      * How this session executes, resolved once at construction.
      *
      * <p>A value, not a lookup: the choices it carries were {@code static final} fields read from
@@ -141,8 +148,9 @@ final class DelegatingSession implements GenerationSession {
     public GenerationResult generate(GenerationRequest request) {
         ensureUsable();
 
+        boolean promptForm = request.messages() == null;
         List<Integer> promptTokens =
-                request.messages() != null ? encodeConversation(request) : encodePrompt(request);
+                promptForm ? encodePrompt(request) : encodeConversation(request);
         if (position + promptTokens.size() >= contextLength) {
             return new GenerationResult(
                     "",
@@ -151,6 +159,9 @@ final class DelegatingSession implements GenerationSession {
                     FinishReason.CONTEXT_FULL,
                     new GenerationTimings(Duration.ZERO, Duration.ZERO, promptTokens.size(), 0));
         }
+
+        // Consumed by this turn's prompt, or superseded by a conversation-form request.
+        carriedHistory = List.of();
 
         Sampler sampler =
                 Sampler.selectSampler(
@@ -168,14 +179,22 @@ final class DelegatingSession implements GenerationSession {
                         model.tokenizer(), stopTokens, request.onEvent(), request.onToken());
         IntConsumer onToken = events::accept;
 
-        // maxTokens is the total budget including the prompt, and is capped by the session's
-        // context: exceeding it would write past the key/value cache this session was sized for.
-        int budget =
-                Math.min(position + promptTokens.size() + request.maxNewTokens(), contextLength);
-
         // The session's logical values become current in whatever state it executes with. For a
         // borrowed workspace that is what keeps two sessions' conversations apart.
         runtime.beginTurn();
+
+        // The loops take a position bound, not a token count: the budget is the positions the
+        // prompt occupies plus the tokens asked for, capped by the session's context — exceeding
+        // it would write past the key/value cache this session was sized for. A prompt that
+        // opens with the token the state is seeded with occupies one position less (it is fed
+        // once), so it is counted by what is ingested, not by its length; otherwise that position
+        // would become one more generated token than the request asked for.
+        int ingested =
+                promptTokens.size()
+                        - org.beehive.jllm.inference.PromptIngestion.of(
+                                        runtime.executionState(), promptTokens, position)
+                                .firstIndex();
+        int budget = Math.min(position + ingested + request.maxNewTokens(), contextLength);
         List<Integer> responseTokens;
         if (gpu) {
             // The runtime already decided what this session executes with — its own state and plan,
@@ -204,6 +223,7 @@ final class DelegatingSession implements GenerationSession {
             responseTokens.removeLast();
         }
 
+        int responseStart = position + promptTokens.size();
         position += promptTokens.size() + responseTokens.size();
         // Exactly what the key/value cache now holds, so the next conversation can be compared
         // against it. The terminal stop token is not here for the same reason it is not in
@@ -211,6 +231,9 @@ final class DelegatingSession implements GenerationSession {
         encodedContext.append(promptTokens);
         encodedContext.append(responseTokens);
         started = true;
+        if (promptForm) {
+            dropReasoningFromHistory(responseStart, responseTokens);
+        }
 
         // The stream drops a held terminal stop token and returns everything else, so the text and
         // the events cannot disagree: concatenating the events' non-empty text is this string.
@@ -290,7 +313,16 @@ final class DelegatingSession implements GenerationSession {
     private List<Integer> encodePrompt(GenerationRequest request) {
         ChatFormat chatFormat = model.chatFormat();
         List<Integer> tokens = new ArrayList<>();
-        if (!started) {
+        tokens.addAll(carriedHistory);
+        if (started) {
+            // The previous turn's response is in the cache without its terminator: the stop token
+            // that ended it was dropped above, and a response cut by the budget never had one. A
+            // new user turn written straight after it would continue an assistant message that
+            // was never closed, and the model answers that malformed history by ending its next
+            // turn early. Close it the way this format closes any assistant message, which is
+            // also what the conversation form encodes, so the two forms keep one history.
+            tokens.addAll(assistantTurnTerminator(chatFormat));
+        } else {
             if (model.shouldAddBeginOfText()) {
                 tokens.add(chatFormat.getBeginOfText());
             }
@@ -310,6 +342,62 @@ final class DelegatingSession implements GenerationSession {
         // configuration, and which request shape was used does not change it.
         encoder.appendThinkingControl(tokens);
         return tokens;
+    }
+
+    /**
+     * Keeps only the answer of a reasoning turn in the history the next prompt-form turn sees.
+     *
+     * <p>A reasoning template renders earlier assistant turns without their reasoning, and the
+     * model is trained on that shape. Left in the cache, the finished {@code <think>} block makes
+     * it close its next turn right after reasoning, without an answer. The conversation form never
+     * has the problem: it re-encodes the history the caller sends, reasoning and all as plain text.
+     *
+     * <p>A family whose state is positional drops the block by rewinding to where the response
+     * began; the answer is fed again with the next turn. One that also carries recurrent state
+     * cannot rewind, because that state has already consumed the reasoning, so it is reset and the
+     * whole history, answer included, is fed again.
+     */
+    private void dropReasoningFromHistory(int responseStart, List<Integer> responseTokens) {
+        int reasoningEnd = responseTokens.indexOf(model.chatFormat().reasoningEndToken());
+        if (model.chatFormat().reasoningEndToken() < 0 || reasoningEnd < 0) {
+            return;
+        }
+        int answerStart = reasoningEnd + 1;
+        // The template strips the whitespace that separates reasoning from the answer.
+        while (answerStart < responseTokens.size()
+                && model.tokenizer().decode(List.of(responseTokens.get(answerStart))).isBlank()) {
+            answerStart++;
+        }
+        List<Integer> answer =
+                List.copyOf(responseTokens.subList(answerStart, responseTokens.size()));
+        if (model.configuration().recurrentStateBytes() == 0) {
+            position = responseStart;
+            encodedContext.truncate(responseStart);
+            carriedHistory = answer;
+            return;
+        }
+        List<Integer> history = new ArrayList<>(encodedContext.tokens().subList(0, responseStart));
+        history.addAll(answer);
+        position = 0;
+        encodedContext.clear();
+        runtime.reset();
+        carriedHistory = history;
+    }
+
+    /**
+     * The tokens that end an assistant message in this format: an empty assistant message minus its
+     * header. Empty when the format does not render a message as its header followed by the
+     * content, since no suffix can then be isolated.
+     */
+    private static List<Integer> assistantTurnTerminator(ChatFormat chatFormat) {
+        List<Integer> header =
+                chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, ""));
+        List<Integer> message =
+                chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, ""));
+        if (message.size() < header.size() || !message.subList(0, header.size()).equals(header)) {
+            return List.of();
+        }
+        return message.subList(header.size(), message.size());
     }
 
     /**
@@ -346,9 +434,11 @@ final class DelegatingSession implements GenerationSession {
      * ask for explicitly, minus the {@code ensureUsable()} that would be redundant here.
      */
     private void resetForDivergence() {
+        carriedHistory = List.of();
         position = 0;
         started = false;
         encodedContext.clear();
+        carriedHistory = List.of();
         runtime.reset();
     }
 

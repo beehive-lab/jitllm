@@ -18,11 +18,52 @@ public record Options(
         boolean echo,
         boolean useTornadovm,
         boolean withPrefillDecode,
-        int batchPrefillSize) {
+        int batchPrefillSize,
+        int maxNewTokens) {
+
+    /** Compatibility constructor: the former limit sized context and bounded generation. */
+    public Options(
+            Path modelPath,
+            String prompt,
+            String systemPrompt,
+            String suffix,
+            boolean interactive,
+            float temperature,
+            float topp,
+            long seed,
+            int maxTokens,
+            boolean stream,
+            boolean echo,
+            boolean useTornadovm,
+            boolean withPrefillDecode,
+            int batchPrefillSize) {
+        this(
+                modelPath,
+                prompt,
+                systemPrompt,
+                suffix,
+                interactive,
+                temperature,
+                topp,
+                seed,
+                maxTokens,
+                stream,
+                echo,
+                useTornadovm,
+                withPrefillDecode,
+                batchPrefillSize,
+                maxTokens);
+    }
+
+    public int contextLength() {
+        return maxTokens;
+    }
 
     public static final int DEFAULT_MAX_TOKENS = 1024;
 
     public Options {
+        require(maxTokens > 0, "--ctx-size must be positive");
+        require(maxNewTokens > 0, "--max-new-tokens must be positive");
         require(
                 interactive || prompt != null,
                 "Missing argument: --prompt is required in --instruct mode e.g. --prompt \"Why is the sky blue?\"");
@@ -45,10 +86,7 @@ public record Options(
 
     static void require(boolean condition, String messageFormat, Object... args) {
         if (!condition) {
-            System.out.println("ERROR " + messageFormat.formatted(args));
-            System.out.println();
-            printUsage(System.out);
-            System.exit(-1);
+            throw new IllegalArgumentException(messageFormat.formatted(args));
         }
     }
 
@@ -57,7 +95,7 @@ public record Options(
     }
 
     public static void printUsage(PrintStream out) {
-        out.println("Usage:  jllm [options]");
+        out.println("Usage: jllm run|chat [options] (legacy mode flags remain supported)");
         out.println();
         out.println("Options:");
         out.println("  --model, -m <path>            required, path to .gguf file");
@@ -73,6 +111,10 @@ public record Options(
                 "  --top-p <float>               p value in top-p (nucleus) sampling in [0,1], default: auto-detected from model family");
         out.println("  --seed <long>                 random seed, default System.nanoTime()");
         out.println(
+                "  --ctx-size, -c <int>          context capacity, including prompt and generated tokens");
+        out.println(
+                "  --max-new-tokens <int>        generated-token limit per request/turn, default: context capacity");
+        out.println(
                 "  --max-tokens, -n <int>        capacity in positions, prompt plus generated tokens (the context"
                         + " this run allocates; a prompt this long or longer is refused), default "
                         + DEFAULT_MAX_TOKENS);
@@ -84,6 +126,8 @@ public record Options(
                 "  --with-prefill-decode         enable prefill/decode separation (skip logits during prefill)");
         out.println(
                 "  --batch-prefill-size <int>    batched prefill chunk size; requires --with-prefill-decode, must be > 1, enables batched CPU/GPU prefill");
+        out.println(
+                "  --print-taskgraph-chain       print every TaskGraph of the GPU plan and when it runs (stderr)");
         out.println();
     }
 
@@ -119,7 +163,7 @@ public record Options(
     }
 
     public static Options parseOptions(String[] args) {
-        String prompt = "Tell me a story with Java"; // Hardcoded for testing
+        String prompt = null;
         String systemPrompt = null;
         String suffix = null;
         float temperature = Float.NaN; // resolved from model family after loading
@@ -128,18 +172,42 @@ public record Options(
         long seed = System.nanoTime();
         int maxTokens = DEFAULT_MAX_TOKENS;
         boolean interactive = false;
+        String mode = null;
+        int firstArg = 0;
+        if (args.length > 0 && (args[0].equals("run") || args[0].equals("chat"))) {
+            mode = args[0];
+            interactive = mode.equals("chat");
+            firstArg = 1;
+        }
+        Integer maxNewTokens = null;
+        boolean contextSpecified = false;
         boolean stream = false;
         boolean echo = false;
         Boolean useTornadovm = null; // null means not specified via command line
         boolean withPrefillDecode = false;
         int batchPrefillSize = 1;
 
-        for (int i = 0; i < args.length; i++) {
+        for (int i = firstArg; i < args.length; i++) {
             String optionName = args[i];
             require(optionName.startsWith("-"), "Invalid option %s", optionName);
             switch (optionName) {
-                case "--interactive", "--chat", "-i" -> interactive = true;
-                case "--instruct" -> interactive = false;
+                case "--interactive", "--chat", "-i", "--instruct" -> {
+                    String requested = optionName.equals("--instruct") ? "run" : "chat";
+                    require(mode == null || mode.equals(requested), "Conflicting run/chat modes");
+                    mode = requested;
+                    interactive = mode.equals("chat");
+                }
+                case "--gpu" -> useTornadovm = true;
+                case "--print-taskgraph-chain" ->
+                        System.setProperty(
+                                org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.PROPERTY,
+                                "true");
+                case "--with-native-libraries" ->
+                        System.setProperty(
+                                org.beehive.jllm.runtime.policy.ExecutionPolicy
+                                        .NATIVE_LIBRARIES_PROPERTY,
+                                "true");
+                case "--verbose", "-v" -> System.setProperty("jllm.verbose", "true");
                 case "--with-prefill-decode" -> withPrefillDecode = true;
                 case "--help", "-h" -> {
                     printUsage(System.out);
@@ -164,7 +232,18 @@ public record Options(
                         case "--top-p" -> topp = Float.parseFloat(nextArg);
                         case "--model", "-m" -> modelPath = Paths.get(nextArg);
                         case "--seed", "-s" -> seed = Long.parseLong(nextArg);
-                        case "--max-tokens", "-n" -> maxTokens = Integer.parseInt(nextArg);
+                        case "--ctx-size", "-c", "--max-tokens", "-n" -> {
+                            require(
+                                    !contextSpecified,
+                                    "Specify context capacity once (--ctx-size or --max-tokens)");
+                            contextSpecified = true;
+                            maxTokens = Integer.parseInt(nextArg);
+                            if (optionName.equals("--max-tokens") || optionName.equals("-n")) {
+                                System.err.println(
+                                        "--max-tokens/-n is deprecated; use --ctx-size/-c (context capacity).");
+                            }
+                        }
+                        case "--max-new-tokens" -> maxNewTokens = Integer.parseInt(nextArg);
                         case "--stream" -> stream = Boolean.parseBoolean(nextArg);
                         case "--echo" -> echo = Boolean.parseBoolean(nextArg);
                         case "--use-tornadovm" -> useTornadovm = Boolean.parseBoolean(nextArg);
@@ -176,6 +255,9 @@ public record Options(
         }
 
         require(modelPath != null, "Missing argument: --model <path> is required");
+        require(
+                !interactive || (prompt == null && suffix == null),
+                "chat reads prompts from the terminal; --prompt/--suffix belong to run");
 
         if (useTornadovm == null) {
             useTornadovm = getDefaultTornadoVM();
@@ -195,6 +277,7 @@ public record Options(
                 echo,
                 useTornadovm,
                 withPrefillDecode,
-                batchPrefillSize);
+                batchPrefillSize,
+                maxNewTokens == null ? maxTokens : maxNewTokens);
     }
 }

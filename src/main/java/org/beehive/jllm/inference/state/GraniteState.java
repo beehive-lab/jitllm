@@ -47,11 +47,11 @@ public final class GraniteState extends State {
         // Key-value cache with Granite dimensions
         int kvDim = (config.dim() * config.numberOfKeyValueHeads()) / config.numberOfHeads();
         fields.keyCache =
-                Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength(), kvDim))
+                Stream.generate(() -> allocateKeyValue(config.contextLength(), kvDim))
                         .limit(config.numberOfLayers())
                         .toArray(FloatTensor[]::new);
         fields.valueCache =
-                Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength(), kvDim))
+                Stream.generate(() -> allocateKeyValue(config.contextLength(), kvDim))
                         .limit(config.numberOfLayers())
                         .toArray(FloatTensor[]::new);
 
@@ -79,7 +79,7 @@ public final class GraniteState extends State {
         // dim vs kvdim
         // KV cache: leased from the manager's pool when this state holds a lease, otherwise
         // allocated here, block-major when paged and contiguous when not.
-        fillKvFields(fields, config, kvDim, false);
+        fillKvFields(fields, config, kvDim, true);
         workspace.wrapAtt =
                 TornadoWorkspaces.floats(config.numberOfHeads() * config.contextLength());
         // [0] = position, [1] = table-local KV slot.

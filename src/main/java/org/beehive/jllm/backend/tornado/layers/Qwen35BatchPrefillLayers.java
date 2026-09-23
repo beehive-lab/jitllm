@@ -66,10 +66,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     /**
      * Whether this family's eligible batched projections run on the tensor cores.
      *
-     * <p>On by default; {@code -Djllm.qwen35.tensorCores=false} (the launcher's {@code
-     * --no-tensor-cores}) keeps the scalar batched kernels, whose multiplicands are not FP16 and
-     * whose outputs are therefore not bit-identical to the tensor-core path. It applies only where
-     * the backend has tensor cores ({@code TensorCoreSupport.isTensorCoreCapableBackend()}, CUDA);
+     * <p>On by default; {@code -Djllm.qwen35.tensorCores=false} (a developer diagnostic, not a
+     * launcher option) keeps the scalar batched kernels, whose multiplicands are not FP16 and whose
+     * outputs are therefore not bit-identical to the tensor-core path. It applies only where the
+     * backend has tensor cores ({@code TensorCoreSupport.isTensorCoreCapableBackend()}, CUDA);
      * elsewhere the scalar kernels run regardless. What it covers is every projection {@link
      * #mmaEligible} admits — the gate and up panels, {@code ffn_down} in both of this model's
      * representations, the Q5_K recurrent readout and the attention output.

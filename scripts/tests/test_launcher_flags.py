@@ -9,9 +9,11 @@ Run with: python3 -m unittest discover -s scripts/tests
 
 import importlib.util
 import io
+import os
 import sys
+import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -79,64 +81,16 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TensorCoreFlagCompatibility(unittest.TestCase):
-    """Kernel selection is automatic; the old spellings survive as deprecated aliases."""
+class RemovedKernelSelectionFlags(unittest.TestCase):
+    """Kernel selection is automatic; the scalar-prefill diagnostic is a Java property only."""
 
-    def _args(self, tensor_cores=False, no_tensor_cores=False, diagnostic=False):
-        class A:
-            pass
-
-        a = A()
-        a.tensor_cores = tensor_cores
-        a.no_tensor_cores = no_tensor_cores
-        a.diagnostic_scalar_batched_prefill = diagnostic
-        return a
-
-    def test_defaults_select_nothing(self):
-        a = self._args()
-        self.assertEqual(launcher.resolve_deprecated_tensor_core_flags(a), [])
-        self.assertFalse(a.diagnostic_scalar_batched_prefill)
-
-    def test_tensor_cores_is_a_deprecated_no_op(self):
-        a = self._args(tensor_cores=True)
-        warnings = launcher.resolve_deprecated_tensor_core_flags(a)
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("deprecated", warnings[0])
-        self.assertFalse(a.diagnostic_scalar_batched_prefill)
-
-    def test_no_tensor_cores_maps_to_the_diagnostic(self):
-        a = self._args(no_tensor_cores=True)
-        warnings = launcher.resolve_deprecated_tensor_core_flags(a)
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("--diagnostic-scalar-batched-prefill", warnings[0])
-        self.assertTrue(a.diagnostic_scalar_batched_prefill)
-
-    def test_contradictory_flags_are_rejected(self):
-        for kw in ({"no_tensor_cores": True}, {"diagnostic": True}):
-            with self.subTest(kw=kw), redirect_stdout(io.StringIO()):
+    def test_the_diagnostic_and_its_old_spellings_are_gone(self):
+        text = launcher.create_parser().format_help()
+        for flag in ("--diagnostic-scalar-batched-prefill", "--no-tensor-cores", "--tensor-cores"):
+            with self.subTest(flag=flag), redirect_stderr(io.StringIO()):
+                self.assertNotIn(flag, text)
                 with self.assertRaises(SystemExit):
-                    launcher.resolve_deprecated_tensor_core_flags(self._args(tensor_cores=True, **kw))
-
-    def test_help_hides_the_deprecated_spellings_and_shows_the_diagnostic(self):
-        parser = launcher.create_parser()
-        text = parser.format_help()
-        self.assertNotIn("--tensor-cores", text)
-        self.assertNotIn("--no-tensor-cores", text)
-        self.assertIn("--diagnostic-scalar-batched-prefill", text)
-        self.assertIn("int8", text)
-
-    def test_only_the_diagnostic_reaches_the_jvm(self):
-        parser = launcher.create_parser()
-        runner = launcher.LlamaRunner.__new__(launcher.LlamaRunner)
-        runner.tornado_sdk = "/nonexistent"
-        for argv, expect in (
-            (["--gpu", "--model", "m"], False),
-            (["--gpu", "--model", "m", "--diagnostic-scalar-batched-prefill"], True),
-        ):
-            with self.subTest(argv=argv):
-                args = parser.parse_args(argv)
-                launcher.resolve_deprecated_tensor_core_flags(args)
-                self.assertEqual(args.diagnostic_scalar_batched_prefill, expect)
+                    launcher.create_parser().parse_args(["--model", "m", flag])
 
 
 class VerbosityOptions(unittest.TestCase):
@@ -153,6 +107,50 @@ class VerbosityOptions(unittest.TestCase):
         self.assertEqual(1, len(warnings))
         self.assertIn("deprecated", warnings[0])
         self.assertIn("--verbose", warnings[0])
+
+    def test_verbose_forwards_only_the_report_property(self):
+        args = launcher.create_parser().parse_args(["--model", "stub.gguf", "-v"])
+        with tempfile.TemporaryDirectory() as sdk:
+            open(os.path.join(sdk, "tornado-argfile"), "w").close()
+            os.makedirs(os.path.join(sdk, "target"))
+            open(os.path.join(sdk, "target", "jllm-1.0.0-jdk21.jar"), "w").close()
+            runner = launcher.LlamaRunner.__new__(launcher.LlamaRunner)
+            runner.tornado_sdk = sdk
+            runner.java_home, runner.llama_root = "/stub/java", sdk
+            args.installed_backends, args.backend = [launcher.Backend.CUDA], launcher.Backend.CUDA
+            cmd = runner._build_base_command(args)
+        self.assertIn("-Djllm.verbose=true", cmd)
+        self.assertNotIn("-Djllm.EnableTimingForTornadoVMInit=true", cmd)
+
+    def base_command(self, *flags):
+        args = launcher.create_parser().parse_args(["--model", "stub.gguf", *flags])
+        with tempfile.TemporaryDirectory() as sdk:
+            open(os.path.join(sdk, "tornado-argfile"), "w").close()
+            os.makedirs(os.path.join(sdk, "target"))
+            open(os.path.join(sdk, "target", "jllm-1.0.0-jdk21.jar"), "w").close()
+            runner = launcher.LlamaRunner.__new__(launcher.LlamaRunner)
+            runner.tornado_sdk = sdk
+            runner.java_home, runner.llama_root = "/stub/java", sdk
+            args.installed_backends, args.backend = [launcher.Backend.CUDA], launcher.Backend.CUDA
+            return runner._build_base_command(args)
+
+    def test_kv_cache_is_fp16_unless_fp32_is_asked_for(self):
+        default = self.base_command()
+        self.assertFalse([a for a in default if "kvcache" in a], "FP16 is the Java default")
+        self.assertIn("-Djllm.kvcache.fp32=true", self.base_command("--fp32-kv-cache"))
+        self.assertNotIn("--fp16-kv-cache", launcher.create_parser().format_help())
+        self.assertIn("--fp32-kv-cache", launcher.create_parser().format_help())
+
+    def test_taskgraph_chain_forwards_the_property_only_when_asked(self):
+        self.assertFalse([a for a in self.base_command() if "printTaskGraphChain" in a])
+        self.assertIn("-Djllm.printTaskGraphChain=true", self.base_command("--print-taskgraph-chain"))
+        text = launcher.create_parser().format_help()
+        verbose = text[text.index("TornadoVM Execution Verbose"):text.index("Advanced Options")]
+        self.assertIn("--print-taskgraph-chain", verbose)
+
+    def test_native_libraries_forward_the_property_only_when_asked(self):
+        self.assertFalse([a for a in self.base_command() if "nativeLibraries" in a])
+        self.assertIn("-Djllm.nativeLibraries=true", self.base_command("--with-native-libraries"))
 
     def test_help_exposes_only_the_new_verbosity_interface(self):
         text = launcher.create_parser().format_help()

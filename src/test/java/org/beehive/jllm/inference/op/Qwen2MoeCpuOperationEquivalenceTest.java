@@ -19,6 +19,28 @@ import org.junit.Test;
 
 public class Qwen2MoeCpuOperationEquivalenceTest {
 
+    // These compare the CPU forward against independent FP32 implementations, so they pin the
+    // FP32 key/value cache: FP16 is the default, and its rounding is not what they measure.
+    private static String previousFp32Property;
+
+    @org.junit.BeforeClass
+    public static void pinFp32KeyValueCache() {
+        previousFp32Property =
+                System.getProperty(org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY);
+        System.setProperty(org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY, "true");
+    }
+
+    @org.junit.AfterClass
+    public static void restoreKeyValueCache() {
+        if (previousFp32Property == null) {
+            System.clearProperty(org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY);
+        } else {
+            System.setProperty(
+                    org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY,
+                    previousFp32Property);
+        }
+    }
+
     private static final int DIM = 48;
     private static final int HIDDEN_DIM = 96;
     private static final int LAYERS = 2;

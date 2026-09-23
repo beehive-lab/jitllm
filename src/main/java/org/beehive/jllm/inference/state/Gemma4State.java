@@ -238,8 +238,8 @@ public final class Gemma4State extends State {
             int reuse = config.kvReuseLayer(l);
             if (reuse < 0) {
                 int layerKvDim = config.headDim(l) * nHeadKv;
-                keyCache[l] = ArrayFloatTensor.allocate(config.contextLength(), layerKvDim);
-                valueCache[l] = ArrayFloatTensor.allocate(config.contextLength(), layerKvDim);
+                keyCache[l] = allocateKeyValue(config.contextLength(), layerKvDim);
+                valueCache[l] = allocateKeyValue(config.contextLength(), layerKvDim);
             } else {
                 keyCache[l] = keyCache[reuse];
                 valueCache[l] = valueCache[reuse];

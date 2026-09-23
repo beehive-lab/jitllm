@@ -179,6 +179,17 @@ public class FacadeLifecycleTest {
         return new DelegatingModel(new StubModel(), Path.of("stub.gguf"), false);
     }
 
+    private static TextGenerationModel model(int maxConcurrentSessions) {
+        return new DelegatingModel(
+                new StubModel(),
+                Path.of("stub.gguf"),
+                false,
+                org.beehive.jllm.runtime.policy.ExecutionPolicy.fromSystemProperties(),
+                org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties(),
+                ThinkingMode.DEFAULT,
+                maxConcurrentSessions);
+    }
+
     @Test
     public void preparationIsIdempotentAndRespectsSessionLifetime() {
         try (TextGenerationModel model = model()) {
@@ -207,7 +218,7 @@ public class FacadeLifecycleTest {
      */
     @Test
     public void aFailedCloseLeavesTheModelOpen() {
-        TextGenerationModel model = model();
+        TextGenerationModel model = model(2);
         GenerationSession first = model.newSession();
         assertThrows(IllegalStateException.class, model::close);
 
@@ -218,13 +229,53 @@ public class FacadeLifecycleTest {
 
     @Test
     public void closingTheSessionsFirstMakesTheModelCloseable() {
-        TextGenerationModel model = model();
+        TextGenerationModel model = model(2);
         GenerationSession a = model.newSession();
         GenerationSession b = model.newSession();
         a.close();
         assertThrows("one session still open", IllegalStateException.class, model::close);
         b.close();
         model.close();
+    }
+
+    /** One open session unless the caller asked for more, and the refusal says how to ask. */
+    @Test
+    public void aModelHoldsOneSessionUnlessToldOtherwise() {
+        TextGenerationModel model = model();
+        GenerationSession first = model.newSession();
+        IllegalStateException refused =
+                assertThrows(IllegalStateException.class, model::newSession);
+        assertTrue(refused.getMessage(), refused.getMessage().contains("maxConcurrentSessions"));
+        first.close();
+        // The place is reusable once freed: a closed session releases its slot.
+        model.newSession().close();
+        model.close();
+    }
+
+    @Test
+    public void aModelHoldsExactlyTheSessionsItWasLoadedFor() {
+        TextGenerationModel model = model(3);
+        GenerationSession a = model.newSession();
+        GenerationSession b = model.newSession();
+        GenerationSession c = model.newSession();
+        assertThrows(IllegalStateException.class, model::newSession);
+        b.close();
+        GenerationSession d = model.newSession();
+        a.close();
+        c.close();
+        d.close();
+        model.close();
+    }
+
+    @Test
+    public void aSessionCountBelowOneIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> model(0));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ModelOptions.builder().maxConcurrentSessions(0));
+        assertEquals(1, ModelOptions.defaults().maxConcurrentSessions());
+        assertEquals(
+                4, ModelOptions.builder().maxConcurrentSessions(4).build().maxConcurrentSessions());
     }
 
     @Test

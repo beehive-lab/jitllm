@@ -214,23 +214,43 @@ public class GraniteFP16FFNLayers
         }
 
         // RoPE + KV Cache
-        unifiedLayer.task(
-                "rope_and_kv_cache",
-                GranitePagedKvKernels::ropeRotationWithCacheCopyPaged,
-                context,
-                state.workspace.positionHolder,
-                state.workspace.wrapQ, // Q (in/out)
-                state.workspace.wrapK, // K (in/out)
-                state.workspace.wrapV, // V (in only)
-                state.workspace.wrapKeyCache, // Key cache (out)
-                state.workspace.wrapValueCache, // Value cache (out)
-                config.kvDim(),
-                config.headSize(),
-                config.ropeTheta(), // needs to load it from model
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride);
+        if (useFp16KVCache()) {
+            unifiedLayer.task(
+                    "rope_and_kv_cache",
+                    GranitePagedKvKernels::ropeRotationWithCacheCopyFP16Paged,
+                    context,
+                    state.workspace.positionHolder,
+                    state.workspace.wrapQ, // Q (in/out)
+                    state.workspace.wrapK, // K (in/out)
+                    state.workspace.wrapV, // V (in only)
+                    state.workspace.wrapKeyCacheFP16, // Key cache (out)
+                    state.workspace.wrapValueCacheFP16, // Value cache (out)
+                    config.kvDim(),
+                    config.headSize(),
+                    config.ropeTheta(), // needs to load it from model
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        } else {
+            unifiedLayer.task(
+                    "rope_and_kv_cache",
+                    GranitePagedKvKernels::ropeRotationWithCacheCopyPaged,
+                    context,
+                    state.workspace.positionHolder,
+                    state.workspace.wrapQ, // Q (in/out)
+                    state.workspace.wrapK, // K (in/out)
+                    state.workspace.wrapV, // V (in only)
+                    state.workspace.wrapKeyCache, // Key cache (out)
+                    state.workspace.wrapValueCache, // Value cache (out)
+                    config.kvDim(),
+                    config.headSize(),
+                    config.ropeTheta(), // needs to load it from model
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        }
         // Attention
         configureAttention(unifiedLayer, layerIndex, config);
         // Output Projection (Wo) with residual
@@ -320,8 +340,8 @@ public class GraniteFP16FFNLayers
                     state.workspace.wrapK,
                     state.workspace.wrapV,
                     // KV cache
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     // Attention & FFN buffers
                     state.workspace.wrapAtt,
                     state.workspace.wrapHb,
@@ -344,8 +364,8 @@ public class GraniteFP16FFNLayers
                     state.workspace.wrapK,
                     state.workspace.wrapV,
                     // KV cache
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     // Attention & FFN buffers
                     state.workspace.wrapAtt,
                     state.workspace.wrapHb,
@@ -362,6 +382,26 @@ public class GraniteFP16FFNLayers
             TaskGraph unifiedLayer, int layerIndex, GraniteConfiguration config) {
         if (schedulerType == SchedulerType.NVIDIA) {
             // Flash Attention (optimized for NVIDIA GPUs)
+            if (useFp16KVCache()) {
+                return unifiedLayer.task(
+                        "attention",
+                        GranitePagedKvKernels::processHeadsFlashAttentionWithGraniteScaleFP16Paged,
+                        context,
+                        state.workspace.wrapQ, // Query
+                        state.workspace.wrapKeyCacheFP16, // Key cache
+                        state.workspace.wrapValueCacheFP16, // Value cache
+                        state.workspace.wrapXb, // Output
+                        config.numberOfHeads(),
+                        config.headSize(),
+                        config.kvDim(),
+                        config.kvMul(),
+                        state.workspace.positionHolder,
+                        layerIndex,
+                        state.workspace.wrapBlockTable,
+                        state.kvBlockCfg,
+                        state.kvBlockStride,
+                        config.attentionScale());
+            }
             return unifiedLayer.task(
                     "attention",
                     GranitePagedKvKernels::processHeadsFlashAttentionWithGraniteScalePaged,
@@ -403,6 +443,18 @@ public class GraniteFP16FFNLayers
                     config.attentionScale());
         }
     }
+
     // @formatter:on
 
+    /** The key cache every graph of this family binds: FP16 when the state holds one. */
+    protected Object keyCache() {
+        return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    /** The value cache, following {@link #keyCache()}. */
+    protected Object valueCache() {
+        return useFp16KVCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
+    }
 }

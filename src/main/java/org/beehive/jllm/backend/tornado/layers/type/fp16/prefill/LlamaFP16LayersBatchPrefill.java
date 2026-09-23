@@ -79,8 +79,8 @@ public class LlamaFP16LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.workspace.wrapVBatch,
                     state.workspace.wrapXbBatch,
                     state.workspace.wrapHbBatch,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache);
+                    keyCache(),
+                    valueCache());
             // wrapXBatch produced by the prefillActivation graph and persists in device memory
             // to consume it from there we should use the explicit uniqueTaskGraph name
             // the no-arg form would use current graph name, which causes NPE without CUDA Graphs
@@ -99,8 +99,8 @@ public class LlamaFP16LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.workspace.wrapVBatch,
                     state.workspace.wrapXbBatch,
                     state.workspace.wrapHbBatch,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.batchStartPosHolder,
                     state.workspace.attnScaleBatch,
                     state.workspace.ffnScaleBatch);
@@ -171,44 +171,87 @@ public class LlamaFP16LayersBatchPrefill implements BatchPrefillTransformerLayer
                 kvDim,
                 LOCAL_WORK_GROUP_SIZE);
 
-        batchPrefillLayer.task(
-                "batch_rope_kv",
-                TransformerPagedKvBatchPrefillKernels::batchedRopeWithKVCachePaged,
-                context,
-                state.workspace.batchStartPosHolder,
-                state.workspace.wrapQBatch,
-                state.workspace.wrapKBatch,
-                state.workspace.wrapVBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                weights.freq_cis_realFlat.asFloatArray(),
-                weights.freq_cis_imagFlat.asFloatArray(),
-                kvDim,
-                config.headSize(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride,
-                dim);
+        if (useFp16KVCache()) {
+            batchPrefillLayer.task(
+                    "batch_rope_kv",
+                    TransformerPagedKvBatchPrefillKernels::batchedRopeWithKVCacheFP16Paged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKBatch,
+                    state.workspace.wrapVBatch,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    weights.freq_cis_realFlat.asFloatArray(),
+                    weights.freq_cis_imagFlat.asFloatArray(),
+                    kvDim,
+                    config.headSize(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        } else {
+            batchPrefillLayer.task(
+                    "batch_rope_kv",
+                    TransformerPagedKvBatchPrefillKernels::batchedRopeWithKVCachePaged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKBatch,
+                    state.workspace.wrapVBatch,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    weights.freq_cis_realFlat.asFloatArray(),
+                    weights.freq_cis_imagFlat.asFloatArray(),
+                    kvDim,
+                    config.headSize(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        }
 
-        batchPrefillLayer.task(
-                "batch_attention",
-                TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionPaged,
-                context,
-                state.workspace.batchStartPosHolder,
-                state.workspace.wrapQBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                state.workspace.wrapXbBatch,
-                config.numberOfHeads(),
-                config.headSize(),
-                kvDim,
-                config.kvMul(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride,
-                dim);
+        if (useFp16KVCache()) {
+            batchPrefillLayer.task(
+                    "batch_attention",
+                    TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionKVFP16Paged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    state.workspace.wrapXbBatch,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    kvDim,
+                    config.kvMul(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        } else {
+            batchPrefillLayer.task(
+                    "batch_attention",
+                    TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionPaged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    state.workspace.wrapXbBatch,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    kvDim,
+                    config.kvMul(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        }
 
         batchPrefillLayer.task(
                 "batch_attn_out",
@@ -258,10 +301,7 @@ public class LlamaFP16LayersBatchPrefill implements BatchPrefillTransformerLayer
 
         // Persist wrapXBatch for the next layer, and KV cache so the decode
         // layers can consume it via the activation graph pass-through.
-        batchPrefillLayer.persistOnDevice(
-                state.workspace.wrapXBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache);
+        batchPrefillLayer.persistOnDevice(state.workspace.wrapXBatch, keyCache(), valueCache());
 
         return batchPrefillLayer;
     }
@@ -344,5 +384,25 @@ public class LlamaFP16LayersBatchPrefill implements BatchPrefillTransformerLayer
 
     public KernelContext getContext() {
         return context;
+    }
+
+    /**
+     * Whether the cache is half precision: the representation the state holds, which the decode
+     * layers after this prefill bind as well.
+     */
+    private boolean useFp16KVCache() {
+        return state.usesFp16KeyValueCache();
+    }
+
+    /** The key cache every graph of this family binds: FP16 when the state holds one. */
+    private Object keyCache() {
+        return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    /** The value cache, following {@link #keyCache()}. */
+    private Object valueCache() {
+        return useFp16KVCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
     }
 }

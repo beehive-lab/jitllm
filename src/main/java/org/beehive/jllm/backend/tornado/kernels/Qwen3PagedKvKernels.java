@@ -375,6 +375,81 @@ public class Qwen3PagedKvKernels {
         }
     }
 
+    // FP16-cache twin of batchedRopeWithKVCacheQwen3Paged: identical arithmetic, the cache stored
+    // in binary16.
+    public static void batchedRopeWithKVCacheQwen3FP16Paged(
+            KernelContext context,
+            IntArray batchStartPosHolder,
+            FloatArray wrapQBatch,
+            FloatArray wrapKBatch,
+            FloatArray wrapVBatch,
+            HalfFloatArray wrapKeyCache,
+            HalfFloatArray wrapValueCache,
+            float ropeTheta,
+            int kvDim,
+            int nEmbdHead,
+            int layerIndex,
+            IntArray blockTable,
+            int blockCfg,
+            int blockStride,
+            int qDim) {
+
+        int globalIdx = context.globalIdx;
+        int halfQDim = qDim / 2;
+        int batchIdx = globalIdx / halfQDim;
+        int pairIdx = globalIdx % halfQDim;
+
+        int pos = batchStartPosHolder.get(0) + batchIdx;
+        int slot = batchStartPosHolder.get(2);
+
+        // Qwen3 uses split-half RoPE: pair element ic with ic + nEmbdHead/2 within each head.
+        int halfEmbdHead = nEmbdHead / 2;
+        int ic = pairIdx % halfEmbdHead;
+        int headIdx = pairIdx / halfEmbdHead;
+
+        // Base from model metadata, not a constant — see ropeRotationWithCacheCopy.
+        float freq = 1.0f / TornadoMath.pow(ropeTheta, 2.0f * ic / (float) nEmbdHead);
+        float val = pos * freq;
+        float fcr = TornadoMath.cos(val);
+        float fci = TornadoMath.sin(val);
+
+        // Rotate Q (split-half pairs within each head)
+        int qHeadBase = batchIdx * qDim + headIdx * nEmbdHead;
+        float v0q = wrapQBatch.get(qHeadBase + ic);
+        float v1q = wrapQBatch.get(qHeadBase + ic + halfEmbdHead);
+        wrapQBatch.set(qHeadBase + ic, v0q * fcr - v1q * fci);
+        wrapQBatch.set(qHeadBase + ic + halfEmbdHead, v0q * fci + v1q * fcr);
+
+        // Rotate K and write K,V to cache (only for KV pairs)
+        if (pairIdx < kvDim / 2) {
+            int kHeadIdx = pairIdx / halfEmbdHead;
+            int kHeadBase = batchIdx * kvDim + kHeadIdx * nEmbdHead;
+            float v0k = wrapKBatch.get(kHeadBase + ic);
+            float v1k = wrapKBatch.get(kHeadBase + ic + halfEmbdHead);
+            float rotK0 = v0k * fcr - v1k * fci;
+            float rotK1 = v0k * fci + v1k * fcr;
+            wrapKBatch.set(kHeadBase + ic, rotK0);
+            wrapKBatch.set(kHeadBase + ic + halfEmbdHead, rotK1);
+
+            int cacheOff =
+                    KvBlockAddress.offset(
+                                    blockTable,
+                                    slot,
+                                    pos,
+                                    KvBlockAddress.layerOffset(layerIndex, kvDim, blockCfg),
+                                    kvDim,
+                                    blockCfg,
+                                    blockStride)
+                            + kHeadIdx * nEmbdHead;
+            wrapKeyCache.set(cacheOff + ic, new HalfFloat(rotK0));
+            wrapKeyCache.set(cacheOff + ic + halfEmbdHead, new HalfFloat(rotK1));
+            wrapValueCache.set(cacheOff + ic, new HalfFloat(wrapVBatch.get(kHeadBase + ic)));
+            wrapValueCache.set(
+                    cacheOff + ic + halfEmbdHead,
+                    new HalfFloat(wrapVBatch.get(kHeadBase + ic + halfEmbdHead)));
+        }
+    }
+
     public static void batchedRopeWithKVCacheQwen3PackedPaged(
             KernelContext context,
             IntArray batchStartPosHolder,

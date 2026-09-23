@@ -32,6 +32,11 @@ import org.junit.Test;
 // @formatter:on
 public class Qwen35NativeRepresentationAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     private static final int CONTEXT_LENGTH = 512;
 
     @Test

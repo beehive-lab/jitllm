@@ -42,7 +42,36 @@ final class MemoryPreflight {
                 config,
                 options.executionPolicy(),
                 TornadoDevices.current(),
-                configuredBudgetBytes());
+                configuredBudgetBytes(),
+                new org.beehive.jllm.runtime.memory.KeyValueReservation(
+                        options.maxConcurrentSessions(),
+                        DelegatingModel.attachesSharedPool(
+                                model,
+                                options.storageOptions(),
+                                org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection
+                                        .mayHandle(
+                                                model.architectureId(),
+                                                loadedWeightType(modelFile),
+                                                options.executionPolicy())),
+                        org.beehive.jllm.runtime.memory.KeyValueReservation.BLOCK_SIZE_TOKENS,
+                        options.storageOptions().usesFp16KeyValueCache()));
+    }
+
+    /**
+     * The weight type a load materializes, when the file's type determines it: F16 and Q8_0 are
+     * loaded as they are. Anything else may be converted, so it is left unknown rather than
+     * guessed.
+     */
+    private static org.beehive.jllm.runtime.tensor.DataType loadedWeightType(Path modelFile) {
+        try {
+            return switch (org.beehive.jllm.format.GgufModelFacts.read(modelFile).quant()) {
+                case "F16" -> org.beehive.jllm.runtime.tensor.DataType.F16;
+                case "Q8_0" -> org.beehive.jllm.runtime.tensor.DataType.Q8_0;
+                default -> null;
+            };
+        } catch (IOException | RuntimeException unreadable) {
+            return null;
+        }
     }
 
     /**

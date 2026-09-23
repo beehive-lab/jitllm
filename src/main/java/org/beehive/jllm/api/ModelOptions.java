@@ -34,9 +34,11 @@ public final class ModelOptions {
     private final BackendId backend;
     private final DeviceSelector device;
     private final ThinkingMode thinkingMode;
+    private final int maxConcurrentSessions;
 
     private ModelOptions(Builder builder) {
         this.contextLength = builder.contextLength;
+        this.maxConcurrentSessions = builder.maxConcurrentSessions;
         this.backend = builder.backend;
         this.device = builder.device;
         this.thinkingMode = builder.thinkingMode;
@@ -92,6 +94,19 @@ public final class ModelOptions {
 
     public int contextLength() {
         return contextLength;
+    }
+
+    /**
+     * How many {@link GenerationSession}s of the loaded model may be open at once; 1 unless set.
+     *
+     * <p>A capacity, not a thread count: it bounds open session objects, and each session still
+     * generates one request at a time. It is a memory decision like {@link #contextLength()}: where
+     * sessions share one key/value pool, the pool is reserved for this many sessions at the full
+     * load-time context when the model loads. A session that asks for a shorter context does not
+     * shrink that reservation.
+     */
+    public int maxConcurrentSessions() {
+        return maxConcurrentSessions;
     }
 
     /**
@@ -182,6 +197,7 @@ public final class ModelOptions {
         private BackendId backend;
         private DeviceSelector device;
         private ThinkingMode thinkingMode = ThinkingMode.DEFAULT;
+        private int maxConcurrentSessions = 1;
 
         private Builder() {}
 
@@ -191,6 +207,23 @@ public final class ModelOptions {
                         "contextLength must not be negative: " + contextLength);
             }
             this.contextLength = contextLength;
+            return this;
+        }
+
+        /**
+         * How many sessions of the loaded model may be open at once.
+         *
+         * <p>Opening one more than this throws; closing a session frees its place. Size it to the
+         * concurrency the caller actually needs: every place may be reserved up front.
+         *
+         * @param maxConcurrentSessions at least 1; the default is 1
+         */
+        public Builder maxConcurrentSessions(int maxConcurrentSessions) {
+            if (maxConcurrentSessions < 1) {
+                throw new IllegalArgumentException(
+                        "maxConcurrentSessions must be at least 1: " + maxConcurrentSessions);
+            }
+            this.maxConcurrentSessions = maxConcurrentSessions;
             return this;
         }
 

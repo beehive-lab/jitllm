@@ -50,8 +50,8 @@ public class LlamaQ8_0FFNLayersPrefillDecode extends LlamaQ8_0FFNLayers {
                 state.workspace.wrapQ,
                 state.workspace.wrapK,
                 state.workspace.wrapV,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
+                keyCache(),
+                valueCache(),
                 state.workspace.wrapAtt,
                 state.workspace.wrapHb,
                 state.workspace.positionHolder);

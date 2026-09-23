@@ -84,7 +84,7 @@ public final class EngineInferenceService implements AutoCloseable {
                                         blockTokens,
                                         model.configuration().numberOfLayers(),
                                         model.kvCacheDim(),
-                                        State.USE_FP16_KV));
+                                        fp16KeyValue()));
         this.manager.attach(store);
         if (prefixCacheEntries > 0) {
             this.manager.enablePrefixCache(prefixCacheEntries);
@@ -93,7 +93,7 @@ public final class EngineInferenceService implements AutoCloseable {
         // One state builds the plan; the per-slot addressing comes from the block table, so the
         // lease that state held goes straight back to the pool once the buffers are bound.
         this.planLease = manager.acquire(blockTokens);
-        State state = model.createNewState(planLease);
+        State state = State.withPrefillBatchSize(batchSize, () -> model.createNewState(planLease));
         this.executor = new TornadoBatchExecutor(model, state, store, batchSize, blocksPerSlot);
         planLease.close();
 
@@ -109,6 +109,10 @@ public final class EngineInferenceService implements AutoCloseable {
         this.driver = new Thread(this::drive, "engine-step");
         this.driver.setDaemon(true);
         this.driver.start();
+    }
+
+    public org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+        return executor.executionInfo();
     }
 
     public Model model() {
@@ -231,8 +235,14 @@ public final class EngineInferenceService implements AutoCloseable {
         }
     }
 
+    /** The pool's representation: FP16 by default, FP32 when asked for. */
+    private static boolean fp16KeyValue() {
+        return org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties()
+                .usesFp16KeyValueCache();
+    }
+
     private static long bytesPerBlock(Model model, int blockTokens) {
-        long bytesPerValue = State.USE_FP16_KV ? 2L : 4L;
+        long bytesPerValue = fp16KeyValue() ? 2L : 4L;
         return 2L
                 * model.kvCacheDim()
                 * blockTokens

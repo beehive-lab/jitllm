@@ -9,22 +9,20 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
-import org.beehive.jllm.Options;
 import org.beehive.jllm.api.ChatContent;
 import org.beehive.jllm.api.ChatMessage;
 import org.beehive.jllm.api.ChatRole;
 import org.beehive.jllm.api.LocalModel;
 import org.beehive.jllm.api.LocalModels;
 import org.beehive.jllm.api.ModelOptions;
+import org.beehive.jllm.integration.cli.StartupDiagnostics;
 import org.beehive.jllm.model.Model;
-import org.beehive.jllm.runtime.backend.BackendId;
 
 /**
  * OpenAI-compatible HTTP server for jllm, built on the JDK {@link HttpServer} (no external
@@ -49,7 +47,7 @@ import org.beehive.jllm.runtime.backend.BackendId;
  * defaults to the model's own, which is what {@code ModelOptions} means by 0 and what the loaders
  * already clamp a larger request down to.
  */
-public final class OpenAIServer {
+public final class OpenAIServer implements AutoCloseable {
 
     /**
      * Either path, behind one call. The engine-backed service batches several conversations; the
@@ -58,6 +56,10 @@ public final class OpenAIServer {
     private interface Generator extends AutoCloseable {
         InferenceService.Result generate(
                 InferenceService.Request request, java.util.function.Consumer<String> onToken);
+
+        default boolean greedyOnly() {
+            return false;
+        }
 
         @Override
         void close();
@@ -71,6 +73,10 @@ public final class OpenAIServer {
     private final boolean gpu;
     private final int contextLength;
     private int port;
+    private HttpServer http;
+    private java.util.concurrent.ExecutorService httpWorkers;
+    private LocalModel ownedModel;
+    private boolean closed;
     private final AtomicLong seq = new AtomicLong();
 
     public OpenAIServer(InferenceService service, String servedModel, boolean gpu) {
@@ -121,6 +127,11 @@ public final class OpenAIServer {
             }
 
             @Override
+            public boolean greedyOnly() {
+                return true;
+            }
+
+            @Override
             public void close() {
                 delegate.close();
             }
@@ -142,6 +153,14 @@ public final class OpenAIServer {
      * @param requested the {@code --ctx} value, or 0 when the flag was not given
      * @param modelContextLength the context length the model declares
      */
+    /**
+     * The loaders' spelling of a requested window: they take {@code -1} for "the model's own", and
+     * serve's {@code 0} means the same. Passing 0 through sized a zero-block key/value pool.
+     */
+    static int loaderContextLength(int requested) {
+        return requested > 0 ? requested : -1;
+    }
+
     static int resolveContextLength(int requested, int modelContextLength) {
         return requested > 0 ? Math.min(requested, modelContextLength) : modelContextLength;
     }
@@ -287,109 +306,150 @@ public final class OpenAIServer {
     }
 
     public static void main(String[] args) throws IOException {
-        String modelPath = null;
-        int port = 8080;
-        // Continuous batching: several conversations decode in one batch instead of queueing
-        // behind one lock. Off by default until it has served real traffic; --batch B turns it on.
-        int batch = 0;
-        // The queue bound is the deployment's, not the library's. The server's default
-        // is its own choice — generous, because rejecting a request the GPU could have absorbed is
-        // worse here than a little queue wait.
-        int maxQueued = Integer.getInteger("server.maxQueuedRequests", 64);
-        // Prefix sharing: off unless asked for, because it trades pool capacity for prefill and
-        // only a deployment whose traffic repeats its openings gets that trade back.
-        int prefixEntries = Integer.getInteger("server.prefixCacheEntries", 0);
-        boolean gpu = false;
-        // 0 means the model's own, the same thing it means to ModelOptions and the loaders.
-        // Serving a coding assistant from a small fixed window is the failure this replaces.
-        int ctx = 0;
-        for (int i = 0; i < args.length; i++) {
-            switch (args[i]) {
-                case "--model", "-m" -> modelPath = args[++i];
-                case "--port", "-p" -> port = Integer.parseInt(args[++i]);
-                case "--gpu" -> gpu = true;
-                case "--batch", "-b" -> batch = Integer.parseInt(args[++i]);
-                case "--ctx", "--context-length", "-c" -> ctx = Integer.parseInt(args[++i]);
-                default -> {}
-            }
-        }
-        if (modelPath == null) {
-            System.err.println(
-                    "usage: OpenAIServer --model <model.gguf> [--port 8080] [--gpu]"
-                            + " [--batch B] [--ctx N]");
-            System.exit(1);
-        }
-        System.setProperty("jllm.enableTornadoVM", String.valueOf(gpu));
+        org.beehive.jllm.integration.cli.CliErrors.reportDiagnostics(() -> run(args));
+    }
 
-        Path path = Paths.get(modelPath);
-        // interactive=true bypasses the --prompt-required check; the server never uses it.
-        // maxTokens is the load-time context length on this path: loadModel(Options) passes it
-        // straight through as such. 0 therefore asks for the model's own.
-        Options options =
-                new Options(
-                        path, "server", null, null, true, 0.0f, 0.95f, 1234L, ctx, false, false,
-                        gpu, false, 1);
-        System.err.println("[server] loading " + path.getFileName() + " (gpu=" + gpu + ") ...");
+    private static void run(String[] args) throws IOException {
+        if (java.util.Arrays.asList(args).contains("--help")
+                || java.util.Arrays.asList(args).contains("-h")) {
+            System.out.println(
+                    "Usage: OpenAIServer [serve] --model FILE [--ctx-size|--ctx N (default: model's own)] [--host 127.0.0.1] [--port 8080] [--gpu] [--continuous-batching SLOTS (experimental)] [-v]");
+            return;
+        }
+        ServerOptions options = ServerOptions.parse(args);
+        var config = options.model();
+        // HTTP requests choose sampling independently; a greedy-only device sampler cannot be
+        // pinned globally.
+        System.clearProperty("jllm.deviceSample");
+        long startedNs = System.nanoTime();
+        Path path = config.model();
         String served = path.getFileName().toString().replaceAll("\\.gguf$", "");
-
+        ModelOptions modelOptions = config.modelOptions();
         OpenAIServer server;
-        if (batch > 0) {
-            if (!gpu) {
-                System.err.println("[server] --batch needs --gpu; the batched plan is a GPU plan");
-                System.exit(1);
-            }
-            System.err.println(
-                    "[server] continuous batching: B="
-                            + batch
-                            + " maxQueuedRequests="
-                            + maxQueued
-                            + (prefixEntries > 0 ? " prefixCacheEntries=" + prefixEntries : ""));
-            // Continuous batching is an engine-tier feature the public facade does not expose, so
-            // this branch loads the model directly. Every other path goes through the facade.
-            Model model = loadModel(options);
+        if (options.continuousBatching()) {
+            System.err.println(ServerOptions.CONTINUOUS_BATCHING_WARNING);
+            Model model =
+                    loadModel(
+                            path, loaderContextLength(config.contextLength()), true, config.gpu());
+            long loadNs = System.nanoTime() - startedNs;
             // The engine needs a concrete window; the facade path reads its own back after load.
-            int contextLength = resolveContextLength(ctx, model.configuration().contextLength());
-            server =
-                    new OpenAIServer(
-                            new EngineInferenceService(
-                                    model, batch, maxQueued, contextLength, prefixEntries),
-                            served,
-                            gpu,
-                            contextLength);
+            int contextLength =
+                    resolveContextLength(
+                            config.contextLength(), model.configuration().contextLength());
+            if (model.weights().dataType() != org.beehive.jllm.runtime.tensor.DataType.F16) {
+                throw new IllegalArgumentException(
+                        "Continuous batching requires FP16 Llama/Qwen3 weights");
+            }
+            EngineInferenceService service =
+                    new EngineInferenceService(
+                            model,
+                            options.batchSlots(),
+                            options.maxQueuedRequests(),
+                            contextLength,
+                            options.prefixCacheEntries());
+            server = new OpenAIServer(service, served, config.gpu(), contextLength);
+            try {
+                if (StartupDiagnostics.verbose()) {
+                    System.err.print(
+                            StartupDiagnostics.render(
+                                    model,
+                                    path,
+                                    service.executionInfo(),
+                                    "greedy (continuous batching)",
+                                    modelOptions,
+                                    loadNs,
+                                    startedNs));
+                }
+                server.start(options.host(), options.port());
+            } catch (IOException | RuntimeException | Error failure) {
+                server.close();
+                throw failure;
+            }
         } else {
-            LocalModel model =
-                    LocalModels.load(
-                            path,
-                            ModelOptions.builder()
-                                    .contextLength(ctx)
-                                    .backend(gpu ? null : BackendId.CPU)
-                                    .build());
-            // Authoritative: what the model was actually loaded with, after any clamping.
-            server =
-                    new OpenAIServer(
-                            new InferenceService(model), served, gpu, model.info().contextLength());
+            LocalModel model = LocalModels.load(path, modelOptions);
+            long loadNs = System.nanoTime() - startedNs;
+            InferenceService service;
+            try {
+                service = new InferenceService(model);
+            } catch (RuntimeException | Error failure) {
+                model.close();
+                throw failure;
+            }
+            server = new OpenAIServer(service, served, config.gpu(), model.info().contextLength());
+            server.ownedModel = model;
+            try {
+                if (StartupDiagnostics.verbose()) {
+                    System.err.print(
+                            StartupDiagnostics.render(
+                                    model,
+                                    service.prepare(),
+                                    "per HTTP request",
+                                    modelOptions,
+                                    loadNs,
+                                    startedNs));
+                }
+                server.start(options.host(), options.port());
+            } catch (IOException | RuntimeException | Error failure) {
+                server.close();
+                throw failure;
+            }
         }
-        server.start(port);
+        if (StartupDiagnostics.verbose()) {
+            System.err.println(
+                    "[server] context per request="
+                            + server.contextLength
+                            + " continuousBatchingSlots="
+                            + options.batchSlots()
+                            + " maxQueuedRequests="
+                            + options.maxQueuedRequests());
+        }
+        Runtime.getRuntime().addShutdownHook(new Thread(server::close, "server-shutdown"));
     }
 
     public void start(int port) throws IOException {
-        this.port = port;
-        HttpServer http = HttpServer.create(new InetSocketAddress(port), 0);
+        start("127.0.0.1", port);
+    }
+
+    public synchronized void start(String host, int port) throws IOException {
+        if (http != null || closed)
+            throw new IllegalStateException("Server already started or closed");
+        http = HttpServer.create(new InetSocketAddress(host, port), 0);
+        this.port = http.getAddress().getPort();
         http.createContext("/", this::handleIndex);
         http.createContext("/health", this::handleHealth);
         http.createContext("/v1/models", this::handleModels);
         http.createContext("/v1/chat/completions", ex -> handleCompletion(ex, true));
         http.createContext("/v1/completions", ex -> handleCompletion(ex, false));
-        // Accept concurrently; generation itself is serialized inside InferenceService.
-        http.setExecutor(Executors.newFixedThreadPool(8));
-        Runtime.getRuntime().addShutdownHook(new Thread(service::close));
+        httpWorkers = Executors.newFixedThreadPool(8);
+        http.setExecutor(httpWorkers);
         http.start();
+        String bound = http.getAddress().getAddress().getHostAddress();
+        if (bound.contains(":")) bound = "[" + bound + "]";
         System.err.println(
-                "[server] listening on http://localhost:"
-                        + port
+                "[server] listening on http://"
+                        + bound
+                        + ":"
+                        + this.port
                         + "  model="
                         + servedModel
                         + (contextLength > 0 ? "  ctx=" + contextLength : ""));
+    }
+
+    public synchronized int port() {
+        return port;
+    }
+
+    @Override
+    public synchronized void close() {
+        if (closed) return;
+        closed = true;
+        if (http != null) http.stop(1);
+        if (httpWorkers != null) httpWorkers.shutdownNow();
+        try {
+            service.close();
+        } finally {
+            if (ownedModel != null) ownedModel.close();
+        }
     }
 
     // ── Endpoints ─────────────────────────────────────────────────────────────
@@ -564,6 +624,9 @@ public final class OpenAIServer {
 
         String rejection =
                 validationError(requestedModel, servedModel, maxTokens, promptChars, contextLength);
+        if (rejection == null && service.greedyOnly() && temperature != 0.0f) {
+            rejection = "Continuous batching currently requires temperature=0 (greedy sampling)";
+        }
         if (rejection != null) {
             System.err.println(summary + " -> 400 " + rejection);
             sendError(ex, 400, rejection);

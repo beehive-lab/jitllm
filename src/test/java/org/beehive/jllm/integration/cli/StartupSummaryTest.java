@@ -1,4 +1,4 @@
-package org.beehive.jllm;
+package org.beehive.jllm.integration.cli;
 
 import static org.junit.Assert.*;
 
@@ -65,6 +65,7 @@ public class StartupSummaryTest {
                         0, 0, 0, 0, 0, 0, false, 2_000_000, 3_000_000, 4_000_000, null, null, null,
                         null),
                 null,
+                1,
                 false);
     }
 
@@ -197,6 +198,7 @@ public class StartupSummaryTest {
                             base.readyNs(),
                             base.timings(),
                             memory,
+                            base.concurrentSessions(),
                             verbose);
             String text = report.render();
             assertTrue(

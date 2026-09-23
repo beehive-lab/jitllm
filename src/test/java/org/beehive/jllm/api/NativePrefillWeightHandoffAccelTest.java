@@ -61,7 +61,7 @@ import org.junit.Test;
 public class NativePrefillWeightHandoffAccelTest {
 
     private static final String GPU_PROPERTY = "use.tornadovm";
-    private static final String NATIVE_PROPERTY = "jllm.prefill.native";
+    private static final String NATIVE_PROPERTY = NativePrefillSupport.PROPERTY;
     private static final int BATCH = 128;
 
     /**
@@ -86,7 +86,11 @@ public class NativePrefillWeightHandoffAccelTest {
             assumeTrue(
                     "this host does not select the native prefill projections, so there is no"
                             + " weight handoff to exercise: "
-                            + NativePrefillSupport.describe(true, PROBE_SHAPE),
+                            + NativePrefillSupport.describe(
+                                    org.beehive.jllm.runtime.policy.ExecutionPolicy
+                                            .fromSystemProperties(),
+                                    true,
+                                    PROBE_SHAPE),
                     NativePrefillSupport.nativeProjections());
             System.setProperty(NATIVE_PROPERTY, "false");
             assertFalse(

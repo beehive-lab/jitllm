@@ -57,7 +57,9 @@ public class Qwen35StateTest {
         assertEquals(
                 "the store is sized by the blocks that write to it",
                 expected,
-                state.workspace.wrapKeyCache.getSize());
+                state.usesFp16KeyValueCache()
+                        ? state.workspace.wrapKeyCacheFP16.getSize()
+                        : state.workspace.wrapKeyCache.getSize());
 
         // Sized by the block count instead, it would be nearly four times this.
         int naive = blocksPerSeq * config.numberOfBlocks() * blockSize * config.kvDim();

@@ -61,12 +61,19 @@ public class PagedKvStateTest {
         int contiguous = CONTEXT * kvDim() * LAYERS;
         int slack = (State.KV_BLOCK_SIZE - 1) * kvDim() * LAYERS;
 
-        assertTrue("never smaller", paged.workspace.wrapKeyCache.getSize() >= contiguous);
-        assertTrue(
-                "padding is bounded by one block per layer",
-                paged.workspace.wrapKeyCache.getSize() <= contiguous + slack);
-        assertEquals(
-                paged.workspace.wrapKeyCache.getSize(), paged.workspace.wrapValueCache.getSize());
+        // Whichever representation the storage selected (FP16 by default); the layout is the same.
+        boolean fp16 = paged.usesFp16KeyValueCache();
+        int keys =
+                fp16
+                        ? paged.workspace.wrapKeyCacheFP16.getSize()
+                        : paged.workspace.wrapKeyCache.getSize();
+        int values =
+                fp16
+                        ? paged.workspace.wrapValueCacheFP16.getSize()
+                        : paged.workspace.wrapValueCache.getSize();
+        assertTrue("never smaller", keys >= contiguous);
+        assertTrue("padding is bounded by one block per layer", keys <= contiguous + slack);
+        assertEquals(keys, values);
     }
 
     /**

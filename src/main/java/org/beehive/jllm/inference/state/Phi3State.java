@@ -81,11 +81,11 @@ public class Phi3State extends State {
 
         // Key-value cache with Phi3 dimensions
         fields.keyCache =
-                Stream.generate(() -> ArrayFloatTensor.allocate(contextLength, kvDim))
+                Stream.generate(() -> allocateKeyValue(contextLength, kvDim))
                         .limit(nLayers)
                         .toArray(FloatTensor[]::new);
         fields.valueCache =
-                Stream.generate(() -> ArrayFloatTensor.allocate(contextLength, kvDim))
+                Stream.generate(() -> allocateKeyValue(contextLength, kvDim))
                         .limit(nLayers)
                         .toArray(FloatTensor[]::new);
 
@@ -112,7 +112,7 @@ public class Phi3State extends State {
         // KV cache wrappers
         // KV cache: leased from the manager's pool when this state holds a lease, otherwise
         // allocated here, block-major when paged and contiguous when not.
-        fillKvFields(fields, config, kvDim, false);
+        fillKvFields(fields, config, kvDim, true);
 
         // Attention wrapper
         workspace.wrapAtt = TornadoWorkspaces.floats(nHeads * contextLength);

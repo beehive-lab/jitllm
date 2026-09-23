@@ -9,6 +9,7 @@ import org.beehive.jllm.model.Configuration;
 import org.beehive.jllm.runtime.backend.BackendId;
 import org.beehive.jllm.runtime.backend.Device;
 import org.beehive.jllm.runtime.memory.BufferClass;
+import org.beehive.jllm.runtime.memory.KeyValueReservation;
 import org.beehive.jllm.runtime.memory.MemoryComponent;
 import org.beehive.jllm.runtime.memory.MemoryPlan;
 import org.beehive.jllm.runtime.memory.WeightFootprint;
@@ -37,18 +38,20 @@ import org.beehive.jllm.runtime.policy.ExecutionPolicy;
  * <h2>Measured, not asserted</h2>
  *
  * <p>Minimum successful {@code -Dtornado.device.memory}, bisected in a fresh JVM per probe, {@code
- * Llama-3.2-1B-Instruct}, ctx 512, CUDA:
+ * Llama-3.2-1B-Instruct}, ctx 512, FP32 cache, CUDA, TornadoVM 7.0.1-dev (2026-09-23):
  *
  * <pre>
- *   F16  single-token         2362 MiB      Q8_0 single-token   1256 MiB
- *   F16  sequential prefill   2365 MiB
- *   F16  batched prefill (8)  4234 MiB      Q8_0 batched (8)    2262 MiB
+ *   F16  single-token         2375 MiB      Q8_0 single-token   1277 MiB
+ *   F16  sequential prefill   2390 MiB
+ *   F16  batched prefill (8)  2399 MiB      Q8_0 batched (8)    1298 MiB
  * </pre>
  *
- * <p>The batched/single difference is <b>1872 MiB</b> for F16 against <b>1856 MiB</b> of per-layer
- * weights — and the full weight set is 2357 MiB, which would not have matched. That is the evidence
- * the duplication is per-layer and not global. Q8_0 repeats it: 1006 MiB measured against ~986 MiB
- * of per-layer weights, with the same ~16–20 MiB of batch staging on top.
+ * <p>Batched prefill used to cost a second copy of the per-layer weights (4234 MiB for F16 when
+ * this table was first bisected). Its decode graphs now consume the copy the prefill graphs
+ * uploaded, so the families that <b>bind</b> weights is one, not two — {@code
+ * Configuration.weightBindingFamilies} — and what batched prefill adds is its staging, padded to
+ * 128-row tensor-core tiles. A native (library) prefill family still keeps stacked projection
+ * copies beside the originals; those are their own component.
  */
 public final class TornadoMemoryModel {
 
@@ -92,7 +95,7 @@ public final class TornadoMemoryModel {
     // @formatter:on
     private static boolean nativePrefillSelected(ExecutionPolicy policy) {
         return executionMode(policy) == ExecutionMode.BATCH_PREFILL_DECODE
-                && NativePrefillSupport.nativeProjections();
+                && NativePrefillSupport.nativeProjections(policy);
     }
 
     /**
@@ -110,6 +113,31 @@ public final class TornadoMemoryModel {
             ExecutionPolicy policy,
             Device device,
             long configuredBudgetBytes) {
+        return predict(
+                weights,
+                config,
+                policy,
+                device,
+                configuredBudgetBytes,
+                KeyValueReservation.singlePrivate(
+                        org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties()
+                                .usesFp16KeyValueCache()));
+    }
+
+    /**
+     * {@link #predict(WeightFootprint, Configuration, ExecutionPolicy, Device, long)} for a stated
+     * key/value provisioning: a pool reserved at load for several sessions costs what it reserves,
+     * not what one session would.
+     *
+     * @param keyValue how the key/value storage is provisioned
+     */
+    public static MemoryPlan predict(
+            WeightFootprint weights,
+            Configuration config,
+            ExecutionPolicy policy,
+            Device device,
+            long configuredBudgetBytes,
+            KeyValueReservation keyValue) {
         long header = device.nativeArrayHeaderBytes();
         int layoutFamilies = layerGraphFamilies(policy, config.numberOfLayers());
         // How many of those families upload the weights, which is what costs memory. A family
@@ -142,14 +170,17 @@ public final class TornadoMemoryModel {
         // The layers that actually hold key/value entries, which is every layer for every family
         // but qwen35 — where it is one in four, and the layer count would predict four times the
         // store that is allocated.
+        // Block-rounded, and for a shared pool sized for every session plus its scratch block:
+        // the pool is what the device holds, and it is reserved whether or not the sessions open.
         long kvElements =
-                (long) config.contextLength() * config.keyValueLayerCount() * config.kvDim();
+                keyValue.elementsPerArray(
+                        config.contextLength(), config.keyValueLayerCount(), config.kvDim());
         // FP16 KV is a storage choice, so it must be read rather than assumed FP32 — assuming
         // FP32 would over-predict a configured FP16 cache by exactly its own size.
-        int kvElementBytes = kvBytesPerElement();
+        int kvElementBytes = keyValue.bytesPerElement();
         components.add(
                 new MemoryComponent(
-                        "key/value cache",
+                        keyValueComponentName(keyValue),
                         BufferClass.KV_CACHE,
                         kvElements * 2L * kvElementBytes,
                         1,
@@ -276,21 +307,33 @@ public final class TornadoMemoryModel {
                         + "; context "
                         + config.contextLength()
                         + "; kv "
-                        + (kvBytesPerElement() == 2 ? "FP16" : "FP32")
+                        + (keyValue.fp16() ? "FP16" : "FP32")
+                        + keyValueAssumption(keyValue)
                         + (nativePrefill && stackedPerLayer > 0 ? "; native prefill" : "")
                         + "; native-array header "
                         + header
                         + " B");
     }
 
-    /**
-     * Bytes per key/value element, from the selected storage representation.
-     *
-     * <p>Read from the same switch the state reads, so the prediction and the allocation cannot
-     * disagree about which representation was chosen.
-     */
-    private static int kvBytesPerElement() {
-        return org.beehive.jllm.inference.state.State.USE_FP16_KV ? 2 : 4;
+    private static String keyValueComponentName(KeyValueReservation keyValue) {
+        if (keyValue.pooled()) {
+            return "key/value pool ("
+                    + keyValue.sessions()
+                    + (keyValue.sessions() == 1 ? " session" : " sessions")
+                    + ", reserved at load)";
+        }
+        return keyValue.sessions() == 1 ? "key/value cache" : "key/value cache (per session)";
+    }
+
+    private static String keyValueAssumption(KeyValueReservation keyValue) {
+        if (keyValue.pooled()) {
+            return " pool for " + keyValue.sessions() + " session(s)";
+        }
+        return keyValue.sessions() == 1
+                ? ""
+                : " per session; each of up to "
+                        + keyValue.sessions()
+                        + " open sessions allocates its own session state";
     }
 
     /**
@@ -335,8 +378,30 @@ public final class TornadoMemoryModel {
 
     /** Staging for a batched prefill chunk: embeddings and per-row activations. */
     private static long batchStagingBytes(Configuration config, int batchSize) {
-        long rows = batchSize;
-        long perRow = (long) config.dim() * 3 + config.hiddenDim() * 2 + config.kvDim() * 2;
-        return rows * perRow * Float.BYTES;
+        // Mirrors what State allocates for a batched plan. The tensor-core GEMM operands and
+        // results are padded to whole 128-row tiles, so a small batch still pays for 128 rows of
+        // them — sizing those by the requested batch under-predicted batch 8 by ~24 MiB on
+        // Llama-3.2-1B. The per-row inputs and scales are the requested width.
+        long padded = (batchSize + 127L) & ~127L;
+        long dim = config.dim();
+        long hidden = config.hiddenDim();
+        long kv = config.kvDim();
+        long q = kv * config.numberOfHeads() / config.numberOfKeyValueHeads();
+        long paddedBytes =
+                padded
+                        * (dim * Short.BYTES // xb (FP16)
+                                + (q + 2 * kv) * Float.BYTES // fused QKV result
+                                + dim * Short.BYTES // FFN-normed x (FP16)
+                                + 2 * hidden * Float.BYTES // fused gate/up result
+                                + q * Short.BYTES // attention output (FP16)
+                                + dim * Float.BYTES // Wo result
+                                + hidden * Short.BYTES // hb (FP16)
+                                + dim * Float.BYTES); // W2 result
+        long rowBytes =
+                (long) batchSize
+                        * (dim * Float.BYTES // x
+                                + dim * Short.BYTES // embeddings (FP16)
+                                + 2 * Float.BYTES); // attention and FFN scales
+        return paddedBytes + rowBytes;
     }
 }

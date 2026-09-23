@@ -27,6 +27,11 @@ import org.junit.Test;
 
 public class BatchedEngineAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     private static final int BATCH = 2;
     private static final int CONTEXT_LENGTH = 256;
     private static final int BLOCK_TOKENS = State.KV_BLOCK_SIZE;
@@ -76,7 +81,7 @@ public class BatchedEngineAccelTest {
                                             BLOCK_TOKENS,
                                             model.configuration().numberOfLayers(),
                                             model.kvCacheDim(),
-                                            State.USE_FP16_KV));
+                                            false)); // the engine reads an FP32 pool only
             manager.attach(store);
 
             // One state, one lease: the batched plan binds the shared pool, and the per-slot

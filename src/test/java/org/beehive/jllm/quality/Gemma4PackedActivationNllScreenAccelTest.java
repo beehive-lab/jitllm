@@ -52,6 +52,11 @@ import org.junit.Test;
 // @formatter:on
 public class Gemma4PackedActivationNllScreenAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     /** Tokens per passage, after tokenizing from the recorded offset. */
     private static final int TOKENS = 256;
 

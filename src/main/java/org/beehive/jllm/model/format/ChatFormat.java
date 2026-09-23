@@ -191,6 +191,16 @@ public interface ChatFormat {
     }
 
     /**
+     * The token that closes a reasoning block in a response, or {@code -1} if this format has none.
+     *
+     * <p>A reasoning format's template drops earlier turns' reasoning from the history it renders;
+     * a session that carries history in its cache uses this to do the same.
+     */
+    default int reasoningEndToken() {
+        return -1;
+    }
+
+    /**
      * Returns the tokens to append immediately after the assistant header in order to control the
      * model's thinking/reasoning phase. Models that do not {@link #supportsThinking()} return an
      * empty list (the default), so callers can invoke this unconditionally.

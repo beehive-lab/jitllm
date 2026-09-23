@@ -288,4 +288,19 @@ public class KvCacheManagerTest {
             lease.close();
         }
     }
+
+    @Test
+    public void totalBlocksRefusesAnOverflowingSessionCount() {
+        assertEquals(8 * 512, KvCacheManager.totalBlocks(8, 512));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> KvCacheManager.totalBlocks(Integer.MAX_VALUE / 2, 3));
+        // The scratch block beyond the leasable range must fit as well.
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> KvCacheManager.totalBlocks(1, Integer.MAX_VALUE));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> KvCacheManager.sizedFor(Integer.MAX_VALUE, 8192, 16, 1024));
+    }
 }
