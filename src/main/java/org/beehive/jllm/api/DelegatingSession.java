@@ -179,14 +179,22 @@ final class DelegatingSession implements GenerationSession {
                         model.tokenizer(), stopTokens, request.onEvent(), request.onToken());
         IntConsumer onToken = events::accept;
 
-        // maxTokens is the total budget including the prompt, and is capped by the session's
-        // context: exceeding it would write past the key/value cache this session was sized for.
-        int budget =
-                Math.min(position + promptTokens.size() + request.maxNewTokens(), contextLength);
-
         // The session's logical values become current in whatever state it executes with. For a
         // borrowed workspace that is what keeps two sessions' conversations apart.
         runtime.beginTurn();
+
+        // The loops take a position bound, not a token count: the budget is the positions the
+        // prompt occupies plus the tokens asked for, capped by the session's context — exceeding
+        // it would write past the key/value cache this session was sized for. A prompt that
+        // opens with the token the state is seeded with occupies one position less (it is fed
+        // once), so it is counted by what is ingested, not by its length; otherwise that position
+        // would become one more generated token than the request asked for.
+        int ingested =
+                promptTokens.size()
+                        - org.beehive.jllm.inference.PromptIngestion.of(
+                                        runtime.executionState(), promptTokens, position)
+                                .firstIndex();
+        int budget = Math.min(position + ingested + request.maxNewTokens(), contextLength);
         List<Integer> responseTokens;
         if (gpu) {
             // The runtime already decided what this session executes with — its own state and plan,
