@@ -301,7 +301,7 @@ public final class OpenAIServer implements AutoCloseable {
         if (java.util.Arrays.asList(args).contains("--help")
                 || java.util.Arrays.asList(args).contains("-h")) {
             System.out.println(
-                    "Usage: OpenAIServer [serve] --model FILE [--ctx-size|--ctx N (default: model's own)] [--host 127.0.0.1] [--port 8080] [--gpu] [--parallel N] [-v]");
+                    "Usage: OpenAIServer [serve] --model FILE [--ctx-size|--ctx N (default: model's own)] [--host 127.0.0.1] [--port 8080] [--gpu] [--continuous-batching SLOTS (experimental)] [-v]");
             return;
         }
         ServerOptions options = ServerOptions.parse(args);
@@ -314,7 +314,8 @@ public final class OpenAIServer implements AutoCloseable {
         String served = path.getFileName().toString().replaceAll("\\.gguf$", "");
         ModelOptions modelOptions = config.modelOptions();
         OpenAIServer server;
-        if (options.parallel() > 1) {
+        if (options.continuousBatching()) {
+            System.err.println(ServerOptions.CONTINUOUS_BATCHING_WARNING);
             Model model = loadModel(path, config.contextLength(), true, config.gpu());
             long loadNs = System.nanoTime() - startedNs;
             // The engine needs a concrete window; the facade path reads its own back after load.
@@ -323,12 +324,12 @@ public final class OpenAIServer implements AutoCloseable {
                             config.contextLength(), model.configuration().contextLength());
             if (model.weights().dataType() != org.beehive.jllm.runtime.tensor.DataType.F16) {
                 throw new IllegalArgumentException(
-                        "Parallel serving requires FP16 Llama/Qwen3 weights");
+                        "Continuous batching requires FP16 Llama/Qwen3 weights");
             }
             EngineInferenceService service =
                     new EngineInferenceService(
                             model,
-                            options.parallel(),
+                            options.batchSlots(),
                             options.maxQueuedRequests(),
                             contextLength,
                             options.prefixCacheEntries());
@@ -340,7 +341,7 @@ public final class OpenAIServer implements AutoCloseable {
                                     model,
                                     path,
                                     service.executionInfo(),
-                                    "greedy (parallel serving)",
+                                    "greedy (continuous batching)",
                                     modelOptions,
                                     loadNs,
                                     startedNs));
@@ -383,8 +384,8 @@ public final class OpenAIServer implements AutoCloseable {
             System.err.println(
                     "[server] context per request="
                             + server.contextLength
-                            + " parallel="
-                            + options.parallel()
+                            + " continuousBatchingSlots="
+                            + options.batchSlots()
                             + " maxQueuedRequests="
                             + options.maxQueuedRequests());
         }
@@ -610,7 +611,7 @@ public final class OpenAIServer implements AutoCloseable {
         String rejection =
                 validationError(requestedModel, servedModel, maxTokens, promptChars, contextLength);
         if (rejection == null && service.greedyOnly() && temperature != 0.0f) {
-            rejection = "Parallel serving currently requires temperature=0 (greedy sampling)";
+            rejection = "Continuous batching currently requires temperature=0 (greedy sampling)";
         }
         if (rejection != null) {
             System.err.println(summary + " -> 400 " + rejection);

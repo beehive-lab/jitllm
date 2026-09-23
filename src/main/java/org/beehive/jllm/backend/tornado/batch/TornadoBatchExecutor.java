@@ -119,10 +119,11 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
 
         if (!org.beehive.jllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend()) {
             throw new IllegalArgumentException(
-                    "Parallel serving requires a CUDA device with tensor-core MMA support");
+                    "Continuous batching requires a CUDA device with tensor-core MMA support");
         }
         if (!(state instanceof LlamaState) && !(state instanceof Qwen3State)) {
-            throw new IllegalArgumentException("Parallel serving supports FP16 Llama/Qwen3 only");
+            throw new IllegalArgumentException(
+                    "Continuous batching supports FP16 Llama/Qwen3 only");
         }
         this.batchSize = batchSize;
         this.blocksPerSlot = blocksPerSlot;
@@ -133,7 +134,8 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
                             + storage.getClass().getName());
         }
         if (store.keyPool() == null || store.valuePool() == null) {
-            throw new IllegalArgumentException("Parallel serving requires FP32 KV cache");
+            throw new IllegalArgumentException(
+                    "Continuous batching requires an FP32 key/value cache (--fp32-kv-cache)");
         }
         this.store = store;
         this.dim = config.dim();

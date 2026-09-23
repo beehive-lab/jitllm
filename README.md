@@ -374,7 +374,7 @@ Each command has focused help:
 | --- | --- | --- |
 | `run` | Generate one response, then exit | `--prompt`, `--system-prompt`, `--max-new-tokens` |
 | `chat` | Terminal conversation using one persistent session | `--system-prompt`, `--max-new-tokens` per turn |
-| `serve` | OpenAI-compatible HTTP API | `--host`, `--port`, `--parallel`, `--max-queued-requests`, `--prefix-cache-entries` |
+| `serve` | OpenAI-compatible HTTP API | `--host`, `--port`; experimental `--continuous-batching` |
 | `bench` | Repeated prefill/decode workloads | `--pp`, `--tg`, `--depth`, `--repetitions`, `--output` |
 
 Model, GPU/backend selection, KV precision, execution policy, and `-v`/`--verbose`
@@ -410,14 +410,16 @@ Serving binds to loopback by default and prints its actual address and port when
 Use `--host 0.0.0.0` explicitly for all IPv4 interfaces. Clients submit conversation
 history in each HTTP request; `chat` retains terminal conversation history locally.
 
-`serve --parallel N` counts **request slots**, whereas `--batch-prefill-size N` counts
-**prompt tokens per chunk**. One request slot uses the regular facade and honors its
-prefill policy. More than one slot enables the existing experimental continuous-batch
-engine: CUDA tensor-core devices, FP16 Llama/Qwen3 weights, an FP32 KV cache
-(`--fp32-kv-cache`, required), and greedy (`temperature=0`) requests only. Prefill chunking and CUDA graphs are rejected in that mode because this executor
-does not implement them. JIT/device setup remains lazy there and is labeled accordingly
-in verbose output; its memory estimate is unavailable. Prefix caching requires parallel
-mode and is disabled by default.
+**Experimental: continuous batching.** `serve --continuous-batching SLOTS` decodes up to
+`SLOTS` HTTP requests together in one batch instead of one at a time, with
+`--max-queued-requests` and `--prefix-cache-entries` as its options (listed under
+*Experimental* in `jllm serve --help`). It prints a warning when enabled and currently supports
+CUDA tensor-core devices, FP16 Llama/Qwen3 weights, an FP32 KV cache (`--fp32-kv-cache`,
+required) and greedy (`temperature=0`) requests only. Prefill chunking and CUDA graphs are
+rejected in that mode because this executor does not implement them. JIT/device setup remains
+lazy there and is labeled accordingly in verbose output; its memory estimate is unavailable.
+Prefix caching requires continuous batching and is disabled by default. Not to be confused with
+`--batch-prefill-size N`, which counts **prompt tokens per chunk** of one request.
 
 `serve -v` and `bench -v` use the same startup report as terminal generation. Server
 request sampling and benchmark token workloads are labeled appropriately; reports stay

@@ -8,40 +8,59 @@ record ServerOptions(
         ModelRunConfig model,
         String host,
         int port,
-        int parallel,
+        int batchSlots,
         int maxQueuedRequests,
         int prefixCacheEntries) {
+    // The checks use the parameter, not continuousBatching(): in a compact constructor the
+    // fields are not assigned until it returns, so the accessor would read the default.
     ServerOptions {
         if (host.isBlank() || port < 0 || port > 65535)
             throw new IllegalArgumentException("Expected a nonempty --host and --port in 0..65535");
-        if (parallel < 1 || maxQueuedRequests < 1 || prefixCacheEntries < 0)
+        if (batchSlots < 1 || maxQueuedRequests < 1 || prefixCacheEntries < 0)
             throw new IllegalArgumentException(
                     "Invalid server concurrency or queue/cache capacity");
-        if (parallel > 1 && !model.gpu())
-            throw new IllegalArgumentException("--parallel > 1 requires --gpu");
-        if (parallel == 1 && prefixCacheEntries > 0)
-            throw new IllegalArgumentException("--prefix-cache-entries requires --parallel > 1");
-        if (parallel > 1
+        if (batchSlots > 1 && !model.gpu())
+            throw new IllegalArgumentException("--continuous-batching requires --gpu");
+        if (batchSlots <= 1 && prefixCacheEntries > 0)
+            throw new IllegalArgumentException(
+                    "--prefix-cache-entries requires --continuous-batching");
+        if (batchSlots > 1
                 && (Boolean.getBoolean("jllm.withPrefillDecode")
                         || Integer.getInteger("jllm.prefillBatchSize", 1) > 1
                         || Boolean.getBoolean("jllm.cudaGraphs"))) {
             throw new IllegalArgumentException(
-                    "Parallel serving does not support prefill chunking or CUDA graphs");
+                    "Continuous batching does not support prefill chunking or CUDA graphs");
         }
-        if (parallel > 1
+        if (batchSlots > 1
                 && org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties()
                         .usesFp16KeyValueCache()) {
             throw new IllegalArgumentException(
-                    "Parallel serving reads an FP32 key/value cache; pass --fp32-kv-cache"
+                    "Continuous batching reads an FP32 key/value cache; pass --fp32-kv-cache"
                             + " (FP16 is the default)");
         }
     }
+
+    /** Whether requests are decoded together by the experimental continuous-batch engine. */
+    boolean continuousBatching() {
+        return batchSlots > 1;
+    }
+
+    /**
+     * The warning printed when continuous batching is enabled: it is experimental, and narrower
+     * than the regular path.
+     */
+    static final String CONTINUOUS_BATCHING_WARNING =
+            "WARNING: continuous batching is experimental. It currently supports CUDA tensor-core"
+                    + " devices, FP16 Llama/Qwen3 weights, an FP32 key/value cache"
+                    + " (--fp32-kv-cache) and greedy requests (temperature 0); prefill chunking and"
+                    + " CUDA graphs are not supported, and its setup time and memory are not"
+                    + " reported.";
 
     static ServerOptions parse(String[] args) {
         Path path = null;
         String host = "127.0.0.1";
         // 0 serves the model's own context, as ModelOptions and the loaders define it.
-        int port = 8080, context = 0, parallel = 1;
+        int port = 8080, context = 0, batchSlots = 1;
         int queued = Integer.getInteger("server.maxQueuedRequests", 64);
         int prefixes = Integer.getInteger("server.prefixCacheEntries", 0);
         boolean gpu = Boolean.getBoolean("use.tornadovm"), contextSet = false;
@@ -99,10 +118,13 @@ record ServerOptions(
                     if (option.equals("--max-tokens") || option.equals("-n"))
                         System.err.println("--max-tokens/-n is deprecated; use --ctx-size/-c.");
                 }
-                case "--parallel", "--batch", "-b" -> {
-                    parallel = Integer.parseInt(value);
-                    if (!option.equals("--parallel"))
-                        System.err.println("--batch/-b is deprecated; use --parallel.");
+                case "--continuous-batching", "--batch", "-b" -> {
+                    batchSlots = Integer.parseInt(value);
+                    if (batchSlots < 2)
+                        throw new IllegalArgumentException(
+                                option + " needs at least 2 request slots");
+                    if (!option.equals("--continuous-batching"))
+                        System.err.println(option + " is deprecated; use --continuous-batching.");
                 }
                 case "--max-queued-requests" -> queued = Integer.parseInt(value);
                 case "--prefix-cache-entries" -> prefixes = Integer.parseInt(value);
@@ -118,6 +140,6 @@ record ServerOptions(
         }
         if (path == null) throw new IllegalArgumentException("serve requires --model");
         return new ServerOptions(
-                new ModelRunConfig(path, context, gpu), host, port, parallel, queued, prefixes);
+                new ModelRunConfig(path, context, gpu), host, port, batchSlots, queued, prefixes);
     }
 }

@@ -41,4 +41,4 @@ materialized as Q8_0 runs, and is decided as, Q8_0.
 | CUDA | Mistral, Devstral, Qwen2 / DeepSeek-R1-Distill, Phi-3, Granite, Qwen2-MoE, Gemma 4 | any | any | refused | layers keep an FP32 cache |
 | OpenCL | any | any | any | refused | no verified FP16 cache path |
 | Metal | any | any | any | refused (blocked) | no verified FP16 cache path; no Metal device here |
-| CUDA | parallel serving (`serve --parallel N`, N > 1) | F16 | batched decode | refused | engine kernels read an FP32 pool; `--fp32-kv-cache` required |
+| CUDA | continuous batching (`serve --continuous-batching`, experimental) | F16 | batched decode | refused | engine kernels read an FP32 pool; `--fp32-kv-cache` required |

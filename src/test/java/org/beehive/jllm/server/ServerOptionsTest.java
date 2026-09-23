@@ -23,7 +23,8 @@ public class ServerOptionsTest {
         assertEquals(4096, options.model().modelOptions().contextLength());
         assertEquals("127.0.0.2", options.host());
         assertEquals(0, options.port());
-        assertEquals(1, options.parallel());
+        assertEquals(1, options.batchSlots());
+        assertFalse(options.continuousBatching());
     }
 
     @Test
@@ -59,7 +60,8 @@ public class ServerOptionsTest {
                     {"--temperature", "1"},
                     {"--ctx-size", "-1"},
                     {"--port", "65536"},
-                    {"--parallel", "0"},
+                    {"--continuous-batching", "1"},
+                    {"--prefix-cache-entries", "4"},
                     {"--ctx-size", "100", "--max-tokens", "200"}
                 }) {
             String[] args = new String[extra.length + 2];
@@ -71,7 +73,7 @@ public class ServerOptionsTest {
     }
 
     @Test
-    public void parallelServingNeedsTheFp32CacheAskedFor() {
+    public void continuousBatchingNeedsTheFp32CacheAskedFor() {
         String fp32 = org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY;
         String previous = System.getProperty(fp32);
         try {
@@ -82,7 +84,11 @@ public class ServerOptionsTest {
                             () ->
                                     ServerOptions.parse(
                                             new String[] {
-                                                "-m", "model.gguf", "--gpu", "--parallel", "2"
+                                                "-m",
+                                                "model.gguf",
+                                                "--gpu",
+                                                "--continuous-batching",
+                                                "2"
                                             }));
             assertTrue(refused.getMessage(), refused.getMessage().contains("--fp32-kv-cache"));
             assertEquals(
@@ -92,11 +98,11 @@ public class ServerOptionsTest {
                                         "-m",
                                         "model.gguf",
                                         "--gpu",
-                                        "--parallel",
+                                        "--continuous-batching",
                                         "2",
                                         "--fp32-kv-cache"
                                     })
-                            .parallel());
+                            .batchSlots());
         } finally {
             if (previous == null) System.clearProperty(fp32);
             else System.setProperty(fp32, previous);

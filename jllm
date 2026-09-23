@@ -281,9 +281,11 @@ class LlamaRunner:
         if getattr(args, "server", False):
             # HTTP options are separate from terminal prompts and sampling.
             srv = ["--model", args.model_path, "--host", args.host, "--port", str(args.port),
-                   "--ctx-size", str(args.max_tokens), "--parallel", str(args.parallel),
-                   "--max-queued-requests", str(args.max_queued_requests),
-                   "--prefix-cache-entries", str(args.prefix_cache_entries)]
+                   "--ctx-size", str(args.max_tokens)]
+            if args.continuous_batching:
+                srv += ["--continuous-batching", str(args.continuous_batching),
+                        "--max-queued-requests", str(args.max_queued_requests),
+                        "--prefix-cache-entries", str(args.prefix_cache_entries)]
             if args.use_gpu:
                 srv.append("--gpu")
             return cmd + srv
@@ -450,7 +452,10 @@ def parse_cli_args(argv):
     if argv and argv[0].startswith("-") and argv[0] not in {"-h", "--help"}:
         parser = create_parser()
     else:
-        parser = argparse.ArgumentParser(prog="jllm", description="Run, chat with, serve, or benchmark a local model.")
+        parser = argparse.ArgumentParser(
+            prog="jllm", description="Run, chat with, serve, or benchmark a local model.",
+            epilog="Experimental: serve --continuous-batching SLOTS decodes several HTTP requests in one "
+                   "batch (see jllm serve --help for what it currently supports).")
         sub = parser.add_subparsers(dest="command", required=True)
         descriptions = {"run": "Generate one response", "chat": "Chat in the terminal",
                         "serve": "Start the OpenAI-compatible HTTP API", "bench": "Measure inference performance"}
@@ -480,19 +485,22 @@ def parse_cli_args(argv):
     if mode == "serve":
         if not 0 <= args.port <= 65535 or not args.host.strip():
             parser.error("serve requires a nonempty --host and --port in 0..65535")
-        if args.parallel < 1 or args.max_queued_requests < 1 or args.prefix_cache_entries < 0:
-            parser.error("--parallel and --max-queued-requests must be positive; --prefix-cache-entries must be non-negative")
-        if args.parallel > 1 and not args.use_gpu:
-            parser.error("--parallel > 1 requires --gpu")
-        if args.parallel > 1 and (args.with_prefill_decode or args.batch_prefill_size is not None or args.cuda_graphs):
-            parser.error("parallel serving does not support --with-prefill-decode, --batch-prefill-size, or --cuda-graphs")
-        if args.parallel > 1 and not args.fp32_kv_cache:
-            parser.error("parallel serving reads an FP32 key/value cache; pass --fp32-kv-cache (FP16 is the default)")
-        if args.parallel == 1 and args.prefix_cache_entries:
-            parser.error("--prefix-cache-entries requires --parallel > 1")
+        batching = args.continuous_batching
+        if batching is not None and batching < 2:
+            parser.error("--continuous-batching needs at least 2 request slots")
+        if not batching and supplied & {"--max-queued-requests", "--prefix-cache-entries"}:
+            parser.error("--max-queued-requests and --prefix-cache-entries belong to --continuous-batching")
+        if args.max_queued_requests < 1 or args.prefix_cache_entries < 0:
+            parser.error("--max-queued-requests must be positive; --prefix-cache-entries must be non-negative")
+        if batching and not args.use_gpu:
+            parser.error("--continuous-batching requires --gpu")
+        if batching and (args.with_prefill_decode or args.batch_prefill_size is not None or args.cuda_graphs):
+            parser.error("continuous batching does not support --with-prefill-decode, --batch-prefill-size, or --cuda-graphs")
+        if batching and not args.fp32_kv_cache:
+            parser.error("continuous batching reads an FP32 key/value cache; pass --fp32-kv-cache (FP16 is the default)")
     if mode in {"serve", "bench"} and (args.prompt is not None or args.system_prompt is not None or args.max_new_tokens is not None):
         parser.error("prompt and generation-limit options belong to run/chat; serve receives them in HTTP requests")
-    if mode != "serve" and supplied & {"--port", "--host", "--parallel", "--max-queued-requests", "--prefix-cache-entries"}:
+    if mode != "serve" and supplied & {"--port", "--host", "--continuous-batching", "--max-queued-requests", "--prefix-cache-entries"}:
         parser.error("HTTP server options require serve/--server")
     if mode != "bench" and supplied & {"--pp", "--tg", "--depth", "--repetitions", "--output", "--bench-args"}:
         parser.error("Benchmark options require bench/--bench")
@@ -588,10 +596,17 @@ def create_parser(command=None) -> argparse.ArgumentParser:
     server_group.add_argument("--port", type=int, default=8080, help="Server port (default 8080)")
 
     server_group.add_argument("--host", default="127.0.0.1", help="HTTP bind address")
-    server_group.add_argument("--parallel", type=int, default=1,
-                              help="Concurrent request slots; >1 uses experimental FP16 Llama/Qwen3 GPU batching")
-    server_group.add_argument("--max-queued-requests", type=int, default=64, help="Maximum queued requests in parallel mode")
-    server_group.add_argument("--prefix-cache-entries", type=int, default=0, help="Cached prompt prefixes in parallel mode")
+    experimental_group = parser.add_argument_group(
+        "Experimental: continuous batching (serve)",
+        "Decodes several HTTP requests in one batch. Currently: CUDA tensor-core devices, FP16 "
+        "Llama/Qwen3 weights, --fp32-kv-cache, greedy requests (temperature 0); no prefill "
+        "chunking or CUDA graphs. Prints a warning when enabled.")
+    experimental_group.add_argument("--continuous-batching", type=int, default=None, metavar="SLOTS",
+                                    help="Enable continuous batching with this many request slots (at least 2)")
+    experimental_group.add_argument("--max-queued-requests", type=int, default=64,
+                                    help="Requests waiting for a free slot before new ones are refused")
+    experimental_group.add_argument("--prefix-cache-entries", type=int, default=0,
+                                    help="Cached prompt prefixes shared between requests (default: off)")
 
     # Benchmark (llama-bench style)
     parser.add_argument(
@@ -763,7 +778,7 @@ def create_parser(command=None) -> argparse.ArgumentParser:
     parser.set_defaults(command=command, legacy_context=False)
     if command:
         generation = {"prompt", "system_prompt", "temperature", "top_p", "seed", "max_new_tokens", "stream", "echo", "suffix"}
-        server = {"host", "port", "parallel", "max_queued_requests", "prefix_cache_entries"}
+        server = {"host", "port", "continuous_batching", "max_queued_requests", "prefix_cache_entries"}
         bench = {"bench_args", "pp", "tg", "depth", "repetitions", "output"}
         modes = {"interactive", "instruct", "server", "bench"}
         hidden = modes | (server if command != "serve" else set()) | (bench if command != "bench" else set())

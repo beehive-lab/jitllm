@@ -1,7 +1,7 @@
 """CLI contracts: modes, validation before loading, and Java argument forwarding."""
 import io
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from test_launcher_flags import launcher
 
 
@@ -51,21 +51,42 @@ class Commands(unittest.TestCase):
         self.reject("run", "-m", "stub.gguf", "--prompt", "hi", "--max-new-tokens", "0")
         self.reject("run", "-m", "stub.gguf")
 
-    def test_server_forwards_host_capacity_and_request_slots(self):
+    def test_server_forwards_host_capacity_and_continuous_batching(self):
         args = self.java_args("serve", "-m", "stub.gguf", "--gpu", "--fp32-kv-cache", "--host", "127.0.0.2",
-                              "--port", "8081", "-c", "4096", "--parallel", "4",
+                              "--port", "8081", "-c", "4096", "--continuous-batching", "4",
                               "--max-queued-requests", "12", "--prefix-cache-entries", "8")
         for key, value in [("--host", "127.0.0.2"), ("--port", "8081"),
-                           ("--ctx-size", "4096"), ("--parallel", "4"),
+                           ("--ctx-size", "4096"), ("--continuous-batching", "4"),
                            ("--max-queued-requests", "12"), ("--prefix-cache-entries", "8")]:
             self.assertEqual(value, args[args.index(key) + 1])
         self.assertNotIn("--prompt", args)
         self.assertNotIn("--temperature", args)
-        self.reject("serve", "-m", "stub.gguf", "--parallel", "2")
-        self.reject("serve", "-m", "stub.gguf", "--gpu", "--parallel", "2", "--cuda-graphs")
-        # Parallel serving reads an FP32 cache, and FP16 is the default: it must be asked for.
-        self.reject("serve", "-m", "stub.gguf", "--gpu", "--parallel", "2")
-        self.parse("serve", "-m", "stub.gguf", "--gpu", "--parallel", "2", "--fp32-kv-cache")
+        # Off unless asked for, and then its options are not forwarded either.
+        plain = self.java_args("serve", "-m", "stub.gguf", "--gpu")
+        self.assertNotIn("--continuous-batching", plain)
+        self.assertNotIn("--max-queued-requests", plain)
+        self.reject("serve", "-m", "stub.gguf", "--continuous-batching", "2", "--fp32-kv-cache")
+        self.reject("serve", "-m", "stub.gguf", "--gpu", "--fp32-kv-cache", "--continuous-batching", "1")
+        self.reject("serve", "-m", "stub.gguf", "--gpu", "--fp32-kv-cache", "--continuous-batching", "2", "--cuda-graphs")
+        # It reads an FP32 cache, and FP16 is the default: it must be asked for.
+        self.reject("serve", "-m", "stub.gguf", "--gpu", "--continuous-batching", "2")
+        # Its options are refused on their own rather than silently doing nothing.
+        self.reject("serve", "-m", "stub.gguf", "--gpu", "--prefix-cache-entries", "4")
+        self.reject("serve", "-m", "stub.gguf", "--gpu", "--max-queued-requests", "4")
+        self.reject("run", "-m", "stub.gguf", "--prompt", "hi", "--continuous-batching", "2")
+        self.parse("serve", "-m", "stub.gguf", "--gpu", "--continuous-batching", "2", "--fp32-kv-cache")
+
+    def test_continuous_batching_is_listed_as_experimental(self):
+        serve_help = launcher.create_parser("serve").format_help()
+        self.assertIn("Experimental: continuous batching", serve_help)
+        self.assertIn("--continuous-batching", serve_help)
+        self.assertNotIn("--parallel", serve_help)
+        self.assertNotIn("--continuous-batching", launcher.create_parser("run").format_help())
+        stdout = io.StringIO()
+        with redirect_stdout(stdout), self.assertRaises(SystemExit):
+            launcher.parse_cli_args(["--help"])
+        self.assertIn("Experimental", stdout.getvalue())
+        self.assertIn("--continuous-batching", stdout.getvalue())
 
     def test_removed_fp16_flag_is_refused_with_the_migration(self):
         for prefix in (["run", "--prompt", "hi"], ["chat"], ["serve"], ["bench"], ["--prompt", "hi"]):
