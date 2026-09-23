@@ -78,11 +78,11 @@
                  tornadovm.release.version, set by the release workflows, replaces the base version
                  and drops the -dev qualifier, and the enforcer below refuses a release build that
                  has no such version or still resolves to -dev coordinates. A release also fails to
-                 compile if the chosen TornadoVM release lacks the APIs above: no published release
-                 carries them yet, so no jitllm release can be cut from this branch until one does. -->
+                 compile if the chosen TornadoVM release lacks the APIs above: TornadoVM 7.0.0 is the
+                 first release that carries them, so it is the minimum a jitllm release can use. -->
         <tornadovm.base.version>6.1.1</tornadovm.base.version>
-        <!-- Empty in development; a published X.Y.Z under -P release (see prepare-release.yml). -->
-        <tornadovm.release.version/>
+        <!-- The published TornadoVM release that -P release builds against (see prepare-release.yml). -->
+        <tornadovm.release.version>7.0.0</tornadovm.release.version>
         <!-- The qualifier TornadoVM's own develop builds carry; emptied by the release profile. -->
         <tornadovm.dev.qualifier>-dev</tornadovm.dev.qualifier>
         <archunit.version>1.4.2</archunit.version>
