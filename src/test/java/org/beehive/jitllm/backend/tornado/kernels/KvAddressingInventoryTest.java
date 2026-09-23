@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assert.assertTrue;
 
@@ -145,7 +145,7 @@ public class KvAddressingInventoryTest {
                         "Qwen2PagedKvKernels.java",
                         "GranitePagedKvKernels.java",
                         "Phi3PagedKvKernels.java")) {
-            String paged = read(MAIN.resolve("org/beehive/jllm/backend/tornado/kernels/" + file));
+            String paged = read(MAIN.resolve("org/beehive/jitllm/backend/tornado/kernels/" + file));
             Matcher m = LEGACY_CONTIGUOUS.matcher(paged);
 
             assertTrue(file + " must address KV only through KvBlockAddress", !m.find());
@@ -158,7 +158,7 @@ public class KvAddressingInventoryTest {
     /** Every migrated kernel exists as a twin, and its legacy original is <b>gone</b>. */
     @Test
     public void everyTwinExistsAndItsLegacyOriginalIsGone() {
-        Path kernels = MAIN.resolve("org/beehive/jllm/backend/tornado/kernels");
+        Path kernels = MAIN.resolve("org/beehive/jitllm/backend/tornado/kernels");
         for (Map.Entry<String, List<String>> entry : ALL_TWINS.entrySet()) {
             String paged = read(kernels.resolve(entry.getKey()));
             for (String twin : entry.getValue()) {

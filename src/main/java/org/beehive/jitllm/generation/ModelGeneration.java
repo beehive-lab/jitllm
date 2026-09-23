@@ -1,6 +1,6 @@
-package org.beehive.jllm.generation;
+package org.beehive.jitllm.generation;
 
-import static org.beehive.jllm.JllmApp.SHOW_PERF_INTERACTIVE;
+import static org.beehive.jitllm.JitllmApp.SHOW_PERF_INTERACTIVE;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -8,14 +8,14 @@ import java.util.Scanner;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
-import org.beehive.jllm.Options;
-import org.beehive.jllm.auxiliary.RunMetrics;
-import org.beehive.jllm.auxiliary.metrics.RunMetricsSink;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
+import org.beehive.jitllm.Options;
+import org.beehive.jitllm.auxiliary.RunMetrics;
+import org.beehive.jitllm.auxiliary.metrics.RunMetricsSink;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
 
 /**
  * The generation loops that used to live on {@code Model} as default methods.
@@ -186,7 +186,7 @@ public final class ModelGeneration {
                 }
                 if (stopToken == null) {
                     System.err.println(
-                            "\n Ran out of context length...\n Increase context length with by passing to jllm --max-tokens XXX");
+                            "\n Ran out of context length...\n Increase context length with by passing to jitllm --max-tokens XXX");
                     break;
                 }
                 System.out.print("\n");

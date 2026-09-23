@@ -1,8 +1,8 @@
-package org.beehive.jllm.backend.tornado.layers;
+package org.beehive.jitllm.backend.tornado.layers;
 
 import static org.junit.Assert.assertEquals;
 
-import org.beehive.jllm.backend.tornado.layers.Qwen35FFNLayers.DeltaRuleGeometry;
+import org.beehive.jitllm.backend.tornado.layers.Qwen35FFNLayers.DeltaRuleGeometry;
 import org.junit.Test;
 
 /**
@@ -67,9 +67,9 @@ public class Qwen35DeltaRuleGeometryTest {
         assertEquals(128L, lane.getLocalWork()[0]);
     }
 
-    private static org.beehive.jllm.model.qwen35.Qwen35Configuration syntheticConfig(
+    private static org.beehive.jitllm.model.qwen35.Qwen35Configuration syntheticConfig(
             int valueHeads, int stateSize) {
-        return new org.beehive.jllm.model.qwen35.Qwen35Configuration(
+        return new org.beehive.jitllm.model.qwen35.Qwen35Configuration(
                 "Q8_0",
                 256,
                 512,

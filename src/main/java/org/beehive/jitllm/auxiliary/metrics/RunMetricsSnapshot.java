@@ -1,4 +1,4 @@
-package org.beehive.jllm.auxiliary.metrics;
+package org.beehive.jitllm.auxiliary.metrics;
 
 /**
  * Immutable snapshot of all performance metrics for a single inference run.

@@ -1,4 +1,4 @@
-name: jllm Build & Run
+name: jitllm Build & Run
 
 on:
   push:
@@ -20,11 +20,11 @@ env:
   JAVA_VERSION_25: 25.0.2-open
   MODELS_DIR: /opt/models
   QUARKUS_PORT: 8081
-  # The Quarkus extension that consumes this project. Its jllm module tracks the public
+  # The Quarkus extension that consumes this project. Its jitllm module tracks the public
   # facade, so it is pinned to the branch matching this repository's surface rather than to
   # quarkiverse's default branch, which lags it.
   QUARKUS_LANGCHAIN4J_REPO: https://github.com/orionpapadakis/quarkus-langchain4j.git
-  QUARKUS_LANGCHAIN4J_REF: jllm/facade-1.0.0
+  QUARKUS_LANGCHAIN4J_REF: jitllm/facade-1.0.0
   # History file committed back to the repo on push to main
   PERF_HISTORY_FILE: docs/perf-history.jsonl
 
@@ -34,13 +34,13 @@ jobs:
   # standalone-inference workflow, so one run is one runtime. A run can be reproduced by
   # dispatching it with that commit.
   resolve-tornadovm:
-    if: github.repository == 'beehive-lab/jllm'
+    if: github.repository == 'beehive-lab/jitllm'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
-      - name: Checkout jllm
+      - name: Checkout jitllm
         uses: actions/checkout@v4
       - name: Resolve the TornadoVM commit for this run
         id: resolve
@@ -61,12 +61,12 @@ jobs:
           echo "- \`$SHA\` ($HOW)" >> "$GITHUB_STEP_SUMMARY"
 
   code-quality:
-    if: github.repository == 'beehive-lab/jllm'
+    if: github.repository == 'beehive-lab/jitllm'
     runs-on: [self-hosted, Linux]
     timeout-minutes: 30
 
     steps:
-      - name: Checkout jllm
+      - name: Checkout jitllm
         uses: actions/checkout@v4
 
       - name: Set up Java
@@ -88,7 +88,7 @@ jobs:
   # depend on jobs, not on matrix cells, so with one `build` job an unavailable Mac runner
   # leaves every Linux consumer queued behind it.
   build-linux:
-    if: github.repository == 'beehive-lab/jllm'
+    if: github.repository == 'beehive-lab/jitllm'
     runs-on: [self-hosted, Linux]
     needs: [code-quality, resolve-tornadovm]
     timeout-minutes: 45
@@ -99,7 +99,7 @@ jobs:
         jdk: ['21', '25']
 
     steps:
-      - name: Checkout jllm
+      - name: Checkout jitllm
         uses: actions/checkout@v4
         with:
           clean: false
@@ -116,7 +116,7 @@ jobs:
           backend: ${{ matrix.backend }}
           jdk: ${{ matrix.jdk }}
 
-      - name: Build and unit-test jllm
+      - name: Build and unit-test jitllm
         run: |
           set -euo pipefail
           # The TornadoVM coordinates are the ones the SDK built in the previous step produced
@@ -132,44 +132,44 @@ jobs:
               || { echo "::error::$a $TORNADOVM_VERSION is not in $MAVEN_REPO_LOCAL"; exit 1; }
           done
           ./mvnw clean install -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
-          JLLM_VERSION=$(./mvnw -q help:evaluate -Dexpression=project.version -DforceStdout)
-          echo "jllm version: $JLLM_VERSION against TornadoVM $TORNADOVM_RUNTIME_ID"
-          echo "JLLM_VERSION=$JLLM_VERSION" >> $GITHUB_ENV
+          JITLLM_VERSION=$(./mvnw -q help:evaluate -Dexpression=project.version -DforceStdout)
+          echo "jitllm version: $JITLLM_VERSION against TornadoVM $TORNADOVM_RUNTIME_ID"
+          echo "JITLLM_VERSION=$JITLLM_VERSION" >> $GITHUB_ENV
 
       - name: Check the artifact matches the JDK that built it
         run: |
           set -euo pipefail
           EXPECTED_SUFFIX="-jdk${{ matrix.jdk }}"
-          case "$JLLM_VERSION" in
+          case "$JITLLM_VERSION" in
             *"$EXPECTED_SUFFIX") ;;
-            *) echo "::error::JDK ${{ matrix.jdk }} produced $JLLM_VERSION, which does not end in $EXPECTED_SUFFIX"; exit 1 ;;
+            *) echo "::error::JDK ${{ matrix.jdk }} produced $JITLLM_VERSION, which does not end in $EXPECTED_SUFFIX"; exit 1 ;;
           esac
           # 21 -> class major 65, 25 -> 69.
           EXPECTED_MAJOR=$(( 44 + ${{ matrix.jdk }} ))
-          JAR="target/jllm-${JLLM_VERSION}.jar"
+          JAR="target/jitllm-${JITLLM_VERSION}.jar"
           MAJOR=$("$JAVA_HOME/bin/javap" -verbose -classpath "$JAR" \
-            org.beehive.jllm.model.Model | awk '/major version:/ { print $3; exit }')
+            org.beehive.jitllm.model.Model | awk '/major version:/ { print $3; exit }')
           if [ "$MAJOR" != "$EXPECTED_MAJOR" ]; then
             echo "::error::$JAR has class major $MAJOR, expected $EXPECTED_MAJOR"; exit 1
           fi
           # The seven provider/architecture SPIs. A missing one loses a model family at runtime
           # and nothing else notices until a load fails.
-          SERVICES=$("$JAVA_HOME/bin/jar" tf "$JAR" | grep -c '^META-INF/services/org\.beehive\.jllm\.' || true)
+          SERVICES=$("$JAVA_HOME/bin/jar" tf "$JAR" | grep -c '^META-INF/services/org\.beehive\.jitllm\.' || true)
           if [ "$SERVICES" != "7" ]; then
             echo "::error::$JAR declares $SERVICES project service files, expected 7"
             "$JAVA_HOME/bin/jar" tf "$JAR" | grep '^META-INF/services/' || true
             exit 1
           fi
-          echo "$JAR: version $JLLM_VERSION, class major $MAJOR, $SERVICES service files"
+          echo "$JAR: version $JITLLM_VERSION, class major $MAJOR, $SERVICES service files"
 
       - name: Launcher smoke test
         run: |
           set -euo pipefail
-          export JLLM_ROOT="${{ github.workspace }}"
-          ./jllm --help > /dev/null
+          export JITLLM_ROOT="${{ github.workspace }}"
+          ./jitllm --help > /dev/null
           # --show-command without --execute-after-show builds the whole JVM command line,
           # which is what proves the SDK argfile was found and read.
-          ./jllm --show-command --gpu \
+          ./jitllm --show-command --gpu \
             --model "$MODELS_DIR/Llama-3.2-1B-Instruct-F16.gguf" --prompt hi \
             | tee /tmp/llama-command.txt > /dev/null
           # `if` blocks, not AND/OR lists: under `bash -e` a list whose final status is
@@ -187,13 +187,13 @@ jobs:
           echo "launcher command built from the SDK argfile"
 
   build-macos:
-    if: github.repository == 'beehive-lab/jllm'
+    if: github.repository == 'beehive-lab/jitllm'
     runs-on: [self-hosted, macOS]
     needs: [code-quality, resolve-tornadovm]
     timeout-minutes: 45
 
     steps:
-      - name: Checkout jllm
+      - name: Checkout jitllm
         uses: actions/checkout@v4
         with:
           clean: false
@@ -210,11 +210,11 @@ jobs:
           backend: metal
           jdk: '21'
 
-      - name: Build and unit-test jllm
+      - name: Build and unit-test jitllm
         run: ./mvnw clean install -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
 
   standalone-inference-linux:
-    if: github.repository == 'beehive-lab/jllm'
+    if: github.repository == 'beehive-lab/jitllm'
     needs: [build-linux, resolve-tornadovm]
     strategy:
       fail-fast: false
@@ -227,7 +227,7 @@ jobs:
       runner_os: Linux
 
   standalone-inference-macos:
-    if: github.repository == 'beehive-lab/jllm'
+    if: github.repository == 'beehive-lab/jitllm'
     needs: [build-macos, resolve-tornadovm]
     uses: ./.github/workflows/standalone-inference.yml
     with:
@@ -247,7 +247,7 @@ jobs:
   # The job is left intact for local runs of the extension against a build. To restore,
   # delete the `&& false` from the condition.
   quarkus-langchain4j-integration:
-    if: github.repository == 'beehive-lab/jllm' && false
+    if: github.repository == 'beehive-lab/jitllm' && false
     runs-on: [self-hosted, Linux]
     needs: [build-linux, resolve-tornadovm]
     timeout-minutes: 45
@@ -259,7 +259,7 @@ jobs:
         backend: [opencl, cuda]
 
     steps:
-      - name: Checkout jllm
+      - name: Checkout jitllm
         uses: actions/checkout@v4
         with:
           clean: false
@@ -276,10 +276,10 @@ jobs:
           backend: ${{ matrix.backend }}
           jdk: '21'
 
-      - name: Build jllm for this leg
+      - name: Build jitllm for this leg
         run: |
           ./mvnw -q clean install -DskipTests -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
-          echo "JLLM_VERSION=$(./mvnw help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_ENV
+          echo "JITLLM_VERSION=$(./mvnw help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_ENV
 
       - name: Clone the Quarkus LangChain4j extension
         run: |
@@ -292,17 +292,17 @@ jobs:
           cd ${{ github.workspace }}/quarkus-langchain4j
           # -i.bak (extension glued to the flag) is the portable form: GNU sed accepts it and
           # BSD sed requires it — a bare `-i ''` is parsed as the script on BSD sed.
-          sed -i.bak 's/<gpu-llama3\.version>.*<\/gpu-llama3\.version>/<gpu-llama3.version>'$JLLM_VERSION'<\/gpu-llama3.version>/' pom.xml
+          sed -i.bak 's/<gpu-llama3\.version>.*<\/gpu-llama3\.version>/<gpu-llama3.version>'$JITLLM_VERSION'<\/gpu-llama3.version>/' pom.xml
           rm -f pom.xml.bak
           # -Dtornado activates the TornadoVM profile; -am builds only the gpu-llama3 module + deps
           mvn -q clean install -pl integration-tests/gpu-llama3 -am -DskipTests -Dtornado -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
 
-      - name: Verify jllm Dependency
+      - name: Verify jitllm Dependency
         run: |
           cd ${{ github.workspace }}/quarkus-langchain4j/integration-tests/gpu-llama3
-          mvn -Dmaven.repo.local="$MAVEN_REPO_LOCAL" dependency:tree | grep "io.github.beehive-lab:jllm:jar:$JLLM_VERSION"
+          mvn -Dmaven.repo.local="$MAVEN_REPO_LOCAL" dependency:tree | grep "io.github.beehive-lab:jitllm:jar:$JITLLM_VERSION"
 
-      - name: Seed jllm model cache (avoid HuggingFace download on cold runners)
+      - name: Seed jitllm model cache (avoid HuggingFace download on cold runners)
         shell: bash
         run: |
           set -euo pipefail
@@ -449,7 +449,7 @@ jobs:
   # (or record-only status) is declared.
   performance-gate:
     if: >-
-      github.repository == 'beehive-lab/jllm' &&
+      github.repository == 'beehive-lab/jitllm' &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main'
 
@@ -458,7 +458,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout jllm
+      - name: Checkout jitllm
         uses: actions/checkout@v4
         with:
           clean: false
@@ -517,7 +517,7 @@ jobs:
     # Guard: only commit history on real pushes to main, not on PRs or forks.
     # Prevents duplicate entries from PR runs and avoids push-permission errors on forks.
     if: >-
-      github.repository == 'beehive-lab/jllm' &&
+      github.repository == 'beehive-lab/jitllm' &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main'
 
@@ -526,7 +526,7 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Checkout jllm
+      - name: Checkout jitllm
         uses: actions/checkout@v4
 
       - name: Download metrics artifacts

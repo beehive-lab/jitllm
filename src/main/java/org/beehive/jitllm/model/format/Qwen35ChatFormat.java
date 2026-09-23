@@ -1,9 +1,9 @@
-package org.beehive.jllm.model.format;
+package org.beehive.jitllm.model.format;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import org.beehive.jllm.tokenizer.Qwen35Tokenizer;
+import org.beehive.jitllm.tokenizer.Qwen35Tokenizer;
 
 /**
  * The chat format for the {@code qwen35} architecture.

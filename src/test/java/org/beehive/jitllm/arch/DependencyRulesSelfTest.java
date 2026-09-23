@@ -1,4 +1,4 @@
-package org.beehive.jllm.arch;
+package org.beehive.jitllm.arch;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -11,13 +11,13 @@ import org.junit.Test;
 
 /**
  * A rule that only ever passes proves nothing — it could be matching the wrong package or silently
- * returning empty. These tests point each rule at {@code org.beehive.jllm.arch.fixture.model} and
+ * returning empty. These tests point each rule at {@code org.beehive.jitllm.arch.fixture.model} and
  * assert it reports the planted violations.
  */
 public class DependencyRulesSelfTest {
 
-    private static final String FIXTURE = "org.beehive.jllm.arch.fixture.model";
-    private static final String FIXTURE_BACKEND = "org.beehive.jllm.arch.fixture.backend";
+    private static final String FIXTURE = "org.beehive.jitllm.arch.fixture.model";
+    private static final String FIXTURE_BACKEND = "org.beehive.jitllm.arch.fixture.backend";
 
     private static JavaClasses fixture;
 
@@ -61,7 +61,7 @@ public class DependencyRulesSelfTest {
 
     @Test
     public void m12db_flagsANeutralSpiTypeThatNamesAnImplementation() {
-        String spi = "org.beehive.jllm.arch.fixture.spi";
+        String spi = "org.beehive.jitllm.arch.fixture.spi";
         JavaClasses spiFixture = new ClassFileImporter().importPackages(spi);
         Set<String> v =
                 ArchRules.m12dbNeutralSpiDependsOnAnImplementation(
@@ -93,7 +93,7 @@ public class DependencyRulesSelfTest {
     /** The other half: a format type, which is the one Rule 4 is actually named for. */
     @Test
     public void rule4_flagsARuntimePackageThatNamesAFormatType() {
-        String runtime = "org.beehive.jllm.arch.fixture.runtime";
+        String runtime = "org.beehive.jitllm.arch.fixture.runtime";
         JavaClasses runtimeFixture = new ClassFileImporter().importPackages(runtime);
         Set<String> v = ArchRules.rule4RuntimeNamesFormatOrBackendTypes(runtimeFixture, runtime);
         assertTrue(
@@ -103,7 +103,7 @@ public class DependencyRulesSelfTest {
 
     @Test
     public void rule17_flagsAMetricsSeamThatReachesUpwards() {
-        String seam = "org.beehive.jllm.arch.fixture.metrics";
+        String seam = "org.beehive.jitllm.arch.fixture.metrics";
         JavaClasses seamFixture = new ClassFileImporter().importPackages(seam);
         Set<String> v = ArchRules.rule17MetricsSeamDependsOnNothing(seamFixture, seam);
         assertTrue("Rule 17 did not flag the fixture: " + v, v.contains(seam + ".ViolatingSeam"));
@@ -142,7 +142,7 @@ public class DependencyRulesSelfTest {
 
     @Test
     public void rule3_flagsAProgramTypeNamingTornado() {
-        String program = "org.beehive.jllm.arch.fixture.program";
+        String program = "org.beehive.jitllm.arch.fixture.program";
         JavaClasses f = new ClassFileImporter().importPackages(program);
         Set<String> v = ArchRules.rule3ProgramImportsBackend(f, program, ArchRules.TORNADO_BACKEND);
         assertTrue(
@@ -153,7 +153,7 @@ public class DependencyRulesSelfTest {
     /** Rule 14's fixture requires a tokenizer to be constructed, which a core type may not. */
     @Test
     public void rule14_flagsACoreTypeRequiringATokenizer() {
-        String program = "org.beehive.jllm.arch.fixture.program";
+        String program = "org.beehive.jitllm.arch.fixture.program";
         JavaClasses f = new ClassFileImporter().importPackages(program);
         Set<String> v = ArchRules.rule14CoreAssumesGeneration(f, program);
         assertTrue(

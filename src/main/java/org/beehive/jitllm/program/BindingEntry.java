@@ -1,8 +1,8 @@
-package org.beehive.jllm.program;
+package org.beehive.jitllm.program;
 
 import java.util.Objects;
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.runtime.tensor.Shape;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 
 /**
  * One entry in a program's binding surface.

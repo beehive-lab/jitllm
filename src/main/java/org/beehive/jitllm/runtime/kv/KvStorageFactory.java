@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.kv;
+package org.beehive.jitllm.runtime.kv;
 
 /**
  * Allocates the device storage a {@link KvCacheManager} leases from — implemented by a backend,

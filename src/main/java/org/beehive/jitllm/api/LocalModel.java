@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 /**
  * A loaded model: weights, configuration and whatever the backend compiled for them.

@@ -1,15 +1,15 @@
-package org.beehive.jllm.backend.tornado.plan;
+package org.beehive.jitllm.backend.tornado.plan;
 
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.lowering.TornadoSupportSets;
-import org.beehive.jllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
-import org.beehive.jllm.backend.tornado.plan.components.fp16.Qwen3FP16PlanComponents;
-import org.beehive.jllm.backend.tornado.plan.components.q8_0.Qwen3Q8_0PlanComponents;
-import org.beehive.jllm.inference.state.Qwen3State;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.runtime.model.ArchitectureId;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
+import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.components.fp16.Qwen3FP16PlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.components.q8_0.Qwen3Q8_0PlanComponents;
+import org.beehive.jitllm.inference.state.Qwen3State;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /** Qwen3's plan components — all three plan shapes. */
 public final class Qwen3PlanProvider implements TornadoPlanProvider {

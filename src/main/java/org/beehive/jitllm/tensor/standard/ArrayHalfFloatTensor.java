@@ -1,9 +1,9 @@
-package org.beehive.jllm.tensor.standard;
+package org.beehive.jitllm.tensor.standard;
 
 import java.lang.foreign.MemorySegment;
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorSpecies;
-import org.beehive.jllm.format.GGMLType;
+import org.beehive.jitllm.format.GGMLType;
 
 /**
  * A writable half-precision tensor: storage in IEEE 754 binary16, arithmetic in FP32.

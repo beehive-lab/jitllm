@@ -1,27 +1,27 @@
-package org.beehive.jllm.model.loader;
+package org.beehive.jitllm.model.loader;
 
-import static org.beehive.jllm.model.loader.ModelLoader.*;
+import static org.beehive.jitllm.model.loader.ModelLoader.*;
 
 import java.nio.channels.FileChannel;
 import java.util.Map;
-import org.beehive.jllm.auxiliary.Pair;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensorLoader;
-import org.beehive.jllm.format.DataTypeMapping;
-import org.beehive.jllm.format.GGMLTensorEntry;
-import org.beehive.jllm.format.GGMLType;
-import org.beehive.jllm.format.GGUF;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.inference.weights.standard.LlamaStandardWeights;
-import org.beehive.jllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jllm.model.format.LlamaChatFormat;
-import org.beehive.jllm.model.llama.Llama;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.runtime.tensor.ExecutionTarget;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tokenizer.LlamaTokenizer;
-import org.beehive.jllm.tokenizer.Tokenizer;
-import org.beehive.jllm.tokenizer.Vocabulary;
+import org.beehive.jitllm.auxiliary.Pair;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
+import org.beehive.jitllm.format.DataTypeMapping;
+import org.beehive.jitllm.format.GGMLTensorEntry;
+import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.format.GGUF;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.inference.weights.standard.LlamaStandardWeights;
+import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
+import org.beehive.jitllm.model.format.LlamaChatFormat;
+import org.beehive.jitllm.model.llama.Llama;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tokenizer.LlamaTokenizer;
+import org.beehive.jitllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.tokenizer.Vocabulary;
 
 public class LlamaModelLoader extends AbstractModelLoader<Llama, LlamaConfiguration> {
 
@@ -193,7 +193,7 @@ public class LlamaModelLoader extends AbstractModelLoader<Llama, LlamaConfigurat
      * kernels, the way the warp path did on OpenCL.
      */
     private static final boolean RETAIN_Q4_0 =
-            !"false".equalsIgnoreCase(System.getProperty("jllm.q4_0.retain", "true"));
+            !"false".equalsIgnoreCase(System.getProperty("jitllm.q4_0.retain", "true"));
 
     /**
      * A per-layer weight array, retaining Q4_0 when the whole layer stack is Q4_0.
@@ -204,7 +204,7 @@ public class LlamaModelLoader extends AbstractModelLoader<Llama, LlamaConfigurat
      * text. There is no per-tensor dispatch in these layers, so the decision is made once for the
      * model.
      */
-    private static org.beehive.jllm.backend.tornado.tensor.TornadoTensor[] perLayerQuantized(
+    private static org.beehive.jitllm.backend.tornado.tensor.TornadoTensor[] perLayerQuantized(
             boolean retainQ4_0, int layers, java.util.function.IntFunction<GGMLTensorEntry> entry) {
         return retainQ4_0
                 ? loadArrayOfTornadoTensorsRetainingQ4_0(layers, entry)

@@ -1,10 +1,10 @@
-package org.beehive.jllm.program.op;
+package org.beehive.jitllm.program.op;
 
 import java.util.EnumSet;
 import java.util.Objects;
 import java.util.Set;
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.runtime.tensor.ExecutionTarget;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 
 /**
  * Which representations each execution target can actually run each operation at.

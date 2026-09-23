@@ -1,8 +1,8 @@
-package org.beehive.jllm.backend.tornado.workspace;
+package org.beehive.jitllm.backend.tornado.workspace;
 
-import org.beehive.jllm.backend.tornado.kv.TornadoKvStore;
-import org.beehive.jllm.runtime.kv.KvLease;
-import org.beehive.jllm.runtime.kv.KvStorage;
+import org.beehive.jitllm.backend.tornado.kv.TornadoKvStore;
+import org.beehive.jitllm.runtime.kv.KvLease;
+import org.beehive.jitllm.runtime.kv.KvStorage;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;

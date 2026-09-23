@@ -1,14 +1,14 @@
-package org.beehive.jllm.model;
+package org.beehive.jitllm.model;
 
 import java.util.List;
 import java.util.Set;
 import java.util.function.IntConsumer;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.tokenizer.Tokenizer;
 
 public interface Model {
 
@@ -35,7 +35,7 @@ public interface Model {
      * program description still has an identity — the architecture registry answers "nothing
      * computes this", which is the normal unsupported answer, not an error in the model.
      */
-    default org.beehive.jllm.runtime.model.ArchitectureId architectureId() {
+    default org.beehive.jitllm.runtime.model.ArchitectureId architectureId() {
         throw new UnsupportedOperationException(
                 getClass().getSimpleName() + " does not state an architecture identity yet");
     }
@@ -56,7 +56,7 @@ public interface Model {
      * <p>The parameter is a <b>lease</b>, not a cache: the model reads what it was handed and owns
      * nothing [Rule 7].
      */
-    default State createNewState(org.beehive.jllm.runtime.kv.KvLease lease) {
+    default State createNewState(org.beehive.jitllm.runtime.kv.KvLease lease) {
         return createNewState();
     }
 
@@ -139,7 +139,7 @@ public interface Model {
 
     // ── Transitional generation bridges ───────────────────────────────
     //
-    // The loops moved to org.beehive.jllm.generation.ModelGeneration under Rule 8a: a model
+    // The loops moved to org.beehive.jitllm.generation.ModelGeneration under Rule 8a: a model
     // that owns a generation loop cannot be an embedding or reranking model, and it drags a CLI
     // options record and System.out into the interface every backend implements.
     //

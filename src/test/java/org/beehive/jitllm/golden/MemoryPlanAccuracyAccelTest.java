@@ -1,17 +1,17 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jllm.backend.tornado.memory.TornadoMemoryModel;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.memory.BufferClass;
-import org.beehive.jllm.runtime.memory.MemoryPlan;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.memory.TornadoMemoryModel;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.memory.BufferClass;
+import org.beehive.jitllm.runtime.memory.MemoryPlan;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 /**
@@ -47,8 +47,8 @@ public class MemoryPlanAccuracyAccelTest {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     private static final long MIB = 1048576L;
 

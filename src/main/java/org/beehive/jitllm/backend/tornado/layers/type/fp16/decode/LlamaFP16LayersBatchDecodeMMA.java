@@ -1,12 +1,12 @@
-package org.beehive.jllm.backend.tornado.layers.type.fp16.decode;
+package org.beehive.jitllm.backend.tornado.layers.type.fp16.decode;
 
 import java.util.List;
 import java.util.stream.IntStream;
-import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.inference.state.LlamaState;
-import org.beehive.jllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;

@@ -1,11 +1,11 @@
-package org.beehive.jllm.inference.state;
+package org.beehive.jitllm.inference.state;
 
 import java.util.stream.Stream;
-import org.beehive.jllm.backend.tornado.workspace.TornadoWorkspaces;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.devstral.DevstralConfiguration;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.devstral.DevstralConfiguration;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 
 /**
  * State for Devstral 2 models where head_dim != dim/num_heads. Allocates Q with qDim (num_heads *
@@ -22,7 +22,7 @@ public final class DevstralState extends State {
      *     allocate its own arrays
      */
     public DevstralState(
-            Configuration config, int batchsize, org.beehive.jllm.runtime.kv.KvLease lease) {
+            Configuration config, int batchsize, org.beehive.jitllm.runtime.kv.KvLease lease) {
         super(config, batchsize, lease);
     }
 

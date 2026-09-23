@@ -1,8 +1,8 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
@@ -22,7 +22,7 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * </ul>
  *
  * <p>The {@link #initializeTornadoVMPlan} factory selects the implementation based on {@code
- * jllm.withPrefillDecode} and {@code jllm.prefillBatchSize}:
+ * jitllm.withPrefillDecode} and {@code jitllm.prefillBatchSize}:
  *
  * <ul>
  *   <li>{@code withPrefillDecode=false} → {@link TornadoVMMasterPlanSingleToken}
@@ -38,10 +38,10 @@ public interface TornadoVMMasterPlan {
      * The deprecated per-stage initialization log lines. {@code --verbose} reports the same facts
      * once, in the startup report, so it no longer enables these; only the legacy property does.
      */
-    boolean ENABLE_TORNADOVM_INIT_TIME = Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit");
+    boolean ENABLE_TORNADOVM_INIT_TIME = Boolean.getBoolean("jitllm.EnableTimingForTornadoVMInit");
 
     /** When {@code true}, {@code withCUDAGraph()} is called — CUDA backend only. */
-    boolean CUDA_GRAPHS = Boolean.parseBoolean(System.getProperty("jllm.cudaGraphs", "false"));
+    boolean CUDA_GRAPHS = Boolean.parseBoolean(System.getProperty("jitllm.cudaGraphs", "false"));
 
     /**
      * @deprecated Replaced by {@code state.executionPolicy()}. This constant survives only for
@@ -49,17 +49,17 @@ public interface TornadoVMMasterPlan {
      *     a capacity input, not policy — and for the bench harness. It is not read on any execution
      *     path.
      */
-    @Deprecated boolean WITH_PREFILL_DECODE = Boolean.getBoolean("jllm.withPrefillDecode");
+    @Deprecated boolean WITH_PREFILL_DECODE = Boolean.getBoolean("jitllm.withPrefillDecode");
 
     /**
      * @deprecated see {@link #WITH_PREFILL_DECODE}. Capacity input only.
      */
-    @Deprecated int PREFILL_BATCH_SIZE = Integer.getInteger("jllm.prefillBatchSize", 1);
+    @Deprecated int PREFILL_BATCH_SIZE = Integer.getInteger("jitllm.prefillBatchSize", 1);
 
     /**
      * Factory: creates, JIT-compiles, and warms up the appropriate TornadoVMMasterPlan.
      *
-     * <p>When {@code jllm.withPrefillDecode=true} and {@code jllm.prefillBatchSize > 1}, a {@link
+     * <p>When {@code jitllm.withPrefillDecode=true} and {@code jitllm.prefillBatchSize > 1}, a {@link
      * TornadoVMMasterPlanBatchPrefillDecode} is returned. Otherwise a {@link
      * TornadoVMMasterPlanSingleToken} is returned (used for the baseline path and the sequential
      * prefill/decode path when batch size is 1).
@@ -109,19 +109,19 @@ public interface TornadoVMMasterPlan {
         // ran the legacy path however the flag was set: a paired A/B taken through the script was
         // measuring legacy against legacy. `handles` answers false unless the opt-in is set and the
         // tuple is the one the slice implements, so this costs a boolean read otherwise.
-        if (org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection.handles(model, state)) {
-            reportPath(org.beehive.jllm.runtime.backend.ExecutionPath.LOWERED, model, state);
-            return org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection.lower(
+        if (org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.handles(model, state)) {
+            reportPath(org.beehive.jitllm.runtime.backend.ExecutionPath.LOWERED, model, state);
+            return org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.lower(
                     model, state, sink);
         }
-        reportPath(org.beehive.jllm.runtime.backend.ExecutionPath.LEGACY, model, state);
+        reportPath(org.beehive.jitllm.runtime.backend.ExecutionPath.LEGACY, model, state);
 
         // Resolved from the session's policy, once, here — not from a class constant read at
         // initialization.
         var policy = state.executionPolicy();
         boolean prefillDecode =
                 policy.phaseStrategy()
-                        == org.beehive.jllm.runtime.policy.ExecutionPolicy.PhaseStrategy
+                        == org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy
                                 .PREFILL_DECODE;
         if (prefillDecode && policy.prefillBatchSize() > 1) {
             // GPU path with batched prefill/decode
@@ -147,7 +147,7 @@ public interface TornadoVMMasterPlan {
      * {@link State}.
      */
     /** Describes an already prepared plan without executing a token. */
-    default org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+    default org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
         throw new UnsupportedOperationException("This plan does not expose execution diagnostics");
     }
 
@@ -203,20 +203,20 @@ public interface TornadoVMMasterPlan {
      * emitted anywhere else would have the same hole.
      */
     private static void reportPath(
-            org.beehive.jllm.runtime.backend.ExecutionPath path,
-            org.beehive.jllm.model.Model model,
-            org.beehive.jllm.inference.state.State state) {
+            org.beehive.jitllm.runtime.backend.ExecutionPath path,
+            org.beehive.jitllm.model.Model model,
+            org.beehive.jitllm.inference.state.State state) {
         var combination =
-                org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection.combinationOf(
+                org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.combinationOf(
                         model, state);
         boolean qualified =
-                org.beehive.jllm.backend.tornado.lowering.LoweringQualification.isQualified(
+                org.beehive.jitllm.backend.tornado.lowering.LoweringQualification.isQualified(
                         combination.architecture(), combination.dtype(), combination.mode());
-        org.beehive.jllm.auxiliary.RunMetrics.setExecutionPath(
+        org.beehive.jitllm.auxiliary.RunMetrics.setExecutionPath(
                 path.reportName(),
                 combination.toString(),
                 qualified,
-                org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection.mode()
+                org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.mode()
                         .name()
                         .toLowerCase(java.util.Locale.ROOT));
     }
@@ -236,7 +236,7 @@ public interface TornadoVMMasterPlan {
      * this run take") is a property of the run, not of the compile.
      */
     public static void reportLoweredPath(
-            org.beehive.jllm.model.Model model, org.beehive.jllm.inference.state.State state) {
-        reportPath(org.beehive.jllm.runtime.backend.ExecutionPath.LOWERED, model, state);
+            org.beehive.jitllm.model.Model model, org.beehive.jitllm.inference.state.State state) {
+        reportPath(org.beehive.jitllm.runtime.backend.ExecutionPath.LOWERED, model, state);
     }
 }

@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.backend;
+package org.beehive.jitllm.runtime.backend;
 
 /**
  * What a pool has and what is left of it.

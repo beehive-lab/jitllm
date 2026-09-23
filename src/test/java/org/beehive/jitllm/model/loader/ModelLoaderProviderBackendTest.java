@@ -1,8 +1,8 @@
-package org.beehive.jllm.model.loader;
+package org.beehive.jitllm.model.loader;
 
 import static org.junit.Assert.assertEquals;
 
-import org.beehive.jllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.junit.Test;
 
 public class ModelLoaderProviderBackendTest {

@@ -1,12 +1,12 @@
-package org.beehive.jllm.backend.cpu;
+package org.beehive.jitllm.backend.cpu;
 
-import org.beehive.jllm.auxiliary.Parallel;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.standard.StandardWeights;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.auxiliary.Parallel;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.standard.StandardWeights;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 
 /**
  * Low-level forward passes for the batched prefill/decode inference path (Phase 3/4).

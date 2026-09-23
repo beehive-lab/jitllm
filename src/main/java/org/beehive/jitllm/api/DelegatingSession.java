@@ -1,18 +1,18 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.function.IntConsumer;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.runtime.diagnostics.DiagnosticCode;
-import org.beehive.jllm.runtime.kv.KvLease;
-import org.beehive.jllm.runtime.metrics.MetricKey;
-import org.beehive.jllm.runtime.metrics.MetricsReport;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.runtime.kv.KvLease;
+import org.beehive.jitllm.runtime.metrics.MetricKey;
+import org.beehive.jitllm.runtime.metrics.MetricsReport;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 
 /**
  * One sequence, on today's {@code State} and execution plan.
@@ -118,17 +118,17 @@ final class DelegatingSession implements GenerationSession {
      * Package-private: not facade v1 surface, and never builds one, because asking {@link
      * SessionRuntime#plan()} would construct a plan on a session that never executed.
      */
-    org.beehive.jllm.backend.tornado.TornadoVMMasterPlan planIfBuilt() {
+    org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan planIfBuilt() {
         return runtime.hasPlan() ? runtime.plan() : null;
     }
 
     @Override
-    public org.beehive.jllm.runtime.backend.ExecutionInfo prepare() {
+    public org.beehive.jitllm.runtime.backend.ExecutionInfo prepare() {
         ensureUsable();
         if (gpu) {
             return runtime.plan().executionInfo();
         }
-        return new org.beehive.jllm.runtime.backend.ExecutionInfo(
+        return new org.beehive.jitllm.runtime.backend.ExecutionInfo(
                 "CPU",
                 System.getProperty("os.arch")
                         + " / "
@@ -191,7 +191,7 @@ final class DelegatingSession implements GenerationSession {
         // would become one more generated token than the request asked for.
         int ingested =
                 promptTokens.size()
-                        - org.beehive.jllm.inference.PromptIngestion.of(
+                        - org.beehive.jitllm.inference.PromptIngestion.of(
                                         runtime.executionState(), promptTokens, position)
                                 .firstIndex();
         int budget = Math.min(position + ingested + request.maxNewTokens(), contextLength);
@@ -297,7 +297,7 @@ final class DelegatingSession implements GenerationSession {
      * thing the engine tier fixes.
      */
     private GenerationTimings timings(int promptTokens, int generatedTokens) {
-        MetricsReport report = org.beehive.jllm.auxiliary.RunMetrics.report();
+        MetricsReport report = org.beehive.jitllm.auxiliary.RunMetrics.report();
         return new GenerationTimings(
                 Duration.ofNanos(report.valueOr(MetricKey.PREFILL_TIME, 0L)),
                 Duration.ofNanos(report.valueOr(MetricKey.DECODE_TIME, 0L)),

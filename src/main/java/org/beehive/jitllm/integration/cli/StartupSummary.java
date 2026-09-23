@@ -1,15 +1,15 @@
-package org.beehive.jllm.integration.cli;
+package org.beehive.jitllm.integration.cli;
 
 import java.util.Locale;
 import java.util.concurrent.ForkJoinPool;
 import java.util.stream.Collectors;
-import org.beehive.jllm.api.ModelConfiguration;
-import org.beehive.jllm.api.ModelInfo;
-import org.beehive.jllm.auxiliary.metrics.RunMetricsSnapshot;
-import org.beehive.jllm.format.GgufModelFacts;
-import org.beehive.jllm.runtime.backend.ExecutionInfo;
-import org.beehive.jllm.runtime.memory.MemoryPlan;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.api.ModelConfiguration;
+import org.beehive.jitllm.api.ModelInfo;
+import org.beehive.jitllm.auxiliary.metrics.RunMetricsSnapshot;
+import org.beehive.jitllm.format.GgufModelFacts;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
+import org.beehive.jitllm.runtime.memory.MemoryPlan;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 
 /** CLI-only, aligned startup diagnostics inspired by llama.cpp's model information rows. */
 record StartupSummary(
@@ -28,7 +28,7 @@ record StartupSummary(
 
     String render() {
         StringBuilder out =
-                new StringBuilder("\n── jllm · run configuration ────────────────────────────\n");
+                new StringBuilder("\n── jitllm · run configuration ────────────────────────────\n");
         row(out, "Device", execution.backend() + " / " + execution.device());
         boolean gpu = !execution.backend().equals("CPU");
         if (gpu) {
@@ -122,16 +122,16 @@ record StartupSummary(
                     (vectorBits == 0 ? "tensor SIMD off" : "tensor SIMD " + vectorBits + "-bit")
                             + (model.weightTypes()
                                                     .contains(
-                                                            org.beehive.jllm.runtime.tensor.DataType
+                                                            org.beehive.jitllm.runtime.tensor.DataType
                                                                     .Q4_0)
                                             || model.weightTypes()
                                                     .contains(
-                                                            org.beehive.jllm.runtime.tensor.DataType
+                                                            org.beehive.jitllm.runtime.tensor.DataType
                                                                     .Q4_1)
                                     ? "; Q4 SIMD "
                                             + (Boolean.parseBoolean(
                                                             System.getProperty(
-                                                                    "jllm.VectorAPI", "true"))
+                                                                    "jitllm.VectorAPI", "true"))
                                                     ? "on"
                                                     : "off")
                                     : ""));

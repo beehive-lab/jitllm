@@ -156,7 +156,7 @@ token.
 **Backend** — an implementation that compiles inference programs, executes compiled
 programs, and owns the device memory involved. The TornadoVM backend is the primary one;
 the plain-Java CPU path is a first-class second. CUDA, OpenCL and Metal are *TornadoVM*
-backends — device capabilities beneath one jllm backend, not jllm backends of
+backends — device capabilities beneath one jitllm backend, not jitllm backends of
 their own.
 
 **Engine** — the tier that owns work across sequences: admission, batch composition, KV
@@ -173,5 +173,5 @@ nothing below it may depend on it.
 | plan | *compiled program*, *task graph*, or `TornadoExecutionPlan` — be specific |
 | model | *model file*, *model architecture*, or *loaded model* |
 | state | *session state*, *KV cache*, or *invocation buffers* |
-| backend | *jllm backend* or *TornadoVM device backend* — different levels |
+| backend | *jitllm backend* or *TornadoVM device backend* — different levels |
 | tensor | `FloatTensor` is a flat float sequence, not a shaped tensor; say *buffer*, *weight tensor* or *tensor descriptor* |

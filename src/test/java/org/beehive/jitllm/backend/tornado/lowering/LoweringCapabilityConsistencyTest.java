@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -7,7 +7,7 @@ import static org.junit.Assert.assertTrue;
 import java.util.EnumSet;
 import java.util.Set;
 import java.util.TreeSet;
-import org.beehive.jllm.backend.tornado.plan.ExecutionMode;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.junit.Test;
 
 /**

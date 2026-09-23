@@ -1,6 +1,6 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 /** FP16 against FP32 key/value cache on the GPU; see {@link GpuFp16KvPrecision}. */

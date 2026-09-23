@@ -1,14 +1,14 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
-import org.beehive.jllm.auxiliary.RunMetrics;
-import org.beehive.jllm.backend.tornado.plan.ForwardPlanFactory;
-import org.beehive.jllm.backend.tornado.plan.SingleTokenForwardPlan;
-import org.beehive.jllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.runtime.metrics.MetricsSink;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.auxiliary.RunMetrics;
+import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
+import org.beehive.jitllm.backend.tornado.plan.SingleTokenForwardPlan;
+import org.beehive.jitllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
@@ -23,13 +23,13 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
 
     /**
      * Rule 16: library code routes its output through the platform logger, so an embedder can
-     * silence or redirect it. Reached only under {@code jllm.EnableTimingForTornadoVMInit}.
+     * silence or redirect it. Reached only under {@code jitllm.EnableTimingForTornadoVMInit}.
      */
     private static final System.Logger LOGGER =
             System.getLogger(TornadoVMMasterPlanSingleToken.class.getName());
 
     @Override
-    public org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
         return PlanDiagnostics.describe(
                 state, "single-token", 1, "JIT kernels (no tensor-core MMA)", "JIT kernels");
     }

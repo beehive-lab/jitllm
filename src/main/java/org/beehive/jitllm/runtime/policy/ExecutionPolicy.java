@@ -1,8 +1,8 @@
-package org.beehive.jllm.runtime.policy;
+package org.beehive.jitllm.runtime.policy;
 
 import java.util.Objects;
 import java.util.OptionalInt;
-import org.beehive.jllm.api.Experimental;
+import org.beehive.jitllm.api.Experimental;
 
 /**
  * How a session executes: the choices that select <b>which components run and how</b>.
@@ -129,35 +129,35 @@ public final class ExecutionPolicy {
      * policy once per session and carry the value; nothing consults this in a loop.
      */
     public static ExecutionPolicy fromSystemProperties() {
-        boolean prefillDecode = Boolean.getBoolean("jllm.withPrefillDecode");
-        int prefillBatch = Integer.getInteger("jllm.prefillBatchSize", 1);
+        boolean prefillDecode = Boolean.getBoolean("jitllm.withPrefillDecode");
+        int prefillBatch = Integer.getInteger("jitllm.prefillBatchSize", 1);
         return builder()
                 .phaseStrategy(
                         prefillDecode ? PhaseStrategy.PREFILL_DECODE : PhaseStrategy.SINGLE_TOKEN)
                 .prefillBatchSize(prefillDecode ? Math.max(1, prefillBatch) : 1)
                 .samplingResidency(
-                        Boolean.getBoolean("jllm.deviceSample")
+                        Boolean.getBoolean("jitllm.deviceSample")
                                 ? SamplingResidency.DEVICE
                                 : SamplingResidency.HOST)
                 .splitKvPartitions(
-                        Boolean.getBoolean("jllm.attention.splitKv")
+                        Boolean.getBoolean("jitllm.attention.splitKv")
                                 ? OptionalInt.of(
-                                        Integer.getInteger("jllm.attention.splitKv.count", 8))
+                                        Integer.getInteger("jitllm.attention.splitKv.count", 8))
                                 : OptionalInt.empty())
-                .packedHalf2Attention(Boolean.getBoolean("jllm.attention.deepHalf2"))
-                .scalarFp16KeyValueReads(Boolean.getBoolean("jllm.kvcache.fp16.scalar"))
+                .packedHalf2Attention(Boolean.getBoolean("jitllm.attention.deepHalf2"))
+                .scalarFp16KeyValueReads(Boolean.getBoolean("jitllm.kvcache.fp16.scalar"))
                 .nativeLibraries(nativeLibrariesFromProperties())
                 .build();
     }
 
-    /** The property that asks for vendor native libraries: {@code -Djllm.nativeLibraries=true}. */
-    public static final String NATIVE_LIBRARIES_PROPERTY = "jllm.nativeLibraries";
+    /** The property that asks for vendor native libraries: {@code -Djitllm.nativeLibraries=true}. */
+    public static final String NATIVE_LIBRARIES_PROPERTY = "jitllm.nativeLibraries";
 
     /**
      * The earlier spelling, from when the native prefill libraries were on by default. Honoured
      * when set; the default is now off.
      */
-    public static final String LEGACY_NATIVE_PREFILL_PROPERTY = "jllm.prefill.native";
+    public static final String LEGACY_NATIVE_PREFILL_PROPERTY = "jitllm.prefill.native";
 
     private static boolean nativeLibrariesFromProperties() {
         String current = System.getProperty(NATIVE_LIBRARIES_PROPERTY);

@@ -1,15 +1,15 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.program.ProgramSignature;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.program.ProgramSignature;
 import org.junit.Test;
 
 /**
@@ -58,8 +58,8 @@ public class LoweredWeightRepresentationAccelTest {
         Model loaded = ModelLoader.loadModel(modelFile, 256, true, true);
         return LoweredPlanSelection.describe(
                         loaded,
-                        org.beehive.jllm.runtime.policy.ExecutionPolicy.builder().build(),
-                        org.beehive.jllm.runtime.tensor.DataType.F32)
+                        org.beehive.jitllm.runtime.policy.ExecutionPolicy.builder().build(),
+                        org.beehive.jitllm.runtime.tensor.DataType.F32)
                 .signature();
     }
 }

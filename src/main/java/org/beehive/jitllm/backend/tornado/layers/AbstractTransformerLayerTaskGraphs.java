@@ -1,13 +1,13 @@
-package org.beehive.jllm.backend.tornado.layers;
+package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.List;
 import java.util.stream.IntStream;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.model.Configuration;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.model.Configuration;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -136,7 +136,7 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
 
     /**
      * Whether this layer stack should use the half-precision KV cache: requested via {@code
-     * -Djllm.kvcache.fp16=true}, allocated by the model state, and running on the NVIDIA path (the
+     * -Djitllm.kvcache.fp16=true}, allocated by the model state, and running on the NVIDIA path (the
      * FP16 kernels rely on packed half2 codegen in the CUDA backend). The packed accessors need
      * even element indices, which holds for the (even) headSize/kvDim of the supported models.
      */

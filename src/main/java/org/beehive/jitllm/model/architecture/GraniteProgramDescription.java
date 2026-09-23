@@ -1,4 +1,4 @@
-package org.beehive.jllm.model.architecture;
+package org.beehive.jitllm.model.architecture;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -6,36 +6,36 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
-import org.beehive.jllm.model.granite.GraniteConfiguration;
-import org.beehive.jllm.program.BindingEntry;
-import org.beehive.jllm.program.BindingRole;
-import org.beehive.jllm.program.CapacityShape;
-import org.beehive.jllm.program.Direction;
-import org.beehive.jllm.program.InferenceProgram;
-import org.beehive.jllm.program.PhaseId;
-import org.beehive.jllm.program.PhaseSelection;
-import org.beehive.jllm.program.ProgramComponent;
-import org.beehive.jllm.program.ProgramSignature;
-import org.beehive.jllm.program.ResultId;
-import org.beehive.jllm.program.ValueId;
-import org.beehive.jllm.program.ValueType;
-import org.beehive.jllm.program.op.ArgMax;
-import org.beehive.jllm.program.op.Attention;
-import org.beehive.jllm.program.op.EmbeddingLookup;
-import org.beehive.jllm.program.op.KvAppend;
-import org.beehive.jllm.program.op.MatVec;
-import org.beehive.jllm.program.op.OperandRef;
-import org.beehive.jllm.program.op.ResidualAdd;
-import org.beehive.jllm.program.op.RmsNorm;
-import org.beehive.jllm.program.op.RoPE;
-import org.beehive.jllm.program.op.RopeLayout;
-import org.beehive.jllm.program.op.Scale;
-import org.beehive.jllm.program.op.SwiGLU;
-import org.beehive.jllm.program.op.VocabProjection;
-import org.beehive.jllm.runtime.model.ArchitectureId;
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.runtime.tensor.Shape;
-import org.beehive.jllm.runtime.tensor.TensorRole;
+import org.beehive.jitllm.model.granite.GraniteConfiguration;
+import org.beehive.jitllm.program.BindingEntry;
+import org.beehive.jitllm.program.BindingRole;
+import org.beehive.jitllm.program.CapacityShape;
+import org.beehive.jitllm.program.Direction;
+import org.beehive.jitllm.program.InferenceProgram;
+import org.beehive.jitllm.program.PhaseId;
+import org.beehive.jitllm.program.PhaseSelection;
+import org.beehive.jitllm.program.ProgramComponent;
+import org.beehive.jitllm.program.ProgramSignature;
+import org.beehive.jitllm.program.ResultId;
+import org.beehive.jitllm.program.ValueId;
+import org.beehive.jitllm.program.ValueType;
+import org.beehive.jitllm.program.op.ArgMax;
+import org.beehive.jitllm.program.op.Attention;
+import org.beehive.jitllm.program.op.EmbeddingLookup;
+import org.beehive.jitllm.program.op.KvAppend;
+import org.beehive.jitllm.program.op.MatVec;
+import org.beehive.jitllm.program.op.OperandRef;
+import org.beehive.jitllm.program.op.ResidualAdd;
+import org.beehive.jitllm.program.op.RmsNorm;
+import org.beehive.jitllm.program.op.RoPE;
+import org.beehive.jitllm.program.op.RopeLayout;
+import org.beehive.jitllm.program.op.Scale;
+import org.beehive.jitllm.program.op.SwiGLU;
+import org.beehive.jitllm.program.op.VocabProjection;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.Shape;
+import org.beehive.jitllm.runtime.tensor.TensorRole;
 
 /**
  * Builds the {@code InferenceProgram} for Granite, single-token, at a given weight representation.
@@ -456,7 +456,7 @@ public final class GraniteProgramDescription {
     }
 
     private static ProgramComponent leaf(
-            String name, org.beehive.jllm.program.op.Operation operation) {
+            String name, org.beehive.jitllm.program.op.Operation operation) {
         return new ProgramComponent.Leaf(name, operation, BOTH);
     }
 

@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -9,7 +9,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 
 /**
  * Runs the same fixture and prompt through the CPU path and the GPU path and compares the logits.
@@ -288,7 +288,7 @@ abstract class CpuGpuParity {
         // Opt-in: the accelerator's rows as raw little-endian floats, one row after another, so
         // two builds' accelerator outputs can be compared directly with each other rather than
         // only each against the CPU reference (the metrics below measure the latter).
-        String dump = System.getProperty("jllm.parity.dumpRows");
+        String dump = System.getProperty("jitllm.parity.dumpRows");
         if (dump != null) {
             dumpRows(gpu.rows, Path.of(dump));
         }
@@ -355,7 +355,7 @@ abstract class CpuGpuParity {
             }
 
             double relL2 = Math.sqrt(sqDiff / sqRef);
-            if (Boolean.getBoolean("jllm.parity.rows")) {
+            if (Boolean.getBoolean("jitllm.parity.rows")) {
                 System.out.printf(java.util.Locale.ROOT, "[PARITY-ROW] %d relL2=%.5f%n", r, relL2);
             }
             if (relL2 > worstRelL2) {

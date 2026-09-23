@@ -1,11 +1,11 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
-import org.beehive.jllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerDetectionService;
+import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;

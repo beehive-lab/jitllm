@@ -11,7 +11,7 @@
  *
  * <h2>What an operation is here</h2>
  *
- * <p><b>A description, not a call.</b> An {@link org.beehive.jllm.program.op.Operation} says
+ * <p><b>A description, not a call.</b> An {@link org.beehive.jitllm.program.op.Operation} says
  * which work is done, over which operands, with which configuration. It does not execute, does not
  * hold buffers, and does not know a backend. That is what lets one Llama description be compiled by
  * the TornadoVM backend and executed by the CPU one.
@@ -34,9 +34,9 @@
  *   <li><b>Rule 4</b> — no GGUF or GGML type reaches an operation signature.
  *   <li><b>Rule 14</b> — no tokenizer, chat format, sampler policy or generation loop. An operation
  *       vocabulary that assumed token generation could not serve embeddings, classification or
- *       reranking. Note {@link org.beehive.jllm.program.op.Sample} and {@link
- *       org.beehive.jllm.program.op.ArgMax}: sampling <i>is</i> an operation and may execute
+ *       reranking. Note {@link org.beehive.jitllm.program.op.Sample} and {@link
+ *       org.beehive.jitllm.program.op.ArgMax}: sampling <i>is</i> an operation and may execute
  *       on the device (Rule 8b). What Rule 14 forbids is <i>requiring</i> one.
  * </ul>
  */
-package org.beehive.jllm.program.op;
+package org.beehive.jitllm.program.op;

@@ -1,8 +1,8 @@
-package org.beehive.jllm.model.loader;
+package org.beehive.jitllm.model.loader;
 
-import static org.beehive.jllm.model.loader.ModelLoader.*;
-import static org.beehive.jllm.model.loader.ModelLoader.loadArrayOfTensors;
-import static org.beehive.jllm.model.loader.ModelLoader.loadTensor;
+import static org.beehive.jitllm.model.loader.ModelLoader.*;
+import static org.beehive.jitllm.model.loader.ModelLoader.loadArrayOfTensors;
+import static org.beehive.jitllm.model.loader.ModelLoader.loadTensor;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -11,28 +11,28 @@ import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.util.Map;
 import java.util.function.IntFunction;
-import org.beehive.jllm.auxiliary.Pair;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensorLoader;
-import org.beehive.jllm.format.DataTypeMapping;
-import org.beehive.jllm.format.GGMLTensorEntry;
-import org.beehive.jllm.format.GGMLType;
-import org.beehive.jllm.format.GGUF;
-import org.beehive.jllm.format.GGUF.GGUFTensorInfo;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.inference.weights.standard.Gemma4StandardWeights;
-import org.beehive.jllm.inference.weights.tornado.Gemma4TornadoWeights;
-import org.beehive.jllm.model.format.Gemma4ChatFormat;
-import org.beehive.jllm.model.gemma4.Gemma4;
-import org.beehive.jllm.model.gemma4.Gemma4Configuration;
-import org.beehive.jllm.runtime.diagnostics.DiagnosticCode;
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.runtime.tensor.ExecutionTarget;
-import org.beehive.jllm.runtime.tensor.LongIndexedTensor;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tokenizer.Gemma4Tokenizer;
-import org.beehive.jllm.tokenizer.Tokenizer;
-import org.beehive.jllm.tokenizer.Vocabulary;
+import org.beehive.jitllm.auxiliary.Pair;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
+import org.beehive.jitllm.format.DataTypeMapping;
+import org.beehive.jitllm.format.GGMLTensorEntry;
+import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.format.GGUF;
+import org.beehive.jitllm.format.GGUF.GGUFTensorInfo;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.inference.weights.standard.Gemma4StandardWeights;
+import org.beehive.jitllm.inference.weights.tornado.Gemma4TornadoWeights;
+import org.beehive.jitllm.model.format.Gemma4ChatFormat;
+import org.beehive.jitllm.model.gemma4.Gemma4;
+import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
+import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
+import org.beehive.jitllm.runtime.tensor.LongIndexedTensor;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tokenizer.Gemma4Tokenizer;
+import org.beehive.jitllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.tokenizer.Vocabulary;
 
 /**
  * Loader for Gemma 4 models (e.g. Gemma-4-E2B-It).

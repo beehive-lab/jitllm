@@ -1,7 +1,7 @@
-package org.beehive.jllm.backend.tornado.tensor;
+package org.beehive.jitllm.backend.tornado.tensor;
 
 import java.lang.foreign.MemorySegment;
-import org.beehive.jllm.format.GGMLType;
+import org.beehive.jitllm.format.GGMLType;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 
 /**
@@ -18,7 +18,7 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
  * </pre>
  *
  * <p>Decoded inside the dot product by {@link
- * org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K}.
+ * org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K}.
  *
  * <p><b>Why this exists</b>: retaining Q4_K alone was not enough, because a "Q4_K_M" file mixes
  * formats per tensor and per layer — Devstral holds attn_v and ffn_down as Q6_K in half its layers.

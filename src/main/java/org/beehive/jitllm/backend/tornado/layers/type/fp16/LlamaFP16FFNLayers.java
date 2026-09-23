@@ -1,16 +1,16 @@
-package org.beehive.jllm.backend.tornado.layers.type.fp16;
+package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
-import org.beehive.jllm.backend.tornado.kernels.TransformerPagedKvKernels;
-import org.beehive.jllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerDetectionService;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.inference.state.LlamaState;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
+import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
@@ -22,7 +22,7 @@ public class LlamaFP16FFNLayers
      * Whether this graph uses split-KV (flash-decoding) attention, resolved once from the session's
      * policy.
      *
-     * <p>It was a {@code static final} read from {@code jllm.attention.splitKv} at class
+     * <p>It was a {@code static final} read from {@code jitllm.attention.splitKv} at class
      * initialization. <b>Selection is policy; the partition count is capacity</b> — the count sizes
      * {@code wrapAttSplit}, so it stays where the array is allocated, and the working value is
      * checked against it rather than assumed equal.
@@ -76,7 +76,7 @@ public class LlamaFP16FFNLayers
                             + " exceed the "
                             + State.SPLIT_KV
                             + " the attention scratch was sized for;"
-                            + " raise jllm.attention.splitKv.count, which is the capacity");
+                            + " raise jitllm.attention.splitKv.count, which is the capacity");
         }
         this.attentionSplits = working;
         setupFFNLayers();
@@ -447,8 +447,8 @@ public class LlamaFP16FFNLayers
 
         // Diagnostic, default off: pulls the per-layer intermediates back so an FP16
         // divergence can be localized. The shipped task graph is unchanged.
-        if (Boolean.getBoolean("jllm.diag.transfers")
-                && layerIndex == Integer.getInteger("jllm.diag.layer", 0)) {
+        if (Boolean.getBoolean("jitllm.diag.transfers")
+                && layerIndex == Integer.getInteger("jitllm.diag.layer", 0)) {
             unifiedLayer.transferToHost(
                     uk.ac.manchester.tornado.api.enums.DataTransferMode.EVERY_EXECUTION,
                     keyCache(),

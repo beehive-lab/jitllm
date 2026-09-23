@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.metrics;
+package org.beehive.jitllm.runtime.metrics;
 
 /**
  * Where measurements go — the one seam in this architecture that is written from below and read

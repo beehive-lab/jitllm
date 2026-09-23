@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -7,12 +7,12 @@ import static org.junit.Assume.assumeTrue;
 import java.nio.file.Path;
 import java.util.EnumMap;
 import java.util.Map;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jllm.inference.weights.tornado.Qwen35TornadoWeights;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 
 // @formatter:off
@@ -34,8 +34,8 @@ public class Qwen35NativeRepresentationAccelTest {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     private static final int CONTEXT_LENGTH = 512;
 

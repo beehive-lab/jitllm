@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -101,10 +101,10 @@ public class FacadeSurfaceTest {
                 builderMethods);
 
         assertEquals(
-                org.beehive.jllm.runtime.backend.BackendId.class,
+                org.beehive.jitllm.runtime.backend.BackendId.class,
                 parameterTypeOf(ModelOptions.Builder.class, "backend"));
         assertEquals(
-                org.beehive.jllm.runtime.backend.DeviceSelector.class,
+                org.beehive.jitllm.runtime.backend.DeviceSelector.class,
                 parameterTypeOf(ModelOptions.Builder.class, "device"));
     }
 

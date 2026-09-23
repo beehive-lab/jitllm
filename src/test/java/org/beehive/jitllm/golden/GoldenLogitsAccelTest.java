@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -9,7 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 /**
@@ -26,8 +26,8 @@ public class GoldenLogitsAccelTest {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     private static final Path GOLDEN_ROOT = Paths.get("src/test/resources/goldens");
 

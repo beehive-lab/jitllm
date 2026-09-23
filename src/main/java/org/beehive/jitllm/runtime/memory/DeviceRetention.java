@@ -1,7 +1,7 @@
-package org.beehive.jllm.runtime.memory;
+package org.beehive.jitllm.runtime.memory;
 
 import java.util.Set;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * What representation each weight will actually occupy on the device.

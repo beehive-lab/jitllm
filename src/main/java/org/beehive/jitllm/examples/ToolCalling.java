@@ -1,20 +1,20 @@
-package org.beehive.jllm.examples;
+package org.beehive.jitllm.examples;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.api.ChatContent;
-import org.beehive.jllm.api.ChatMessage;
-import org.beehive.jllm.api.ChatRole;
-import org.beehive.jllm.api.FinishReason;
-import org.beehive.jllm.api.GenerationRequest;
-import org.beehive.jllm.api.GenerationResult;
-import org.beehive.jllm.api.GenerationSession;
-import org.beehive.jllm.api.LocalModel;
-import org.beehive.jllm.api.LocalModels;
-import org.beehive.jllm.api.ModelOptions;
-import org.beehive.jllm.api.TextGenerationModel;
-import org.beehive.jllm.api.ToolSpec;
+import org.beehive.jitllm.api.ChatContent;
+import org.beehive.jitllm.api.ChatMessage;
+import org.beehive.jitllm.api.ChatRole;
+import org.beehive.jitllm.api.FinishReason;
+import org.beehive.jitllm.api.GenerationRequest;
+import org.beehive.jitllm.api.GenerationResult;
+import org.beehive.jitllm.api.GenerationSession;
+import org.beehive.jitllm.api.LocalModel;
+import org.beehive.jitllm.api.LocalModels;
+import org.beehive.jitllm.api.ModelOptions;
+import org.beehive.jitllm.api.TextGenerationModel;
+import org.beehive.jitllm.api.ToolSpec;
 
 /**
  * A full tool round-trip: describe a tool, let the model call it, run it, hand back the result.

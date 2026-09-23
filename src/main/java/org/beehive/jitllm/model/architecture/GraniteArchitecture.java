@@ -1,12 +1,12 @@
-package org.beehive.jllm.model.architecture;
+package org.beehive.jitllm.model.architecture;
 
 import java.util.EnumSet;
 import java.util.Set;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.granite.GraniteConfiguration;
-import org.beehive.jllm.program.InferenceProgram;
-import org.beehive.jllm.program.PhaseId;
-import org.beehive.jllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.granite.GraniteConfiguration;
+import org.beehive.jitllm.program.InferenceProgram;
+import org.beehive.jitllm.program.PhaseId;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 
 /**
  * Granite's computation. Llama with four {@code Scale} components and an attention scale that

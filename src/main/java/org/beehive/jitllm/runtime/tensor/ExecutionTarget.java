@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.tensor;
+package org.beehive.jitllm.runtime.tensor;
 
 /**
  * Where a model is being loaded to execute — the axis that decides which representation a tensor is

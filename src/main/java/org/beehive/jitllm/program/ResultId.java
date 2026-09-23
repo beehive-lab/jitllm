@@ -1,4 +1,4 @@
-package org.beehive.jllm.program;
+package org.beehive.jitllm.program;
 
 /**
  * Something the caller may read once an invocation completes.

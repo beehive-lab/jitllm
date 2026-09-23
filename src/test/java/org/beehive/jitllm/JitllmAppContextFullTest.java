@@ -1,4 +1,4 @@
-package org.beehive.jllm;
+package org.beehive.jitllm;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -12,11 +12,11 @@ import org.junit.Test;
  * interactive loop reported it and the single-instruction path printed a zero-token metrics block
  * and exited 0.)
  */
-public class JllmAppContextFullTest {
+public class JitllmAppContextFullTest {
 
     @Test
     public void theDiagnosticNamesThePromptTheCapacityAndTheRemedy() {
-        String message = JllmApp.contextFullMessage(296, 8);
+        String message = JitllmApp.contextFullMessage(296, 8);
         assertTrue(message, message.contains("296 tokens"));
         assertTrue(message, message.contains("--ctx-size 8"));
         assertTrue(message, message.contains("pass --ctx-size larger than the prompt"));

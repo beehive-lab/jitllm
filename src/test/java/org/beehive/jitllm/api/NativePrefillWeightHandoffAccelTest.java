@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -6,10 +6,10 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jllm.backend.tornado.NativePrefillSupport;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 /**
@@ -87,7 +87,7 @@ public class NativePrefillWeightHandoffAccelTest {
                     "this host does not select the native prefill projections, so there is no"
                             + " weight handoff to exercise: "
                             + NativePrefillSupport.describe(
-                                    org.beehive.jllm.runtime.policy.ExecutionPolicy
+                                    org.beehive.jitllm.runtime.policy.ExecutionPolicy
                                             .fromSystemProperties(),
                                     true,
                                     PROBE_SHAPE),

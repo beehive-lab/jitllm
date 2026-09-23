@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -7,8 +7,8 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 // @formatter:off
@@ -51,9 +51,9 @@ public class Qwen35BatchedFp16KvLifecycleAccelTest {
         Path modelPath = fixtureOrSkip();
         String previous = System.getProperty(GPU_PROPERTY);
         System.setProperty(GPU_PROPERTY, "true");
-        System.setProperty("jllm.withPrefillDecode", "true");
-        System.setProperty("jllm.prefillBatchSize", "32");
-        System.setProperty("jllm.kvcache.fp16", "true");
+        System.setProperty("jitllm.withPrefillDecode", "true");
+        System.setProperty("jitllm.prefillBatchSize", "32");
+        System.setProperty("jitllm.kvcache.fp16", "true");
         try (LocalModel model = LocalModels.load(modelPath, options())) {
             TextGenerationModel generation = (TextGenerationModel) model;
             // Thinking off: the answer has to land inside the token budget, and this family
@@ -72,7 +72,7 @@ public class Qwen35BatchedFp16KvLifecycleAccelTest {
 
                 // Proved, not assumed. A silent host fallback produces fluent text at a plausible
                 // rate, and every assertion below would pass on it.
-                var snapshot = org.beehive.jllm.auxiliary.RunMetrics.snapshot();
+                var snapshot = org.beehive.jitllm.auxiliary.RunMetrics.snapshot();
                 assertEquals("the plan that ran", "legacy", snapshot.executionPath());
                 assertEquals(
                         "the tuple that ran",
@@ -115,8 +115,8 @@ public class Qwen35BatchedFp16KvLifecycleAccelTest {
                     IllegalStateException.class,
                     () -> session.generate(request()));
         } finally {
-            System.clearProperty("jllm.withPrefillDecode");
-            System.clearProperty("jllm.prefillBatchSize");
+            System.clearProperty("jitllm.withPrefillDecode");
+            System.clearProperty("jitllm.prefillBatchSize");
             restore(previous);
         }
     }

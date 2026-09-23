@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
@@ -6,9 +6,9 @@ import static org.junit.Assume.assumeTrue;
 import com.sun.management.ThreadMXBean;
 import java.lang.management.ManagementFactory;
 import java.nio.file.Path;
-import org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 /**

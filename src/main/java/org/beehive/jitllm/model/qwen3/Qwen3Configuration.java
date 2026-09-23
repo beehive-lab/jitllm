@@ -1,7 +1,7 @@
-package org.beehive.jllm.model.qwen3;
+package org.beehive.jitllm.model.qwen3;
 
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 // @formatter:off
 public record Qwen3Configuration(

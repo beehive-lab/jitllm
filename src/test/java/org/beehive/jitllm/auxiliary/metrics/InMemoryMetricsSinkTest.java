@@ -1,10 +1,10 @@
-package org.beehive.jllm.auxiliary.metrics;
+package org.beehive.jitllm.auxiliary.metrics;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-import org.beehive.jllm.runtime.metrics.MetricKey;
-import org.beehive.jllm.runtime.metrics.MetricsReport;
+import org.beehive.jitllm.runtime.metrics.MetricKey;
+import org.beehive.jitllm.runtime.metrics.MetricsReport;
 import org.junit.Test;
 
 public class InMemoryMetricsSinkTest {

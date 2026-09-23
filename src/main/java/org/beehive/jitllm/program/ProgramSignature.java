@@ -1,8 +1,8 @@
-package org.beehive.jllm.program;
+package org.beehive.jitllm.program;
 
 import java.util.List;
 import java.util.Objects;
-import org.beehive.jllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 
 /**
  * What a program is, as a value — and therefore what makes two compiled programs the same one.

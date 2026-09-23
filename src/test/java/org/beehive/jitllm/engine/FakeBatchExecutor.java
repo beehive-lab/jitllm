@@ -1,9 +1,9 @@
-package org.beehive.jllm.engine;
+package org.beehive.jitllm.engine;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.runtime.batch.BatchExecutor;
-import org.beehive.jllm.runtime.batch.BatchSlots;
+import org.beehive.jitllm.runtime.batch.BatchExecutor;
+import org.beehive.jitllm.runtime.batch.BatchSlots;
 
 /**
  * A backend that produces tokens without a device, so the engine's whole contract is testable.

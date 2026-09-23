@@ -1,7 +1,7 @@
-package org.beehive.jllm.backend.cpu;
+package org.beehive.jitllm.backend.cpu;
 
-import org.beehive.jllm.inference.ForwardPass;
-import org.beehive.jllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.inference.ForwardPass;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 
 /**
  * The host forward pass for {@code phi3}.
@@ -22,6 +22,6 @@ public final class Phi3CpuForwardProvider implements CpuForwardProvider {
     public ForwardPass create() {
         return (model, state, token, position) ->
                 InferenceCore.forwardJavaPhi3(
-                        model, (org.beehive.jllm.inference.state.Phi3State) state, token, position);
+                        model, (org.beehive.jitllm.inference.state.Phi3State) state, token, position);
     }
 }

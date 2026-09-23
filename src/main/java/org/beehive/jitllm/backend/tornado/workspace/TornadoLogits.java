@@ -1,7 +1,7 @@
-package org.beehive.jllm.backend.tornado.workspace;
+package org.beehive.jitllm.backend.tornado.workspace;
 
-import org.beehive.jllm.backend.tornado.utils.FloatArrayUtils;
-import org.beehive.jllm.inference.Logits;
+import org.beehive.jitllm.backend.tornado.utils.FloatArrayUtils;
+import org.beehive.jitllm.inference.Logits;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 /** A {@link Logits} view over a device array. */

@@ -1,9 +1,9 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import java.util.EnumSet;
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.plan.ExecutionMode;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * The capability sets providers reuse — <b>family-neutral</b>, so it names no architecture.

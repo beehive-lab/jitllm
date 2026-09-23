@@ -9,7 +9,7 @@ jobs:
     name: Rerun CI Workflows
     # Only run on PR comments (not issue comments) with /rerun command
     if: |
-      github.repository == 'beehive-lab/jllm' &&
+      github.repository == 'beehive-lab/jitllm' &&
       github.event.issue.pull_request &&
       contains(github.event.comment.body, '/rerun')
     runs-on: ubuntu-latest

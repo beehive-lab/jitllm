@@ -1,16 +1,16 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Objects;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.backend.Device;
-import org.beehive.jllm.runtime.backend.DeviceResolver;
-import org.beehive.jllm.runtime.backend.DeviceResolvers;
-import org.beehive.jllm.runtime.diagnostics.DiagnosticCode;
-import org.beehive.jllm.runtime.memory.MemoryPlan;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.Device;
+import org.beehive.jitllm.runtime.backend.DeviceResolver;
+import org.beehive.jitllm.runtime.backend.DeviceResolvers;
+import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.runtime.memory.MemoryPlan;
 
 /**
  * Where a caller starts: load a model file, get a {@link LocalModel}.
@@ -114,7 +114,7 @@ public final class LocalModels {
             Path modelFile, ModelOptions options, Throwable cause) {
         StringBuilder message =
                 new StringBuilder(
-                                org.beehive.jllm.runtime.diagnostics.DiagnosticCode
+                                org.beehive.jitllm.runtime.diagnostics.DiagnosticCode
                                         .DEVICE_MEMORY_INSUFFICIENT
                                         .prefix())
                         .append("The device ran out of memory loading ")

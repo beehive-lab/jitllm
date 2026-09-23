@@ -1,6 +1,6 @@
-package org.beehive.jllm.model.phi3;
+package org.beehive.jitllm.model.phi3;
 
-import org.beehive.jllm.model.Configuration;
+import org.beehive.jitllm.model.Configuration;
 
 // @formatter:off
 public record Phi3Configuration(

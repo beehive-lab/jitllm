@@ -1,8 +1,8 @@
-package org.beehive.jllm.program.op;
+package org.beehive.jitllm.program.op;
 
 import java.util.List;
 import java.util.Objects;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * A weight matrix times a batch of activation rows.

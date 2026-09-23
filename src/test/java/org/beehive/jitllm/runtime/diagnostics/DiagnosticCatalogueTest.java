@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.diagnostics;
+package org.beehive.jitllm.runtime.diagnostics;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;

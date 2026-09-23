@@ -1,11 +1,11 @@
-package org.beehive.jllm.model.format;
+package org.beehive.jitllm.model.format;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import org.beehive.jllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.tokenizer.Tokenizer;
 
 public class LlamaChatFormat implements ChatFormat {
 

@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -12,7 +12,7 @@ import java.util.HexFormat;
  * Locates and verifies the pinned model fixtures for the golden and parity gates.
  *
  * <p>The GGUF files are far too large to commit, so only their SHA-256 is pinned here. The file
- * itself is resolved from {@code $JLLM_TEST_MODELS} or {@code ~/.jllm/test-models/} (falling back
+ * itself is resolved from {@code $JITLLM_TEST_MODELS} or {@code ~/.jitllm/test-models/} (falling back
  * to the pre-rename cache, see {@link #modelsRoot()}), and an absent fixture produces a fetch
  * instruction rather than a mysterious failure.
  *
@@ -180,14 +180,14 @@ public final class GoldenFixture {
      * Root of the local fixture cache.
      *
      * <p>The rename from GPULlama3.java moved this from {@code $GPULLAMA_TEST_MODELS} / {@code
-     * ~/.gpullama3/test-models} to {@code $JLLM_TEST_MODELS} / {@code ~/.jllm/test-models}. Falling
+     * ~/.gpullama3/test-models} to {@code $JITLLM_TEST_MODELS} / {@code ~/.jitllm/test-models}. Falling
      * back to the old location matters more than it looks: an unresolved fixture makes the Class B
      * gates <b>skip</b>, not fail, so a developer or runner that still has the old cache would
      * silently stop running every golden and accelerator correctness check while the build stayed
      * green. The fallback closes that window; it can go once no machine has the old cache.
      */
     public static Path modelsRoot() {
-        String env = System.getenv("JLLM_TEST_MODELS");
+        String env = System.getenv("JITLLM_TEST_MODELS");
         if (env != null && !env.isBlank()) {
             return Paths.get(env);
         }
@@ -196,7 +196,7 @@ public final class GoldenFixture {
             return Paths.get(legacyEnv);
         }
         Path home = Paths.get(System.getProperty("user.home"));
-        Path current = home.resolve(".jllm").resolve("test-models");
+        Path current = home.resolve(".jitllm").resolve("test-models");
         if (Files.isDirectory(current)) {
             return current;
         }
@@ -219,7 +219,7 @@ public final class GoldenFixture {
                 + modelsRoot()
                 + "\n  sha256: "
                 + fixture.sha256
-                + "\n  Set JLLM_TEST_MODELS to a directory containing it, or place/symlink the"
+                + "\n  Set JITLLM_TEST_MODELS to a directory containing it, or place/symlink the"
                 + " file there. It is intentionally not committed.";
     }
 

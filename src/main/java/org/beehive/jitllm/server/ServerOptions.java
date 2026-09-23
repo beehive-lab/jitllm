@@ -1,7 +1,7 @@
-package org.beehive.jllm.server;
+package org.beehive.jitllm.server;
 
 import java.nio.file.Path;
-import org.beehive.jllm.integration.cli.ModelRunConfig;
+import org.beehive.jitllm.integration.cli.ModelRunConfig;
 
 /** HTTP configuration, independent of terminal prompts and sampling. */
 record ServerOptions(
@@ -25,15 +25,15 @@ record ServerOptions(
             throw new IllegalArgumentException(
                     "--prefix-cache-entries requires --continuous-batching");
         if (batchSlots > 1
-                && (Boolean.getBoolean("jllm.withPrefillDecode")
-                        || Integer.getInteger("jllm.prefillBatchSize", 1) > 1
-                        || Boolean.getBoolean("jllm.cudaGraphs"))) {
+                && (Boolean.getBoolean("jitllm.withPrefillDecode")
+                        || Integer.getInteger("jitllm.prefillBatchSize", 1) > 1
+                        || Boolean.getBoolean("jitllm.cudaGraphs"))) {
             throw new IllegalArgumentException(
                     "Continuous batching does not support prefill chunking or CUDA graphs");
         }
         if (batchSlots > 1
                 && Boolean.getBoolean(
-                        org.beehive.jllm.runtime.policy.ExecutionPolicy
+                        org.beehive.jitllm.runtime.policy.ExecutionPolicy
                                 .NATIVE_LIBRARIES_PROPERTY)) {
             throw new IllegalArgumentException(
                     "Continuous batching has no native-library implementation; drop"
@@ -74,23 +74,23 @@ record ServerOptions(
                     continue;
                 }
                 case "--verbose", "-v" -> {
-                    System.setProperty("jllm.verbose", "true");
+                    System.setProperty("jitllm.verbose", "true");
                     continue;
                 }
                 case "--fp32-kv-cache" -> {
                     System.setProperty(
-                            org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY, "true");
+                            org.beehive.jitllm.runtime.policy.StorageOptions.FP32_PROPERTY, "true");
                     continue;
                 }
                 case "--print-taskgraph-chain" -> {
                     System.setProperty(
-                            org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.PROPERTY,
+                            org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.PROPERTY,
                             "true");
                     continue;
                 }
                 case "--with-native-libraries" -> {
                     System.setProperty(
-                            org.beehive.jllm.runtime.policy.ExecutionPolicy
+                            org.beehive.jitllm.runtime.policy.ExecutionPolicy
                                     .NATIVE_LIBRARIES_PROPERTY,
                             "true");
                     continue;
@@ -101,11 +101,11 @@ record ServerOptions(
                                         + " cache. Drop the flag, or pass --fp32-kv-cache to keep"
                                         + " an FP32 cache");
                 case "--cuda-graphs" -> {
-                    System.setProperty("jllm.cudaGraphs", "true");
+                    System.setProperty("jitllm.cudaGraphs", "true");
                     continue;
                 }
                 case "--with-prefill-decode" -> {
-                    System.setProperty("jllm.withPrefillDecode", "true");
+                    System.setProperty("jitllm.withPrefillDecode", "true");
                     continue;
                 }
                 default -> {}
@@ -146,8 +146,8 @@ record ServerOptions(
                     int width = Integer.parseInt(value);
                     if (width < 1)
                         throw new IllegalArgumentException("--batch-prefill-size must be positive");
-                    System.setProperty("jllm.prefillBatchSize", value);
-                    System.setProperty("jllm.withPrefillDecode", "true");
+                    System.setProperty("jitllm.prefillBatchSize", value);
+                    System.setProperty("jitllm.withPrefillDecode", "true");
                 }
                 default -> throw new IllegalArgumentException("Unknown server option: " + option);
             }

@@ -1,10 +1,10 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import java.nio.file.Path;
-import org.beehive.jllm.backend.tornado.bench.BatchDecodeOptions;
-import org.beehive.jllm.backend.tornado.bench.BatchedDecodeEngine;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.backend.tornado.bench.BatchDecodeOptions;
+import org.beehive.jitllm.backend.tornado.bench.BatchedDecodeEngine;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
 
 /**
  * Drives #129's own harness, so its numbers can be compared with the promoted path's.
@@ -14,7 +14,7 @@ import org.beehive.jllm.model.loader.ModelLoader;
  * since it was absorbed. This is the missing driver, in test scope: the bench is frozen and gains
  * nothing production-shaped from being made executable.
  *
- * <p>{@code -Dprobe.model=… -Dprobe.batch=16 -Djllm.prefillBatchSize=16 …}
+ * <p>{@code -Dprobe.model=… -Dprobe.batch=16 -Djitllm.prefillBatchSize=16 …}
  */
 public final class Reference129Probe {
 

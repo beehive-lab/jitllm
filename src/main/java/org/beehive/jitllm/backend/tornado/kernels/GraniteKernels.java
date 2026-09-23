@@ -1,8 +1,8 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
-import static org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered.matrixVectorRowMajorOptimized;
-import static org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered.matrixVectorRowMajorOptimizedQ8_0Byte;
-import static org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered.matrixVectorRowMajorOptimizedSingle;
+import static org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered.matrixVectorRowMajorOptimized;
+import static org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered.matrixVectorRowMajorOptimizedQ8_0Byte;
+import static org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered.matrixVectorRowMajorOptimizedSingle;
 
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.types.HalfFloat;

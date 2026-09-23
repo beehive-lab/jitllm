@@ -1,4 +1,4 @@
-package org.beehive.jllm.quality;
+package org.beehive.jitllm.quality;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -15,29 +15,29 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.golden.TupleInfo;
-import org.beehive.jllm.inference.Logits;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.backend.tornado.TornadoBatchPrefillPass;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.TupleInfo;
+import org.beehive.jitllm.inference.Logits;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
 import org.junit.Test;
 
 // @formatter:off
 /**
  * Adoption-evaluation scoring for the int8 projection candidate, driven by a frozen manifest
- * ({@code jllm.eval.manifest}: path, byte range, sha256, prefix and scored token counts per
+ * ({@code jitllm.eval.manifest}: path, byte range, sha256, prefix and scored token counts per
  * passage): a prefix ingested through the batched prefill in several chunks with a partial tail,
  * then 128 scored decode steps whose full logits rows are written out so two builds can be compared
  * position by position.
  *
- * <p>Properties: {@code jllm.eval.manifest} (required), {@code jllm.eval.out} (directory for the
- * per-position reports and the full logits rows, required), {@code jllm.eval.batch} (prefill width,
- * default 512); {@code jllm.kvcache.fp16} is set here. Each passage names its own prefix and scored
+ * <p>Properties: {@code jitllm.eval.manifest} (required), {@code jitllm.eval.out} (directory for the
+ * per-position reports and the full logits rows, required), {@code jitllm.eval.batch} (prefill width,
+ * default 512); {@code jitllm.kvcache.fp16} is set here. Each passage names its own prefix and scored
  * lengths; at width 512 every prefix in the frozen manifest is several full chunks plus a 128-token
  * partial tail. The first passage is scored twice with a reset between, and the two runs must be
  * raw-bit identical (replay determinism of the build under test).
@@ -46,7 +46,7 @@ import org.junit.Test;
 public class Qwen35AdoptionTextEvalAccelTest {
 
     static {
-        System.setProperty("jllm.kvcache.fp16", "true");
+        System.setProperty("jitllm.kvcache.fp16", "true");
     }
 
     private static final int CONTEXT = 4096;
@@ -56,7 +56,7 @@ public class Qwen35AdoptionTextEvalAccelTest {
 
     /** The frozen manifest (path, byte range, sha256, prefix and scored lengths per passage). */
     private static List<Passage> passages() throws IOException {
-        String manifest = System.getProperty("jllm.eval.manifest");
+        String manifest = System.getProperty("jitllm.eval.manifest");
         if (manifest == null) {
             return List.of();
         }
@@ -88,17 +88,17 @@ public class Qwen35AdoptionTextEvalAccelTest {
         Path modelPath = GoldenFixture.locate(Fixture.QWEN3_8_27B_Q4_0);
         assumeTrue("environment absent", modelPath != null);
         assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
-        int batch = Integer.getInteger("jllm.eval.batch", 512);
-        String outDir = System.getProperty("jllm.eval.out");
+        int batch = Integer.getInteger("jitllm.eval.batch", 512);
+        String outDir = System.getProperty("jitllm.eval.out");
         List<Passage> passages = passages();
         assumeTrue(
-                "jllm.eval.manifest and jllm.eval.out select this run",
+                "jitllm.eval.manifest and jitllm.eval.out select this run",
                 outDir != null && !passages.isEmpty());
         Files.createDirectories(Paths.get(outDir));
 
         System.setProperty("use.tornadovm", "true");
-        System.setProperty("jllm.withPrefillDecode", "true");
-        System.setProperty("jllm.prefillBatchSize", String.valueOf(batch));
+        System.setProperty("jitllm.withPrefillDecode", "true");
+        System.setProperty("jitllm.prefillBatchSize", String.valueOf(batch));
         Model model = ModelLoader.loadModel(modelPath, CONTEXT, true, true);
         State state = State.withPrefillBatchSize(batch, model::createNewState);
         TornadoVMMasterPlan plan = TornadoVMMasterPlan.initializeTornadoVMPlan(state, model);
@@ -108,17 +108,17 @@ public class Qwen35AdoptionTextEvalAccelTest {
                 .append(" batch=")
                 .append(batch)
                 .append(" manifest=")
-                .append(System.getProperty("jllm.eval.manifest"))
+                .append(System.getProperty("jitllm.eval.manifest"))
                 .append(" context=")
                 .append(CONTEXT)
                 .append('\n');
         summary.append("pairs=")
                 .append(
-                        org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                        org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
                                 .batchedTaskKernelsIfAny(plan, "ffn_gate_proj"))
                 .append(" gateUp=")
                 .append(
-                        org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                        org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
                                 .batchedTaskKernelsIfAny(plan, "ffn_gate_up"))
                 .append('\n');
         double pooled = 0;

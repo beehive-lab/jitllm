@@ -1,10 +1,10 @@
-package org.beehive.jllm.backend.tornado.plan.components;
+package org.beehive.jitllm.backend.tornado.plan.components;
 
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlanPrefillDecode;
-import org.beehive.jllm.backend.tornado.layers.AbstractLogitsTaskGraph;
-import org.beehive.jllm.backend.tornado.layers.ActivationTaskGraph;
-import org.beehive.jllm.backend.tornado.layers.TransformerLayerTaskGraphs;
-import org.beehive.jllm.backend.tornado.plan.PrefillDecodeForwardPlan;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanPrefillDecode;
+import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.plan.PrefillDecodeForwardPlan;
 
 // @formatter:off
 /**
@@ -24,7 +24,7 @@ import org.beehive.jllm.backend.tornado.plan.PrefillDecodeForwardPlan;
  * </ul>
  *
  * Note: Consult also the {@link
- * org.beehive.jllm.backend.tornado.plan.layout.PrefillDecodeForwardTaskGraphLayout}
+ * org.beehive.jitllm.backend.tornado.plan.layout.PrefillDecodeForwardTaskGraphLayout}
  */
 // @formatter:on
 public interface PrefillDecodeForwardPlanComponents extends SingleTokenForwardPlanComponents {

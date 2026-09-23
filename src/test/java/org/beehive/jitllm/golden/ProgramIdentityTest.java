@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;

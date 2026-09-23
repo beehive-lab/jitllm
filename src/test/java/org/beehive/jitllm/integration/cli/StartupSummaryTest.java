@@ -1,16 +1,16 @@
-package org.beehive.jllm.integration.cli;
+package org.beehive.jitllm.integration.cli;
 
 import static org.junit.Assert.*;
 
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Set;
-import org.beehive.jllm.api.ModelConfiguration;
-import org.beehive.jllm.api.ModelInfo;
-import org.beehive.jllm.auxiliary.metrics.RunMetricsSnapshot;
-import org.beehive.jllm.format.GgufModelFacts;
-import org.beehive.jllm.runtime.backend.ExecutionInfo;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.api.ModelConfiguration;
+import org.beehive.jitllm.api.ModelInfo;
+import org.beehive.jitllm.auxiliary.metrics.RunMetricsSnapshot;
+import org.beehive.jitllm.format.GgufModelFacts;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 
 public class StartupSummaryTest {
@@ -155,35 +155,35 @@ public class StartupSummaryTest {
                                 "cuBLAS, cuDNN"));
         long gib = 1073741824L;
         var memory =
-                new org.beehive.jllm.runtime.memory.MemoryPlan(
+                new org.beehive.jitllm.runtime.memory.MemoryPlan(
                         java.util.List.of(
-                                new org.beehive.jllm.runtime.memory.MemoryComponent(
+                                new org.beehive.jitllm.runtime.memory.MemoryComponent(
                                         "weights",
-                                        org.beehive.jllm.runtime.memory.BufferClass
+                                        org.beehive.jitllm.runtime.memory.BufferClass
                                                 .WEIGHTS_PER_LAYER,
                                         gib,
                                         2,
                                         0),
-                                new org.beehive.jllm.runtime.memory.MemoryComponent(
+                                new org.beehive.jitllm.runtime.memory.MemoryComponent(
                                         "cache",
-                                        org.beehive.jllm.runtime.memory.BufferClass.KV_CACHE,
+                                        org.beehive.jitllm.runtime.memory.BufferClass.KV_CACHE,
                                         gib,
                                         1,
                                         0),
-                                new org.beehive.jllm.runtime.memory.MemoryComponent(
+                                new org.beehive.jitllm.runtime.memory.MemoryComponent(
                                         "scratch",
-                                        org.beehive.jllm.runtime.memory.BufferClass.BATCH_STAGING,
+                                        org.beehive.jitllm.runtime.memory.BufferClass.BATCH_STAGING,
                                         gib,
                                         1,
                                         0),
-                                new org.beehive.jllm.runtime.memory.MemoryComponent(
+                                new org.beehive.jitllm.runtime.memory.MemoryComponent(
                                         "controls",
-                                        org.beehive.jllm.runtime.memory.BufferClass.CONTROL,
+                                        org.beehive.jitllm.runtime.memory.BufferClass.CONTROL,
                                         gib,
                                         1,
                                         0)),
                         10 * gib,
-                        org.beehive.jllm.runtime.memory.MemoryPlan.Confidence.CONSERVATIVE,
+                        org.beehive.jitllm.runtime.memory.MemoryPlan.Confidence.CONSERVATIVE,
                         "test topology");
         for (boolean verbose : new boolean[] {false, true}) {
             var report =
@@ -213,11 +213,11 @@ public class StartupSummaryTest {
 
     @Test
     public void finalPerformanceBlockDoesNotRepeatStartupEvenInVerboseMode() {
-        String old = System.getProperty("jllm.EnableTimingForTornadoVMInit");
+        String old = System.getProperty("jitllm.EnableTimingForTornadoVMInit");
         try {
-            System.setProperty("jllm.EnableTimingForTornadoVMInit", "true");
+            System.setProperty("jitllm.EnableTimingForTornadoVMInit", "true");
             String text =
-                    new org.beehive.jllm.auxiliary.metrics.HumanMetricsRenderer()
+                    new org.beehive.jitllm.auxiliary.metrics.HumanMetricsRenderer()
                             .render(
                                     summary(
                                                     new ExecutionInfo(
@@ -236,8 +236,8 @@ public class StartupSummaryTest {
             assertFalse(text.contains("Model Load"));
             assertFalse(text.contains("JIT precompilation"));
         } finally {
-            if (old == null) System.clearProperty("jllm.EnableTimingForTornadoVMInit");
-            else System.setProperty("jllm.EnableTimingForTornadoVMInit", old);
+            if (old == null) System.clearProperty("jitllm.EnableTimingForTornadoVMInit");
+            else System.setProperty("jitllm.EnableTimingForTornadoVMInit", old);
         }
     }
 }

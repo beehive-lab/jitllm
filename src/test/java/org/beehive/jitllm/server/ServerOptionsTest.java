@@ -1,4 +1,4 @@
-package org.beehive.jllm.server;
+package org.beehive.jitllm.server;
 
 import static org.junit.Assert.*;
 
@@ -74,7 +74,7 @@ public class ServerOptionsTest {
 
     @Test
     public void continuousBatchingTakesEitherCache() {
-        String fp32 = org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY;
+        String fp32 = org.beehive.jitllm.runtime.policy.StorageOptions.FP32_PROPERTY;
         String previous = System.getProperty(fp32);
         try {
             System.clearProperty(fp32);

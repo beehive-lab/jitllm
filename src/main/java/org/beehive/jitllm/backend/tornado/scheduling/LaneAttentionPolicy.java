@@ -1,7 +1,7 @@
-package org.beehive.jllm.backend.tornado.scheduling;
+package org.beehive.jitllm.backend.tornado.scheduling;
 
-import org.beehive.jllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jllm.runtime.backend.DeviceCapability;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
 
 // @formatter:off
 /**

@@ -1,4 +1,4 @@
-package org.beehive.jllm.program.op;
+package org.beehive.jitllm.program.op;
 
 /**
  * How a rotary embedding pairs the components it rotates.

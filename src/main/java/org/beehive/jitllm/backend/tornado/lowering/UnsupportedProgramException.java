@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 /**
  * A lowering's refusal, naming what it expected and what it was handed.

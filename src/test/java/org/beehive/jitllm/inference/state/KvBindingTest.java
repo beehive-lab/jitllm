@@ -1,4 +1,4 @@
-package org.beehive.jllm.inference.state;
+package org.beehive.jitllm.inference.state;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -7,13 +7,13 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
-import org.beehive.jllm.model.llama.LlamaConfiguration;
-import org.beehive.jllm.runtime.kv.BlockPool;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
-import org.beehive.jllm.runtime.kv.KvLease;
-import org.beehive.jllm.runtime.kv.KvStorage;
-import org.beehive.jllm.runtime.kv.KvStorageFactories;
-import org.beehive.jllm.runtime.kv.KvStorageRequest;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.runtime.kv.BlockPool;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.kv.KvLease;
+import org.beehive.jitllm.runtime.kv.KvStorage;
+import org.beehive.jitllm.runtime.kv.KvStorageFactories;
+import org.beehive.jitllm.runtime.kv.KvStorageRequest;
 import org.junit.Test;
 
 /**

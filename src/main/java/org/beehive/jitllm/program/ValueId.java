@@ -1,4 +1,4 @@
-package org.beehive.jllm.program;
+package org.beehive.jitllm.program;
 
 /**
  * A scalar an invocation supplies, by meaning rather than by buffer.

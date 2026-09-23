@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -6,14 +6,14 @@ import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.backend.tornado.plan.ForwardPlanFactory;
-import org.beehive.jllm.backend.tornado.plan.SingleTokenForwardPlan;
-import org.beehive.jllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
+import org.beehive.jitllm.backend.tornado.plan.SingleTokenForwardPlan;
+import org.beehive.jitllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
@@ -47,8 +47,8 @@ public class CompiledProgramIdentityAccelTest {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     /** "≥ 100 tokens" from the gate definition. */
     private static final int DECODE_TOKENS = 120;
@@ -116,8 +116,8 @@ public class CompiledProgramIdentityAccelTest {
 
             int token = beginToken(model);
             for (int position = 0; position < DECODE_TOKENS; position++) {
-                org.beehive.jllm.inference.Logits logits =
-                        org.beehive.jllm.backend.tornado.TornadoForwardPass.forward(
+                org.beehive.jitllm.inference.Logits logits =
+                        org.beehive.jitllm.backend.tornado.TornadoForwardPass.forward(
                                 model, state, token, position, plan);
                 token = argmax(logits);
                 assertEquals(
@@ -162,7 +162,7 @@ public class CompiledProgramIdentityAccelTest {
         return model.shouldAddBeginOfText() ? model.chatFormat().getBeginOfText() : 0;
     }
 
-    private static int argmax(org.beehive.jllm.inference.Logits logits) {
+    private static int argmax(org.beehive.jitllm.inference.Logits logits) {
         int best = 0;
         float bestValue = logits.get(0);
         for (int i = 1; i < logits.size(); i++) {

@@ -20,11 +20,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_launcher():
-    """Import `jllm` by path -- its name is not a valid module identifier."""
+    """Import `jitllm` by path -- its name is not a valid module identifier."""
     spec = importlib.util.spec_from_loader(
         "llama_tornado_launcher",
         importlib.machinery.SourceFileLoader(
-            "llama_tornado_launcher", str(REPO_ROOT / "jllm")
+            "llama_tornado_launcher", str(REPO_ROOT / "jitllm")
         ),
     )
     module = importlib.util.module_from_spec(spec)
@@ -113,21 +113,21 @@ class VerbosityOptions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as sdk:
             open(os.path.join(sdk, "tornado-argfile"), "w").close()
             os.makedirs(os.path.join(sdk, "target"))
-            open(os.path.join(sdk, "target", "jllm-1.0.0-jdk21.jar"), "w").close()
+            open(os.path.join(sdk, "target", "jitllm-1.0.0-jdk21.jar"), "w").close()
             runner = launcher.LlamaRunner.__new__(launcher.LlamaRunner)
             runner.tornado_sdk = sdk
             runner.java_home, runner.llama_root = "/stub/java", sdk
             args.installed_backends, args.backend = [launcher.Backend.CUDA], launcher.Backend.CUDA
             cmd = runner._build_base_command(args)
-        self.assertIn("-Djllm.verbose=true", cmd)
-        self.assertNotIn("-Djllm.EnableTimingForTornadoVMInit=true", cmd)
+        self.assertIn("-Djitllm.verbose=true", cmd)
+        self.assertNotIn("-Djitllm.EnableTimingForTornadoVMInit=true", cmd)
 
     def base_command(self, *flags):
         args = launcher.create_parser().parse_args(["--model", "stub.gguf", *flags])
         with tempfile.TemporaryDirectory() as sdk:
             open(os.path.join(sdk, "tornado-argfile"), "w").close()
             os.makedirs(os.path.join(sdk, "target"))
-            open(os.path.join(sdk, "target", "jllm-1.0.0-jdk21.jar"), "w").close()
+            open(os.path.join(sdk, "target", "jitllm-1.0.0-jdk21.jar"), "w").close()
             runner = launcher.LlamaRunner.__new__(launcher.LlamaRunner)
             runner.tornado_sdk = sdk
             runner.java_home, runner.llama_root = "/stub/java", sdk
@@ -137,20 +137,20 @@ class VerbosityOptions(unittest.TestCase):
     def test_kv_cache_is_fp16_unless_fp32_is_asked_for(self):
         default = self.base_command()
         self.assertFalse([a for a in default if "kvcache" in a], "FP16 is the Java default")
-        self.assertIn("-Djllm.kvcache.fp32=true", self.base_command("--fp32-kv-cache"))
+        self.assertIn("-Djitllm.kvcache.fp32=true", self.base_command("--fp32-kv-cache"))
         self.assertNotIn("--fp16-kv-cache", launcher.create_parser().format_help())
         self.assertIn("--fp32-kv-cache", launcher.create_parser().format_help())
 
     def test_taskgraph_chain_forwards_the_property_only_when_asked(self):
         self.assertFalse([a for a in self.base_command() if "printTaskGraphChain" in a])
-        self.assertIn("-Djllm.printTaskGraphChain=true", self.base_command("--print-taskgraph-chain"))
+        self.assertIn("-Djitllm.printTaskGraphChain=true", self.base_command("--print-taskgraph-chain"))
         text = launcher.create_parser().format_help()
         verbose = text[text.index("TornadoVM Execution Verbose"):text.index("Advanced Options")]
         self.assertIn("--print-taskgraph-chain", verbose)
 
     def test_native_libraries_forward_the_property_only_when_asked(self):
         self.assertFalse([a for a in self.base_command() if "nativeLibraries" in a])
-        self.assertIn("-Djllm.nativeLibraries=true", self.base_command("--with-native-libraries"))
+        self.assertIn("-Djitllm.nativeLibraries=true", self.base_command("--with-native-libraries"))
 
     def test_help_exposes_only_the_new_verbosity_interface(self):
         text = launcher.create_parser().format_help()

@@ -1,10 +1,10 @@
-package org.beehive.jllm.model.provider;
+package org.beehive.jitllm.model.provider;
 
 import java.nio.channels.FileChannel;
-import org.beehive.jllm.format.ModelSource;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.Qwen35ModelLoader;
-import org.beehive.jllm.runtime.backend.BackendId;
+import org.beehive.jitllm.format.ModelSource;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.Qwen35ModelLoader;
+import org.beehive.jitllm.runtime.backend.BackendId;
 
 /**
  * The {@code qwen35} architecture: Qwen3.5, Qwen3.6 and Qwen3.8, which share one hybrid stack.

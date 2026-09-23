@@ -1,6 +1,6 @@
-package org.beehive.jllm.model.llama;
+package org.beehive.jitllm.model.llama;
 
-import org.beehive.jllm.model.Configuration;
+import org.beehive.jitllm.model.Configuration;
 
 // @formatter:off
 public record LlamaConfiguration(

@@ -1,10 +1,10 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.program.InferenceProgram;
-import org.beehive.jllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.program.InferenceProgram;
+import org.beehive.jitllm.runtime.metrics.MetricsSink;
 
 /**
  * One family's lowering: it validates the programs it claims and builds their compiled form.
@@ -21,7 +21,7 @@ import org.beehive.jllm.runtime.metrics.MetricsSink;
 interface FamilyLowering {
 
     /** The architecture identity this lowering's programs carry. */
-    org.beehive.jllm.runtime.model.ArchitectureId architecture();
+    org.beehive.jitllm.runtime.model.ArchitectureId architecture();
 
     /** Whether this lowering can handle {@code program}, without throwing. */
     default boolean supports(InferenceProgram program) {

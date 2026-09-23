@@ -1,13 +1,13 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.backend.DeviceCapability;
-import org.beehive.jllm.runtime.backend.DeviceSelector;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
+import org.beehive.jitllm.runtime.backend.DeviceSelector;
 import org.junit.Test;
 
 public class ModelOptionsSelectionTest {

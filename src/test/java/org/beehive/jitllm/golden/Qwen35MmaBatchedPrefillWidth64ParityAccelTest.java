@@ -1,7 +1,7 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
-import org.beehive.jllm.backend.tornado.PlanDispatchEvidence;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.backend.tornado.PlanDispatchEvidence;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 // @formatter:off
@@ -10,7 +10,7 @@ import org.junit.Test;
  * **tensor-core path actually selected**, and the selection read off the plan the run built.
  *
  * <p>{@code Qwen35BatchPrefillLayers.TENSOR_CORES} is a static final read from {@code
- * jllm.qwen35.tensorCores} at class initialization, so the ordinary parity classes — which never
+ * jitllm.qwen35.tensorCores} at class initialization, so the ordinary parity classes — which never
  * set it — build the scalar batched plan and are not coverage of the MMA path. The property here is
  * set in a static initializer, before this JVM touches the layer class, and {@code
  * reuseForks=false} gives the class its own process.
@@ -28,11 +28,11 @@ public class Qwen35MmaBatchedPrefillWidth64ParityAccelTest extends CpuGpuParity 
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     static {
-        System.setProperty("jllm.qwen35.tensorCores", "true");
+        System.setProperty("jitllm.qwen35.tensorCores", "true");
     }
 
     @Test

@@ -1,10 +1,10 @@
-package org.beehive.jllm.inference.state;
+package org.beehive.jitllm.inference.state;
 
-import org.beehive.jllm.backend.tornado.workspace.TornadoWorkspaces;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.gemma4.Gemma4Configuration;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 
 /**
  * Inference state for Gemma 4 models.
@@ -134,7 +134,7 @@ public final class Gemma4State extends State {
                 TornadoWorkspaces.halfFloats(2 * config.maxFeedForwardLength() * config.dim());
         this.workspace.splitKPartialBatch =
                 TornadoWorkspaces.floats(
-                        org.beehive.jllm.backend.tornado.layers.Gemma4BatchPrefillLayers
+                        org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers
                                         .SPLIT_K_SLICES
                                 * padded
                                 * config.dim());

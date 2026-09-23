@@ -1,4 +1,4 @@
-package org.beehive.jllm.tensor.standard;
+package org.beehive.jitllm.tensor.standard;
 
 import java.lang.foreign.MemorySegment;
 import java.lang.reflect.Field;
@@ -6,10 +6,10 @@ import java.util.Arrays;
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorShape;
 import jdk.incubator.vector.VectorSpecies;
-import org.beehive.jllm.auxiliary.Parallel;
-import org.beehive.jllm.format.DataTypeMapping;
-import org.beehive.jllm.format.GGMLType;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.auxiliary.Parallel;
+import org.beehive.jitllm.format.DataTypeMapping;
+import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import sun.misc.Unsafe;
 
 /**
@@ -20,7 +20,7 @@ import sun.misc.Unsafe;
  */
 public abstract class FloatTensor {
     static final int VECTOR_BIT_SIZE =
-            Integer.getInteger("jllm.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
+            Integer.getInteger("jitllm.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
 
     /** Configured SIMD width for tensor kernels; zero selects scalar execution. */
@@ -83,7 +83,7 @@ public abstract class FloatTensor {
     protected abstract FloatVector getFloatVector(VectorSpecies<Float> species, int offset);
 
     /**
-     * @deprecated Use {@link #dataType()}; see {@link org.beehive.jllm.runtime.tensor.DataType}.
+     * @deprecated Use {@link #dataType()}; see {@link org.beehive.jitllm.runtime.tensor.DataType}.
      */
     @Deprecated
     protected abstract GGMLType type();

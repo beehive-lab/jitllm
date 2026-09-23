@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.model;
+package org.beehive.jitllm.runtime.model;
 
 import java.util.Locale;
 import java.util.Objects;
@@ -12,7 +12,7 @@ import java.util.Objects;
  * "qwen2" from the same file produce a model that loads and computes nonsense.
  *
  * <p>A value, not an enum: adding an architecture must not mean editing a central list ({@link
- * org.beehive.jllm.model.ModelType} is that list, and Rule 15 is why it is going).
+ * org.beehive.jitllm.model.ModelType} is that list, and Rule 15 is why it is going).
  *
  * <h2>Why it lives in {@code runtime}</h2>
  */

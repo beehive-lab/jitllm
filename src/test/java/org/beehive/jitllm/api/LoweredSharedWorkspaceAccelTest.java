@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -8,9 +8,9 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 /**
@@ -285,7 +285,7 @@ public class LoweredSharedWorkspaceAccelTest {
                         ModelOptions.builder()
                                 .contextLength(256)
                                 .storageOptions(
-                                        org.beehive.jllm.runtime.policy.StorageOptions.fp32())
+                                        org.beehive.jitllm.runtime.policy.StorageOptions.fp32())
                                 .build())) {
             TextGenerationModel generator = (TextGenerationModel) loaded;
             long before = LoweredPlanSelection.loweredPlanCount();

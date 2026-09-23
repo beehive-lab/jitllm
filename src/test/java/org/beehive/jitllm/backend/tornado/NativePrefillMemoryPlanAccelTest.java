@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -9,15 +9,15 @@ import static org.junit.Assume.assumeTrue;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
-import org.beehive.jllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jllm.backend.tornado.memory.TornadoMemoryModel;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.memory.MemoryComponent;
-import org.beehive.jllm.runtime.memory.MemoryPlan;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.memory.TornadoMemoryModel;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.memory.MemoryComponent;
+import org.beehive.jitllm.runtime.memory.MemoryPlan;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 // @formatter:off

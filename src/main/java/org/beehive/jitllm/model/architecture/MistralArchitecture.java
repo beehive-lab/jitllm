@@ -1,11 +1,11 @@
-package org.beehive.jllm.model.architecture;
+package org.beehive.jitllm.model.architecture;
 
 import java.util.Set;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.mistral.MistralConfiguration;
-import org.beehive.jllm.program.InferenceProgram;
-import org.beehive.jllm.program.PhaseId;
-import org.beehive.jllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.mistral.MistralConfiguration;
+import org.beehive.jitllm.program.InferenceProgram;
+import org.beehive.jitllm.program.PhaseId;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 
 /**
  * Mistral's computation, which <b>is</b> Llama's.

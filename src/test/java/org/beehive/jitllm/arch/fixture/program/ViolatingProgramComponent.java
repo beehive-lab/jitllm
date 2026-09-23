@@ -1,4 +1,4 @@
-package org.beehive.jllm.arch.fixture.program;
+package org.beehive.jitllm.arch.fixture.program;
 
 import uk.ac.manchester.tornado.api.TaskGraph;
 

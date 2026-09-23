@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;

@@ -1,20 +1,20 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.backend.tornado.batch.TornadoBatchExecutor;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.batch.BatchSlots;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
-import org.beehive.jllm.runtime.kv.KvLease;
-import org.beehive.jllm.runtime.kv.KvStorage;
-import org.beehive.jllm.runtime.kv.KvStorageFactories;
-import org.beehive.jllm.runtime.kv.KvStorageRequest;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.batch.TornadoBatchExecutor;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.batch.BatchSlots;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.kv.KvLease;
+import org.beehive.jitllm.runtime.kv.KvStorage;
+import org.beehive.jitllm.runtime.kv.KvStorageFactories;
+import org.beehive.jitllm.runtime.kv.KvStorageRequest;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 /**
@@ -54,8 +54,8 @@ public final class BatchedVsSingleTokenProbe {
             try {
                 int token = prompt.get(0);
                 for (int position = 0; position < prompt.size() + howMany; position++) {
-                    org.beehive.jllm.inference.Logits logits =
-                            org.beehive.jllm.backend.tornado.TornadoForwardPass.forward(
+                    org.beehive.jitllm.inference.Logits logits =
+                            org.beehive.jitllm.backend.tornado.TornadoForwardPass.forward(
                                     model, state, token, position, plan);
                     int next = argmax(logits);
                     if (position + 1 < prompt.size()) {
@@ -71,7 +71,7 @@ public final class BatchedVsSingleTokenProbe {
         }
 
         // ── batched path, greedy, one active slot ────────────────────────────────────────────
-        System.setProperty("jllm.prefillBatchSize", String.valueOf(batch));
+        System.setProperty("jitllm.prefillBatchSize", String.valueOf(batch));
         Model model = ModelLoader.loadModel(modelPath, contextLength, true, true);
         int blockTokens = State.KV_BLOCK_SIZE;
         int blocksPerSlot = (contextLength + blockTokens - 1) / blockTokens;
@@ -132,7 +132,7 @@ public final class BatchedVsSingleTokenProbe {
         System.out.println("[PROBE] byte-identical: " + singleTokenOutput.equals(batchedOutput));
     }
 
-    private static int argmax(org.beehive.jllm.inference.Logits logits) {
+    private static int argmax(org.beehive.jitllm.inference.Logits logits) {
         int best = 0;
         float bestValue = logits.get(0);
         for (int i = 1; i < logits.size(); i++) {

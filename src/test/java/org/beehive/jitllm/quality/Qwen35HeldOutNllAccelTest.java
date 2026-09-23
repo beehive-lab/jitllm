@@ -1,4 +1,4 @@
-package org.beehive.jllm.quality;
+package org.beehive.jitllm.quality;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -15,16 +15,16 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.golden.TupleInfo;
-import org.beehive.jllm.inference.Logits;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.backend.tornado.TornadoBatchPrefillPass;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.TupleInfo;
+import org.beehive.jitllm.inference.Logits;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
 import org.junit.Test;
 
 // @formatter:off
@@ -34,8 +34,8 @@ import org.junit.Test;
  * partial tail, then 128 scored decode steps whose full logits rows are written out so two builds
  * can be compared position by position.
  *
- * <p>Properties: {@code jllm.heldout.batch} (prefill width, required), {@code jllm.heldout.out}
- * (directory for the reports and the logits rows, required), {@code jllm.kvcache.fp16} is set here.
+ * <p>Properties: {@code jitllm.heldout.batch} (prefill width, required), {@code jitllm.heldout.out}
+ * (directory for the reports and the logits rows, required), {@code jitllm.kvcache.fp16} is set here.
  * The prefix is {@value #PREFIX} tokens: at width 512 that is two full chunks and a 128-token tail,
  * at width 1024 one full chunk and the same tail. The first passage is scored twice with a reset
  * between, and the two runs must be raw-bit identical (replay determinism of the build under test,
@@ -45,7 +45,7 @@ import org.junit.Test;
 public class Qwen35HeldOutNllAccelTest {
 
     static {
-        System.setProperty("jllm.kvcache.fp16", "true");
+        System.setProperty("jitllm.kvcache.fp16", "true");
     }
 
     private static final int PREFIX = 1152;
@@ -62,7 +62,7 @@ public class Qwen35HeldOutNllAccelTest {
                     new Passage("prose-api", "docs/architecture/api.md", 0, 6768),
                     new Passage(
                             "code-java",
-                            "src/main/java/org/beehive/jllm/bench/JllmBench.java",
+                            "src/main/java/org/beehive/jitllm/bench/JitllmBench.java",
                             0,
                             9000),
                     new Passage("code-python", "scripts/perf_gate.py", 0, 9000),
@@ -72,7 +72,7 @@ public class Qwen35HeldOutNllAccelTest {
 
     /**
      * A second set, never used by any screen or by the set above, selected with {@code
-     * -Djllm.heldout.set=fresh}; frozen with the revised acceptance proposal before either build
+     * -Djitllm.heldout.set=fresh}; frozen with the revised acceptance proposal before either build
      * was scored on it.
      */
     private static final List<Passage> FRESH =
@@ -85,12 +85,12 @@ public class Qwen35HeldOutNllAccelTest {
                     new Passage("prose-handoff", "/home/orion/jllm/HANDOFF-JLLM-CODEX.md", 0, 8633),
                     new Passage(
                             "code-java-loop",
-                            "src/main/java/org/beehive/jllm/inference/TokenGenerationLoop.java",
+                            "src/main/java/org/beehive/jitllm/inference/TokenGenerationLoop.java",
                             20000,
                             10000),
                     new Passage(
                             "code-java-app",
-                            "src/main/java/org/beehive/jllm/JllmApp.java",
+                            "src/main/java/org/beehive/jitllm/JitllmApp.java",
                             0,
                             7840),
                     new Passage("code-python-tests", "scripts/tests/test_perf_gate.py", 0, 9000),
@@ -103,7 +103,7 @@ public class Qwen35HeldOutNllAccelTest {
                     new Passage("numeric-jsonl2", "docs/perf-history.jsonl", 1500000, 7000));
 
     private static List<Passage> passages() {
-        return "fresh".equals(System.getProperty("jllm.heldout.set")) ? FRESH : PASSAGES;
+        return "fresh".equals(System.getProperty("jitllm.heldout.set")) ? FRESH : PASSAGES;
     }
 
     @Test
@@ -111,27 +111,27 @@ public class Qwen35HeldOutNllAccelTest {
         Path modelPath = GoldenFixture.locate(Fixture.QWEN3_8_27B_Q4_0);
         assumeTrue("environment absent", modelPath != null);
         assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
-        int batch = Integer.getInteger("jllm.heldout.batch", 0);
-        String outDir = System.getProperty("jllm.heldout.out");
+        int batch = Integer.getInteger("jitllm.heldout.batch", 0);
+        String outDir = System.getProperty("jitllm.heldout.out");
         assumeTrue(
-                "jllm.heldout.batch and jllm.heldout.out select this run",
+                "jitllm.heldout.batch and jitllm.heldout.out select this run",
                 batch > 1 && outDir != null);
         Files.createDirectories(Paths.get(outDir));
 
         // Diagnostic seams (test-only): keep named projections on FP16, or feed the FP16 pair
         // quantized-dequantized activations.
-        String exclude = System.getProperty("jllm.heldout.int8exclude", "");
+        String exclude = System.getProperty("jitllm.heldout.int8exclude", "");
         if (!exclude.isEmpty()) {
             java.util.Set<String> ex = java.util.Set.of(exclude.split(","));
-            org.beehive.jllm.backend.tornado.layers.Qwen35BatchPrefillLayers
+            org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers
                             .int8TaskFilterForTests =
                     task -> !ex.contains(task);
         }
-        org.beehive.jllm.backend.tornado.layers.Qwen35BatchPrefillLayers.fakeQuantizeForTests =
-                Boolean.getBoolean("jllm.heldout.fakequant");
+        org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers.fakeQuantizeForTests =
+                Boolean.getBoolean("jitllm.heldout.fakequant");
         System.setProperty("use.tornadovm", "true");
-        System.setProperty("jllm.withPrefillDecode", "true");
-        System.setProperty("jllm.prefillBatchSize", String.valueOf(batch));
+        System.setProperty("jitllm.withPrefillDecode", "true");
+        System.setProperty("jitllm.prefillBatchSize", String.valueOf(batch));
         Model model = ModelLoader.loadModel(modelPath, CONTEXT, true, true);
         State state = State.withPrefillBatchSize(batch, model::createNewState);
         TornadoVMMasterPlan plan = TornadoVMMasterPlan.initializeTornadoVMPlan(state, model);
@@ -145,15 +145,15 @@ public class Qwen35HeldOutNllAccelTest {
                 .append(" scored=")
                 .append(SCORED)
                 .append(" set=")
-                .append(System.getProperty("jllm.heldout.set", "original"))
+                .append(System.getProperty("jitllm.heldout.set", "original"))
                 .append('\n');
         summary.append("pairs=")
                 .append(
-                        org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                        org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
                                 .batchedTaskKernelsIfAny(plan, "ffn_gate_proj"))
                 .append(" gateUp=")
                 .append(
-                        org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                        org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
                                 .batchedTaskKernelsIfAny(plan, "ffn_gate_up"))
                 .append('\n');
         double pooled = 0;

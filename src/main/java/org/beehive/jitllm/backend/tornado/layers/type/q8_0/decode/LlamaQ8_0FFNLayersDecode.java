@@ -1,16 +1,16 @@
-package org.beehive.jllm.backend.tornado.layers.type.q8_0.decode;
+package org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode;
 
-import org.beehive.jllm.backend.tornado.layers.type.q8_0.LlamaQ8_0FFNLayers;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.inference.state.LlamaState;
-import org.beehive.jllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LlamaQ8_0FFNLayers;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 
 /**
  * Decode transformer-layer TaskGraphs for the unified batched prefill-decode plan ({@link
- * org.beehive.jllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode}).
+ * org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode}).
  *
  * <p>Layer 0 consumes the KV cache from device (passed through by the decode activation graph,
  * which relays it from the last batch prefill layer). No FIRST_EXECUTION allocation for the KV

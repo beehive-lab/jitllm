@@ -1,7 +1,7 @@
-package org.beehive.jllm.backend.tornado.bench;
+package org.beehive.jitllm.backend.tornado.bench;
 
 import java.util.Random;
-import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -24,7 +24,7 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * into a compute-bound win.
  *
  * <p>Both use synthetic data at Llama-3.2-1B geometry and load no model, so they measure the
- * kernels rather than an end-to-end pipeline. They are reported through {@code JllmBench} ({@code
+ * kernels rather than an end-to-end pipeline. They are reported through {@code JitllmBench} ({@code
  * --synthetic}); this class only measures and returns, so that console I/O and CLI types stay out
  * of the backend.
  *

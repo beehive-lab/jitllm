@@ -1,28 +1,28 @@
-package org.beehive.jllm.backend.tornado.batch;
+package org.beehive.jitllm.backend.tornado.batch;
 
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
-import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.kv.TornadoKvStore;
-import org.beehive.jllm.backend.tornado.layers.type.fp16.decode.LlamaFP16LayersBatchDecodeMMA;
-import org.beehive.jllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16LayersBatchDecodeMMA;
-import org.beehive.jllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
-import org.beehive.jllm.inference.state.LlamaState;
-import org.beehive.jllm.inference.state.Qwen3State;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jllm.inference.weights.tornado.Qwen3TornadoWeights;
-import org.beehive.jllm.inference.weights.tornado.TornadoWeights;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
-import org.beehive.jllm.model.qwen3.Qwen3Configuration;
-import org.beehive.jllm.runtime.batch.BatchExecutor;
-import org.beehive.jllm.runtime.batch.BatchSlots;
-import org.beehive.jllm.runtime.kv.KvStorage;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kv.TornadoKvStore;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.LlamaFP16LayersBatchDecodeMMA;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16LayersBatchDecodeMMA;
+import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.state.Qwen3State;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
+import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.runtime.batch.BatchExecutor;
+import org.beehive.jitllm.runtime.batch.BatchSlots;
+import org.beehive.jitllm.runtime.kv.KvStorage;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -84,13 +84,13 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
     /**
      * The continuous-batch plan compiles lazily on the first step, independently of master plans.
      */
-    public org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
         var backend =
                 uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider.getTornadoRuntime()
                         .getBackend(0);
         var module = TornadoExecutionPlan.class.getModule().getDescriptor();
         String version = module == null ? "unknown" : module.rawVersion().orElse("unknown");
-        return new org.beehive.jllm.runtime.backend.ExecutionInfo(
+        return new org.beehive.jitllm.runtime.backend.ExecutionInfo(
                 backend.getBackendType().name(),
                 backend.getDefaultDevice().getPhysicalDevice().getDeviceName(),
                 "TornadoVM " + version,
@@ -117,7 +117,7 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         TornadoWeights weights = (TornadoWeights) model.weights();
         boolean isQwen3 = config instanceof Qwen3Configuration;
 
-        if (!org.beehive.jllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend()) {
+        if (!org.beehive.jitllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend()) {
             throw new IllegalArgumentException(
                     "Continuous batching requires a CUDA device with tensor-core MMA support");
         }
@@ -260,19 +260,19 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         this.plan = new TornadoExecutionPlan(all.toArray(new ImmutableTaskGraph[0]));
         var roles = new java.util.HashMap<Integer, String>();
         roles.put(0, "batch activation");
-        org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.label(
+        org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.label(
                 roles, 1, layerCount, "layers");
         roles.put(logitsGraphIndex, "logits and sampling");
-        org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.printIfRequested(
-                new org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.Chain(
+        org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.printIfRequested(
+                new org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.Chain(
                         "continuous batching (" + batchSize + " slots)",
                         all,
                         schedule,
                         List.of(
-                                new org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.Phase(
+                                new org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.Phase(
                                         "engine step",
                                         "per engine step, all slots together",
-                                        org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.span(
+                                        org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.span(
                                                 0, logitsGraphIndex))),
                         roles),
                 model);

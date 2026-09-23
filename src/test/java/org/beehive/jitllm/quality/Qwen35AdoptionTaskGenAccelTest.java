@@ -1,4 +1,4 @@
-package org.beehive.jllm.quality;
+package org.beehive.jitllm.quality;
 
 import static org.junit.Assume.assumeTrue;
 
@@ -9,26 +9,26 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.golden.TupleInfo;
-import org.beehive.jllm.inference.Logits;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.backend.tornado.TornadoBatchPrefillPass;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.TupleInfo;
+import org.beehive.jitllm.inference.Logits;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.model.loader.ModelLoader;
 import org.junit.Test;
 
 // @formatter:off
 /**
  * Greedy generation for the adoption evaluation's objectively scored tasks: one JSONL of prompts in
- * ({@code jllm.eval.tasks}), one JSONL of completions out ({@code jllm.eval.out}). The model is
+ * ({@code jitllm.eval.tasks}), one JSONL of completions out ({@code jitllm.eval.out}). The model is
  * loaded once; every task is an independent sequence (reset between), the prompt goes through the
- * batched prefill at {@code jllm.eval.batch} (default 512) with the chat template, thinking
- * disabled, then greedy decode until a stop token or {@code jllm.eval.maxTokens} (default 384).
+ * batched prefill at {@code jitllm.eval.batch} (default 512) with the chat template, thinking
+ * disabled, then greedy decode until a stop token or {@code jitllm.eval.maxTokens} (default 384).
  * Identical prompts, tokenization, limits and decoding for whichever build runs it; the scoring is
  * done outside by {@code score_tasks.py}.
  */
@@ -36,7 +36,7 @@ import org.junit.Test;
 public class Qwen35AdoptionTaskGenAccelTest {
 
     static {
-        System.setProperty("jllm.kvcache.fp16", "true");
+        System.setProperty("jitllm.kvcache.fp16", "true");
     }
 
     private static final int CONTEXT = 2048;
@@ -46,27 +46,27 @@ public class Qwen35AdoptionTaskGenAccelTest {
         Path modelPath = GoldenFixture.locate(Fixture.QWEN3_8_27B_Q4_0);
         assumeTrue("environment absent", modelPath != null);
         assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
-        String tasksFile = System.getProperty("jllm.eval.tasks");
-        String outFile = System.getProperty("jllm.eval.out");
+        String tasksFile = System.getProperty("jitllm.eval.tasks");
+        String outFile = System.getProperty("jitllm.eval.out");
         assumeTrue(
-                "jllm.eval.tasks and jllm.eval.out select this run",
+                "jitllm.eval.tasks and jitllm.eval.out select this run",
                 tasksFile != null && outFile != null);
-        int batch = Integer.getInteger("jllm.eval.batch", 512);
-        int maxTokens = Integer.getInteger("jllm.eval.maxTokens", 384);
-        String systemFile = System.getProperty("jllm.eval.system");
+        int batch = Integer.getInteger("jitllm.eval.batch", 512);
+        int maxTokens = Integer.getInteger("jitllm.eval.maxTokens", 384);
+        String systemFile = System.getProperty("jitllm.eval.system");
         String systemText = systemFile == null ? null : Files.readString(Paths.get(systemFile));
 
         // The FP16 control: the same code and runtime with the int8 pairs excluded through the
         // test seam, so the projections run the FP16 dequantize-then-GEMM pair the int8 pair
         // replaced. The meta line records which kernels actually ran in either case.
-        if ("fp16".equals(System.getProperty("jllm.eval.control"))) {
-            org.beehive.jllm.backend.tornado.layers.Qwen35BatchPrefillLayers
+        if ("fp16".equals(System.getProperty("jitllm.eval.control"))) {
+            org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers
                             .int8TaskFilterForTests =
                     task -> false;
         }
         System.setProperty("use.tornadovm", "true");
-        System.setProperty("jllm.withPrefillDecode", "true");
-        System.setProperty("jllm.prefillBatchSize", String.valueOf(batch));
+        System.setProperty("jitllm.withPrefillDecode", "true");
+        System.setProperty("jitllm.prefillBatchSize", String.valueOf(batch));
         Model model = ModelLoader.loadModel(modelPath, CONTEXT, true, true);
         State state = State.withPrefillBatchSize(batch, model::createNewState);
         TornadoVMMasterPlan plan = TornadoVMMasterPlan.initializeTornadoVMPlan(state, model);
@@ -83,15 +83,15 @@ public class Qwen35AdoptionTaskGenAccelTest {
                 .append(systemText == null ? 0 : systemText.length())
                 .append(", \"gateUpKernel\": \"")
                 .append(
-                        org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                        org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
                                 .batchedTaskKernelsIfAny(plan, "ffn_gate_proj"))
                 .append("\", \"downKernel\": \"")
                 .append(
-                        org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                        org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
                                 .batchedTaskKernelsIfAny(plan, "ffn_down_proj"))
                 .append("\", \"attnOutputKernel\": \"")
                 .append(
-                        org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                        org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
                                 .batchedTaskKernelsIfAny(plan, "attn_output_proj"))
                 .append("\"}}\n");
         try {

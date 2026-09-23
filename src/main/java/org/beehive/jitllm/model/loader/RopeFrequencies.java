@@ -1,6 +1,6 @@
-package org.beehive.jllm.model.loader;
+package org.beehive.jitllm.model.loader;
 
-import org.beehive.jllm.auxiliary.Pair;
+import org.beehive.jitllm.auxiliary.Pair;
 
 /**
  * Precomputed rotary position frequencies, built once per model at load.

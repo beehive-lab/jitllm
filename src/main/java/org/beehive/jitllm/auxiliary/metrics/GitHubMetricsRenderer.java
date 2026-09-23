@@ -1,4 +1,4 @@
-package org.beehive.jllm.auxiliary.metrics;
+package org.beehive.jitllm.auxiliary.metrics;
 
 /**
  * Renders metrics as a Markdown table suitable for appending to {@code $GITHUB_STEP_SUMMARY}.
@@ -8,9 +8,9 @@ package org.beehive.jllm.auxiliary.metrics;
  * <p>Enable via system properties and append the output file to the step summary:
  *
  * <pre>
- *   -Djllm.metrics.format=github
- *   -Djllm.metrics.output=file
- *   -Djllm.metrics.file=/tmp/metrics.md
+ *   -Djitllm.metrics.format=github
+ *   -Djitllm.metrics.output=file
+ *   -Djitllm.metrics.file=/tmp/metrics.md
  * </pre>
  *
  * <p>In a GitHub Actions workflow step:

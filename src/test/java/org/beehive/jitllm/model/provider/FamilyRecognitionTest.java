@@ -1,4 +1,4 @@
-package org.beehive.jllm.model.provider;
+package org.beehive.jitllm.model.provider;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
@@ -8,7 +8,7 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.beehive.jllm.format.ModelSource;
+import org.beehive.jitllm.format.ModelSource;
 import org.junit.Test;
 
 /**

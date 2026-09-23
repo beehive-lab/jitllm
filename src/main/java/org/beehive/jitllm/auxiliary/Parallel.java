@@ -1,4 +1,4 @@
-package org.beehive.jllm.auxiliary;
+package org.beehive.jitllm.auxiliary;
 
 import java.util.function.IntConsumer;
 import java.util.function.LongConsumer;

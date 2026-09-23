@@ -1,17 +1,17 @@
-package org.beehive.jllm.backend.tornado.layers.type.fp16;
+package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
-import org.beehive.jllm.backend.tornado.layers.AbstractLogitsTaskGraph;
-import org.beehive.jllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerDetectionService;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.inference.weights.tornado.Qwen2TornadoWeights;
-import org.beehive.jllm.inference.weights.tornado.TornadoWeights;
-import org.beehive.jllm.model.Configuration;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
+import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.inference.weights.tornado.Qwen2TornadoWeights;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
+import org.beehive.jitllm.model.Configuration;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
@@ -25,12 +25,12 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
     /**
      * On-device greedy sampling: append a GPU argmax over the logits and transfer only the sampled
      * token id (1 int) to the host instead of the full vocab logits row. Only valid for greedy
-     * decoding — {@code JllmApp} refuses it for temperature &gt; 0 and non-FP16 models, which still
+     * decoding — {@code JitllmApp} refuses it for temperature &gt; 0 and non-FP16 models, which still
      * need the full logits host-side.
      *
      * <p><b>Resolved from the session's policy on every read, deliberately not cached in a
      * field</b> (then Metal parity task 8). It was originally a {@code public static final boolean}
-     * read from {@code jllm.deviceSample} at class initialization — replaced with a per-session
+     * read from {@code jitllm.deviceSample} at class initialization — replaced with a per-session
      * read, then reintroduced as an instance field, which fell into exactly the
      * constructor-ordering pitfall {@link #useSimd32Reduction} was already written to document and
      * avoid: {@link AbstractLogitsTaskGraph}'s constructor invokes {@link #setupLogitsTaskGraph}
@@ -50,7 +50,7 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
      */
     private boolean deviceSample() {
         return state.executionPolicy().samplingResidency()
-                == org.beehive.jllm.runtime.policy.ExecutionPolicy.SamplingResidency.DEVICE;
+                == org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency.DEVICE;
     }
 
     /**

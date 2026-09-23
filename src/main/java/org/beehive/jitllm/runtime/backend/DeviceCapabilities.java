@@ -1,11 +1,11 @@
-package org.beehive.jllm.runtime.backend;
+package org.beehive.jitllm.runtime.backend;
 
 import java.util.Collection;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
-import org.beehive.jllm.api.Experimental;
+import org.beehive.jitllm.api.Experimental;
 
 /**
  * What a device can do that lowering may vary on — an immutable set, and a cache-key component.

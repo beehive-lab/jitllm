@@ -1,7 +1,7 @@
-package org.beehive.jllm.inference.weights.tornado;
+package org.beehive.jitllm.inference.weights.tornado;
 
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 public class Phi3TornadoWeights extends TornadoWeights {
 

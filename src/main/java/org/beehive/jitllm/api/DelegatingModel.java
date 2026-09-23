@@ -1,18 +1,18 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Set;
 import java.util.stream.Collectors;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.runtime.diagnostics.DiagnosticCode;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
-import org.beehive.jllm.runtime.kv.KvLease;
-import org.beehive.jllm.runtime.kv.KvStorageFactories;
-import org.beehive.jllm.runtime.kv.KvStorageFactory;
-import org.beehive.jllm.runtime.kv.KvStorageRequest;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.kv.KvLease;
+import org.beehive.jitllm.runtime.kv.KvStorageFactories;
+import org.beehive.jitllm.runtime.kv.KvStorageFactory;
+import org.beehive.jitllm.runtime.kv.KvStorageRequest;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 
 /**
  * The facade over today's {@code Model}: everything a user holds, nothing a user should not.
@@ -44,7 +44,7 @@ final class DelegatingModel implements TextGenerationModel {
      * <p>Not policy: it types and sizes the pool every session addresses, so no session overrides
      * it.
      */
-    private final org.beehive.jllm.runtime.policy.StorageOptions storageOptions;
+    private final org.beehive.jitllm.runtime.policy.StorageOptions storageOptions;
 
     private final KvCacheManager sessions;
 
@@ -55,8 +55,8 @@ final class DelegatingModel implements TextGenerationModel {
      * <p>Internal in v1: nothing about it reaches a public signature. Released at model close, when
      * guarantees no session is live.
      */
-    private final org.beehive.jllm.backend.tornado.lowering.CompiledProgramCache programs =
-            new org.beehive.jllm.backend.tornado.lowering.CompiledProgramCache();
+    private final org.beehive.jitllm.backend.tornado.lowering.CompiledProgramCache programs =
+            new org.beehive.jitllm.backend.tornado.lowering.CompiledProgramCache();
 
     private final ModelConfiguration configuration;
     private final boolean gpu;
@@ -84,7 +84,7 @@ final class DelegatingModel implements TextGenerationModel {
                 source,
                 gpu,
                 ExecutionPolicy.fromSystemProperties(),
-                org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties(),
+                org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties(),
                 ThinkingMode.DEFAULT);
     }
 
@@ -93,7 +93,7 @@ final class DelegatingModel implements TextGenerationModel {
             Path source,
             boolean gpu,
             ExecutionPolicy executionPolicy,
-            org.beehive.jllm.runtime.policy.StorageOptions storageOptions) {
+            org.beehive.jitllm.runtime.policy.StorageOptions storageOptions) {
         this(delegate, source, gpu, executionPolicy, storageOptions, ThinkingMode.DEFAULT);
     }
 
@@ -102,7 +102,7 @@ final class DelegatingModel implements TextGenerationModel {
             Path source,
             boolean gpu,
             ExecutionPolicy executionPolicy,
-            org.beehive.jllm.runtime.policy.StorageOptions storageOptions,
+            org.beehive.jitllm.runtime.policy.StorageOptions storageOptions,
             ThinkingMode thinkingMode) {
         this(delegate, source, gpu, executionPolicy, storageOptions, thinkingMode, 1);
     }
@@ -112,7 +112,7 @@ final class DelegatingModel implements TextGenerationModel {
             Path source,
             boolean gpu,
             ExecutionPolicy executionPolicy,
-            org.beehive.jllm.runtime.policy.StorageOptions storageOptions,
+            org.beehive.jitllm.runtime.policy.StorageOptions storageOptions,
             ThinkingMode thinkingMode,
             int maxConcurrentSessions) {
         if (maxConcurrentSessions < 1) {
@@ -128,9 +128,9 @@ final class DelegatingModel implements TextGenerationModel {
         this.configuration = new ConfigurationView(delegate.configuration());
         // Before any cache or pool is sized: the model is loaded, so the weight representation
         // and family are known, and the storage and policy are the model's defaults.
-        org.beehive.jllm.backend.tornado.Fp16KeyValueSupport.require(
+        org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.require(
                 delegate, executionPolicy, storageOptions, gpu);
-        org.beehive.jllm.backend.tornado.NativeLibrarySupport.require(
+        org.beehive.jitllm.backend.tornado.NativeLibrarySupport.require(
                 delegate, executionPolicy, gpu);
         // One weight representation is all today's Weights can report: it carries a single
         // materialized type for the whole set. Per-tensor descriptors make a genuinely
@@ -174,7 +174,7 @@ final class DelegatingModel implements TextGenerationModel {
                 || !attachesSharedPool(
                         delegate,
                         storageOptions,
-                        org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection.mayHandle(
+                        org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.mayHandle(
                                 delegate, executionPolicy))) {
             return;
         }
@@ -215,7 +215,7 @@ final class DelegatingModel implements TextGenerationModel {
      */
     static boolean attachesSharedPool(
             Model model,
-            org.beehive.jllm.runtime.policy.StorageOptions storageOptions,
+            org.beehive.jitllm.runtime.policy.StorageOptions storageOptions,
             boolean lowerable) {
         return model.supportsSharedKvStorage()
                 && (storageOptions.sharedKeyValuePool() || lowerable);
@@ -262,7 +262,7 @@ final class DelegatingModel implements TextGenerationModel {
      * {@code kvDim} values per token, {@code BLOCK_SIZE_TOKENS} tokens, every layer.
      */
     private static long bytesPerBlock(
-            Model model, org.beehive.jllm.runtime.policy.StorageOptions storage) {
+            Model model, org.beehive.jitllm.runtime.policy.StorageOptions storage) {
         var config = model.configuration();
         long kvDim = (long) config.dim() * config.numberOfKeyValueHeads() / config.numberOfHeads();
         // Taken from the resolved storage options rather than assumed FP32: the accounting a
@@ -318,9 +318,9 @@ final class DelegatingModel implements TextGenerationModel {
             if (!policy.equals(executionPolicy)) {
                 // A session that overrides the execution mode can select layers the model's own
                 // policy did not, so the cache it would share is checked again before the lease.
-                org.beehive.jllm.backend.tornado.Fp16KeyValueSupport.require(
+                org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.require(
                         delegate, policy, storageOptions, gpu);
-                org.beehive.jllm.backend.tornado.NativeLibrarySupport.require(
+                org.beehive.jitllm.backend.tornado.NativeLibrarySupport.require(
                         delegate, policy, gpu);
             }
             KvLease lease = sessions.acquire(contextLength);
@@ -393,11 +393,11 @@ final class DelegatingModel implements TextGenerationModel {
      * for when the remaining families migrate, and making it a prerequisite would mean redesigning
      * nine states to prove one vertical slice.
      */
-    private org.beehive.jllm.backend.tornado.lowering.BindingDomain loweredDomain;
+    private org.beehive.jitllm.backend.tornado.lowering.BindingDomain loweredDomain;
 
-    private org.beehive.jllm.inference.state.State loweredWorkspace;
+    private org.beehive.jitllm.inference.state.State loweredWorkspace;
 
-    private org.beehive.jllm.backend.tornado.TornadoVMMasterPlan loweredProgram;
+    private org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan loweredProgram;
 
     /**
      * Builds this session's runtime: legacy when it owns its state, lowered when it borrows the
@@ -408,11 +408,11 @@ final class DelegatingModel implements TextGenerationModel {
      * session executes against another's cache.
      */
     synchronized SessionRuntime newRuntime(
-            org.beehive.jllm.model.Model delegate,
-            org.beehive.jllm.runtime.kv.KvLease lease,
+            org.beehive.jitllm.model.Model delegate,
+            org.beehive.jitllm.runtime.kv.KvLease lease,
             ExecutionPolicy policy) {
         if (!gpu
-                || !org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection.mayHandle(
+                || !org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.mayHandle(
                         delegate, executionPolicy)) {
             return new LegacySessionRuntime(delegate, lease, policy, storageOptions);
         }
@@ -437,53 +437,53 @@ final class DelegatingModel implements TextGenerationModel {
             }
             // Allocated once per domain. A second lowered session reaches neither of these lines.
             loweredWorkspace =
-                    org.beehive.jllm.inference.state.State.withStorageOptions(
+                    org.beehive.jitllm.inference.state.State.withStorageOptions(
                             storageOptions, () -> delegate.createNewState(lease));
             // The domain's workspace carries the model's policy: every session that shares it
             // shares that policy, which is why a session that overrode it took the legacy path
             // above rather than reaching this line.
             loweredWorkspace.resolveExecutionPolicy(executionPolicy);
             loweredDomain =
-                    org.beehive.jllm.backend.tornado.lowering.BindingDomain.shareable(
+                    org.beehive.jitllm.backend.tornado.lowering.BindingDomain.shareable(
                             "runtime@" + Integer.toHexString(System.identityHashCode(this)),
                             loweredWorkspace);
         }
-        if (!org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection.handles(
+        if (!org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.handles(
                 delegate, loweredWorkspace)) {
             return new LegacySessionRuntime(delegate, lease, policy, storageOptions);
         }
         var key =
-                org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection.key(
+                org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.key(
                         delegate,
                         loweredDomain,
                         loweredWorkspace.executionPolicy(),
                         loweredWorkspace.usesFp16KeyValueCache()
-                                ? org.beehive.jllm.runtime.tensor.DataType.F16
-                                : org.beehive.jllm.runtime.tensor.DataType.F32);
+                                ? org.beehive.jitllm.runtime.tensor.DataType.F16
+                                : org.beehive.jitllm.runtime.tensor.DataType.F32);
         loweredProgram =
                 programs.acquire(
                         key,
                         () ->
-                                org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection
+                                org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection
                                         .lower(
                                                 delegate,
                                                 loweredWorkspace,
-                                                org.beehive.jllm.auxiliary.metrics.RunMetricsSink
+                                                org.beehive.jitllm.auxiliary.metrics.RunMetricsSink
                                                         .installedOrDisabled()));
         // After the acquire, not inside the supplier: on a cache hit the supplier never runs, and
         // this session took the lowered path just the same. Without it a run through the facade
         // reports no execution_path at all.
-        org.beehive.jllm.backend.tornado.TornadoVMMasterPlan.reportLoweredPath(
+        org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan.reportLoweredPath(
                 delegate, loweredWorkspace);
         var perSession =
-                new org.beehive.jllm.backend.tornado.lowering.SharedWorkspacePlan(
+                new org.beehive.jitllm.backend.tornado.lowering.SharedWorkspacePlan(
                         loweredProgram,
                         loweredDomain.invocationLock(),
                         loweredWorkspace.workspace.positionHolder,
                         lease.slot(),
                         delegate.configuration().vocabularySize(),
                         token ->
-                                org.beehive.jllm.backend.tornado.lowering.EmbeddingStaging.stage(
+                                org.beehive.jitllm.backend.tornado.lowering.EmbeddingStaging.stage(
                                         delegate, loweredWorkspace, token),
                         false,
                         null);
@@ -496,17 +496,17 @@ final class DelegatingModel implements TextGenerationModel {
     /**
      * The domain's workspace, or {@code null} before the first lowered session. Internal; tests.
      */
-    org.beehive.jllm.inference.state.State loweredWorkspace() {
+    org.beehive.jitllm.inference.state.State loweredWorkspace() {
         return loweredWorkspace;
     }
 
     /** The domain, or {@code null} before the first lowered session. Internal; tests. */
-    org.beehive.jllm.backend.tornado.lowering.BindingDomain loweredDomain() {
+    org.beehive.jitllm.backend.tornado.lowering.BindingDomain loweredDomain() {
         return loweredDomain;
     }
 
     /** The shared compiled program, or {@code null} before the first lowered session. Internal. */
-    org.beehive.jllm.backend.tornado.TornadoVMMasterPlan loweredProgram() {
+    org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan loweredProgram() {
         return loweredProgram;
     }
 

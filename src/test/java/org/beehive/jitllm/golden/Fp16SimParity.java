@@ -1,17 +1,17 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.backend.cpu.InferenceCore;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.standard.StandardWeights;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.model.granite.GraniteConfiguration;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.backend.cpu.InferenceCore;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.standard.StandardWeights;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.model.granite.GraniteConfiguration;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 import uk.ac.manchester.tornado.api.types.HalfFloat;
 
 /**

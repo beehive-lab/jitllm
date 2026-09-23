@@ -1,18 +1,18 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.standard.StandardWeights;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.standard.StandardWeights;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
@@ -20,7 +20,7 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 /**
  * The full-model parity test can only say the paths disagree by ~3.5 at the logits. This compares,
  * at layer 0 of the first generated position, each intermediate the GPU exposes under {@code
- * -Djllm.diag.transfers} against the same quantity recomputed on the CPU:
+ * -Djitllm.diag.transfers} against the same quantity recomputed on the CPU:
  *
  * <ol>
  *   <li>the RMS scale ({@code state.workspace.temp[0]}) — a pure FP32 reduction, so a difference
@@ -33,13 +33,13 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  *       its input: if it matches, the projection is faithful and the error was inherited.
  * </ol>
  *
- * <p>Run with {@code -Djllm.diag.transfers=true -Djllm.diag.layer=0}.
+ * <p>Run with {@code -Djitllm.diag.transfers=true -Djitllm.diag.layer=0}.
  */
 public final class LayerParity {
 
     public static void main(String[] args) throws Exception {
-        if (!Boolean.getBoolean("jllm.diag.transfers")) {
-            throw new IllegalStateException("run with -Djllm.diag.transfers=true");
+        if (!Boolean.getBoolean("jitllm.diag.transfers")) {
+            throw new IllegalStateException("run with -Djitllm.diag.transfers=true");
         }
         Path modelPath = Path.of(System.getProperty("parity.model"));
 
@@ -63,7 +63,7 @@ public final class LayerParity {
             gpuModel.generateTokensGPU(
                     gpuState, 0, prompt, Set.of(), prompt.size() + 1, greedy, false, null, plan);
             token = sink.get(0);
-            org.beehive.jllm.backend.tornado.TornadoForwardPass.forward(
+            org.beehive.jitllm.backend.tornado.TornadoForwardPass.forward(
                     gpuModel, gpuState, token, prompt.size(), plan);
             gpuTemp = snap(gpuState.workspace.temp);
             gpuXb = snapHalf(gpuState.workspace.wrapXbFP16);
@@ -119,7 +119,7 @@ public final class LayerParity {
                 qDim,
                 headSize,
                 cpuModel.configuration()
-                                instanceof org.beehive.jllm.model.llama.LlamaConfiguration lc
+                                instanceof org.beehive.jitllm.model.llama.LlamaConfiguration lc
                         ? Float.toString(lc.ropeTheta())
                         : "n/a");
         System.out.printf(

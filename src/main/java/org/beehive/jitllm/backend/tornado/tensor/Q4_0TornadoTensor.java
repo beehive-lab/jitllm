@@ -1,7 +1,7 @@
-package org.beehive.jllm.backend.tornado.tensor;
+package org.beehive.jitllm.backend.tornado.tensor;
 
 import java.lang.foreign.MemorySegment;
-import org.beehive.jllm.format.GGMLType;
+import org.beehive.jitllm.format.GGMLType;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 
 /**
@@ -17,7 +17,7 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
  * </pre>
  *
  * <p>A weight is {@code d * (q - 8)}, decoded inside the dot product by {@link
- * org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0}. The layers pass {@link
+ * org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0}. The layers pass {@link
  * #asByteArray()} just as they do for Q8_0, and only the kernel that reads it differs.
  *
  * <p><b>Why this exists</b>: materializing Q4_0 as Q8_0 at load nearly doubles a model's device

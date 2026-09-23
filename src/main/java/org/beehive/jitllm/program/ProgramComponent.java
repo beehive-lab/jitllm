@@ -1,9 +1,9 @@
-package org.beehive.jllm.program;
+package org.beehive.jitllm.program;
 
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import org.beehive.jllm.program.op.Operation;
+import org.beehive.jitllm.program.op.Operation;
 
 /**
  * One named unit of a program's work.

@@ -1,6 +1,6 @@
-package org.beehive.jllm.runtime.diagnostics;
+package org.beehive.jitllm.runtime.diagnostics;
 
-import org.beehive.jllm.api.Experimental;
+import org.beehive.jitllm.api.Experimental;
 
 /**
  * A stable identifier for a user-reachable failure.

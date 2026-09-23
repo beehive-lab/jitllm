@@ -1,16 +1,16 @@
-package org.beehive.jllm.integration.cli;
+package org.beehive.jitllm.integration.cli;
 
 import java.io.IOException;
 import java.nio.file.Files;
-import org.beehive.jllm.api.LocalModel;
-import org.beehive.jllm.api.LocalModels;
-import org.beehive.jllm.api.ModelConfiguration;
-import org.beehive.jllm.api.ModelInfo;
-import org.beehive.jllm.api.ModelOptions;
-import org.beehive.jllm.auxiliary.RunMetrics;
-import org.beehive.jllm.format.GgufModelFacts;
-import org.beehive.jllm.runtime.backend.ExecutionInfo;
-import org.beehive.jllm.runtime.memory.MemoryPlan;
+import org.beehive.jitllm.api.LocalModel;
+import org.beehive.jitllm.api.LocalModels;
+import org.beehive.jitllm.api.ModelConfiguration;
+import org.beehive.jitllm.api.ModelInfo;
+import org.beehive.jitllm.api.ModelOptions;
+import org.beehive.jitllm.auxiliary.RunMetrics;
+import org.beehive.jitllm.format.GgufModelFacts;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
+import org.beehive.jitllm.runtime.memory.MemoryPlan;
 
 /** Shared startup-report assembly; the integration chooses when and where to print it. */
 public final class StartupDiagnostics {
@@ -21,7 +21,7 @@ public final class StartupDiagnostics {
      * renders it; where it goes is the integration's choice.
      */
     public static void installTaskGraphChainOutput() {
-        org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.output(
+        org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.output(
                 text -> {
                     System.err.print(text);
                     System.err.flush();
@@ -29,12 +29,12 @@ public final class StartupDiagnostics {
     }
 
     public static boolean verbose() {
-        return Boolean.getBoolean("jllm.verbose")
-                || Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit");
+        return Boolean.getBoolean("jitllm.verbose")
+                || Boolean.getBoolean("jitllm.EnableTimingForTornadoVMInit");
     }
 
     public static String render(
-            org.beehive.jllm.model.Model model,
+            org.beehive.jitllm.model.Model model,
             java.nio.file.Path path,
             ExecutionInfo execution,
             String sampling,

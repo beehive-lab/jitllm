@@ -1,16 +1,16 @@
-package org.beehive.jllm.auxiliary;
+package org.beehive.jitllm.auxiliary;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import org.beehive.jllm.auxiliary.metrics.GitHubMetricsRenderer;
-import org.beehive.jllm.auxiliary.metrics.HumanMetricsRenderer;
-import org.beehive.jllm.auxiliary.metrics.JsonMetricsRenderer;
-import org.beehive.jllm.auxiliary.metrics.MetricsRenderer;
-import org.beehive.jllm.auxiliary.metrics.RunMetricsSnapshot;
-import org.beehive.jllm.runtime.metrics.MetricKey;
-import org.beehive.jllm.runtime.metrics.MetricsReport;
+import org.beehive.jitllm.auxiliary.metrics.GitHubMetricsRenderer;
+import org.beehive.jitllm.auxiliary.metrics.HumanMetricsRenderer;
+import org.beehive.jitllm.auxiliary.metrics.JsonMetricsRenderer;
+import org.beehive.jitllm.auxiliary.metrics.MetricsRenderer;
+import org.beehive.jitllm.auxiliary.metrics.RunMetricsSnapshot;
+import org.beehive.jitllm.runtime.metrics.MetricKey;
+import org.beehive.jitllm.runtime.metrics.MetricsReport;
 
 /**
  * Singleton that accumulates fine-grained performance metrics across one inference run.
@@ -31,9 +31,9 @@ import org.beehive.jllm.runtime.metrics.MetricsReport;
  * <p>Configurable via system properties:
  *
  * <ul>
- *   <li>{@code jllm.metrics.format} — {@code human} (default) | {@code json} | {@code github}
- *   <li>{@code jllm.metrics.output} — {@code stderr} (default) | {@code stdout} | {@code file}
- *   <li>{@code jllm.metrics.file} — target path when {@code output=file}
+ *   <li>{@code jitllm.metrics.format} — {@code human} (default) | {@code json} | {@code github}
+ *   <li>{@code jitllm.metrics.output} — {@code stderr} (default) | {@code stdout} | {@code file}
+ *   <li>{@code jitllm.metrics.file} — target path when {@code output=file}
  * </ul>
  */
 public final class RunMetrics {
@@ -144,7 +144,7 @@ public final class RunMetrics {
      * Records which path executed and the exact combination [D-7].
      *
      * <p>Called once per plan construction, from the one factory every caller reaches. A test that
-     * wants to prove which path ran asserts on this rather than reading the {@code jllm.lowering}
+     * wants to prove which path ran asserts on this rather than reading the {@code jitllm.lowering}
      * property back — the property says what was <b>asked for</b>.
      *
      * @param path {@code lowered} or {@code legacy}
@@ -217,14 +217,14 @@ public final class RunMetrics {
     // ── Output ────────────────────────────────────────────────────────────────
 
     /**
-     * Builds a snapshot, selects a renderer based on {@code jllm.metrics.format}, and writes the
-     * result to the sink configured by {@code jllm.metrics.output}.
+     * Builds a snapshot, selects a renderer based on {@code jitllm.metrics.format}, and writes the
+     * result to the sink configured by {@code jitllm.metrics.output}.
      */
     public static void printMetrics() {
         RunMetricsSnapshot snap = snapshot();
 
         MetricsRenderer renderer =
-                switch (System.getProperty("jllm.metrics.format", "human").toLowerCase()) {
+                switch (System.getProperty("jitllm.metrics.format", "human").toLowerCase()) {
                     case "json" -> new JsonMetricsRenderer();
                     case "github" -> new GitHubMetricsRenderer();
                     default -> new HumanMetricsRenderer();
@@ -232,7 +232,7 @@ public final class RunMetrics {
 
         String rendered = renderer.render(snap);
 
-        switch (System.getProperty("jllm.metrics.output", "stderr").toLowerCase()) {
+        switch (System.getProperty("jitllm.metrics.output", "stderr").toLowerCase()) {
             case "stdout" -> System.out.print(rendered);
             case "file" -> writeToFile(rendered);
             default -> System.err.print(rendered);
@@ -240,10 +240,10 @@ public final class RunMetrics {
     }
 
     private static void writeToFile(String content) {
-        String filePath = System.getProperty("jllm.metrics.file");
+        String filePath = System.getProperty("jitllm.metrics.file");
         if (filePath == null || filePath.isBlank()) {
             throw new IllegalStateException(
-                    "jllm.metrics.output=file requires jllm.metrics.file to be set");
+                    "jitllm.metrics.output=file requires jitllm.metrics.file to be set");
         }
         Path path = Path.of(filePath);
         try {

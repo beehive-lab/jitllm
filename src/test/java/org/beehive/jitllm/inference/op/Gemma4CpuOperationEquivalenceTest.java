@@ -1,4 +1,4 @@
-package org.beehive.jllm.inference.op;
+package org.beehive.jitllm.inference.op;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -7,16 +7,16 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Random;
-import org.beehive.jllm.auxiliary.Parallel;
-import org.beehive.jllm.backend.cpu.InferenceCore;
-import org.beehive.jllm.inference.state.Gemma4State;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.standard.Gemma4StandardWeights;
-import org.beehive.jllm.model.gemma4.Gemma4Configuration;
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.runtime.tensor.LongIndexedTensor;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.auxiliary.Parallel;
+import org.beehive.jitllm.backend.cpu.InferenceCore;
+import org.beehive.jitllm.inference.state.Gemma4State;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.standard.Gemma4StandardWeights;
+import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.LongIndexedTensor;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.junit.Test;
 
 /**

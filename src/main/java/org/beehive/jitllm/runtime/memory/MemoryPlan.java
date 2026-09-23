@@ -1,9 +1,9 @@
-package org.beehive.jllm.runtime.memory;
+package org.beehive.jitllm.runtime.memory;
 
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
-import org.beehive.jllm.api.Experimental;
+import org.beehive.jitllm.api.Experimental;
 
 /**
  * What a configuration is predicted to need on the device, computed <b>before any allocation</b>.

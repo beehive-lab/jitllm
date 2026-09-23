@@ -1,7 +1,7 @@
-package org.beehive.jllm.backend.cpu;
+package org.beehive.jitllm.backend.cpu;
 
-import org.beehive.jllm.inference.ForwardPass;
-import org.beehive.jllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.inference.ForwardPass;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 
 /**
  * Supplies the host forward pass for one architecture — discovered, never enumerated.

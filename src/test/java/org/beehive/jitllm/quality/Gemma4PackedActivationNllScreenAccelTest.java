@@ -1,4 +1,4 @@
-package org.beehive.jllm.quality;
+package org.beehive.jitllm.quality;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
@@ -8,19 +8,19 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
-import org.beehive.jllm.backend.cpu.InferenceCore;
-import org.beehive.jllm.backend.tornado.TornadoForwardPass;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.golden.TupleInfo;
-import org.beehive.jllm.inference.Logits;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.backend.DeviceCapability;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.backend.cpu.InferenceCore;
+import org.beehive.jitllm.backend.tornado.TornadoForwardPass;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.TupleInfo;
+import org.beehive.jitllm.inference.Logits;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.junit.Test;
 
 // @formatter:off
@@ -54,8 +54,8 @@ public class Gemma4PackedActivationNllScreenAccelTest {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     /** Tokens per passage, after tokenizing from the recorded offset. */
     private static final int TOKENS = 256;
@@ -76,7 +76,7 @@ public class Gemma4PackedActivationNllScreenAccelTest {
                     new Passage("prose", "README.md", 0, 4000),
                     new Passage(
                             "java-source",
-                            "src/main/java/org/beehive/jllm/backend/tornado/kernels/"
+                            "src/main/java/org/beehive/jitllm/backend/tornado/kernels/"
                                     + "TransformerComputeKernelsQ4_0.java",
                             0,
                             4000),

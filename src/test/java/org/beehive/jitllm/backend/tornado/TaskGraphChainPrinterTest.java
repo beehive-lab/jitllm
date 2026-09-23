@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import static org.junit.Assert.assertEquals;
 

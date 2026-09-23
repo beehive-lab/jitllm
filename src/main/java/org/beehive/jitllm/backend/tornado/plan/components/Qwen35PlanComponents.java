@@ -1,22 +1,22 @@
-package org.beehive.jllm.backend.tornado.plan.components;
+package org.beehive.jitllm.backend.tornado.plan.components;
 
-import org.beehive.jllm.backend.tornado.layers.AbstractLogitsTaskGraph;
-import org.beehive.jllm.backend.tornado.layers.Activation;
-import org.beehive.jllm.backend.tornado.layers.ActivationTaskGraph;
-import org.beehive.jllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
-import org.beehive.jllm.backend.tornado.layers.Qwen35BatchDecodeActivation;
-import org.beehive.jllm.backend.tornado.layers.Qwen35BatchPrefillLayers;
-import org.beehive.jllm.backend.tornado.layers.Qwen35FFNLayers;
-import org.beehive.jllm.backend.tornado.layers.Qwen35FFNLayersBatchDecode;
-import org.beehive.jllm.backend.tornado.layers.TransformerLayerTaskGraphs;
-import org.beehive.jllm.backend.tornado.layers.type.q8_0.LogitsQ8_0Layer;
-import org.beehive.jllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerDetectionService;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.inference.state.Qwen35State;
-import org.beehive.jllm.inference.weights.tornado.Qwen35TornadoWeights;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.Activation;
+import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.Qwen35BatchDecodeActivation;
+import org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers;
+import org.beehive.jitllm.backend.tornado.layers.Qwen35FFNLayers;
+import org.beehive.jitllm.backend.tornado.layers.Qwen35FFNLayersBatchDecode;
+import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LogitsQ8_0Layer;
+import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.inference.state.Qwen35State;
+import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
 
 /**
  * The {@code qwen35} single-token plan: an activation graph, one graph per trunk layer, and a

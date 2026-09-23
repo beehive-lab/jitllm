@@ -1,4 +1,4 @@
-package org.beehive.jllm.model.loader;
+package org.beehive.jitllm.model.loader;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -7,12 +7,12 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Map;
-import org.beehive.jllm.backend.tornado.tensor.Q8_0TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jllm.format.Float16;
-import org.beehive.jllm.format.GGMLTensorEntry;
-import org.beehive.jllm.format.GGMLType;
-import org.beehive.jllm.tensor.standard.Q4_0FloatTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.format.Float16;
+import org.beehive.jitllm.format.GGMLTensorEntry;
+import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.tensor.standard.Q4_0FloatTensor;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;

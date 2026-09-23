@@ -1,14 +1,14 @@
-package org.beehive.jllm.engine;
+package org.beehive.jitllm.engine;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-import org.beehive.jllm.auxiliary.metrics.InMemoryMetricsSink;
-import org.beehive.jllm.runtime.kv.BlockPool;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
-import org.beehive.jllm.runtime.metrics.MetricKey;
-import org.beehive.jllm.runtime.metrics.MetricsReport;
-import org.beehive.jllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.auxiliary.metrics.InMemoryMetricsSink;
+import org.beehive.jitllm.runtime.kv.BlockPool;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.metrics.MetricKey;
+import org.beehive.jitllm.runtime.metrics.MetricsReport;
+import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import org.junit.Test;
 
 public class EngineMetricsTest {

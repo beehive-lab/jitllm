@@ -1,4 +1,4 @@
-package org.beehive.jllm.program.op;
+package org.beehive.jitllm.program.op;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -9,14 +9,14 @@ import java.util.EnumSet;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.runtime.tensor.ExecutionTarget;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.junit.Test;
 
 public class OperationSupportTest {
 
     private static final OperandRef.Weight W =
-            new OperandRef.Weight("w", org.beehive.jllm.runtime.tensor.TensorRole.OUTPUT);
+            new OperandRef.Weight("w", org.beehive.jitllm.runtime.tensor.TensorRole.OUTPUT);
     private static final OperandRef A = new OperandRef.Activation("a");
     private static final OperandRef B = new OperandRef.Activation("b");
 

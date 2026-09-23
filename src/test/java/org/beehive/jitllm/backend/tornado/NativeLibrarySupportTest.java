@@ -1,13 +1,13 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Optional;
-import org.beehive.jllm.backend.tornado.Fp16KeyValueSupport.Combination;
-import org.beehive.jllm.backend.tornado.plan.ExecutionMode;
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 
 /**

@@ -1,19 +1,19 @@
-package org.beehive.jllm.backend.tornado.layers.type.fp16.prefill;
+package org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill;
 
 import java.util.List;
 import java.util.stream.IntStream;
-import org.beehive.jllm.backend.tornado.NativePrefillSupport;
-import org.beehive.jllm.backend.tornado.TensorCoreSupport;
-import org.beehive.jllm.backend.tornado.kernels.CuDnnPrefillAttentionKernels;
-import org.beehive.jllm.backend.tornado.kernels.Qwen3Kernels;
-import org.beehive.jllm.backend.tornado.kernels.Qwen3PagedKvKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.inference.state.Qwen3State;
-import org.beehive.jllm.inference.weights.tornado.Qwen3TornadoWeights;
-import org.beehive.jllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.kernels.CuDnnPrefillAttentionKernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.inference.state.Qwen3State;
+import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
+import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -58,7 +58,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     /** Legacy detail; the startup report's native-library and MMA lines cover it under -v. */
     private static void logInitialization(String format, Object... args) {
-        if (Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit")) {
+        if (Boolean.getBoolean("jitllm.EnableTimingForTornadoVMInit")) {
             System.err.printf(java.util.Locale.ROOT, format, args);
         }
     }
@@ -239,7 +239,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      * sides ask this one method; see {@code Qwen3FP16FFNLayersDecode.weightsNotProvidedBySource}.
      */
     public static boolean nativeProjections(
-            org.beehive.jllm.runtime.policy.ExecutionPolicy policy) {
+            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy) {
         return NativePrefillSupport.nativeProjections(policy);
     }
 
@@ -301,7 +301,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.nativeProjections = nativeProjections(state.executionPolicy());
         this.layersPerGraph = Math.min(prefillLayersPerGraph(), config.numberOfLayers());
         logInitialization(
-                "[jllm] prefill acceleration: %s%n",
+                "[jitllm] prefill acceleration: %s%n",
                 NativePrefillSupport.describe(state.executionPolicy(), fp16Kv, sdpaShape));
         int cudnnElems = cudnnAttention ? qDim * batchSize : 0;
         this.cudnnQ = new HalfFloatArray(cudnnElems);
@@ -317,7 +317,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             cudnnV.init(zero);
             cudnnOut.init(zero);
             logInitialization(
-                    "[jllm] prefill attention: cuDNN SDPA for the first chunk, batched JIT paged"
+                    "[jitllm] prefill attention: cuDNN SDPA for the first chunk, batched JIT paged"
                             + " attention for the rest; staging %d MiB, one set shared by every"
                             + " batch-prefill graph%n",
                     4L * cudnnElems * Short.BYTES / (1024 * 1024));
@@ -337,7 +337,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 gateUpCat[l] = cat;
             }
             logInitialization(
-                    "[jllm] prefill gate/up: cuBLAS, %d stacked weights, %d MiB extra resident,"
+                    "[jitllm] prefill gate/up: cuBLAS, %d stacked weights, %d MiB extra resident,"
                             + " built in %.2f s%n",
                     config.numberOfLayers(),
                     (long) config.numberOfLayers() * 2 * rowsK * Short.BYTES / (1024 * 1024),
@@ -358,7 +358,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 qkvCat[l] = cat;
             }
             logInitialization(
-                    "[jllm] prefill QKV: cuBLAS, %d stacked weights (%d|%d|%d cols), %d MiB extra"
+                    "[jitllm] prefill QKV: cuBLAS, %d stacked weights (%d|%d|%d cols), %d MiB extra"
                             + " resident, built in %.2f s%n",
                     config.numberOfLayers(),
                     qDim,
@@ -378,12 +378,12 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         if (batchSize != paddedBatch) {
             if (nativeProjections) {
                 logInitialization(
-                        "[jllm] prefill native GEMM rows: %d (chunk width) instead of %d"
+                        "[jitllm] prefill native GEMM rows: %d (chunk width) instead of %d"
                                 + " (padded)%n",
                         batchSize, paddedBatch);
             } else {
                 logInitialization(
-                        "[jllm] prefill batch %d padded to %d for tensor-core tiles; GEMM"
+                        "[jitllm] prefill batch %d padded to %d for tensor-core tiles; GEMM"
                                 + " efficiency is %d/%d — use a multiple of 128 for best"
                                 + " throughput.%n",
                         batchSize, paddedBatch, batchSize, paddedBatch);
@@ -391,7 +391,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         }
         if (layersPerGraph > 1) {
             logInitialization(
-                    "[jllm] prefill layer grouping: %d layers per graph, %d graphs instead of %d%n",
+                    "[jitllm] prefill layer grouping: %d layers per graph, %d graphs instead of %d%n",
                     layersPerGraph, groups, config.numberOfLayers());
         }
         this.layerITGs =
@@ -446,7 +446,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         .map(TaskGraph::snapshot)
                         .toList();
         logInitialization(
-                "[jllm] prefill fallback family: %d graphs, JIT paged attention, all buffers bound"
+                "[jitllm] prefill fallback family: %d graphs, JIT paged attention, all buffers bound"
                         + " from the primary family%n",
                 groups);
     }

@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;

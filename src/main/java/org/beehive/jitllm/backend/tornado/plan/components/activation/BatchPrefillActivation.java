@@ -1,11 +1,11 @@
-package org.beehive.jllm.backend.tornado.plan.components.activation;
+package org.beehive.jitllm.backend.tornado.plan.components.activation;
 
-import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernels;
-import org.beehive.jllm.backend.tornado.layers.ActivationTaskGraph;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Configuration;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
+import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Configuration;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;

@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -8,20 +8,20 @@ import static org.junit.Assert.fail;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.model.architecture.LlamaProgramDescription;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
-import org.beehive.jllm.program.InferenceProgram;
-import org.beehive.jllm.program.PhaseId;
-import org.beehive.jllm.program.ProgramComponent;
-import org.beehive.jllm.program.ProgramSignature;
-import org.beehive.jllm.program.op.OperationKind;
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.backend.CompileOptions;
-import org.beehive.jllm.runtime.backend.DeviceCapabilities;
-import org.beehive.jllm.runtime.backend.DeviceCapability;
-import org.beehive.jllm.runtime.backend.DeviceId;
-import org.beehive.jllm.runtime.model.ArchitectureId;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.model.architecture.LlamaProgramDescription;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.program.InferenceProgram;
+import org.beehive.jitllm.program.PhaseId;
+import org.beehive.jitllm.program.ProgramComponent;
+import org.beehive.jitllm.program.ProgramSignature;
+import org.beehive.jitllm.program.op.OperationKind;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.CompileOptions;
+import org.beehive.jitllm.runtime.backend.DeviceCapabilities;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
+import org.beehive.jitllm.runtime.backend.DeviceId;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 
 /**
@@ -133,13 +133,13 @@ public class LlamaLoweringTest {
                 (ProgramComponent.Composite) original.components().get(1);
         List<ProgramComponent> mixed = new ArrayList<>(layer.children());
         ProgramComponent.Leaf q = (ProgramComponent.Leaf) layer.children().get(1);
-        org.beehive.jllm.program.op.MatVec original_ =
-                (org.beehive.jllm.program.op.MatVec) q.operation();
+        org.beehive.jitllm.program.op.MatVec original_ =
+                (org.beehive.jitllm.program.op.MatVec) q.operation();
         mixed.set(
                 1,
                 new ProgramComponent.Leaf(
                         q.name(),
-                        new org.beehive.jllm.program.op.MatVec(
+                        new org.beehive.jitllm.program.op.MatVec(
                                 original_.weight(),
                                 original_.input(),
                                 original_.output(),
@@ -453,7 +453,7 @@ public class LlamaLoweringTest {
         assertEquals("and must not add an entry", 2, cache.size());
     }
 
-    private static org.beehive.jllm.backend.tornado.TornadoVMMasterPlan acquire(
+    private static org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan acquire(
             CompiledProgramCache cache,
             ProgramSignature signature,
             CompileOptions options,
@@ -466,7 +466,7 @@ public class LlamaLoweringTest {
     }
 
     /** A stand-in for a compiled plan, so the cache's behaviour can be tested without a device. */
-    private static class StubPlan implements org.beehive.jllm.backend.tornado.TornadoVMMasterPlan {
+    private static class StubPlan implements org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan {
         @Override
         public uk.ac.manchester.tornado.api.TornadoExecutionPlan createExecutionPlan() {
             throw new UnsupportedOperationException();
@@ -561,7 +561,7 @@ public class LlamaLoweringTest {
     public void aHostSampledResultReportsNoDeviceToken() {
         InvocationBoundary.Result result =
                 new InvocationBoundary.Result(
-                        org.beehive.jllm.backend.tornado.workspace.TornadoLogits.of(
+                        org.beehive.jitllm.backend.tornado.workspace.TornadoLogits.of(
                                 new uk.ac.manchester.tornado.api.types.arrays.FloatArray(1)),
                         -1);
         assertTrue("a negative token means the host samples", !result.hasSampledToken());
@@ -641,7 +641,7 @@ public class LlamaLoweringTest {
 
     private static DataType kvBindingType(ProgramSignature signature) {
         return signature.programFixed().stream()
-                .filter(b -> b.role() == org.beehive.jllm.program.BindingRole.KV_POOL)
+                .filter(b -> b.role() == org.beehive.jitllm.program.BindingRole.KV_POOL)
                 .findFirst()
                 .orElseThrow()
                 .dataType();

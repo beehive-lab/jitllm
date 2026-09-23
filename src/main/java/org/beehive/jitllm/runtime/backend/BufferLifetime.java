@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.backend;
+package org.beehive.jitllm.runtime.backend;
 
 /**
  * How long a device buffer lives, and therefore what releases it.

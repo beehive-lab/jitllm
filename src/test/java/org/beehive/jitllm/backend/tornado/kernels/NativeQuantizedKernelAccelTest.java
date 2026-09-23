@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -8,14 +8,14 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Random;
 import java.util.function.BiFunction;
-import org.beehive.jllm.format.GGMLType;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
-import org.beehive.jllm.tensor.standard.Q4_0FloatTensor;
-import org.beehive.jllm.tensor.standard.Q4_1FloatTensor;
-import org.beehive.jllm.tensor.standard.Q4_KFloatTensor;
-import org.beehive.jllm.tensor.standard.Q5_KFloatTensor;
-import org.beehive.jllm.tensor.standard.Q6_KFloatTensor;
+import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.tensor.standard.Q4_0FloatTensor;
+import org.beehive.jitllm.tensor.standard.Q4_1FloatTensor;
+import org.beehive.jitllm.tensor.standard.Q4_KFloatTensor;
+import org.beehive.jitllm.tensor.standard.Q5_KFloatTensor;
+import org.beehive.jitllm.tensor.standard.Q6_KFloatTensor;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -305,7 +305,7 @@ public class NativeQuantizedKernelAccelTest {
                 }
                 FloatTensor g = new ArrayFloatTensor(new float[] {gateSum});
                 FloatTensor u = new ArrayFloatTensor(new float[] {upSum});
-                org.beehive.jllm.inference.op.CpuOperations.swiGLU(g, u);
+                org.beehive.jitllm.inference.op.CpuOperations.swiGLU(g, u);
                 expected[row] = g.getFloat(0);
             }
         }

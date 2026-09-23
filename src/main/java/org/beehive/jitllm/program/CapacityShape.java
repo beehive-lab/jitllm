@@ -1,4 +1,4 @@
-package org.beehive.jllm.program;
+package org.beehive.jitllm.program;
 
 /**
  * What a compiled program's device arrays were sized from.

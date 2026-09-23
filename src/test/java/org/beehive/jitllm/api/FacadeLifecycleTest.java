@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -9,15 +9,15 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
 import java.util.function.IntConsumer;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.ModelType;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.ModelType;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.tokenizer.Tokenizer;
 import org.junit.Test;
 
 /**
@@ -44,7 +44,7 @@ public class FacadeLifecycleTest {
 
         @Override
         public Weights weights() {
-            return () -> org.beehive.jllm.runtime.tensor.DataType.Q8_0;
+            return () -> org.beehive.jitllm.runtime.tensor.DataType.Q8_0;
         }
 
         @Override
@@ -184,8 +184,8 @@ public class FacadeLifecycleTest {
                 new StubModel(),
                 Path.of("stub.gguf"),
                 false,
-                org.beehive.jllm.runtime.policy.ExecutionPolicy.fromSystemProperties(),
-                org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties(),
+                org.beehive.jitllm.runtime.policy.ExecutionPolicy.fromSystemProperties(),
+                org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties(),
                 ThinkingMode.DEFAULT,
                 maxConcurrentSessions);
     }
@@ -320,7 +320,7 @@ public class FacadeLifecycleTest {
     public void theModelReportsWhatItLoaded() {
         TextGenerationModel model = model();
         assertEquals(512, model.info().contextLength());
-        assertEquals(org.beehive.jllm.runtime.tensor.DataType.Q8_0, model.info().computeType());
+        assertEquals(org.beehive.jitllm.runtime.tensor.DataType.Q8_0, model.info().computeType());
         assertEquals(Path.of("stub.gguf"), model.info().source());
         assertEquals(16, model.configuration().layers());
         assertEquals(8, model.configuration().keyValueHeads());

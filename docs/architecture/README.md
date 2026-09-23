@@ -1,4 +1,4 @@
-# jllm — engine documentation
+# jitllm — engine documentation
 
 A Java-native transformer inference engine that compiles reusable Java inference
 components through TornadoVM into execution plans for local accelerators. TornadoVM is the
@@ -20,7 +20,7 @@ compiler and runtime.
 
 | | |
 | --- | --- |
-| JDKs | 21 and 25. Each publishes its own artifact — `jllm:<version>-jdk21` and `-jdk25` — against its own TornadoVM line. Any other JDK fails the build with a message naming both |
+| JDKs | 21 and 25. Each publishes its own artifact — `jitllm:<version>-jdk21` and `-jdk25` — against its own TornadoVM line. Any other JDK fails the build with a message naming both |
 | Backends | CPU (plain Java, Vector API), and through TornadoVM: CUDA, OpenCL and Metal |
 | Platforms | Linux on NVIDIA (CUDA and OpenCL), macOS on Apple silicon (Metal) |
 | Model formats | GGUF, in F32, F16, BF16, Q8_0, Q4_0, Q4_K, Q5_K and Q6_K |

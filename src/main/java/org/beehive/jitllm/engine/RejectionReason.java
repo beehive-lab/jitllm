@@ -1,4 +1,4 @@
-package org.beehive.jllm.engine;
+package org.beehive.jitllm.engine;
 
 /**
  * Why a request was refused before it ever ran.

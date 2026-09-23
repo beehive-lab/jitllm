@@ -1,19 +1,19 @@
-package org.beehive.jllm.backend.tornado.memory;
+package org.beehive.jitllm.backend.tornado.memory;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.NativePrefillSupport;
-import org.beehive.jllm.backend.tornado.plan.ExecutionMode;
-import org.beehive.jllm.backend.tornado.plan.layout.TornadoGraphTopology;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.backend.Device;
-import org.beehive.jllm.runtime.memory.BufferClass;
-import org.beehive.jllm.runtime.memory.KeyValueReservation;
-import org.beehive.jllm.runtime.memory.MemoryComponent;
-import org.beehive.jllm.runtime.memory.MemoryPlan;
-import org.beehive.jllm.runtime.memory.WeightFootprint;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
+import org.beehive.jitllm.backend.tornado.plan.layout.TornadoGraphTopology;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.Device;
+import org.beehive.jitllm.runtime.memory.BufferClass;
+import org.beehive.jitllm.runtime.memory.KeyValueReservation;
+import org.beehive.jitllm.runtime.memory.MemoryComponent;
+import org.beehive.jitllm.runtime.memory.MemoryPlan;
+import org.beehive.jitllm.runtime.memory.WeightFootprint;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 
 /**
  * The Tornado backend's memory-plan model — <b>the only place that knows what a task graph
@@ -120,7 +120,7 @@ public final class TornadoMemoryModel {
                 device,
                 configuredBudgetBytes,
                 KeyValueReservation.singlePrivate(
-                        org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties()
+                        org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties()
                                 .usesFp16KeyValueCache()));
     }
 
@@ -355,7 +355,7 @@ public final class TornadoMemoryModel {
         long scalarAttention = (long) config.numberOfHeads() * config.contextLength();
         long splitKvAttention =
                 (long) config.numberOfHeads()
-                        * org.beehive.jllm.inference.state.State.SPLIT_KV
+                        * org.beehive.jitllm.inference.state.State.SPLIT_KV
                         * (config.headSize() + 2L);
         long floats =
                 dim * 6 // x, xb, xb2, q, and two spare dim-sized activations

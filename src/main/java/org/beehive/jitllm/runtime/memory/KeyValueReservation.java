@@ -1,6 +1,6 @@
-package org.beehive.jllm.runtime.memory;
+package org.beehive.jitllm.runtime.memory;
 
-import org.beehive.jllm.api.Experimental;
+import org.beehive.jitllm.api.Experimental;
 
 /**
  * How a model's key/value storage is provisioned, which a memory plan must know to size it.

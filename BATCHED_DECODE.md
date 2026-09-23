@@ -290,18 +290,18 @@ for temperature sampling (which still needs logits on the host).
 ### Qwen3 quick start (copy-paste)
 
 After building TornadoVM (CUDA backend) and this project (steps 1–3 below), take
-`jllm --show-command …`, swap the main class to
-`org.beehive.jllm.bench.BatchedDecodeEngine`, and prepend the flags. Keep
-`-Djllm.prefillBatchSize` equal to `-Dbatch.decode.B`.
+`jitllm --show-command …`, swap the main class to
+`org.beehive.jitllm.bench.BatchedDecodeEngine`, and prepend the flags. Keep
+`-Djitllm.prefillBatchSize` equal to `-Dbatch.decode.B`.
 
 ```bash
 # A) static batch — all B streams bit-exact vs single-stream greedy
--Djllm.prefillBatchSize=32 -Dbatch.decode.B=32 -Dbatch.decode.ctx=512 -Dbatch.decode.n=64 \
+-Djitllm.prefillBatchSize=32 -Dbatch.decode.B=32 -Dbatch.decode.ctx=512 -Dbatch.decode.n=64 \
   ... BatchedDecodeEngine -m Qwen3-1.7B-f16.gguf -p "What is the capital of France?" --instruct
 #  → [verify] all 32 streams identical (== single-stream greedy ref): true
 
 # B) continuous multi-request serving — paged KV + prefix cache
--Djllm.prefillBatchSize=16 -Dbatch.decode.B=16 -Dbatch.decode.ctx=512 -Dbatch.decode.n=64 \
+-Djitllm.prefillBatchSize=16 -Dbatch.decode.B=16 -Dbatch.decode.ctx=512 -Dbatch.decode.n=64 \
   -Dbatch.decode.continuous=true -Dbatch.decode.paged=true -Dbatch.decode.prefixCache=true \
   -Dbatch.decode.requests=128 \
   ... BatchedDecodeEngine -m Qwen3-1.7B-f16.gguf -p "What is the capital of France?" --instruct
@@ -327,7 +327,7 @@ rows regardless of B, so batching is effectively free until B=128.
 
 Requires a TornadoVM with the **CUDA backend** and the **MMA `KernelContext`** API
 (`mmaFragment` / `mmaLoadA` / `mmaMultiply`, `HalfFloatArray`) — the same TornadoVM the
-`feat/mma_cuda` jllm branch already needs. Tested against **TornadoVM
+`feat/mma_cuda` jitllm branch already needs. Tested against **TornadoVM
 5.0.1-jdk21-dev**, CUDA backend, **JDK 21**. (All numbers here are from the CUDA
 backend.)
 
@@ -339,7 +339,7 @@ make BACKEND=cuda
 export TORNADOVM_HOME=$PWD/dist/tornadovm-*-cuda
 ```
 
-### 2. jllm (this branch)
+### 2. jitllm (this branch)
 
 ```bash
 # JDK 21
@@ -349,19 +349,19 @@ mvn -Pjdk21 -Dtornadovm.base.version=5.0.1 -Djdk.version.suffix=-jdk21-dev \
 
 ### 3. Run the engine
 
-`-Djllm.prefillBatchSize` MUST equal `-Dbatch.decode.B` (it sizes the batch
-activation buffers). Launch `org.beehive.jllm.bench.BatchedDecodeEngine` on the
-standard TornadoVM module path (easiest: take `jllm --show-command …`,
+`-Djitllm.prefillBatchSize` MUST equal `-Dbatch.decode.B` (it sizes the batch
+activation buffers). Launch `org.beehive.jitllm.bench.BatchedDecodeEngine` on the
+standard TornadoVM module path (easiest: take `jitllm --show-command …`,
 swap the main class to the engine, and prepend the `-D` flags):
 
 ```
--Djllm.prefillBatchSize=128     # batch buffers = B
+-Djitllm.prefillBatchSize=128     # batch buffers = B
 -Dbatch.decode.B=128             # concurrent sequences
 -Dbatch.decode.ctx=512           # per-slot KV context cap (VRAM)
 -Dbatch.decode.n=64              # decode steps
 -Dbatch.decode.temp=0.0          # 0 = greedy (bit-exact verify); >0 = divergent streams
 -Dbatch.decode.cudaGraphs=true   # CUDA-graph capture/replay
-org.beehive.jllm.bench.BatchedDecodeEngine -m <llama-3.2-1b-fp16.gguf> -p "…" --instruct
+org.beehive.jitllm.bench.BatchedDecodeEngine -m <llama-3.2-1b-fp16.gguf> -p "…" --instruct
 ```
 
 Two supporting micro-benchmarks (synthetic dims, no model load) isolate the two
@@ -377,12 +377,12 @@ Prompts (verbatim):
 
 | result | model | prompt | engine flags |
 |--------|-------|--------|--------------|
-| static B=128 (41×) | llama-1b-fp16 | P_SHORT | `-Djllm.prefillBatchSize=128 -Dbatch.decode.B=128 -Dbatch.decode.ctx=512 -Dbatch.decode.n=64` |
+| static B=128 (41×) | llama-1b-fp16 | P_SHORT | `-Djitllm.prefillBatchSize=128 -Dbatch.decode.B=128 -Dbatch.decode.ctx=512 -Dbatch.decode.n=64` |
 | divergent streams | llama-1b-fp16 | P_SHORT | above + `-Dbatch.decode.temp=0.7` |
 | continuous (vs static-wave) | llama-1b-fp16 | P_SHORT | `…B=128 -Dbatch.decode.continuous=true -Dbatch.decode.requests=512 -Dbatch.decode.minN=8 -Dbatch.decode.refill=true` (baseline `refill=false`) |
 | paged (10.7× less KV) | llama-1b-fp16 | P_SHORT | `…continuous=true -Dbatch.decode.paged=true -Dbatch.decode.blocks=384 -Dbatch.decode.requests=512 -Dbatch.decode.minN=8` |
 | prefix cache (+85%) | llama-1b-fp16 | P_LONG | `…continuous=true -Dbatch.decode.paged=true -Dbatch.decode.blocks=1024 -Dbatch.decode.prefixCache=true -Dbatch.decode.requests=512 -Dbatch.decode.minN=8` (off: `prefixCache=false`) |
-| Qwen3 paged+prefix (+104%) | Qwen3-1.7B-f16 | P_LONG | `-Dtornado.device.memory=20GB -Djllm.prefillBatchSize=64 -Dbatch.decode.B=64 -Dbatch.decode.ctx=512 -Dbatch.decode.n=64 -Dbatch.decode.continuous=true -Dbatch.decode.paged=true -Dbatch.decode.blocks=768 -Dbatch.decode.prefixCache=true -Dbatch.decode.requests=256 -Dbatch.decode.minN=8` |
+| Qwen3 paged+prefix (+104%) | Qwen3-1.7B-f16 | P_LONG | `-Dtornado.device.memory=20GB -Djitllm.prefillBatchSize=64 -Dbatch.decode.B=64 -Dbatch.decode.ctx=512 -Dbatch.decode.n=64 -Dbatch.decode.continuous=true -Dbatch.decode.paged=true -Dbatch.decode.blocks=768 -Dbatch.decode.prefixCache=true -Dbatch.decode.requests=256 -Dbatch.decode.minN=8` |
 
 All flags (defaults): `batch.decode.B`, `.ctx`(512), `.n`(64), `.temp`(0=greedy),
 `.cudaGraphs`(true), `.continuous`(false), `.refill`(true), `.requests`(4·B), `.minN`(n/2),

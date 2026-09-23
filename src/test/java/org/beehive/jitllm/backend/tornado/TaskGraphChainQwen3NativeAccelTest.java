@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -6,9 +6,9 @@ import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
 import java.util.Map;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 /**
@@ -33,9 +33,9 @@ public class TaskGraphChainQwen3NativeAccelTest {
                 TaskGraphChainLlamaAccelTest.capture(
                         file,
                         Map.of(
-                                "jllm.withPrefillDecode",
+                                "jitllm.withPrefillDecode",
                                 "true",
-                                "jllm.prefillBatchSize",
+                                "jitllm.prefillBatchSize",
                                 "128",
                                 ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY,
                                 "true"));

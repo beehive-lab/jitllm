@@ -1,4 +1,4 @@
-package org.beehive.jllm.engine;
+package org.beehive.jitllm.engine;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -10,10 +10,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.runtime.batch.BatchExecutor;
-import org.beehive.jllm.runtime.kv.BlockPool;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.batch.BatchExecutor;
+import org.beehive.jitllm.runtime.kv.BlockPool;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
 import org.junit.Test;
 
 /**

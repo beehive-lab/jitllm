@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
@@ -8,7 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import org.beehive.jllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.tokenizer.Tokenizer;
 import org.junit.Test;
 
 /**

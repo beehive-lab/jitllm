@@ -1,7 +1,7 @@
-package org.beehive.jllm.inference;
+package org.beehive.jitllm.inference;
 
 import java.util.List;
-import org.beehive.jllm.inference.state.State;
+import org.beehive.jitllm.inference.state.State;
 
 /**
  * Where a generation loop starts feeding: the first token, and the prompt index to continue from.

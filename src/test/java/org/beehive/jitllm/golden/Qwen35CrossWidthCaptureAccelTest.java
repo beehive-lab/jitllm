@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -12,7 +12,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 // @formatter:off
@@ -36,15 +36,15 @@ import org.junit.Test;
  *
  * <p>Two runs, two JVMs: this fixture holds 15.5 GiB on the device and TornadoVM returns freed
  * device memory to its own provider, so a second plan in one process runs out. The width comes from
- * {@code jllm.crossWidth.width} and the rows go to {@code jllm.crossWidth.out}.
+ * {@code jitllm.crossWidth.width} and the rows go to {@code jitllm.crossWidth.out}.
  */
 // @formatter:on
 public class Qwen35CrossWidthCaptureAccelTest {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     /** Odd on purpose: neither 32 nor 64 divides it, so both widths end on a partial chunk. */
     private static final int FORCED_TOKENS = 37;
@@ -60,9 +60,9 @@ public class Qwen35CrossWidthCaptureAccelTest {
             System.out.println("[SKIP] no TornadoVM device");
             assumeTrue("environment absent", false);
         }
-        String out = System.getProperty("jllm.crossWidth.out");
-        assumeTrue("no jllm.crossWidth.out given", out != null);
-        int width = Integer.getInteger("jllm.crossWidth.width", 32);
+        String out = System.getProperty("jitllm.crossWidth.out");
+        assumeTrue("no jitllm.crossWidth.out given", out != null);
+        int width = Integer.getInteger("jitllm.crossWidth.width", 32);
 
         // Fixed, so both widths walk the same positions regardless of what the logits say.
         Random random = new Random(20260911L);

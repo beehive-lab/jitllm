@@ -1,6 +1,6 @@
-package org.beehive.jllm.model.mistral;
+package org.beehive.jitllm.model.mistral;
 
-import org.beehive.jllm.model.Configuration;
+import org.beehive.jitllm.model.Configuration;
 
 // @formatter:off
 public record MistralConfiguration(

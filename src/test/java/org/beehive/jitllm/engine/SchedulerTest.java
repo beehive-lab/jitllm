@@ -1,4 +1,4 @@
-package org.beehive.jllm.engine;
+package org.beehive.jitllm.engine;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
@@ -8,8 +8,8 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import java.util.List;
-import org.beehive.jllm.runtime.kv.BlockPool;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.kv.BlockPool;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
 import org.junit.Test;
 
 public class SchedulerTest {

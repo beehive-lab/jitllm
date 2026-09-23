@@ -1,6 +1,6 @@
-package org.beehive.jllm.server;
+package org.beehive.jitllm.server;
 
-import static org.beehive.jllm.model.loader.ModelLoader.loadModel;
+import static org.beehive.jitllm.model.loader.ModelLoader.loadModel;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -15,17 +15,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
-import org.beehive.jllm.api.ChatContent;
-import org.beehive.jllm.api.ChatMessage;
-import org.beehive.jllm.api.ChatRole;
-import org.beehive.jllm.api.LocalModel;
-import org.beehive.jllm.api.LocalModels;
-import org.beehive.jllm.api.ModelOptions;
-import org.beehive.jllm.integration.cli.StartupDiagnostics;
-import org.beehive.jllm.model.Model;
+import org.beehive.jitllm.api.ChatContent;
+import org.beehive.jitllm.api.ChatMessage;
+import org.beehive.jitllm.api.ChatRole;
+import org.beehive.jitllm.api.LocalModel;
+import org.beehive.jitllm.api.LocalModels;
+import org.beehive.jitllm.api.ModelOptions;
+import org.beehive.jitllm.integration.cli.StartupDiagnostics;
+import org.beehive.jitllm.model.Model;
 
 /**
- * OpenAI-compatible HTTP server for jllm, built on the JDK {@link HttpServer} (no external
+ * OpenAI-compatible HTTP server for jitllm, built on the JDK {@link HttpServer} (no external
  * dependencies). Exposes the loaded model behind the endpoints an OpenAI client already speaks:
  *
  * <ul>
@@ -40,7 +40,7 @@ import org.beehive.jllm.model.Model;
  * accept is multi-threaded so clients queue cleanly. Run:
  *
  * <pre>
- *   java. org.beehive.jllm.server.OpenAIServer --model model.gguf --port 8080 --gpu
+ *   java. org.beehive.jitllm.server.OpenAIServer --model model.gguf --port 8080 --gpu
  * </pre>
  *
  * <p>{@code --ctx N} sizes the KV cache and therefore the context the server advertises. It
@@ -169,7 +169,7 @@ public final class OpenAIServer implements AutoCloseable {
      * Characters per token assumed when checking a prompt against the window.
      *
      * <p>An exact count needs the tokenizer, and this package cannot reach one: the facade path
-     * holds a {@link org.beehive.jllm.api.LocalModel}, whose surface is identity and configuration
+     * holds a {@link org.beehive.jitllm.api.LocalModel}, whose surface is identity and configuration
      * only. Four is deliberately generous — real text, and code especially, tokenizes to *more*
      * tokens than this predicts — so the estimate errs toward accepting. It therefore catches a
      * prompt that is grossly over the window and lets a marginal one through to the engine, which
@@ -295,7 +295,7 @@ public final class OpenAIServer implements AutoCloseable {
         entry.put("id", servedModel);
         entry.put("object", "model");
         entry.put("created", 0);
-        entry.put("owned_by", "jllm");
+        entry.put("owned_by", "jitllm");
         if (contextLength > 0) {
             entry.put("context_length", contextLength);
         }
@@ -306,7 +306,7 @@ public final class OpenAIServer implements AutoCloseable {
     }
 
     public static void main(String[] args) throws IOException {
-        org.beehive.jllm.integration.cli.CliErrors.reportDiagnostics(() -> run(args));
+        org.beehive.jitllm.integration.cli.CliErrors.reportDiagnostics(() -> run(args));
     }
 
     private static void run(String[] args) throws IOException {
@@ -320,7 +320,7 @@ public final class OpenAIServer implements AutoCloseable {
         var config = options.model();
         // HTTP requests choose sampling independently; a greedy-only device sampler cannot be
         // pinned globally.
-        System.clearProperty("jllm.deviceSample");
+        System.clearProperty("jitllm.deviceSample");
         long startedNs = System.nanoTime();
         Path path = config.model();
         String served = path.getFileName().toString().replaceAll("\\.gguf$", "");
@@ -336,7 +336,7 @@ public final class OpenAIServer implements AutoCloseable {
             int contextLength =
                     resolveContextLength(
                             config.contextLength(), model.configuration().contextLength());
-            if (model.weights().dataType() != org.beehive.jllm.runtime.tensor.DataType.F16) {
+            if (model.weights().dataType() != org.beehive.jitllm.runtime.tensor.DataType.F16) {
                 throw new IllegalArgumentException(
                         "Continuous batching requires FP16 Llama/Qwen3 weights");
             }
@@ -478,7 +478,7 @@ public final class OpenAIServer implements AutoCloseable {
             <html lang="en">
             <head>
             <meta charset="utf-8">
-            <title>jllm server</title>
+            <title>jitllm server</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
               body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
@@ -499,7 +499,7 @@ public final class OpenAIServer implements AutoCloseable {
             </style>
             </head>
             <body>
-              <h1>jllm</h1>
+              <h1>jitllm</h1>
               <div class="sub">Local OpenAI-compatible inference server</div>
 
               <table>
@@ -510,7 +510,7 @@ public final class OpenAIServer implements AutoCloseable {
 
               <p>
                 This is a local instance of
-                <a href="https://github.com/beehive-lab/jllm" target="_blank">jllm</a>,
+                <a href="https://github.com/beehive-lab/jitllm" target="_blank">jitllm</a>,
                 a Llama3-family inference engine written in native Java and automatically accelerated on
                 GPUs with <a href="https://github.com/beehive-lab/TornadoVM" target="_blank">TornadoVM</a>.
                 It supports Llama3, Mistral, Devstral 2, Qwen2.5, Qwen3, Phi-3, IBM Granite 3.2+, and

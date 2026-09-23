@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -7,7 +7,7 @@ import static org.junit.Assume.assumeTrue;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.Random;
-import org.beehive.jllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -614,13 +614,13 @@ public class Qwen35Int8V2ProjectionAccelTest {
         check("128x128x17408", 128, 128, 17408, 4L);
     }
 
-    /** Complete paths at production shapes; opt in with JLLM_KERNEL_SCREEN=true. */
+    /** Complete paths at production shapes; opt in with JITLLM_KERNEL_SCREEN=true. */
     @Test
     public void screen() throws Exception {
         assumeTrue(
-                "opt in with JLLM_KERNEL_SCREEN=true",
-                Boolean.getBoolean("jllm.kernelScreen")
-                        || "true".equals(System.getenv("JLLM_KERNEL_SCREEN")));
+                "opt in with JITLLM_KERNEL_SCREEN=true",
+                Boolean.getBoolean("jitllm.kernelScreen")
+                        || "true".equals(System.getenv("JITLLM_KERNEL_SCREEN")));
         int[][] shapes = {{17408, 5120}, {5120, 17408}, {10240, 5120}};
         String[] names = {"gate/up", "ffn_down", "ssm_qkv"};
         HalfFloatArray scratch = new HalfFloatArray(17408 * 5120);

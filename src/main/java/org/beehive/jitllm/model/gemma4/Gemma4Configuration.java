@@ -1,6 +1,6 @@
-package org.beehive.jllm.model.gemma4;
+package org.beehive.jitllm.model.gemma4;
 
-import org.beehive.jllm.model.Configuration;
+import org.beehive.jitllm.model.Configuration;
 
 /**
  * Configuration for the Gemma 4 architecture (e.g. Gemma-4-E2B-It).

@@ -1,13 +1,13 @@
-package org.beehive.jllm.server;
+package org.beehive.jitllm.server;
 
 import java.util.List;
-import org.beehive.jllm.api.ChatMessage;
-import org.beehive.jllm.api.FinishReason;
-import org.beehive.jllm.api.GenerationRequest;
-import org.beehive.jllm.api.GenerationResult;
-import org.beehive.jllm.api.GenerationSession;
-import org.beehive.jllm.api.LocalModel;
-import org.beehive.jllm.api.TextGenerationModel;
+import org.beehive.jitllm.api.ChatMessage;
+import org.beehive.jitllm.api.FinishReason;
+import org.beehive.jitllm.api.GenerationRequest;
+import org.beehive.jitllm.api.GenerationResult;
+import org.beehive.jitllm.api.GenerationSession;
+import org.beehive.jitllm.api.LocalModel;
+import org.beehive.jitllm.api.TextGenerationModel;
 
 /**
  * Reusable, thread-safe inference wrapper over one loaded model.
@@ -31,7 +31,7 @@ public final class InferenceService {
         this.session = ((TextGenerationModel) model).newSession();
     }
 
-    public org.beehive.jllm.runtime.backend.ExecutionInfo prepare() {
+    public org.beehive.jitllm.runtime.backend.ExecutionInfo prepare() {
         synchronized (lock) {
             return session.prepare();
         }

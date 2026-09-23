@@ -1,11 +1,11 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assert.assertEquals;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.util.Random;
-import org.beehive.jllm.tensor.standard.Q4_0FloatTensor;
+import org.beehive.jitllm.tensor.standard.Q4_0FloatTensor;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 

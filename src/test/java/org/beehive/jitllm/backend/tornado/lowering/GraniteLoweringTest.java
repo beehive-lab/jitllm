@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -8,18 +8,18 @@ import static org.junit.Assert.fail;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.model.architecture.GraniteProgramDescription;
-import org.beehive.jllm.model.architecture.LlamaProgramDescription;
-import org.beehive.jllm.model.granite.GraniteConfiguration;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
-import org.beehive.jllm.program.InferenceProgram;
-import org.beehive.jllm.program.ProgramComponent;
-import org.beehive.jllm.program.op.Attention;
-import org.beehive.jllm.program.op.OperationKind;
-import org.beehive.jllm.runtime.backend.CompileOptions;
-import org.beehive.jllm.runtime.backend.DeviceCapabilities;
-import org.beehive.jllm.runtime.backend.DeviceCapability;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.model.architecture.GraniteProgramDescription;
+import org.beehive.jitllm.model.architecture.LlamaProgramDescription;
+import org.beehive.jitllm.model.granite.GraniteConfiguration;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.program.InferenceProgram;
+import org.beehive.jitllm.program.ProgramComponent;
+import org.beehive.jitllm.program.op.Attention;
+import org.beehive.jitllm.program.op.OperationKind;
+import org.beehive.jitllm.runtime.backend.CompileOptions;
+import org.beehive.jitllm.runtime.backend.DeviceCapabilities;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 
 /**
@@ -122,7 +122,7 @@ public class GraniteLoweringTest {
                 () ->
                         granite.validate(
                                 InferenceProgram.of(
-                                        new org.beehive.jllm.program.ProgramSignature(
+                                        new org.beehive.jitllm.program.ProgramSignature(
                                                 original.signature().architecture(),
                                                         original.signature().policy(),
                                                 original.signature().capacity(), components,
@@ -190,21 +190,21 @@ public class GraniteLoweringTest {
         return kinds;
     }
 
-    private static List<org.beehive.jllm.program.PhaseSelection> phasesFor(
+    private static List<org.beehive.jitllm.program.PhaseSelection> phasesFor(
             List<ProgramComponent> components) {
         List<Integer> prefill = new ArrayList<>();
         List<Integer> decode = new ArrayList<>();
         for (int i = 0; i < components.size(); i++) {
-            if (components.get(i).phases().contains(org.beehive.jllm.program.PhaseId.PREFILL)) {
+            if (components.get(i).phases().contains(org.beehive.jitllm.program.PhaseId.PREFILL)) {
                 prefill.add(i);
             }
             decode.add(i);
         }
         return List.of(
-                new org.beehive.jllm.program.PhaseSelection(
-                        org.beehive.jllm.program.PhaseId.PREFILL, prefill),
-                new org.beehive.jllm.program.PhaseSelection(
-                        org.beehive.jllm.program.PhaseId.DECODE, decode));
+                new org.beehive.jitllm.program.PhaseSelection(
+                        org.beehive.jitllm.program.PhaseId.PREFILL, prefill),
+                new org.beehive.jitllm.program.PhaseSelection(
+                        org.beehive.jitllm.program.PhaseId.DECODE, decode));
     }
 
     private static InferenceProgram rebuild(
@@ -212,7 +212,7 @@ public class GraniteLoweringTest {
         List<ProgramComponent> components = new ArrayList<>(original.components());
         components.set(index, replacement);
         return InferenceProgram.of(
-                new org.beehive.jllm.program.ProgramSignature(
+                new org.beehive.jitllm.program.ProgramSignature(
                         original.signature().architecture(),
                         original.signature().policy(),
                         original.signature().capacity(),

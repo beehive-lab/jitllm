@@ -1,16 +1,16 @@
-package org.beehive.jllm.backend.tornado.layers.type.q8_0.prefill;
+package org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill;
 
 import java.util.List;
 import java.util.stream.IntStream;
-import org.beehive.jllm.backend.tornado.kernels.Qwen3Kernels;
-import org.beehive.jllm.backend.tornado.kernels.Qwen3PagedKvKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.inference.state.Qwen3State;
-import org.beehive.jllm.inference.weights.tornado.Qwen3TornadoWeights;
-import org.beehive.jllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.inference.state.Qwen3State;
+import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
+import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;

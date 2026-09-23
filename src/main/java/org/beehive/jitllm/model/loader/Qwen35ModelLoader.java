@@ -1,30 +1,30 @@
-package org.beehive.jllm.model.loader;
+package org.beehive.jitllm.model.loader;
 
-import static org.beehive.jllm.tokenizer.Vocabulary.fromTokensAndScores;
+import static org.beehive.jitllm.tokenizer.Vocabulary.fromTokensAndScores;
 
 import java.nio.channels.FileChannel;
 import java.util.Map;
 import java.util.function.IntFunction;
-import org.beehive.jllm.auxiliary.Pair;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensorLoader;
-import org.beehive.jllm.format.DataTypeMapping;
-import org.beehive.jllm.format.GGMLTensorEntry;
-import org.beehive.jllm.format.GGUF;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.inference.weights.standard.Qwen35StandardWeights;
-import org.beehive.jllm.inference.weights.tornado.Qwen35TornadoWeights;
-import org.beehive.jllm.model.format.ChatFormat.ChatTokens;
-import org.beehive.jllm.model.format.Qwen35ChatFormat;
-import org.beehive.jllm.model.qwen35.Qwen35;
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
-import org.beehive.jllm.runtime.diagnostics.DiagnosticCode;
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
-import org.beehive.jllm.tokenizer.Qwen35Tokenizer;
-import org.beehive.jllm.tokenizer.Tokenizer;
-import org.beehive.jllm.tokenizer.Vocabulary;
+import org.beehive.jitllm.auxiliary.Pair;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
+import org.beehive.jitllm.format.DataTypeMapping;
+import org.beehive.jitllm.format.GGMLTensorEntry;
+import org.beehive.jitllm.format.GGUF;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.inference.weights.standard.Qwen35StandardWeights;
+import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
+import org.beehive.jitllm.model.format.ChatFormat.ChatTokens;
+import org.beehive.jitllm.model.format.Qwen35ChatFormat;
+import org.beehive.jitllm.model.qwen35.Qwen35;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.tokenizer.Qwen35Tokenizer;
+import org.beehive.jitllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.tokenizer.Vocabulary;
 
 /**
  * Loads a {@code qwen35} GGUF.

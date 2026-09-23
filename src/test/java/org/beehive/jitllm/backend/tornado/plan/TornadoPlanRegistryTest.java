@@ -1,11 +1,11 @@
-package org.beehive.jllm.backend.tornado.plan;
+package org.beehive.jitllm.backend.tornado.plan;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Set;
-import org.beehive.jllm.runtime.model.ArchitectureId;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 
 /**
@@ -145,12 +145,12 @@ public class TornadoPlanRegistryTest {
                     }
 
                     @Override
-                    public org.beehive.jllm.backend.tornado.plan.components
+                    public org.beehive.jitllm.backend.tornado.plan.components
                                     .SingleTokenForwardPlanComponents
                             components(
                                     DataType weights,
-                                    org.beehive.jllm.inference.state.State state,
-                                    org.beehive.jllm.model.Model model) {
+                                    org.beehive.jitllm.inference.state.State state,
+                                    org.beehive.jitllm.model.Model model) {
                         throw new UnsupportedOperationException("declaration only");
                     }
                 };
@@ -182,12 +182,12 @@ public class TornadoPlanRegistryTest {
                     }
 
                     @Override
-                    public org.beehive.jllm.backend.tornado.plan.components
+                    public org.beehive.jitllm.backend.tornado.plan.components
                                     .SingleTokenForwardPlanComponents
                             components(
                                     DataType weights,
-                                    org.beehive.jllm.inference.state.State state,
-                                    org.beehive.jllm.model.Model model) {
+                                    org.beehive.jitllm.inference.state.State state,
+                                    org.beehive.jitllm.model.Model model) {
                         throw new UnsupportedOperationException("declaration only");
                     }
                 };

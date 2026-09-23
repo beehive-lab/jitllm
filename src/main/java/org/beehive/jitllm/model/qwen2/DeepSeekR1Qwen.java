@@ -1,9 +1,9 @@
-package org.beehive.jllm.model.qwen2;
+package org.beehive.jitllm.model.qwen2;
 
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.model.ModelType;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.model.ModelType;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.tokenizer.Tokenizer;
 
 public class DeepSeekR1Qwen extends Qwen2 {
 
@@ -27,7 +27,7 @@ public class DeepSeekR1Qwen extends Qwen2 {
 
     /** Its own identity, stated rather than derived. */
     @Override
-    public org.beehive.jllm.runtime.model.ArchitectureId architectureId() {
-        return org.beehive.jllm.runtime.model.ArchitectureId.of("deepseek-r1-distill-qwen");
+    public org.beehive.jitllm.runtime.model.ArchitectureId architectureId() {
+        return org.beehive.jitllm.runtime.model.ArchitectureId.of("deepseek-r1-distill-qwen");
     }
 }

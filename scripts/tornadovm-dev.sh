@@ -7,7 +7,7 @@
 #   scripts/tornadovm-dev.sh refresh [--backend ...] [--jdk ...]      # advance to latest develop
 #   scripts/tornadovm-dev.sh build   [--install DIR] [--dry-run] [mvn args...]
 #   scripts/tornadovm-dev.sh status  [--install DIR]                   # what is prepared
-#   scripts/tornadovm-dev.sh env     [--install DIR]                   # shell lines to run jllm with it
+#   scripts/tornadovm-dev.sh env     [--install DIR]                   # shell lines to run jitllm with it
 #   scripts/tornadovm-dev.sh prune   [--yes]                           # remove non-current installations
 #   scripts/tornadovm-dev.sh resolve-develop                           # print upstream develop's sha
 #   scripts/tornadovm-dev.sh recipe                                    # print the build-recipe identity
@@ -27,14 +27,14 @@
 # with -Dmaven.repo.local=<that repository> and -Dtornadovm.version=<the version that SDK
 # produced>; plain ./mvnw does NOT see these artifacts (see README, "Build from source").
 # A prepared revision is reused as is; only `refresh`, a different --ref, or a changed recipe
-# builds again. Nothing here runs when jllm is launched, and nothing is deleted except by `prune`.
+# builds again. Nothing here runs when jitllm is launched, and nothing is deleted except by `prune`.
 # The user's own TornadoVM (TORNADOVM_HOME, SDKMAN) is never touched.
 set -euo pipefail
 
 UPSTREAM=${TORNADOVM_UPSTREAM:-https://github.com/beehive-lab/TornadoVM.git}
-ROOT=${JLLM_DEV_ROOT:-$HOME/.jllm/tornadovm}
-BACKEND=${JLLM_DEV_BACKEND:-}
-JDK=${JLLM_DEV_JDK:-21}
+ROOT=${JITLLM_DEV_ROOT:-$HOME/.jitllm/tornadovm}
+BACKEND=${JITLLM_DEV_BACKEND:-}
+JDK=${JITLLM_DEV_JDK:-21}
 REF=""
 LATEST=0
 RESULT=""
@@ -305,10 +305,10 @@ do_env() {
   dir=$(resolve_install); p="$dir/provenance.json"; sdk=$(prov_field "$p" sdk_dir)
   echo "export TORNADOVM_HOME=$sdk"
   echo "export PATH=$sdk/bin:\$PATH"
-  echo "# TornadoVM $(prov_field "$p" artifact_version) from $(prov_field "$p" ref); then: ./jllm --gpu --model <model.gguf> --prompt '...'"
+  echo "# TornadoVM $(prov_field "$p" artifact_version) from $(prov_field "$p" ref); then: ./jitllm --gpu --model <model.gguf> --prompt '...'"
 }
 
-# Explicit cleanup only: nothing is deleted by setup, because another build or a running jllm may
+# Explicit cleanup only: nothing is deleted by setup, because another build or a running jitllm may
 # be using an older installation. Lists what would go; --yes removes it.
 do_prune() {
   parse_args "$@"

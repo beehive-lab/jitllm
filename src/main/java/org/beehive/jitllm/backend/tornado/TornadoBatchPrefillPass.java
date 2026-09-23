@@ -1,13 +1,13 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import java.lang.foreign.MemorySegment;
 import java.util.stream.IntStream;
-import org.beehive.jllm.inference.Logits;
-import org.beehive.jllm.inference.state.Qwen2MoEState;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.tornado.TornadoWeights;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.Model;
+import org.beehive.jitllm.inference.Logits;
+import org.beehive.jitllm.inference.state.Qwen2MoEState;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.Model;
 
 /** The accelerated <b>batched prefill</b> pass and its decode step. */
 public final class TornadoBatchPrefillPass {
@@ -29,7 +29,7 @@ public final class TornadoBatchPrefillPass {
      * when it is off.
      */
     // @formatter:on
-    private static final boolean TIME_STAGING = Boolean.getBoolean("jllm.bench.timeStaging");
+    private static final boolean TIME_STAGING = Boolean.getBoolean("jitllm.bench.timeStaging");
 
     /** Rule 16: library code routes its output through the platform logger. */
     private static final System.Logger LOGGER =

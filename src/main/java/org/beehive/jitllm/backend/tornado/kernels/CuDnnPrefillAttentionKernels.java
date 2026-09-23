@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import uk.ac.manchester.tornado.api.annotations.Parallel;
 import uk.ac.manchester.tornado.api.types.HalfFloat;
@@ -10,7 +10,7 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * The layout adapters around a cuDNN scaled-dot-product-attention call on the batched prefill path.
  *
  * <p>cuDNN's binding takes three contiguous {@code [batch][head][seq][headDim]} FP16 tensors and
- * one head count. jllm's prefill keeps Q inside a packed FP32 QKV buffer and its K/V in a paged
+ * one head count. jitllm's prefill keeps Q inside a packed FP32 QKV buffer and its K/V in a paged
  * FP16 cache with a block table, and serves several query heads from one KV head. These three
  * kernels bridge exactly that gap and nothing else: the projections, Q/K normalization, RoPE and
  * the output projection are untouched, and the KV cache is still written by the existing RoPE

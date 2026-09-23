@@ -1,4 +1,4 @@
-package org.beehive.jllm.arch;
+package org.beehive.jitllm.arch;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;

@@ -1,6 +1,6 @@
-package org.beehive.jllm.quality;
+package org.beehive.jitllm.quality;
 
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 // @formatter:off
@@ -17,8 +17,8 @@ public class Gemma4Q4_0BatchedPrefillNllScreenAccelTest {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     @Test
     public void theBatchedPrefillDoesNotMakeHeldOutTextLessLikely() throws Exception {

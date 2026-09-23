@@ -1,13 +1,13 @@
-package org.beehive.jllm.backend.cpu;
+package org.beehive.jitllm.backend.cpu;
 
-import org.beehive.jllm.inference.op.AttentionShape;
-import org.beehive.jllm.inference.op.CpuOperations;
-import org.beehive.jllm.inference.state.Qwen35State;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.standard.Qwen35StandardWeights;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.inference.op.AttentionShape;
+import org.beehive.jitllm.inference.op.CpuOperations;
+import org.beehive.jitllm.inference.state.Qwen35State;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.standard.Qwen35StandardWeights;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 
 /**
  * The host forward pass for the {@code qwen35} architecture.

@@ -1,7 +1,7 @@
-package org.beehive.jllm.program.op;
+package org.beehive.jitllm.program.op;
 
 import java.util.List;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * One unit of work in a forward pass, described independently of backend and model family.

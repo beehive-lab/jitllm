@@ -1,6 +1,6 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
-import org.beehive.jllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 
 /**
  * The device ran out of memory while building the execution plan.

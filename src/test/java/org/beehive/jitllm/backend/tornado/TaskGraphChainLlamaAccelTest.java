@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -7,12 +7,12 @@ import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
 import java.util.Map;
-import org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
 import org.junit.Test;
 
 /**
@@ -35,7 +35,7 @@ public class TaskGraphChainLlamaAccelTest {
     @Test
     public void theLegacyPlanPrintsItsChain() throws Exception {
         long before = LoweredPlanSelection.loweredPlanCount();
-        String chain = printed(Map.of("jllm.lowering", "off"));
+        String chain = printed(Map.of("jitllm.lowering", "off"));
         assertEquals(before, LoweredPlanSelection.loweredPlanCount());
         check(chain);
     }

@@ -1,7 +1,7 @@
-package org.beehive.jllm.program.op;
+package org.beehive.jitllm.program.op;
 
 import java.util.Objects;
-import org.beehive.jllm.runtime.tensor.TensorRole;
+import org.beehive.jitllm.runtime.tensor.TensorRole;
 
 /**
  * A reference to a tensor an operation reads or writes, by name rather than by handle.

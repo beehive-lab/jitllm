@@ -1,13 +1,13 @@
-package org.beehive.jllm.backend.tornado.layers.type.fp16.decode;
+package org.beehive.jitllm.backend.tornado.layers.type.fp16.decode;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.layers.type.fp16.Qwen3FP16FFNLayers;
-import org.beehive.jllm.backend.tornado.layers.type.fp16.prefill.Qwen3FP16LayersBatchPrefillMMA;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.inference.state.Qwen3State;
-import org.beehive.jllm.inference.weights.tornado.Qwen3TornadoWeights;
-import org.beehive.jllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.Qwen3FP16FFNLayers;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.Qwen3FP16LayersBatchPrefillMMA;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.inference.state.Qwen3State;
+import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
+import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 

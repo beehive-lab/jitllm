@@ -4,12 +4,12 @@
 
     <!-- Use your verified namespace -->
     <groupId>io.github.beehive-lab</groupId>
-    <artifactId>jllm</artifactId>
+    <artifactId>jitllm</artifactId>
     <version>${revision}${jdk.version.suffix}</version>
 
-    <name>jllm</name>
+    <name>jitllm</name>
     <description>LLM inference and serving for the JVM, GPU-accelerated with TornadoVM</description>
-    <url>https://github.com/beehive-lab/jllm</url>
+    <url>https://github.com/beehive-lab/jitllm</url>
 
     <licenses>
         <license>
@@ -28,10 +28,10 @@
     </developers>
 
     <scm>
-        <connection>scm:git:git://github.com/beehive-lab/jllm.git</connection>
-        <developerConnection>scm:git:ssh://github.com/beehive-lab/jllm.git</developerConnection>
+        <connection>scm:git:git://github.com/beehive-lab/jitllm.git</connection>
+        <developerConnection>scm:git:ssh://github.com/beehive-lab/jitllm.git</developerConnection>
         <tag>HEAD</tag>
-        <url>https://github.com/beehive-lab/jllm</url>
+        <url>https://github.com/beehive-lab/jitllm</url>
     </scm>
 
     <properties>
@@ -79,7 +79,7 @@
                  and drops the -dev qualifier, and the enforcer below refuses a release build that
                  has no such version or still resolves to -dev coordinates. A release also fails to
                  compile if the chosen TornadoVM release lacks the APIs above: no published release
-                 carries them yet, so no jllm release can be cut from this branch until one does. -->
+                 carries them yet, so no jitllm release can be cut from this branch until one does. -->
         <tornadovm.base.version>6.1.1</tornadovm.base.version>
         <!-- Empty in development; a published X.Y.Z under -P release (see prepare-release.yml). -->
         <tornadovm.release.version/>
@@ -92,7 +92,7 @@
                  (see <version> at the top of this POM) and must keep saying -jdk25, while
                  TornadoVM 6.0.0 collapsed its jdk25/jdk26/jdk27 lines into a single jdk22plus
                  profile and publishes only 6.0.0-jdk21 and 6.0.0-jdk22plus to Maven Central.
-                 Tying the two together would silently rename jllm's own coordinates. -->
+                 Tying the two together would silently rename jitllm's own coordinates. -->
         <tornadovm.jdk.suffix>-jdk21</tornadovm.jdk.suffix>
         <!-- CUDA backend is only available after 5.0.0 TornadoVM version -->
         <tornadovm.version>${tornadovm.base.version}${tornadovm.jdk.suffix}${tornadovm.dev.qualifier}</tornadovm.version>
@@ -204,7 +204,7 @@
                             <rules>
                                 <requireJavaVersion>
                                     <version>[21,22),[25,26)</version>
-                                    <message>jllm builds on JDK 21 or JDK 25 only. JDK 21 produces jllm:*-jdk21 against tornado *-jdk21; JDK 25 produces jllm:*-jdk25 against tornado *-jdk22plus. Any other JDK would activate neither profile and publish a mislabelled artifact.</message>
+                                    <message>jitllm builds on JDK 21 or JDK 25 only. JDK 21 produces jitllm:*-jdk21 against tornado *-jdk21; JDK 25 produces jitllm:*-jdk25 against tornado *-jdk22plus. Any other JDK would activate neither profile and publish a mislabelled artifact.</message>
                                 </requireJavaVersion>
                             </rules>
                             <fail>true</fail>
@@ -254,9 +254,9 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>org.beehive.jllm.JllmApp</mainClass>
+                                    <mainClass>org.beehive.jitllm.JitllmApp</mainClass>
                                     <manifestEntries>
-                                        <Automatic-Module-Name>org.beehive.jllm</Automatic-Module-Name>
+                                        <Automatic-Module-Name>org.beehive.jitllm</Automatic-Module-Name>
                                     </manifestEntries>
                                 </transformer>
                             </transformers>
@@ -272,7 +272,7 @@
 
         <!-- ─── Class B: accelerator qualification gates ─────────────────────────
                  Opt-in: `mvn verify -Paccel-tests`. Needs TORNADOVM_HOME, a device, and
-                 the pinned model fixtures (JLLM_TEST_MODELS or ~/.jllm/test-models).
+                 the pinned model fixtures (JITLLM_TEST_MODELS or ~/.jitllm/test-models).
                  On a machine without them the tests skip with an explicit marker — a skip
                  is recorded, never reported as a pass.
 
@@ -348,7 +348,7 @@
                                     --add-modules jdk.incubator.vector
                                     -da:tornado.graal...
                                     -Dtornado.recover.bailout=False
-                                    -Djllm.deviceSample=false
+                                    -Djitllm.deviceSample=false
                                     -Dtornado.device.memory=20GB
                                     -Dtornado.cuda.priority=100
                                     -Dtornado.opencl.priority=0</argLine>
@@ -360,7 +360,7 @@
 
         <!-- ─── JDK 21 ───────────────────────────────────────────────────────────
                  Auto-activates on JDK 21.
-                 Publishes: jllm:${revision}-jdk21
+                 Publishes: jitllm:${revision}-jdk21
                  TornadoVM: ${tornadovm.base.version}-jdk21
             ─────────────────────────────────────────────────────────────────────── -->
         <profile>
@@ -395,7 +395,7 @@
 
         <!-- ─── JDK 25 ───────────────────────────────────────────────────────────
                  Auto-activates on JDK 25.
-                 Publishes: jllm:${revision}-jdk25
+                 Publishes: jitllm:${revision}-jdk25
                  TornadoVM: ${tornadovm.base.version}-jdk22plus${tornadovm.dev.qualifier} (see tornadovm.jdk.suffix)
             ─────────────────────────────────────────────────────────────────────── -->
         <profile>

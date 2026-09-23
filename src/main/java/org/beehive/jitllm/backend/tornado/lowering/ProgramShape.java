@@ -1,16 +1,16 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import java.util.List;
 import java.util.Set;
-import org.beehive.jllm.program.InferenceProgram;
-import org.beehive.jllm.program.PhaseId;
-import org.beehive.jllm.program.ProgramComponent;
-import org.beehive.jllm.program.op.EmbeddingLookup;
-import org.beehive.jllm.program.op.Operation;
-import org.beehive.jllm.program.op.OperationKind;
-import org.beehive.jllm.program.op.VocabProjection;
-import org.beehive.jllm.runtime.model.ArchitectureId;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.program.InferenceProgram;
+import org.beehive.jitllm.program.PhaseId;
+import org.beehive.jitllm.program.ProgramComponent;
+import org.beehive.jitllm.program.op.EmbeddingLookup;
+import org.beehive.jitllm.program.op.Operation;
+import org.beehive.jitllm.program.op.OperationKind;
+import org.beehive.jitllm.program.op.VocabProjection;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * The checks every single-token decoder program shares, and nothing a family owns.

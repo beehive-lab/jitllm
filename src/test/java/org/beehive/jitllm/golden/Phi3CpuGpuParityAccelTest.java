@@ -1,6 +1,6 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 /** Phi3's logits against the CPU reference. See {@link CpuGpuParity}. */
@@ -8,8 +8,8 @@ public class Phi3CpuGpuParityAccelTest extends CpuGpuParity {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     @Test
     public void phi3_mini_4k_f16_cpuGpuParity() throws Exception {

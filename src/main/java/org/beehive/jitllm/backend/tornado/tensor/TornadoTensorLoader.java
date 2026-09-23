@@ -1,10 +1,10 @@
-package org.beehive.jllm.backend.tornado.tensor;
+package org.beehive.jitllm.backend.tornado.tensor;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
-import org.beehive.jllm.runtime.tensor.LongIndexedTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.runtime.tensor.LongIndexedTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
 

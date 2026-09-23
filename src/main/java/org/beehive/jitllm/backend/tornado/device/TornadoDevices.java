@@ -1,13 +1,13 @@
-package org.beehive.jllm.backend.tornado.device;
+package org.beehive.jitllm.backend.tornado.device;
 
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.backend.Device;
-import org.beehive.jllm.runtime.backend.DeviceCapabilities;
-import org.beehive.jllm.runtime.backend.DeviceCapability;
-import org.beehive.jllm.runtime.backend.DeviceId;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.Device;
+import org.beehive.jitllm.runtime.backend.DeviceCapabilities;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
+import org.beehive.jitllm.runtime.backend.DeviceId;
 import uk.ac.manchester.tornado.api.enums.TornadoVMBackendType;
 import uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider;
 import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
@@ -17,7 +17,7 @@ import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
  *
  * <p>Before this, four call sites asked independently — {@code LoweredPlanSelection}'s device label
  * for the cache key, {@code SchedulerDetectionService} for the scheduler type and two backend
- * predicates, {@code TensorCoreSupport} for MMA, and {@code JllmBench} inline for a report heading
+ * predicates, {@code TensorCoreSupport} for MMA, and {@code JitllmBench} inline for a report heading
  * — and all four pinned {@code getBackend(0).getDefaultDevice()}. Four answers that must agree,
  * derived four times, is a disagreement waiting for a machine with two backends installed.
  *

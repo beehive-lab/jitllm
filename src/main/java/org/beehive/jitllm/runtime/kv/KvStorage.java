@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.kv;
+package org.beehive.jitllm.runtime.kv;
 
 /**
  * The device-side storage a {@link KvCacheManager} hands out through leases — seen from above,

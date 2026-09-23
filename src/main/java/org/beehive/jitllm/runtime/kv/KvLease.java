@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.kv;
+package org.beehive.jitllm.runtime.kv;
 
 /**
  * A session's claim on KV storage: the blocks it may write, and nothing more.

@@ -1,4 +1,4 @@
-package org.beehive.jllm.model.loader;
+package org.beehive.jitllm.model.loader;
 
 /** Exception thrown when model loading fails. */
 public class ModelLoadException extends RuntimeException {

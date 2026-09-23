@@ -1,9 +1,9 @@
-package org.beehive.jllm.inference.weights;
+package org.beehive.jitllm.inference.weights;
 
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
- * jllm utilizes two distinct weight types:
+ * jitllm utilizes two distinct weight types:
  *
  * <ul>
  *   <li><b>StandardWeights:</b> Designed for standard Java-based inference on the CPU.

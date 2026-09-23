@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.scheduling;
+package org.beehive.jitllm.backend.tornado.scheduling;
 
 public enum SchedulerType {
     NVIDIA,

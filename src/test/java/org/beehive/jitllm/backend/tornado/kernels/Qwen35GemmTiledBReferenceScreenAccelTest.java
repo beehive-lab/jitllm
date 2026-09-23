@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assume.assumeTrue;
 
@@ -22,16 +22,16 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  * Opt-in screen: {@code gemmMMATiledB} alone on the production shapes at M = 512 and 2048, for
  * comparison with a standalone cuBLAS FP16/FP32 reference of the same shapes and operand types.
  * Device kernel time from the profiler; 15 samples after 5 warm-ups; reports microseconds and
- * TFLOPS. {@code JLLM_KERNEL_SCREEN=true}.
+ * TFLOPS. {@code JITLLM_KERNEL_SCREEN=true}.
  */
 public class Qwen35GemmTiledBReferenceScreenAccelTest {
 
     @Test
     public void screen() throws Exception {
         assumeTrue(
-                "opt in with JLLM_KERNEL_SCREEN=true",
-                Boolean.getBoolean("jllm.kernelScreen")
-                        || "true".equals(System.getenv("JLLM_KERNEL_SCREEN")));
+                "opt in with JITLLM_KERNEL_SCREEN=true",
+                Boolean.getBoolean("jitllm.kernelScreen")
+                        || "true".equals(System.getenv("JITLLM_KERNEL_SCREEN")));
         int[][] shapes = {{17408, 5120}, {5120, 17408}, {10240, 5120}, {5120, 6144}};
         HalfFloatArray b = new HalfFloatArray(17408 * 5120);
         Random rng = new Random(1L);

@@ -1,4 +1,4 @@
-package org.beehive.jllm.auxiliary.metrics;
+package org.beehive.jitllm.auxiliary.metrics;
 
 /**
  * Renders metrics in human-readable format to {@code stderr}.
@@ -6,8 +6,8 @@ package org.beehive.jllm.auxiliary.metrics;
  * <p>This is the default renderer — no configuration needed. To enable explicitly:
  *
  * <pre>
- *   -Djllm.metrics.format=human   (default, can be omitted)
- *   -Djllm.metrics.output=stderr  (default, can be omitted)
+ *   -Djitllm.metrics.format=human   (default, can be omitted)
+ *   -Djitllm.metrics.output=stderr  (default, can be omitted)
  * </pre>
  *
  * <p>Startup timings are printed once by the CLI before generation.

@@ -1,9 +1,9 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import java.lang.foreign.MemorySegment;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.tornado.TornadoWeights;
-import org.beehive.jllm.model.Model;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
+import org.beehive.jitllm.model.Model;
 
 /** Staging one token's embedding into the carrier a compiled program actually reads. */
 public final class EmbeddingStaging {

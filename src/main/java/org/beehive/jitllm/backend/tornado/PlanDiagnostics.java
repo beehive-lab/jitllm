@@ -1,7 +1,7 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.runtime.backend.ExecutionInfo;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider;
 

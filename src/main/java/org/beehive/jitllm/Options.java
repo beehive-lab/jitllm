@@ -1,4 +1,4 @@
-package org.beehive.jllm;
+package org.beehive.jitllm;
 
 import java.io.PrintStream;
 import java.nio.file.Path;
@@ -79,9 +79,9 @@ public record Options(
                 "Invalid argument: --batch-prefill-size requires --with-prefill-decode");
         // Publish to system properties so TornadoVMMasterPlan and Llama read the right values
         // even when the JAR is invoked directly (without the Python launcher).
-        if (withPrefillDecode) System.setProperty("jllm.withPrefillDecode", "true");
+        if (withPrefillDecode) System.setProperty("jitllm.withPrefillDecode", "true");
         if (batchPrefillSize > 1)
-            System.setProperty("jllm.prefillBatchSize", String.valueOf(batchPrefillSize));
+            System.setProperty("jitllm.prefillBatchSize", String.valueOf(batchPrefillSize));
     }
 
     static void require(boolean condition, String messageFormat, Object... args) {
@@ -95,7 +95,7 @@ public record Options(
     }
 
     public static void printUsage(PrintStream out) {
-        out.println("Usage: jllm run|chat [options] (legacy mode flags remain supported)");
+        out.println("Usage: jitllm run|chat [options] (legacy mode flags remain supported)");
         out.println();
         out.println("Options:");
         out.println("  --model, -m <path>            required, path to .gguf file");
@@ -200,14 +200,14 @@ public record Options(
                 case "--gpu" -> useTornadovm = true;
                 case "--print-taskgraph-chain" ->
                         System.setProperty(
-                                org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.PROPERTY,
+                                org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.PROPERTY,
                                 "true");
                 case "--with-native-libraries" ->
                         System.setProperty(
-                                org.beehive.jllm.runtime.policy.ExecutionPolicy
+                                org.beehive.jitllm.runtime.policy.ExecutionPolicy
                                         .NATIVE_LIBRARIES_PROPERTY,
                                 "true");
-                case "--verbose", "-v" -> System.setProperty("jllm.verbose", "true");
+                case "--verbose", "-v" -> System.setProperty("jitllm.verbose", "true");
                 case "--with-prefill-decode" -> withPrefillDecode = true;
                 case "--help", "-h" -> {
                     printUsage(System.out);

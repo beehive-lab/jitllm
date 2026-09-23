@@ -1,13 +1,13 @@
-package org.beehive.jllm.backend.tornado.plan;
+package org.beehive.jitllm.backend.tornado.plan;
 
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
-import org.beehive.jllm.backend.tornado.plan.components.q8_0.Qwen2MoEQ8_0PlanComponents;
-import org.beehive.jllm.inference.state.Qwen2MoEState;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.runtime.model.ArchitectureId;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.components.q8_0.Qwen2MoEQ8_0PlanComponents;
+import org.beehive.jitllm.inference.state.Qwen2MoEState;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * Qwen2-MoE's plan components — the family the inventory flagged.

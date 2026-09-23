@@ -1,20 +1,20 @@
-package org.beehive.jllm.model;
+package org.beehive.jitllm.model;
 
 import java.nio.channels.FileChannel;
-import org.beehive.jllm.format.GGUF;
-import org.beehive.jllm.model.loader.DevstralModelLoader;
-import org.beehive.jllm.model.loader.Gemma4ModelLoader;
-import org.beehive.jllm.model.loader.GraniteLoader;
-import org.beehive.jllm.model.loader.LlamaModelLoader;
-import org.beehive.jllm.model.loader.MistralModelLoader;
-import org.beehive.jllm.model.loader.Phi3ModelLoader;
-import org.beehive.jllm.model.loader.Qwen2MoEModelLoader;
-import org.beehive.jllm.model.loader.Qwen2ModelLoader;
-import org.beehive.jllm.model.loader.Qwen35ModelLoader;
-import org.beehive.jllm.model.loader.Qwen3ModelLoader;
+import org.beehive.jitllm.format.GGUF;
+import org.beehive.jitllm.model.loader.DevstralModelLoader;
+import org.beehive.jitllm.model.loader.Gemma4ModelLoader;
+import org.beehive.jitllm.model.loader.GraniteLoader;
+import org.beehive.jitllm.model.loader.LlamaModelLoader;
+import org.beehive.jitllm.model.loader.MistralModelLoader;
+import org.beehive.jitllm.model.loader.Phi3ModelLoader;
+import org.beehive.jitllm.model.loader.Qwen2MoEModelLoader;
+import org.beehive.jitllm.model.loader.Qwen2ModelLoader;
+import org.beehive.jitllm.model.loader.Qwen35ModelLoader;
+import org.beehive.jitllm.model.loader.Qwen3ModelLoader;
 
 /**
- * Enumerates the different types of models supported by jllm. This enum helps in categorizing and
+ * Enumerates the different types of models supported by jitllm. This enum helps in categorizing and
  * handling model-specific logic based on the type of model being used.
  *
  * <p><b>Usage:</b> Use {@code ModelType} to specify or retrieve the type of large language model
@@ -22,7 +22,7 @@ import org.beehive.jllm.model.loader.Qwen3ModelLoader;
  * configurations by dispatching calls to the appropriate model loader for each model type.
  *
  * <p>Each enum value represents a distinct model type, which might be used for conditional logic,
- * initialization, or resource allocation within jllm.
+ * initialization, or resource allocation within jitllm.
  */
 public enum ModelType {
     LLAMA_3 {

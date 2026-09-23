@@ -1,4 +1,4 @@
-package org.beehive.jllm.program;
+package org.beehive.jitllm.program;
 
 /**
  * What a program-fixed device array is for.

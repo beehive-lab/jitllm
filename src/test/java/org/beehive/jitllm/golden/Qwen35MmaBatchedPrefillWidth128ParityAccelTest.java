@@ -1,7 +1,7 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
-import org.beehive.jllm.backend.tornado.PlanDispatchEvidence;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.backend.tornado.PlanDispatchEvidence;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 // @formatter:off
@@ -17,11 +17,11 @@ public class Qwen35MmaBatchedPrefillWidth128ParityAccelTest extends CpuGpuParity
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     static {
-        System.setProperty("jllm.qwen35.tensorCores", "true");
+        System.setProperty("jitllm.qwen35.tensorCores", "true");
     }
 
     @Test

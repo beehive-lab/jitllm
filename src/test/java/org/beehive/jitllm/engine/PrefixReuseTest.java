@@ -1,13 +1,13 @@
-package org.beehive.jllm.engine;
+package org.beehive.jitllm.engine;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.runtime.batch.BatchSlots;
-import org.beehive.jllm.runtime.kv.BlockPool;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.batch.BatchSlots;
+import org.beehive.jitllm.runtime.kv.BlockPool;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
 import org.junit.Test;
 
 /**
@@ -21,7 +21,7 @@ public class PrefixReuseTest {
 
     /** Records the positions it was asked to decode, per slot. */
     private static final class RecordingExecutor
-            implements org.beehive.jllm.runtime.batch.BatchExecutor {
+            implements org.beehive.jitllm.runtime.batch.BatchExecutor {
 
         final List<Integer> decodedPositions = new ArrayList<>();
         private final int batchSize;

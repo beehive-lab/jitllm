@@ -1,12 +1,12 @@
-package org.beehive.jllm.model.provider;
+package org.beehive.jitllm.model.provider;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.ServiceLoader;
 import java.util.stream.Collectors;
-import org.beehive.jllm.format.ModelSource;
-import org.beehive.jllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.format.ModelSource;
+import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 
 /**
  * Finds the provider for a source.

@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.enums.MMAShape;
@@ -17,7 +17,7 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * the single-token kernels.
  *
  * <p>These kernels are meant to be registered in {@link
- * org.beehive.jllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode} TaskGraphs.
+ * org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode} TaskGraphs.
  */
 public final class TransformerBatchPrefillKernels {
 

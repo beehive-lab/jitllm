@@ -1,14 +1,14 @@
-package org.beehive.jllm.backend.tornado.layers.type.q8_0.prefill;
+package org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill;
 
 import java.util.List;
 import java.util.stream.IntStream;
-import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.inference.state.LlamaState;
-import org.beehive.jllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -20,7 +20,7 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 
 /**
  * Batched-prefill transformer-layer TaskGraphs for the unified batched prefill-decode plan ({@link
- * org.beehive.jllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode}).
+ * org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode}).
  *
  * <p>One {@link ImmutableTaskGraph} per transformer layer, each processing {@code batchSize} tokens
  * simultaneously via {@link TransformerBatchPrefillKernels}.
@@ -79,10 +79,10 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.batchSize = batchSize;
         this.paddedBatch = (batchSize + 127) & ~127;
         if (batchSize % 128 != 0
-                && (Boolean.getBoolean("jllm.verbose")
-                        || Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit"))) {
+                && (Boolean.getBoolean("jitllm.verbose")
+                        || Boolean.getBoolean("jitllm.EnableTimingForTornadoVMInit"))) {
             System.err.printf(
-                    "[jllm] prefill batch %d padded to %d for tensor-core tiles; "
+                    "[jitllm] prefill batch %d padded to %d for tensor-core tiles; "
                             + "GEMM efficiency is %d/%d — use a multiple of 128 for best throughput.%n",
                     batchSize, paddedBatch, batchSize, paddedBatch);
         }

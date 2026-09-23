@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 /**
  * One sequence: a conversation, a completion, one thread's worth of work.
@@ -32,7 +32,7 @@ public interface GenerationSession extends AutoCloseable {
      * diagnostics may throw {@link UnsupportedOperationException}.
      */
     @Experimental
-    default org.beehive.jllm.runtime.backend.ExecutionInfo prepare() {
+    default org.beehive.jitllm.runtime.backend.ExecutionInfo prepare() {
         throw new UnsupportedOperationException(
                 "This session does not expose execution diagnostics");
     }

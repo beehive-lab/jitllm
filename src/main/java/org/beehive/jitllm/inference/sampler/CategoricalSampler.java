@@ -1,7 +1,7 @@
-package org.beehive.jllm.inference.sampler;
+package org.beehive.jitllm.inference.sampler;
 
 import java.util.random.RandomGenerator;
-import org.beehive.jllm.inference.Logits;
+import org.beehive.jitllm.inference.Logits;
 
 /**
  * A sampler that samples from a categorical distribution. Supports both FloatTensor and FloatArray

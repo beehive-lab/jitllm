@@ -1,4 +1,4 @@
-package org.beehive.jllm.quality;
+package org.beehive.jitllm.quality;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -12,18 +12,18 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.PlanDispatchEvidence;
-import org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.golden.TupleInfo;
-import org.beehive.jllm.inference.Logits;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.backend.tornado.PlanDispatchEvidence;
+import org.beehive.jitllm.backend.tornado.TornadoBatchPrefillPass;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.TupleInfo;
+import org.beehive.jitllm.inference.Logits;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
 import org.junit.Test;
 
 // @formatter:off
@@ -42,22 +42,22 @@ import org.junit.Test;
  * the kernels the plan dispatched for the batched scan and attention, every scored position's NLL,
  * and the sha256 of those NLLs, so two reports either agree bit for bit or show where they part.
  *
- * <p>Width from {@code jllm.nllScreen.batch} (default 256); the prefix is one and a half widths
- * plus 64 tokens, so the last chunk is partial as well. Output to {@code jllm.nllScreen.out}.
+ * <p>Width from {@code jitllm.nllScreen.batch} (default 256); the prefix is one and a half widths
+ * plus 64 tokens, so the last chunk is partial as well. Output to {@code jitllm.nllScreen.out}.
  * Tensor cores and the FP16 KV cache on, as the benchmarked plan runs.
  */
 // @formatter:on
 public class Qwen35LongPrefixNllAccelTest {
 
     static {
-        System.setProperty("jllm.qwen35.tensorCores", "true");
+        System.setProperty("jitllm.qwen35.tensorCores", "true");
         // The benchmarked plan's cache precision: it selects the attention kernel, so it is set
         // here and read back into the report from the state rather than assumed.
-        System.setProperty("jllm.kvcache.fp16", "true");
+        System.setProperty("jitllm.kvcache.fp16", "true");
     }
 
-    private static final String OUTPUT_PROPERTY = "jllm.nllScreen.out";
-    private static final String BATCH_PROPERTY = "jllm.nllScreen.batch";
+    private static final String OUTPUT_PROPERTY = "jitllm.nllScreen.out";
+    private static final String BATCH_PROPERTY = "jitllm.nllScreen.batch";
 
     /**
      * Context the plan is sized for: 2048, or twice the width where the prefix would not fit (width
@@ -91,8 +91,8 @@ public class Qwen35LongPrefixNllAccelTest {
 
         String previous = System.getProperty("use.tornadovm");
         System.setProperty("use.tornadovm", "true");
-        System.setProperty("jllm.withPrefillDecode", "true");
-        System.setProperty("jllm.prefillBatchSize", String.valueOf(batch));
+        System.setProperty("jitllm.withPrefillDecode", "true");
+        System.setProperty("jitllm.prefillBatchSize", String.valueOf(batch));
         StringBuilder report = new StringBuilder();
         try {
             Model model = ModelLoader.loadModel(modelPath, CONTEXT, true, true);

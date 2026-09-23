@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -295,13 +295,13 @@ public class Qwen35GemmEpilogueFusionAccelTest {
         assertEquals("host residual", 0, mismatches(straight, x2));
     }
 
-    /** Opt in with JLLM_KERNEL_SCREEN=true: fused vs two-kernel forms at the production shapes. */
+    /** Opt in with JITLLM_KERNEL_SCREEN=true: fused vs two-kernel forms at the production shapes. */
     @Test
     public void screen() throws Exception {
         assumeTrue(
-                "opt in with JLLM_KERNEL_SCREEN=true",
-                Boolean.getBoolean("jllm.kernelScreen")
-                        || "true".equals(System.getenv("JLLM_KERNEL_SCREEN")));
+                "opt in with JITLLM_KERNEL_SCREEN=true",
+                Boolean.getBoolean("jitllm.kernelScreen")
+                        || "true".equals(System.getenv("JITLLM_KERNEL_SCREEN")));
         for (int m : new int[] {512, 2048}) {
             // residual: attn_output shape (5120 x 6144) and ffn_down (5120 x 17408)
             for (int[] nk : new int[][] {{5120, 6144}, {5120, 17408}}) {

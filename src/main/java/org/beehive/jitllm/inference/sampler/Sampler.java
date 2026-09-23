@@ -1,11 +1,11 @@
-package org.beehive.jllm.inference.sampler;
+package org.beehive.jitllm.inference.sampler;
 
 import java.util.random.RandomGenerator;
 import java.util.random.RandomGeneratorFactory;
-import org.beehive.jllm.Options;
-import org.beehive.jllm.inference.Logits;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.Options;
+import org.beehive.jitllm.inference.Logits;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 /**

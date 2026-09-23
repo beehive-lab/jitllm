@@ -1,11 +1,11 @@
-package org.beehive.jllm.integration.cli;
+package org.beehive.jitllm.integration.cli;
 
 import java.nio.file.Path;
 import java.util.Objects;
-import org.beehive.jllm.api.ModelOptions;
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.backend.DeviceResolvers;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.api.ModelOptions;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.DeviceResolvers;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 
 /** Common model-loading settings for terminal and HTTP integrations. */
 public record ModelRunConfig(Path model, int contextLength, boolean gpu) {

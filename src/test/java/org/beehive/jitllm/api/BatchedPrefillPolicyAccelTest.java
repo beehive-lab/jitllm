@@ -1,12 +1,12 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 /**
@@ -15,7 +15,7 @@ import org.junit.Test;
  *
  * <p>The prefill workspace is sized from the batch width when the state is built. The facade
  * resolves an {@code ExecutionPolicy} onto the finished state, which is after that, so the width
- * had come from the {@code jllm.prefillBatchSize} system property alone. A caller that set the
+ * had come from the {@code jitllm.prefillBatchSize} system property alone. A caller that set the
  * width through the facade got a plan built for a batch whose arrays were never allocated, and the
  * failure arrived from inside TornadoVM as {@code null object passed into streamIn() in schedule
  * prefillActivation} — naming neither the policy nor the property.
@@ -26,7 +26,7 @@ import org.junit.Test;
 public class BatchedPrefillPolicyAccelTest {
 
     private static final String GPU_PROPERTY = "use.tornadovm";
-    private static final String BATCH_PROPERTY = "jllm.prefillBatchSize";
+    private static final String BATCH_PROPERTY = "jitllm.prefillBatchSize";
     private static final int BATCH = 32;
 
     @Test

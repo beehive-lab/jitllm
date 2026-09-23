@@ -1,8 +1,8 @@
-package org.beehive.jllm.quality;
+package org.beehive.jitllm.quality;
 
 import static org.junit.Assert.assertEquals;
 
-import org.beehive.jllm.backend.tornado.PlanDispatchEvidence;
+import org.beehive.jitllm.backend.tornado.PlanDispatchEvidence;
 import uk.ac.manchester.tornado.api.GridScheduler;
 
 // @formatter:off
@@ -11,12 +11,12 @@ import uk.ac.manchester.tornado.api.GridScheduler;
  *
  * <p>The same passages and the same helper: the unscored prefix is ingested through the batched
  * path and the identical teacher-forced continuation positions are scored. What differs from the
- * parent is only which kernels the prefix went through — `jllm.qwen35.tensorCores` is set here,
+ * parent is only which kernels the prefix went through — `jitllm.qwen35.tensorCores` is set here,
  * before this JVM touches the layer class, so the plan is the MMA one, and {@link #verifyDispatch}
  * checks that against the scheduler of the plan this screen scored with, not against the property.
  *
- * <p>Drive it with {@code -Djllm.nllScreen.batch=32} for the batched prefix, and with {@code
- * -Djllm.nllScreen.out=<file>} to write the per-passage report. Without the batch width the plan is
+ * <p>Drive it with {@code -Djitllm.nllScreen.batch=32} for the batched prefix, and with {@code
+ * -Djitllm.nllScreen.out=<file>} to write the per-passage report. Without the batch width the plan is
  * the single-token one, which has no batched projection to check, and this class skips rather than
  * scoring a path its name does not describe.
  *
@@ -29,11 +29,11 @@ public class Qwen35MmaNllScreenAccelTest extends Qwen35NllScreenAccelTest {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     static {
-        System.setProperty("jllm.qwen35.tensorCores", "true");
+        System.setProperty("jitllm.qwen35.tensorCores", "true");
     }
 
     @Override
@@ -45,7 +45,7 @@ public class Qwen35MmaNllScreenAccelTest extends Qwen35NllScreenAccelTest {
     protected void verifyDispatch(GridScheduler grids, int batch, int dim) {
         // At the widths that fill whole GEMM tiles the projection runs as the dequantize-then-GEMM
         // pair; below them, as the direct tensor-core kernel. Either way it is on the tensor cores.
-        if (org.beehive.jllm.model.qwen35.Qwen35Configuration.dequantGemmWidth(batch)) {
+        if (org.beehive.jitllm.model.qwen35.Qwen35Configuration.dequantGemmWidth(batch)) {
             PlanDispatchEvidence.assertQwen35AttentionOutputOnDequantGemm(grids, batch, dim, 6144);
         } else {
             PlanDispatchEvidence.assertQwen35AttentionOutputOnTensorCores(grids, batch, dim);
@@ -57,9 +57,9 @@ public class Qwen35MmaNllScreenAccelTest extends Qwen35NllScreenAccelTest {
         // The 128-wide state on CUDA takes the warp-per-column scan; the same width elsewhere the
         // shared-state one. The report names the kernel; this pins it to the dispatch rule.
         String expected =
-                org.beehive.jllm.backend.tornado.kernels.Qwen35BatchKernels.deltaWarpEligible(
+                org.beehive.jitllm.backend.tornado.kernels.Qwen35BatchKernels.deltaWarpEligible(
                                         stateDim)
-                                && org.beehive.jllm.backend.tornado.TensorCoreSupport
+                                && org.beehive.jitllm.backend.tornado.TensorCoreSupport
                                         .isTensorCoreCapableBackend()
                         ? "deltaRuleScanWarp"
                         : "deltaRuleScanShared";

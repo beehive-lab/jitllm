@@ -5,10 +5,10 @@
 # This script configures all necessary environment variables for development and runtime
 
 # Resolve root of this project (LLaMA3) and TornadoVM
-export JLLM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export JITLLM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Add TornadoVM and LLaMA bin directories to PATH
-export PATH="${PATH}:${TORNADOVM_HOME}/bin:${JLLM_ROOT}"
+export PATH="${PATH}:${TORNADOVM_HOME}/bin:${JITLLM_ROOT}"
 
 # Optional: Set JAVA_HOME if required
 # export JAVA_HOME=/path/to/graalvm

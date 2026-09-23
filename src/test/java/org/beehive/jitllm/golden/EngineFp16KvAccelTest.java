@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -7,19 +7,19 @@ import static org.junit.Assume.assumeTrue;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.TensorCoreSupport;
-import org.beehive.jllm.backend.tornado.batch.TornadoBatchExecutor;
-import org.beehive.jllm.engine.LLMEngine;
-import org.beehive.jllm.engine.RequestHandle;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
-import org.beehive.jllm.runtime.kv.KvLease;
-import org.beehive.jllm.runtime.kv.KvStorage;
-import org.beehive.jllm.runtime.kv.KvStorageFactories;
-import org.beehive.jllm.runtime.kv.KvStorageRequest;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.batch.TornadoBatchExecutor;
+import org.beehive.jitllm.engine.LLMEngine;
+import org.beehive.jitllm.engine.RequestHandle;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.kv.KvLease;
+import org.beehive.jitllm.runtime.kv.KvStorage;
+import org.beehive.jitllm.runtime.kv.KvStorageFactories;
+import org.beehive.jitllm.runtime.kv.KvStorageRequest;
 import org.junit.Test;
 
 /**
@@ -54,8 +54,8 @@ public class EngineFp16KvAccelTest {
         assumeTrue("environment absent: " + GoldenFixture.absentMessage(fixture), file != null);
         assumeTrue(
                 "the engine needs tensor-core MMA", TensorCoreSupport.isTensorCoreCapableBackend());
-        String previousBatch = System.getProperty("jllm.prefillBatchSize");
-        System.setProperty("jllm.prefillBatchSize", String.valueOf(BATCH));
+        String previousBatch = System.getProperty("jitllm.prefillBatchSize");
+        System.setProperty("jitllm.prefillBatchSize", String.valueOf(BATCH));
         try {
             Model model = ModelLoader.loadModel(file, CONTEXT_LENGTH, true, true);
             List<Integer> longPrompt = KvPrecisionHarness.longPrompt(model, 300);
@@ -97,9 +97,9 @@ public class EngineFp16KvAccelTest {
             }
         } finally {
             if (previousBatch == null) {
-                System.clearProperty("jllm.prefillBatchSize");
+                System.clearProperty("jitllm.prefillBatchSize");
             } else {
-                System.setProperty("jllm.prefillBatchSize", previousBatch);
+                System.setProperty("jitllm.prefillBatchSize", previousBatch);
             }
         }
     }

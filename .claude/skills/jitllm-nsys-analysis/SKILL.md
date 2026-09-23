@@ -1,7 +1,7 @@
 ---
-name: jllm-nsys-analysis
+name: jitllm-nsys-analysis
 description: >
-  Nsight Systems workflow for jllm on the CUDA backend. Use to capture a
+  Nsight Systems workflow for jitllm on the CUDA backend. Use to capture a
   timeline and decide where the time goes: generated kernels, launch overhead,
   synchronization, host-device transfers, or GPU idle.
 tags:
@@ -11,14 +11,14 @@ tags:
 license: Apache-2.0
 ---
 
-# Nsight Systems on jllm
+# Nsight Systems on jitllm
 
 ## When to use
 
 For the system-level picture: which kernels dominate, whether launch overhead is
 significant, whether copies or synchronization are visible, and whether the GPU is idle
 between kernels. For per-kernel occupancy, stalls and speed-of-light, use
-`jllm-ncu-analysis` after this identifies the hot kernel.
+`jitllm-ncu-analysis` after this identifies the hot kernel.
 
 CUDA only. `nsys` sees nothing useful on the OpenCL or Metal backends.
 
@@ -68,7 +68,7 @@ nsys profile \
   --trace=cuda,nvtx,osrt \
   --output "$OUT/decode" \
   --force-overwrite true \
-  ./jllm --gpu --model "<model.gguf>" \
+  ./jitllm --gpu --model "<model.gguf>" \
     --prompt "<prompt>" -n 256 --seed 42
 ```
 
@@ -88,7 +88,7 @@ nsys analyze "$OUT/decode.nsys-rep"
 
 | Observation | Classification | Next |
 | --- | --- | --- |
-| one generated kernel dominates GPU time | kernel-bound | `jllm-ncu-analysis` on that kernel |
+| one generated kernel dominates GPU time | kernel-bound | `jitllm-ncu-analysis` on that kernel |
 | many short kernels, high launch API time | launch-overhead-bound | compare with `--cuda-graphs`; look at graph count and per-layer task count |
 | high `cudaMemcpy` time | transfer-bound | which buffers move per step? A weight or block table copied every execution is a residency question |
 | high synchronization API time | sync-bound | look at the read-back at the invocation boundary |
@@ -102,7 +102,7 @@ should move per invocation. A per-step copy of anything else is the finding.
 
 ## 6. What to hand back
 
-- the exact `nsys` command and the exact `jllm` command;
+- the exact `nsys` command and the exact `jitllm` command;
 - the trace path (outside the repo);
 - top kernels by total GPU time, the CUDA API summary and the transfer summary;
 - which part of the timeline is warm-up and which is steady state;

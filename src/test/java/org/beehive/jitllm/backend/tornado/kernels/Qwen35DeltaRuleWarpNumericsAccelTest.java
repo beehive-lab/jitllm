@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
@@ -410,9 +410,9 @@ public class Qwen35DeltaRuleWarpNumericsAccelTest {
     @Test
     public void screen() throws Exception {
         assumeTrue(
-                "opt in with JLLM_KERNEL_SCREEN=true",
-                Boolean.getBoolean("jllm.kernelScreen")
-                        || "true".equals(System.getenv("JLLM_KERNEL_SCREEN")));
+                "opt in with JITLLM_KERNEL_SCREEN=true",
+                Boolean.getBoolean("jitllm.kernelScreen")
+                        || "true".equals(System.getenv("JITLLM_KERNEL_SCREEN")));
         for (int rows : new int[] {32, 256, 512, 1024}) {
             long s = 900L + rows;
             FloatArray q =

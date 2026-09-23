@@ -1,7 +1,7 @@
-package org.beehive.jllm.backend.tornado.tensor;
+package org.beehive.jitllm.backend.tornado.tensor;
 
 import java.lang.foreign.MemorySegment;
-import org.beehive.jllm.format.GGMLType;
+import org.beehive.jitllm.format.GGMLType;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 public class FP16TornadoTensor extends TornadoTensor {

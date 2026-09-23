@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.layers;
+package org.beehive.jitllm.backend.tornado.layers;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -12,19 +12,19 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.kernels.Qwen35MMAKernels;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.backend.tornado.tensor.FP32TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.Q4_0TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.Q4_1TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.Q5_KTornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.Q6_KTornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jllm.inference.state.Qwen35State;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.tornado.Qwen35TornadoWeights;
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q4_1TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q5_KTornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q6_KTornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.inference.state.Qwen35State;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.WorkerGrid;
@@ -252,21 +252,21 @@ public class Qwen35GraphTopologyAccelTest {
      * tests set.
      *
      * <p>Two facts, not one, and the second is why this is a method rather than a capability test.
-     * {@code -Djllm.qwen35.packedIntegerDot=false} puts every packed projection back on the
+     * {@code -Djitllm.qwen35.packedIntegerDot=false} puts every packed projection back on the
      * floating-point kernels, so a suite run that way builds a different plan — and the cases below
      * assert <b>that</b> plan rather than skipping. It is the existing escape hatch and not a new
      * option: no other switch selects this.
      */
     // @formatter:on
     private static boolean packedPathEnabled() {
-        return org.beehive.jllm.backend.tornado.device.TornadoDevices.current()
+        return org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
                         .capabilities()
                         .supports(
-                                org.beehive.jllm.runtime.backend.DeviceCapability
+                                org.beehive.jitllm.runtime.backend.DeviceCapability
                                         .PACKED_INTEGER_DOT)
                 && !"false"
                         .equalsIgnoreCase(
-                                System.getProperty("jllm.qwen35.packedIntegerDot", "true"));
+                                System.getProperty("jitllm.qwen35.packedIntegerDot", "true"));
     }
 
     // @formatter:off
@@ -316,7 +316,7 @@ public class Qwen35GraphTopologyAccelTest {
         // otherwise. Asserted on the grid because the task name is the same either way, and
         // against the same decision the builder took for this device.
         long limit =
-                org.beehive.jllm.backend.tornado.device.TornadoDevices.current().maxWorkGroupSize();
+                org.beehive.jitllm.backend.tornado.device.TornadoDevices.current().maxWorkGroupSize();
         var geometry = Qwen35FFNLayers.selectDeltaRuleGeometry(valueDim, limit);
         WorkerGrid expectedDelta = Qwen35FFNLayers.deltaRuleWorker(geometry, config);
         WorkerGrid delta = scheduler.get(prefix + "ssm_delta_rule");
@@ -774,11 +774,11 @@ public class Qwen35GraphTopologyAccelTest {
 
     private static Qwen35BatchPrefillLayers buildBatched(Qwen35Configuration config, int width) {
         String previousDevice = System.getProperty("use.tornadovm");
-        String previousCores = System.getProperty("jllm.qwen35.tensorCores");
+        String previousCores = System.getProperty("jitllm.qwen35.tensorCores");
         System.setProperty("use.tornadovm", "true");
         // Read into a static final when Qwen35BatchPrefillLayers first loads, which is here: no
         // test above this one touches that class.
-        System.setProperty("jllm.qwen35.tensorCores", "true");
+        System.setProperty("jitllm.qwen35.tensorCores", "true");
         try {
             Qwen35State state =
                     (Qwen35State)
@@ -786,7 +786,7 @@ public class Qwen35GraphTopologyAccelTest {
             return new Qwen35BatchPrefillLayers(state, weights(config), config, width);
         } finally {
             restore("use.tornadovm", previousDevice);
-            restore("jllm.qwen35.tensorCores", previousCores);
+            restore("jitllm.qwen35.tensorCores", previousCores);
         }
     }
 
@@ -831,7 +831,7 @@ public class Qwen35GraphTopologyAccelTest {
     public void everyFfnDownReachesTheTensorCoresWhateverItsRepresentation() {
         assumeTrue(
                 "no tensor-core-capable device",
-                org.beehive.jllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend());
+                org.beehive.jitllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend());
         Qwen35Configuration config = config();
         GridScheduler scheduler = new GridScheduler();
         buildBatched(config).updateGridScheduler(scheduler);
@@ -869,7 +869,7 @@ public class Qwen35GraphTopologyAccelTest {
     public void theBatchedFeedForwardProjectsGateAndUpSeparately() {
         assumeTrue(
                 "no tensor-core-capable device",
-                org.beehive.jllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend());
+                org.beehive.jitllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend());
         Qwen35Configuration config = config();
         GridScheduler scheduler = new GridScheduler();
         buildBatched(config).updateGridScheduler(scheduler);
@@ -926,7 +926,7 @@ public class Qwen35GraphTopologyAccelTest {
     public void theBatchedPlanSelectsTensorCoresPerWidth() {
         assumeTrue(
                 "no tensor-core-capable device",
-                org.beehive.jllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend());
+                org.beehive.jitllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend());
         Qwen35Configuration config = config();
 
         for (int width : new int[] {32, 64}) {
@@ -1038,7 +1038,7 @@ public class Qwen35GraphTopologyAccelTest {
     public void theBatchedPlanSelectsDequantizeThenGemmPerWidthAndWidthOfOutput() {
         assumeTrue(
                 "no tensor-core-capable device",
-                org.beehive.jllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend());
+                org.beehive.jitllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend());
         Qwen35Configuration wide = config(TRUNK_LAYERS, 5120);
         assertTrue(Qwen35Configuration.dequantGemmWidth(128));
         assertFalse(Qwen35Configuration.dequantGemmWidth(64));

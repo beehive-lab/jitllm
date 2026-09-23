@@ -1,4 +1,4 @@
-package org.beehive.jllm.inference.op;
+package org.beehive.jitllm.inference.op;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -7,14 +7,14 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.util.Random;
-import org.beehive.jllm.auxiliary.Parallel;
-import org.beehive.jllm.backend.cpu.InferenceCore;
-import org.beehive.jllm.inference.state.Qwen2MoEState;
-import org.beehive.jllm.inference.weights.standard.Qwen2MoEStandardWeights;
-import org.beehive.jllm.model.qwen2.Qwen2MoEConfiguration;
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.auxiliary.Parallel;
+import org.beehive.jitllm.backend.cpu.InferenceCore;
+import org.beehive.jitllm.inference.state.Qwen2MoEState;
+import org.beehive.jitllm.inference.weights.standard.Qwen2MoEStandardWeights;
+import org.beehive.jitllm.model.qwen2.Qwen2MoEConfiguration;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.junit.Test;
 
 public class Qwen2MoeCpuOperationEquivalenceTest {
@@ -26,17 +26,17 @@ public class Qwen2MoeCpuOperationEquivalenceTest {
     @org.junit.BeforeClass
     public static void pinFp32KeyValueCache() {
         previousFp32Property =
-                System.getProperty(org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY);
-        System.setProperty(org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY, "true");
+                System.getProperty(org.beehive.jitllm.runtime.policy.StorageOptions.FP32_PROPERTY);
+        System.setProperty(org.beehive.jitllm.runtime.policy.StorageOptions.FP32_PROPERTY, "true");
     }
 
     @org.junit.AfterClass
     public static void restoreKeyValueCache() {
         if (previousFp32Property == null) {
-            System.clearProperty(org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY);
+            System.clearProperty(org.beehive.jitllm.runtime.policy.StorageOptions.FP32_PROPERTY);
         } else {
             System.setProperty(
-                    org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY,
+                    org.beehive.jitllm.runtime.policy.StorageOptions.FP32_PROPERTY,
                     previousFp32Property);
         }
     }

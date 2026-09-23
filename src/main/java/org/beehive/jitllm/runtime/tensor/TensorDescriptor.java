@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.tensor;
+package org.beehive.jitllm.runtime.tensor;
 
 import java.util.Objects;
 

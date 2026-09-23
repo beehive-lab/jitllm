@@ -1,11 +1,11 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import java.lang.foreign.MemorySegment;
-import org.beehive.jllm.inference.Logits;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.tornado.TornadoWeights;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.Model;
+import org.beehive.jitllm.inference.Logits;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.Model;
 
 /**
  * The accelerated forward pass: stage the token's embedding, then run the plan.
@@ -47,7 +47,7 @@ public final class TornadoForwardPass {
         // Per-token host staging the family owns, before anything reads its device buffers.
         model.stagePerTokenDeviceInputs(state, token);
         if (tornadoVMMasterPlan
-                instanceof org.beehive.jllm.backend.tornado.lowering.InvocationBoundary boundary) {
+                instanceof org.beehive.jitllm.backend.tornado.lowering.InvocationBoundary boundary) {
             return boundary.invoke(token, position).logits();
         }
 

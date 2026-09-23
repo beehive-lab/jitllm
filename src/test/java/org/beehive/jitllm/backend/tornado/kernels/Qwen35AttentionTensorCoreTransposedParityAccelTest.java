@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -267,13 +267,13 @@ public class Qwen35AttentionTensorCoreTransposedParityAccelTest {
         assertCase(2056, 2048, 2048, 0, 9L);
     }
 
-    /** Retained, T and T32 at 2048 rows, start 0, capacity 2056; opt in with JLLM_KERNEL_SCREEN. */
+    /** Retained, T and T32 at 2048 rows, start 0, capacity 2056; opt in with JITLLM_KERNEL_SCREEN. */
     @Test
     public void screen() throws Exception {
         assumeTrue(
-                "opt in with JLLM_KERNEL_SCREEN=true",
-                Boolean.getBoolean("jllm.kernelScreen")
-                        || "true".equals(System.getenv("JLLM_KERNEL_SCREEN")));
+                "opt in with JITLLM_KERNEL_SCREEN=true",
+                Boolean.getBoolean("jitllm.kernelScreen")
+                        || "true".equals(System.getenv("JITLLM_KERNEL_SCREEN")));
         Store store = new Store(2056, 11L);
         int rows = 2048;
         FloatArray q = new FloatArray(rows * HEADS * HEAD_SIZE);

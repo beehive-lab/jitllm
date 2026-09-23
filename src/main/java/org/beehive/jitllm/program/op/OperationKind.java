@@ -1,4 +1,4 @@
-package org.beehive.jllm.program.op;
+package org.beehive.jitllm.program.op;
 
 /**
  * The closed set of operations transformer inference needs.

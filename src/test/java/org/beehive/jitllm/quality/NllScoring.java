@@ -1,4 +1,4 @@
-package org.beehive.jllm.quality;
+package org.beehive.jitllm.quality;
 
 /**
  * Teacher-forced negative log-likelihood, and the alignment it depends on.

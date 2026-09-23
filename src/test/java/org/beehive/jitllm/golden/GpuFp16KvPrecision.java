@@ -1,11 +1,11 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
 import java.util.List;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.model.Model;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.model.Model;
 
 /**
  * The GPU's FP16 key/value cache against its FP32 one, for every supported (family, weights, mode)
@@ -61,15 +61,15 @@ public final class GpuFp16KvPrecision {
 
     private static void check(Path file, String fixture, Mode mode) throws Exception {
         assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
-        String[] keys = {"use.tornadovm", "jllm.withPrefillDecode", "jllm.prefillBatchSize"};
+        String[] keys = {"use.tornadovm", "jitllm.withPrefillDecode", "jitllm.prefillBatchSize"};
         String[] previous = new String[keys.length];
         for (int i = 0; i < keys.length; i++) {
             previous[i] = System.getProperty(keys[i]);
         }
         System.setProperty("use.tornadovm", "true");
-        System.setProperty("jllm.withPrefillDecode", Boolean.toString(mode != Mode.SINGLE_TOKEN));
+        System.setProperty("jitllm.withPrefillDecode", Boolean.toString(mode != Mode.SINGLE_TOKEN));
         int width = mode == Mode.BATCHED ? CHUNK : 1;
-        System.setProperty("jllm.prefillBatchSize", Integer.toString(width));
+        System.setProperty("jitllm.prefillBatchSize", Integer.toString(width));
         try {
             Model model = KvPrecisionHarness.load(file, CONTEXT, true);
             List<Integer> prompt = KvPrecisionHarness.longPrompt(model, PROMPT_TOKENS);

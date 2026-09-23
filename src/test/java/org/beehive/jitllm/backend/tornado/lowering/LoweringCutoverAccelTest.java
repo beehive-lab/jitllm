@@ -1,19 +1,19 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jllm.api.GenerationRequest;
-import org.beehive.jllm.api.GenerationResult;
-import org.beehive.jllm.api.GenerationSession;
-import org.beehive.jllm.api.LocalModel;
-import org.beehive.jllm.api.LocalModels;
-import org.beehive.jllm.api.ModelOptions;
-import org.beehive.jllm.api.TextGenerationModel;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.api.GenerationRequest;
+import org.beehive.jitllm.api.GenerationResult;
+import org.beehive.jitllm.api.GenerationSession;
+import org.beehive.jitllm.api.LocalModel;
+import org.beehive.jitllm.api.LocalModels;
+import org.beehive.jitllm.api.ModelOptions;
+import org.beehive.jitllm.api.TextGenerationModel;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 /**
@@ -21,7 +21,7 @@ import org.junit.Test;
  * property, so all of them would still pass if the default silently reverted — which is exactly how
  * a cutover regresses without anyone noticing.
  *
- * <p><b>The counter, not the property.</b> Reading {@code jllm.lowering} back proves the path was
+ * <p><b>The counter, not the property.</b> Reading {@code jitllm.lowering} back proves the path was
  * asked for; {@code loweredPlanCount()} proves a lowered plan was built. This project has already
  * recorded one accelerator gate that passed green while the flag never reached the JVM.
  */

@@ -1,6 +1,6 @@
-package org.beehive.jllm.backend.tornado.plan.layout;
+package org.beehive.jitllm.backend.tornado.plan.layout;
 
-import org.beehive.jllm.backend.tornado.plan.ExecutionMode;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 
 /**
  * How many layer graph families each execution mode builds — read from the layouts themselves.

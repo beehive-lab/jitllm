@@ -1,10 +1,10 @@
-package org.beehive.jllm.model.provider;
+package org.beehive.jitllm.model.provider;
 
 import java.io.IOException;
-import org.beehive.jllm.format.ModelSource;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.format.ModelSource;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 
 /**
  * Recognizes a model source and loads it.

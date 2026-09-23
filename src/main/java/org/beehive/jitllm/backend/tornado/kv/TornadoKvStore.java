@@ -1,6 +1,6 @@
-package org.beehive.jllm.backend.tornado.kv;
+package org.beehive.jitllm.backend.tornado.kv;
 
-import org.beehive.jllm.runtime.kv.KvStorage;
+import org.beehive.jitllm.runtime.kv.KvStorage;
 import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
@@ -24,7 +24,7 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  *     + c ]
  * </pre>
  *
- * <p>Precision follows the model's KV setting: FP32 arrays unless {@code jllm.kvcache.fp16}, in
+ * <p>Precision follows the model's KV setting: FP32 arrays unless {@code jitllm.kvcache.fp16}, in
  * which case the half-precision pair is allocated instead and the FP32 pair is left null. Both are
  * never allocated at once — that would double the largest allocation in the process for nothing.
  */
@@ -139,7 +139,7 @@ public final class TornadoKvStore implements KvStorage {
      * {@inheritDoc}
      *
      * <p><b>Unmapped entries are translated to the scratch block here</b>, and only here. The host
-     * table keeps {@link org.beehive.jllm.runtime.kv.BlockPool#UNMAPPED} because that is the
+     * table keeps {@link org.beehive.jitllm.runtime.kv.BlockPool#UNMAPPED} because that is the
      * accounting truth — "no lease holds this slot" — while the device needs an index it can safely
      * write to, since an inactive slot still executes the KV kernels every step. Doing the
      * translation on the host instead would collapse the two meanings and lose the distinction the
@@ -162,7 +162,7 @@ public final class TornadoKvStore implements KvStorage {
             int entry = table[i];
             blockTable.set(
                     i,
-                    entry == org.beehive.jllm.runtime.kv.BlockPool.UNMAPPED ? scratchBlock : entry);
+                    entry == org.beehive.jitllm.runtime.kv.BlockPool.UNMAPPED ? scratchBlock : entry);
         }
     }
 

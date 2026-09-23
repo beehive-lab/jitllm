@@ -1,20 +1,20 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.batch.TornadoBatchExecutor;
-import org.beehive.jllm.engine.LLMEngine;
-import org.beehive.jllm.engine.RequestHandle;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
-import org.beehive.jllm.runtime.kv.KvLease;
-import org.beehive.jllm.runtime.kv.KvStorage;
-import org.beehive.jllm.runtime.kv.KvStorageFactories;
-import org.beehive.jllm.runtime.kv.KvStorageRequest;
+import org.beehive.jitllm.backend.tornado.batch.TornadoBatchExecutor;
+import org.beehive.jitllm.engine.LLMEngine;
+import org.beehive.jitllm.engine.RequestHandle;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.kv.KvLease;
+import org.beehive.jitllm.runtime.kv.KvStorage;
+import org.beehive.jitllm.runtime.kv.KvStorageFactories;
+import org.beehive.jitllm.runtime.kv.KvStorageRequest;
 
 /**
  * The promoted path on #129's workload, so the two numbers mean the same thing.
@@ -46,7 +46,7 @@ public final class EngineVsReference129 {
         int contextLength = Integer.getInteger("probe.ctx", 512);
         int maxNewTokens = Integer.getInteger("probe.n", 64);
         String prompt = System.getProperty("probe.prompt", "What is the capital of France?");
-        System.setProperty("jllm.prefillBatchSize", String.valueOf(batch));
+        System.setProperty("jitllm.prefillBatchSize", String.valueOf(batch));
 
         Model model = ModelLoader.loadModel(modelPath, contextLength, true, true);
         int blockTokens = State.KV_BLOCK_SIZE;

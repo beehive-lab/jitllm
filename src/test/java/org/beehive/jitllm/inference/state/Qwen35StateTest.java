@@ -1,11 +1,11 @@
-package org.beehive.jllm.inference.state;
+package org.beehive.jitllm.inference.state;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
 import org.junit.After;
 import org.junit.Test;
 

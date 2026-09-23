@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
@@ -8,12 +8,12 @@ import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import org.beehive.jllm.Options;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.Options;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 
@@ -39,7 +39,7 @@ import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 public class DecodeGraphBytecodeAccelTest {
 
     private static final String GPU_PROPERTY = "use.tornadovm";
-    private static final String KV_FP16_PROPERTY = "jllm.kvcache.fp16";
+    private static final String KV_FP16_PROPERTY = "jitllm.kvcache.fp16";
     private static final int BATCH = 128;
     private static final int CONTEXT = 512;
 

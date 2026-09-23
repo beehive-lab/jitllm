@@ -1,15 +1,15 @@
-package org.beehive.jllm.backend.tornado.layers.type.fp16;
+package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
-import org.beehive.jllm.backend.tornado.kernels.TransformerPagedKvKernels;
-import org.beehive.jllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerDetectionService;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jllm.model.mistral.MistralConfiguration;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
+import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
+import org.beehive.jitllm.model.mistral.MistralConfiguration;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
@@ -19,7 +19,7 @@ public class MistralFP16FFNLayers
         extends AbstractTransformerLayerTaskGraphs<LlamaTornadoWeights, MistralConfiguration> {
 
     /**
-     * @see org.beehive.jllm.backend.tornado.layers.type.fp16.LlamaFP16FFNLayers#useSimd32Reduction
+     * @see org.beehive.jitllm.backend.tornado.layers.type.fp16.LlamaFP16FFNLayers#useSimd32Reduction
      */
     private final boolean useSimd32Reduction =
             SchedulerDetectionService.isSubgroupShuffle32Supported();
@@ -447,6 +447,6 @@ public class MistralFP16FFNLayers
     @Override
     protected boolean useFp16KVCache() {
         return state.usesFp16KeyValueCache()
-                && org.beehive.jllm.backend.tornado.Fp16KeyValueSupport.nvidiaDevice();
+                && org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.nvidiaDevice();
     }
 }

@@ -1,6 +1,6 @@
-package org.beehive.jllm.model.devstral;
+package org.beehive.jitllm.model.devstral;
 
-import org.beehive.jllm.model.Configuration;
+import org.beehive.jitllm.model.Configuration;
 
 /**
  * Configuration for Devstral 2 models (Mistral 3 architecture). Unlike standard Mistral, Devstral 2

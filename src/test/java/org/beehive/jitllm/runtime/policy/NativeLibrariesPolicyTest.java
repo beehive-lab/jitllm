@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.policy;
+package org.beehive.jitllm.runtime.policy;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;

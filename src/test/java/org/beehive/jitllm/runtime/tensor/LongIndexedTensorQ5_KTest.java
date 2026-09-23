@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.tensor;
+package org.beehive.jitllm.runtime.tensor;
 
 import static org.junit.Assert.assertEquals;
 
@@ -6,7 +6,7 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Random;
-import org.beehive.jllm.tensor.standard.Q5_KFloatTensor;
+import org.beehive.jitllm.tensor.standard.Q5_KFloatTensor;
 import org.junit.Test;
 
 /**

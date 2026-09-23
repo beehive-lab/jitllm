@@ -1,11 +1,11 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
 import java.util.List;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.model.Model;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.model.Model;
 import org.junit.Test;
 
 /**
@@ -57,12 +57,12 @@ public class CpuFp16KvPrecisionAccelTest {
         Path file = GoldenFixture.locate(fixture);
         assumeTrue("environment absent: " + GoldenFixture.absentMessage(fixture), file != null);
         String previousGpu = System.getProperty(GPU_PROPERTY);
-        String previousPrefill = System.getProperty("jllm.withPrefillDecode");
-        String previousWidth = System.getProperty("jllm.prefillBatchSize");
+        String previousPrefill = System.getProperty("jitllm.withPrefillDecode");
+        String previousWidth = System.getProperty("jitllm.prefillBatchSize");
         System.setProperty(GPU_PROPERTY, "false");
         if (prefillBatchSize > 1) {
-            System.setProperty("jllm.withPrefillDecode", "true");
-            System.setProperty("jllm.prefillBatchSize", Integer.toString(prefillBatchSize));
+            System.setProperty("jitllm.withPrefillDecode", "true");
+            System.setProperty("jitllm.prefillBatchSize", Integer.toString(prefillBatchSize));
         }
         try {
             Model model = KvPrecisionHarness.load(file, CONTEXT, false);
@@ -82,8 +82,8 @@ public class CpuFp16KvPrecisionAccelTest {
             comparison.assertWithin(fixture + " cpu", 0.9999, 0.01, 0.95);
         } finally {
             restore(GPU_PROPERTY, previousGpu);
-            restore("jllm.withPrefillDecode", previousPrefill);
-            restore("jllm.prefillBatchSize", previousWidth);
+            restore("jitllm.withPrefillDecode", previousPrefill);
+            restore("jitllm.prefillBatchSize", previousWidth);
         }
     }
 

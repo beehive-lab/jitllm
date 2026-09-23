@@ -1,6 +1,6 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
-import org.beehive.jllm.backend.tornado.PlanDispatchEvidence;
+import org.beehive.jitllm.backend.tornado.PlanDispatchEvidence;
 
 // @formatter:off
 /**
@@ -16,7 +16,7 @@ import org.beehive.jllm.backend.tornado.PlanDispatchEvidence;
  *
  * <pre>
  * for W in 32 64; do
- *   JAVA_TOOL_OPTIONS="-Djllm.crossWidth.width=$W -Djllm.crossWidth.out=/tmp/mma-cw-$W.bin" \
+ *   JAVA_TOOL_OPTIONS="-Djitllm.crossWidth.width=$W -Djitllm.crossWidth.out=/tmp/mma-cw-$W.bin" \
  *     ./mvnw -o verify -Paccel-tests -Dtest='Qwen35MmaCrossWidthCaptureAccelTest'
  * done
  * </pre>
@@ -29,11 +29,11 @@ public class Qwen35MmaCrossWidthCaptureAccelTest extends Qwen35CrossWidthCapture
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     static {
-        System.setProperty("jllm.qwen35.tensorCores", "true");
+        System.setProperty("jitllm.qwen35.tensorCores", "true");
     }
 
     @Override

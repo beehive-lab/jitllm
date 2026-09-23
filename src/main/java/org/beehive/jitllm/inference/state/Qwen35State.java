@@ -1,10 +1,10 @@
-package org.beehive.jllm.inference.state;
+package org.beehive.jitllm.inference.state;
 
-import org.beehive.jllm.backend.tornado.workspace.TornadoWorkspaces;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 
 /**
  * Session state for the {@code qwen35} architecture.
@@ -122,7 +122,7 @@ public final class Qwen35State extends State {
     }
 
     public Qwen35State(
-            Configuration config, int batchsize, org.beehive.jllm.runtime.kv.KvLease lease) {
+            Configuration config, int batchsize, org.beehive.jitllm.runtime.kv.KvLease lease) {
         super(config, batchsize, lease);
         Qwen35Configuration c = (Qwen35Configuration) config;
 

@@ -1,6 +1,6 @@
-package org.beehive.jllm.arch.fixture.runtime;
+package org.beehive.jitllm.arch.fixture.runtime;
 
-import org.beehive.jllm.format.GGMLType;
+import org.beehive.jitllm.format.GGMLType;
 
 /**
  * Deliberate Rule 4 violation of the <i>format</i> kind: a runtime-layer type naming a file-format

@@ -1,8 +1,8 @@
-package org.beehive.jllm.tensor.standard;
+package org.beehive.jitllm.tensor.standard;
 
 import static org.junit.Assert.assertEquals;
 
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 
 public class ArrayHalfFloatTensorTest {

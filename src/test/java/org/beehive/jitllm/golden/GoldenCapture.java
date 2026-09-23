@@ -1,15 +1,15 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.model.loader.ModelLoader;
 import uk.ac.manchester.tornado.api.GridScheduler;
 
 /**
@@ -19,7 +19,7 @@ import uk.ac.manchester.tornado.api.GridScheduler;
  * capturing needs no production change. Sampling stays greedy (argmax), which makes the seed
  * irrelevant and the token sequence deterministic.
  *
- * <p>Requires {@code -Djllm.deviceSample=false} (the default). With on-device sampling the argmax
+ * <p>Requires {@code -Djitllm.deviceSample=false} (the default). With on-device sampling the argmax
  * runs on the GPU and only the token id crosses to the host, so there would be no logits row to
  * capture — {@link #assertHostLogitsAvailable()} makes that explicit rather than silently producing
  * empty goldens.
@@ -41,7 +41,7 @@ public final class GoldenCapture {
         /**
          * The grid scheduler of the plan this capture ran on: one entry per task, with the geometry
          * it is configured to launch on. {@code null} for a CPU capture, or for a plan shape {@link
-         * org.beehive.jllm.backend.tornado.PlanDispatchEvidence} cannot reach — callers that need
+         * org.beehive.jitllm.backend.tornado.PlanDispatchEvidence} cannot reach — callers that need
          * it assert on it. Readable after the execution plan is freed.
          */
         public GridScheduler gridScheduler;
@@ -66,9 +66,9 @@ public final class GoldenCapture {
     private GoldenCapture() {}
 
     public static void assertHostLogitsAvailable() {
-        if (Boolean.getBoolean("jllm.deviceSample")) {
+        if (Boolean.getBoolean("jitllm.deviceSample")) {
             throw new IllegalStateException(
-                    "jllm.deviceSample=true keeps the logits row on the device; goldens must run with it false");
+                    "jitllm.deviceSample=true keeps the logits row on the device; goldens must run with it false");
         }
     }
 
@@ -125,17 +125,17 @@ public final class GoldenCapture {
             throws Exception {
         assertHostLogitsAvailable();
 
-        String previousPrefill = System.getProperty("jllm.withPrefillDecode");
-        String previousBatch = System.getProperty("jllm.prefillBatchSize");
+        String previousPrefill = System.getProperty("jitllm.withPrefillDecode");
+        String previousBatch = System.getProperty("jitllm.prefillBatchSize");
         if (separatePrefillPhase) {
-            System.setProperty("jllm.withPrefillDecode", "true");
-            System.setProperty("jllm.prefillBatchSize", String.valueOf(prefillBatchSize));
+            System.setProperty("jitllm.withPrefillDecode", "true");
+            System.setProperty("jitllm.prefillBatchSize", String.valueOf(prefillBatchSize));
         }
         try {
             return captureWithCurrentPolicy(ggufPath, useGpu, forcedTokens, prefillBatchSize);
         } finally {
-            restore("jllm.withPrefillDecode", previousPrefill);
-            restore("jllm.prefillBatchSize", previousBatch);
+            restore("jitllm.withPrefillDecode", previousPrefill);
+            restore("jitllm.prefillBatchSize", previousBatch);
         }
     }
 
@@ -189,7 +189,7 @@ public final class GoldenCapture {
         // adjustment from the same source keeps the row count at TOKENS for every family, instead
         // of encoding one family's arithmetic as a constant that quietly rots.
         int skippedSeed =
-                org.beehive.jllm.inference.PromptIngestion.of(state, promptTokens, 0).firstIndex();
+                org.beehive.jitllm.inference.PromptIngestion.of(state, promptTokens, 0).firstIndex();
         int budget = promptTokens.size() + TOKENS - skippedSeed;
 
         TornadoVMMasterPlan plan = null;
@@ -204,16 +204,16 @@ public final class GoldenCapture {
                 // The dispatch this capture's own plan was built with, for callers that assert on
                 // it. Optional here: a plan shape this seam cannot reach records nothing.
                 result.gridScheduler =
-                        org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                        org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
                                 .gridSchedulerIfAvailable(plan);
                 if (plan
                         instanceof
-                        org.beehive.jllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode) {
+                        org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode) {
                     // Only the tasks this family's batched graphs hold: another family records
                     // nothing under a qwen35 task name rather than failing the capture.
                     for (String task : RECORDED_BATCHED_TASKS) {
                         java.util.Set<String> kernels =
-                                org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                                org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
                                         .batchedTaskKernelsIfAny(plan, task);
                         if (!kernels.isEmpty()) {
                             result.batchedTaskKernels.put(task, kernels);
@@ -234,7 +234,7 @@ public final class GoldenCapture {
         return result;
     }
 
-    private static float[] toFloatArray(org.beehive.jllm.inference.Logits logits) {
+    private static float[] toFloatArray(org.beehive.jitllm.inference.Logits logits) {
         float[] out = new float[logits.size()];
         for (int i = 0; i < out.length; i++) {
             out[i] = logits.get(i);

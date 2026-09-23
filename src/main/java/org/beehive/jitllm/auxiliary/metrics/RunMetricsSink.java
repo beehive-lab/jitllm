@@ -1,12 +1,12 @@
-package org.beehive.jllm.auxiliary.metrics;
+package org.beehive.jitllm.auxiliary.metrics;
 
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.Map;
-import org.beehive.jllm.auxiliary.RunMetrics;
-import org.beehive.jllm.runtime.metrics.MetricKey;
-import org.beehive.jllm.runtime.metrics.MetricsReport;
-import org.beehive.jllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.auxiliary.RunMetrics;
+import org.beehive.jitllm.runtime.metrics.MetricKey;
+import org.beehive.jitllm.runtime.metrics.MetricsReport;
+import org.beehive.jitllm.runtime.metrics.MetricsSink;
 
 /**
  * The sink behind the CLI's metrics report — {@link RunMetrics} seen through the Rule 17 seam.
@@ -29,12 +29,12 @@ import org.beehive.jllm.runtime.metrics.MetricsSink;
 public final class RunMetricsSink implements MetricsSink {
 
     /** Opt-in switch. Absent or false ⇒ {@link MetricsSink#disabled()}. */
-    public static final String ENABLE_PROPERTY = "jllm.metrics.device";
+    public static final String ENABLE_PROPERTY = "jitllm.metrics.device";
 
     private final Map<MetricKey, Long> deviceMetrics = new EnumMap<>(MetricKey.class);
 
     /**
-     * The sink the CLI installs: this one when {@code -Djllm.metrics.device=true}, the disabled
+     * The sink the CLI installs: this one when {@code -Djitllm.metrics.device=true}, the disabled
      * sink otherwise. Returning the disabled sink rather than a flag on this class keeps the
      * "nobody is listening" answer in one place — the backend asks {@link #isEnabled()} and skips
      * the measurement entirely.

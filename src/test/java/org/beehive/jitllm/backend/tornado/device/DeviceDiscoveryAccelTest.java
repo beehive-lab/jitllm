@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.device;
+package org.beehive.jitllm.backend.tornado.device;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -6,8 +6,8 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assume.assumeFalse;
 import static org.junit.Assume.assumeTrue;
 
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.backend.Device;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.Device;
 import org.junit.Test;
 
 /**
@@ -90,16 +90,16 @@ public class DeviceDiscoveryAccelTest {
      */
     @org.junit.Test
     public void theCudaDeviceReportsItsWorkgroupLimitAndAdmitsTheEightPartDeltaRule() {
-        org.beehive.jllm.runtime.backend.Device device =
-                org.beehive.jllm.backend.tornado.device.TornadoDevices.current();
+        org.beehive.jitllm.runtime.backend.Device device =
+                org.beehive.jitllm.backend.tornado.device.TornadoDevices.current();
         org.junit.Assume.assumeTrue(
                 "not a CUDA device",
-                device.backend() == org.beehive.jllm.runtime.backend.BackendId.CUDA);
+                device.backend() == org.beehive.jitllm.runtime.backend.BackendId.CUDA);
         long limit = device.maxWorkGroupSize();
         org.junit.Assert.assertTrue("CUDA reports a workgroup limit, got " + limit, limit >= 1024);
         org.junit.Assert.assertEquals(
-                org.beehive.jllm.backend.tornado.layers.Qwen35FFNLayers.DeltaRuleGeometry.SPLIT8,
-                org.beehive.jllm.backend.tornado.layers.Qwen35FFNLayers.selectDeltaRuleGeometry(
+                org.beehive.jitllm.backend.tornado.layers.Qwen35FFNLayers.DeltaRuleGeometry.SPLIT8,
+                org.beehive.jitllm.backend.tornado.layers.Qwen35FFNLayers.selectDeltaRuleGeometry(
                         128, limit));
     }
 }

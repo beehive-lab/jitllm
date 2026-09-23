@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.kv;
+package org.beehive.jitllm.runtime.kv;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;

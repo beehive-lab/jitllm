@@ -1,7 +1,7 @@
-package org.beehive.jllm.format;
+package org.beehive.jitllm.format;
 
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.runtime.tensor.ExecutionTarget;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 
 /**
  * The one place that says what a file's tensor becomes when it is loaded.

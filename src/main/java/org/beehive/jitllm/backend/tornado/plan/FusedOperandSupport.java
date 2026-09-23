@@ -1,9 +1,9 @@
-package org.beehive.jllm.backend.tornado.plan;
+package org.beehive.jitllm.backend.tornado.plan;
 
 import java.util.Arrays;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * Which combinations of operand representations a fused device kernel accepts.

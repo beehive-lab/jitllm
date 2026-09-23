@@ -1,19 +1,19 @@
-package org.beehive.jllm;
+package org.beehive.jitllm;
 
 import java.io.IOException;
 import java.util.Locale;
 import java.util.Scanner;
-import org.beehive.jllm.api.FinishReason;
-import org.beehive.jllm.api.GenerationRequest;
-import org.beehive.jllm.api.GenerationResult;
-import org.beehive.jllm.api.GenerationSession;
-import org.beehive.jllm.api.LocalModel;
-import org.beehive.jllm.api.LocalModels;
-import org.beehive.jllm.api.ModelOptions;
-import org.beehive.jllm.api.TextGenerationModel;
-import org.beehive.jllm.auxiliary.RunMetrics;
-import org.beehive.jllm.integration.cli.ModelRunConfig;
-import org.beehive.jllm.integration.cli.StartupDiagnostics;
+import org.beehive.jitllm.api.FinishReason;
+import org.beehive.jitllm.api.GenerationRequest;
+import org.beehive.jitllm.api.GenerationResult;
+import org.beehive.jitllm.api.GenerationSession;
+import org.beehive.jitllm.api.LocalModel;
+import org.beehive.jitllm.api.LocalModels;
+import org.beehive.jitllm.api.ModelOptions;
+import org.beehive.jitllm.api.TextGenerationModel;
+import org.beehive.jitllm.auxiliary.RunMetrics;
+import org.beehive.jitllm.integration.cli.ModelRunConfig;
+import org.beehive.jitllm.integration.cli.StartupDiagnostics;
 
 /**
  * The command-line integration.
@@ -23,21 +23,21 @@ import org.beehive.jllm.integration.cli.StartupDiagnostics;
  * history, the stop tokens and the streaming decode all belong to the session, so what is left here
  * is what a CLI is actually for — parsing arguments and writing to the console.
  */
-public class JllmApp {
+public class JitllmApp {
     // Configuration flags for hardware acceleration and optimizations
     public static final boolean USE_VECTOR_API =
             Boolean.parseBoolean(
                     System.getProperty(
-                            "jllm.VectorAPI",
+                            "jitllm.VectorAPI",
                             "true")); // Enable Java Vector API for CPU acceleration
     public static final boolean SHOW_PERF_INTERACTIVE =
             Boolean.parseBoolean(
                     System.getProperty(
-                            "jllm.ShowPerfInteractive",
+                            "jitllm.ShowPerfInteractive",
                             "true")); // Show performance metrics in interactive mode
 
     /**
-     * On-device greedy sampling ({@code -Djllm.deviceSample=true}) keeps the logits on the GPU and
+     * On-device greedy sampling ({@code -Djitllm.deviceSample=true}) keeps the logits on the GPU and
      * returns only the argmax token id. It is only valid on the GPU FP16 greedy path for the models
      * whose decode loop reads {@code state.workspace.sampledToken} (Llama / Mistral / Qwen3). For
      * any other configuration the host still needs the full logits row, so the flag is cleared
@@ -47,7 +47,7 @@ public class JllmApp {
      * when the session builds its execution plan.
      */
     private static void guardDeviceSample(LocalModel model, Options options) {
-        if (!Boolean.getBoolean("jllm.deviceSample")) {
+        if (!Boolean.getBoolean("jitllm.deviceSample")) {
             return;
         }
         boolean greedy = options.temperature() == 0.0f;
@@ -60,7 +60,7 @@ public class JllmApp {
         if (!(options.useTornadovm() && greedy && fp16 && wiredLoop)) {
             System.err.println(
                     "[deviceSample] ignored — requires GPU + greedy (temperature 0) + FP16 + Llama/Mistral/Qwen3");
-            System.clearProperty("jllm.deviceSample");
+            System.clearProperty("jitllm.deviceSample");
         }
     }
 
@@ -163,7 +163,7 @@ public class JllmApp {
      * @throws IOException if model loading or file operations fail.
      */
     static void main(String[] args) throws IOException {
-        org.beehive.jllm.integration.cli.CliErrors.reportDiagnostics(() -> run(args));
+        org.beehive.jitllm.integration.cli.CliErrors.reportDiagnostics(() -> run(args));
     }
 
     private static void run(String[] args) throws IOException {

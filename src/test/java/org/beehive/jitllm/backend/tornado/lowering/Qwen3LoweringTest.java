@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -8,18 +8,18 @@ import static org.junit.Assert.fail;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.model.architecture.Qwen2ProgramDescription;
-import org.beehive.jllm.model.architecture.Qwen3ProgramDescription;
-import org.beehive.jllm.model.qwen2.Qwen2Configuration;
-import org.beehive.jllm.model.qwen3.Qwen3Configuration;
-import org.beehive.jllm.program.InferenceProgram;
-import org.beehive.jllm.program.ProgramComponent;
-import org.beehive.jllm.program.op.OperationKind;
-import org.beehive.jllm.program.op.RmsNorm;
-import org.beehive.jllm.runtime.backend.CompileOptions;
-import org.beehive.jllm.runtime.backend.DeviceCapabilities;
-import org.beehive.jllm.runtime.backend.DeviceCapability;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.model.architecture.Qwen2ProgramDescription;
+import org.beehive.jitllm.model.architecture.Qwen3ProgramDescription;
+import org.beehive.jitllm.model.qwen2.Qwen2Configuration;
+import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.program.InferenceProgram;
+import org.beehive.jitllm.program.ProgramComponent;
+import org.beehive.jitllm.program.op.OperationKind;
+import org.beehive.jitllm.program.op.RmsNorm;
+import org.beehive.jitllm.runtime.backend.CompileOptions;
+import org.beehive.jitllm.runtime.backend.DeviceCapabilities;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 
 /**
@@ -123,13 +123,13 @@ public class Qwen3LoweringTest {
     public void theProjectionWidthsComeFromTheHeadLengths() {
         List<ProgramComponent> layer = layer(program(DataType.F16)).children();
         var query =
-                (org.beehive.jllm.program.op.MatVec)
+                (org.beehive.jitllm.program.op.MatVec)
                         ((ProgramComponent.Leaf) layer.get(1)).operation();
         var key =
-                (org.beehive.jllm.program.op.MatVec)
+                (org.beehive.jitllm.program.op.MatVec)
                         ((ProgramComponent.Leaf) layer.get(2)).operation();
         var output =
-                (org.beehive.jllm.program.op.MatVec)
+                (org.beehive.jitllm.program.op.MatVec)
                         ((ProgramComponent.Leaf) layer.get(9)).operation();
 
         assertEquals("heads × key_length, not dim", HEADS * HEAD_KEY, query.rows());
@@ -207,7 +207,7 @@ public class Qwen3LoweringTest {
         List<ProgramComponent> components = new ArrayList<>(original.components());
         components.set(index, replacement);
         return InferenceProgram.of(
-                new org.beehive.jllm.program.ProgramSignature(
+                new org.beehive.jitllm.program.ProgramSignature(
                         original.signature().architecture(),
                         original.signature().policy(),
                         original.signature().capacity(),

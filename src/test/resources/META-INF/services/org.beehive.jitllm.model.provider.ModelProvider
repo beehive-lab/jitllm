@@ -1,2 +1,2 @@
-org.beehive.jllm.model.provider.TestProviders$FixtureProvider
-org.beehive.jllm.model.provider.TestProviders$OtherFixtureProvider
+org.beehive.jitllm.model.provider.TestProviders$FixtureProvider
+org.beehive.jitllm.model.provider.TestProviders$OtherFixtureProvider

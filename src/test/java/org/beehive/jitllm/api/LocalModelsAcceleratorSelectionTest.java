@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -6,11 +6,11 @@ import static org.junit.Assert.assertTrue;
 import java.io.IOException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.backend.Device;
-import org.beehive.jllm.runtime.backend.DeviceCapabilities;
-import org.beehive.jllm.runtime.backend.DeviceId;
-import org.beehive.jllm.runtime.backend.DeviceResolver;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.Device;
+import org.beehive.jitllm.runtime.backend.DeviceCapabilities;
+import org.beehive.jitllm.runtime.backend.DeviceId;
+import org.beehive.jitllm.runtime.backend.DeviceResolver;
 import org.junit.Test;
 
 /**

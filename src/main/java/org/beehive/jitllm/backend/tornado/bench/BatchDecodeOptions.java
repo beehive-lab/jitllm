@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.bench;
+package org.beehive.jitllm.backend.tornado.bench;
 
 /**
  * What a batched-decode run is configured with.
@@ -6,7 +6,7 @@ package org.beehive.jllm.backend.tornado.bench;
  * <p>Eleven knobs that were eleven {@code -Dbatch.decode.*} system properties read from the middle
  * of a 400-line method. As properties they had three problems: two runs in one JVM could not
  * differ, a caller could not see what a run was configured with, and the coupling to {@code
- * jllm.prefillBatchSize} was enforced by an exception thrown after the model had loaded.
+ * jitllm.prefillBatchSize} was enforced by an exception thrown after the model had loaded.
  *
  * @param batchSize slots decoded together, {@code B}
  * @param decodeContext context length each slot is given

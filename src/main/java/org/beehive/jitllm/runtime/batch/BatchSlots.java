@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.batch;
+package org.beehive.jitllm.runtime.batch;
 
 /**
  * One step's worth of work, as positions in fixed-width arrays.

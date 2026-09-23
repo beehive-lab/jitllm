@@ -40,7 +40,7 @@ cd "$LANGCHAIN4J_DIR"
   -DskipTests -DskipITs -Drevapi.skip=true
 
 ./mvnw -pl langchain4j-gpu-llama3 dependency:tree \
-  -Dincludes=io.github.beehive-lab:jllm
+  -Dincludes=io.github.beehive-lab:jitllm
 ```
 
 Confirm the resolved artifact ends in the suffix the active JDK implies — `-jdk21` on JDK 21,
@@ -53,7 +53,7 @@ needs a comment, and a method with a return value needs `@return`. A missing one
 ## 3. Run the suite
 
 ```bash
-/path/to/jllm/.claude/skills/update-langchain4j-integration/scripts/validate-langchain4j-integration.sh \
+/path/to/jitllm/.claude/skills/update-langchain4j-integration/scripts/validate-langchain4j-integration.sh \
   "$LANGCHAIN4J_DIR"
 ```
 
@@ -93,7 +93,7 @@ a given fixture emits.
 cd "$DEMO_DIR"
 mvn clean package dependency:build-classpath -Dmdep.outputFile=cp.txt -DskipTests
 mvn dependency:tree \
-  -Dincludes=dev.langchain4j:langchain4j-gpu-llama3,io.github.beehive-lab:jllm
+  -Dincludes=dev.langchain4j:langchain4j-gpu-llama3,io.github.beehive-lab:jitllm
 ```
 
 Confirm the local artifacts resolved rather than a stale release. Do not commit `cp.txt`.

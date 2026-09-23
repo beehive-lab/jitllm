@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -7,22 +7,22 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jllm.api.InsufficientDeviceMemoryException;
-import org.beehive.jllm.api.LocalModel;
-import org.beehive.jllm.api.LocalModels;
-import org.beehive.jllm.api.ModelOptions;
-import org.beehive.jllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.memory.MemoryPlan;
+import org.beehive.jitllm.api.InsufficientDeviceMemoryException;
+import org.beehive.jitllm.api.LocalModel;
+import org.beehive.jitllm.api.LocalModels;
+import org.beehive.jitllm.api.ModelOptions;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.memory.MemoryPlan;
 import org.junit.Test;
 
 public class MemoryPreflightAccelTest {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     private static final String GPU_PROPERTY = "use.tornadovm";
     private static final String BUDGET = "tornado.device.memory";
@@ -150,9 +150,9 @@ public class MemoryPreflightAccelTest {
                         ModelOptions.builder()
                                 .contextLength(512)
                                 .executionPolicy(
-                                        org.beehive.jllm.runtime.policy.ExecutionPolicy.builder()
+                                        org.beehive.jitllm.runtime.policy.ExecutionPolicy.builder()
                                                 .phaseStrategy(
-                                                        org.beehive.jllm.runtime.policy
+                                                        org.beehive.jitllm.runtime.policy
                                                                 .ExecutionPolicy.PhaseStrategy
                                                                 .PREFILL_DECODE)
                                                 .prefillBatchSize(8)
@@ -167,41 +167,41 @@ public class MemoryPreflightAccelTest {
         assertEquals("the weights are not charged twice", 0L, batched.duplicationBytes());
         assertTrue(
                 "the extra is batch staging",
-                logicalBytesOf(batched, org.beehive.jllm.runtime.memory.BufferClass.BATCH_STAGING)
+                logicalBytesOf(batched, org.beehive.jitllm.runtime.memory.BufferClass.BATCH_STAGING)
                         > 0);
         // Key/value storage is compared on its own: single-token Llama F16 is the lowered tuple,
         // so it reserves the shared pool and its scratch block, while batched prefill keeps a
         // private cache. The two differ by exactly that one block, and by nothing else.
         long kvBlockBytes =
                 2L
-                        * org.beehive.jllm.runtime.memory.KeyValueReservation.BLOCK_SIZE_TOKENS
+                        * org.beehive.jitllm.runtime.memory.KeyValueReservation.BLOCK_SIZE_TOKENS
                         * 16 // layers
                         * 512 // kvDim
                         * 4; // FP32
         assertEquals(
                 "a single pooled session costs its private cache plus the scratch block",
-                logicalBytesOf(batched, org.beehive.jllm.runtime.memory.BufferClass.KV_CACHE)
+                logicalBytesOf(batched, org.beehive.jitllm.runtime.memory.BufferClass.KV_CACHE)
                         + kvBlockBytes,
-                logicalBytesOf(single, org.beehive.jllm.runtime.memory.BufferClass.KV_CACHE));
+                logicalBytesOf(single, org.beehive.jitllm.runtime.memory.BufferClass.KV_CACHE));
         assertEquals(
                 "the other logical bytes barely change; it is the multiplicity that does",
                 (single.logicalBytes()
                                 - logicalBytesOf(
                                         single,
-                                        org.beehive.jllm.runtime.memory.BufferClass.KV_CACHE))
+                                        org.beehive.jitllm.runtime.memory.BufferClass.KV_CACHE))
                         / 1048576,
                 (batched.logicalBytes()
                                 - logicalBytesOf(
                                         batched,
-                                        org.beehive.jllm.runtime.memory.BufferClass.KV_CACHE)
+                                        org.beehive.jitllm.runtime.memory.BufferClass.KV_CACHE)
                                 - logicalBytesOf(
                                         batched,
-                                        org.beehive.jllm.runtime.memory.BufferClass.BATCH_STAGING))
+                                        org.beehive.jitllm.runtime.memory.BufferClass.BATCH_STAGING))
                         / 1048576);
     }
 
     private static long logicalBytesOf(
-            MemoryPlan plan, org.beehive.jllm.runtime.memory.BufferClass bufferClass) {
+            MemoryPlan plan, org.beehive.jitllm.runtime.memory.BufferClass bufferClass) {
         return plan.components().stream()
                 .filter(c -> c.bufferClass() == bufferClass)
                 .mapToLong(c -> c.logicalBytes())

@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -9,8 +9,8 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.List;
 import java.util.Random;
-import org.beehive.jllm.golden.ProgramIdentity;
-import org.beehive.jllm.tensor.standard.Q5_KFloatTensor;
+import org.beehive.jitllm.golden.ProgramIdentity;
+import org.beehive.jitllm.tensor.standard.Q5_KFloatTensor;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;

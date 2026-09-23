@@ -1,4 +1,4 @@
-package org.beehive.jllm.quality;
+package org.beehive.jitllm.quality;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
@@ -8,18 +8,18 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
-import org.beehive.jllm.backend.cpu.InferenceCore;
-import org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.golden.TupleInfo;
-import org.beehive.jllm.inference.Logits;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.backend.cpu.InferenceCore;
+import org.beehive.jitllm.backend.tornado.TornadoBatchPrefillPass;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.TupleInfo;
+import org.beehive.jitllm.inference.Logits;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.junit.Test;
 
 // @formatter:off
@@ -52,8 +52,8 @@ public class Gemma4BatchedPrefillNllScreenAccelTest {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     /** Chunk width the batched graphs are built for. */
     private static final int BATCH = 256;
@@ -99,11 +99,11 @@ public class Gemma4BatchedPrefillNllScreenAccelTest {
         }
 
         String prevTornado = System.getProperty("use.tornadovm");
-        String prevPrefill = System.getProperty("jllm.withPrefillDecode");
-        String prevBatch = System.getProperty("jllm.prefillBatchSize");
+        String prevPrefill = System.getProperty("jitllm.withPrefillDecode");
+        String prevBatch = System.getProperty("jitllm.prefillBatchSize");
         System.setProperty("use.tornadovm", "true");
-        System.setProperty("jllm.withPrefillDecode", "true");
-        System.setProperty("jllm.prefillBatchSize", Integer.toString(BATCH));
+        System.setProperty("jitllm.withPrefillDecode", "true");
+        System.setProperty("jitllm.prefillBatchSize", Integer.toString(BATCH));
 
         double batchedTotal = 0;
         double hostTotal = 0;
@@ -174,8 +174,8 @@ public class Gemma4BatchedPrefillNllScreenAccelTest {
             }
         } finally {
             restore("use.tornadovm", prevTornado);
-            restore("jllm.withPrefillDecode", prevPrefill);
-            restore("jllm.prefillBatchSize", prevBatch);
+            restore("jitllm.withPrefillDecode", prevPrefill);
+            restore("jitllm.prefillBatchSize", prevBatch);
         }
 
         double hostMean = hostTotal / counted;

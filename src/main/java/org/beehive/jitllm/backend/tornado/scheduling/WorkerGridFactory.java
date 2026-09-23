@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.scheduling;
+package org.beehive.jitllm.backend.tornado.scheduling;
 
 import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;

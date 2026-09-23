@@ -1,17 +1,17 @@
-package org.beehive.jllm.engine;
+package org.beehive.jitllm.engine;
 
 import java.util.List;
 import java.util.Set;
 import java.util.function.IntConsumer;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.ModelType;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.ModelType;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.tokenizer.Tokenizer;
 
 /**
  * Models that answer the one question the engine asks at construction, and nothing else.

@@ -1,13 +1,13 @@
-package org.beehive.jllm.backend.tornado.plan.components.activation;
+package org.beehive.jitllm.backend.tornado.plan.components.activation;
 
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernels;
-import org.beehive.jllm.backend.tornado.layers.ActivationTaskGraph;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.inference.weights.tornado.TornadoWeights;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
+import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -47,7 +47,7 @@ public class Gemma4BatchDecodeActivation implements ActivationTaskGraph {
     // @formatter:off
     /**
      * The conversion comes from the embedding tensor's own representation, as {@link
-     * org.beehive.jllm.backend.tornado.layers.Activation} takes it, and not from the model's. A
+     * org.beehive.jitllm.backend.tornado.layers.Activation} takes it, and not from the model's. A
      * mixed file holds them apart — staging 18-byte blocks to be read as 34-byte ones is a
      * plausible activation and wrong output.
      */

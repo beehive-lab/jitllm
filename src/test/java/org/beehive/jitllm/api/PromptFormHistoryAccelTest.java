@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -6,13 +6,13 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 /**
  * The prompt form of a multi-turn session — each request sends only the new user text, the way
- * {@code jllm chat} does — must leave the cache holding the history the model's template would
+ * {@code jitllm chat} does — must leave the cache holding the history the model's template would
  * render.
  *
  * <p>Two defects made later turns end early. The previous response sat in the cache without its

@@ -1,16 +1,16 @@
-package org.beehive.jllm.backend.tornado.layers.type.fp16.decode;
+package org.beehive.jitllm.backend.tornado.layers.type.fp16.decode;
 
-import org.beehive.jllm.backend.tornado.layers.type.fp16.LlamaFP16FFNLayers;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.inference.state.LlamaState;
-import org.beehive.jllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.LlamaFP16FFNLayers;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 
 /**
  * Decode transformer-layer TaskGraphs of the unified batched prefill-decode plan ({@link
- * org.beehive.jllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode}).
+ * org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode}).
  *
  * <p>Overrides data-transfer declarations so that all cross-graph boundaries use the
  * explicit-source form of {@code consumeFromDevice}. The no-arg form (used by the base class)

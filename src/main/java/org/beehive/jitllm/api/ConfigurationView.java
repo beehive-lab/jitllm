@@ -1,6 +1,6 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
-import org.beehive.jllm.model.Configuration;
+import org.beehive.jitllm.model.Configuration;
 
 /** The internal {@link Configuration}, narrowed to what a user may see. */
 final class ConfigurationView implements ModelConfiguration {

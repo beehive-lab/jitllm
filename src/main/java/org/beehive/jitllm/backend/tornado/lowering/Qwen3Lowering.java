@@ -1,23 +1,23 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import java.util.List;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlanSingleToken;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.program.InferenceProgram;
-import org.beehive.jllm.program.ProgramComponent;
-import org.beehive.jllm.program.op.Attention;
-import org.beehive.jllm.program.op.KvAppend;
-import org.beehive.jllm.program.op.MatVec;
-import org.beehive.jllm.program.op.OperationKind;
-import org.beehive.jllm.program.op.RoPE;
-import org.beehive.jllm.program.op.RopeLayout;
-import org.beehive.jllm.runtime.backend.CompileOptions;
-import org.beehive.jllm.runtime.backend.DeviceCapabilities;
-import org.beehive.jllm.runtime.metrics.MetricsSink;
-import org.beehive.jllm.runtime.model.ArchitectureId;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanSingleToken;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.program.InferenceProgram;
+import org.beehive.jitllm.program.ProgramComponent;
+import org.beehive.jitllm.program.op.Attention;
+import org.beehive.jitllm.program.op.KvAppend;
+import org.beehive.jitllm.program.op.MatVec;
+import org.beehive.jitllm.program.op.OperationKind;
+import org.beehive.jitllm.program.op.RoPE;
+import org.beehive.jitllm.program.op.RopeLayout;
+import org.beehive.jitllm.runtime.backend.CompileOptions;
+import org.beehive.jitllm.runtime.backend.DeviceCapabilities;
+import org.beehive.jitllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * Lowers a Qwen3 single-token {@link InferenceProgram} onto TornadoVM task graphs.
@@ -101,8 +101,8 @@ public final class Qwen3Lowering implements FamilyLowering {
 
         // The per-head norms, which is what makes this Qwen3 rather than Qwen2 without biases.
         for (int i : new int[] {4, 5}) {
-            org.beehive.jllm.program.op.RmsNorm norm =
-                    (org.beehive.jllm.program.op.RmsNorm) ProgramShape.leafOperation(inner.get(i));
+            org.beehive.jitllm.program.op.RmsNorm norm =
+                    (org.beehive.jitllm.program.op.RmsNorm) ProgramShape.leafOperation(inner.get(i));
             if (!norm.isGrouped()) {
                 throw new UnsupportedProgramException(
                         FAMILY,

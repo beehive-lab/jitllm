@@ -1,8 +1,8 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertNotNull;
 
-import org.beehive.jllm.backend.tornado.PlanDispatchEvidence;
+import org.beehive.jitllm.backend.tornado.PlanDispatchEvidence;
 
 /**
  * {@link Qwen35BatchedFp16KvLifecycleAccelTest} with the tensor-core path selected.
@@ -15,7 +15,7 @@ public class Qwen35MmaBatchedFp16KvLifecycleAccelTest
         extends Qwen35BatchedFp16KvLifecycleAccelTest {
 
     static {
-        System.setProperty("jllm.qwen35.tensorCores", "true");
+        System.setProperty("jitllm.qwen35.tensorCores", "true");
     }
 
     @Override

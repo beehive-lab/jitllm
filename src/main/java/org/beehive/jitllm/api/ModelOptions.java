@@ -1,10 +1,10 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.backend.DeviceSelector;
-import org.beehive.jllm.runtime.diagnostics.DiagnosticCode;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
-import org.beehive.jllm.runtime.policy.StorageOptions;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.DeviceSelector;
+import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.policy.StorageOptions;
 
 /**
  * Load-time settings.
@@ -14,7 +14,7 @@ import org.beehive.jllm.runtime.policy.StorageOptions;
  * <h2>Backend and device selection</h2>
  *
  * <p>When neither is set the existing mechanism still decides, so nothing that works today stops
- * working: {@code -Duse.tornadovm=true}, which is what the {@code jllm} launcher's {@code --gpu}
+ * working: {@code -Duse.tornadovm=true}, which is what the {@code jitllm} launcher's {@code --gpu}
  * sets.
  *
  * <p><b>What a selector can constrain today is narrower than what it can express.</b> The backend

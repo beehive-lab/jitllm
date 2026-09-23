@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
@@ -6,7 +6,7 @@ import static org.junit.Assume.assumeTrue;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.Random;
-import org.beehive.jllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -311,13 +311,13 @@ public class Qwen35DecodeAttentionWarpNumericsAccelTest {
                 bad[0] > 10 * good[0]);
     }
 
-    /** Opt in with JLLM_KERNEL_SCREEN=true: both kernels + combine at depths 512 and 2048. */
+    /** Opt in with JITLLM_KERNEL_SCREEN=true: both kernels + combine at depths 512 and 2048. */
     @Test
     public void screen() throws Exception {
         assumeTrue(
-                "opt in with JLLM_KERNEL_SCREEN=true",
-                Boolean.getBoolean("jllm.kernelScreen")
-                        || "true".equals(System.getenv("JLLM_KERNEL_SCREEN")));
+                "opt in with JITLLM_KERNEL_SCREEN=true",
+                Boolean.getBoolean("jitllm.kernelScreen")
+                        || "true".equals(System.getenv("JITLLM_KERNEL_SCREEN")));
         for (int seqLen : new int[] {512, 2048}) {
             Store store = new Store(seqLen, 7L);
             FloatArray q = queries(8L);

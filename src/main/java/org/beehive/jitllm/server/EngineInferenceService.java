@@ -1,20 +1,20 @@
-package org.beehive.jllm.server;
+package org.beehive.jitllm.server;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
-import org.beehive.jllm.backend.tornado.batch.TornadoBatchExecutor;
-import org.beehive.jllm.engine.LLMEngine;
-import org.beehive.jllm.engine.RequestHandle;
-import org.beehive.jllm.engine.RequestState;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
-import org.beehive.jllm.runtime.kv.KvLease;
-import org.beehive.jllm.runtime.kv.KvStorage;
-import org.beehive.jllm.runtime.kv.KvStorageFactories;
-import org.beehive.jllm.runtime.kv.KvStorageRequest;
+import org.beehive.jitllm.backend.tornado.batch.TornadoBatchExecutor;
+import org.beehive.jitllm.engine.LLMEngine;
+import org.beehive.jitllm.engine.RequestHandle;
+import org.beehive.jitllm.engine.RequestState;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.kv.KvLease;
+import org.beehive.jitllm.runtime.kv.KvStorage;
+import org.beehive.jitllm.runtime.kv.KvStorageFactories;
+import org.beehive.jitllm.runtime.kv.KvStorageRequest;
 
 /**
  * The server's inference path, on the engine: several conversations decode in one batch instead of
@@ -104,14 +104,14 @@ public final class EngineInferenceService implements AutoCloseable {
                         executor,
                         batchSize,
                         maxQueuedRequests,
-                        org.beehive.jllm.auxiliary.metrics.RunMetricsSink.installedOrDisabled());
+                        org.beehive.jitllm.auxiliary.metrics.RunMetricsSink.installedOrDisabled());
 
         this.driver = new Thread(this::drive, "engine-step");
         this.driver.setDaemon(true);
         this.driver.start();
     }
 
-    public org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
         return executor.executionInfo();
     }
 
@@ -183,10 +183,10 @@ public final class EngineInferenceService implements AutoCloseable {
      * public facade does not expose: there is no {@code GenerationSession} here to render the
      * template. Only text turns reach this server, so only text is translated.
      */
-    private static ChatFormat.Message asFormatMessage(org.beehive.jllm.api.ChatMessage message) {
+    private static ChatFormat.Message asFormatMessage(org.beehive.jitllm.api.ChatMessage message) {
         StringBuilder text = new StringBuilder();
-        for (org.beehive.jllm.api.ChatContent piece : message.content()) {
-            if (piece instanceof org.beehive.jllm.api.ChatContent.Text t) {
+        for (org.beehive.jitllm.api.ChatContent piece : message.content()) {
+            if (piece instanceof org.beehive.jitllm.api.ChatContent.Text t) {
                 text.append(t.text());
             }
         }
@@ -201,7 +201,7 @@ public final class EngineInferenceService implements AutoCloseable {
         if (model.shouldAddBeginOfText()) {
             tokens.add(chatFormat.getBeginOfText());
         }
-        for (org.beehive.jllm.api.ChatMessage message : request.messages()) {
+        for (org.beehive.jitllm.api.ChatMessage message : request.messages()) {
             tokens.addAll(chatFormat.encodeMessage(asFormatMessage(message)));
         }
         tokens.addAll(
@@ -237,7 +237,7 @@ public final class EngineInferenceService implements AutoCloseable {
 
     /** The pool's representation: FP16 by default, FP32 when asked for. */
     private static boolean fp16KeyValue() {
-        return org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties()
+        return org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties()
                 .usesFp16KeyValueCache();
     }
 

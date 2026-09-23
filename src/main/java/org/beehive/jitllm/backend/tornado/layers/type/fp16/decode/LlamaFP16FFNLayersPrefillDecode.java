@@ -1,15 +1,15 @@
-package org.beehive.jllm.backend.tornado.layers.type.fp16.decode;
+package org.beehive.jitllm.backend.tornado.layers.type.fp16.decode;
 
-import org.beehive.jllm.backend.tornado.layers.type.fp16.LlamaFP16FFNLayers;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.inference.state.LlamaState;
-import org.beehive.jllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.LlamaFP16FFNLayers;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import uk.ac.manchester.tornado.api.TaskGraph;
 
 /**
  * Decode transformer-layer TaskGraphs for the single-token prefill/decode plan ({@link
- * org.beehive.jllm.backend.tornado.TornadoVMMasterPlanPrefillDecode}).
+ * org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanPrefillDecode}).
  *
  * <p>Combines two concerns:
  *

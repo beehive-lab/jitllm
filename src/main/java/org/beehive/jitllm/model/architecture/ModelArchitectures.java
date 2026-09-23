@@ -1,4 +1,4 @@
-package org.beehive.jllm.model.architecture;
+package org.beehive.jitllm.model.architecture;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.stream.Collectors;
-import org.beehive.jllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 
 /**
  * Finds the architecture computation for an identity.

@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.layers.type.fp16;
+package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;

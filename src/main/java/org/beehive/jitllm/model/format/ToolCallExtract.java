@@ -1,4 +1,4 @@
-package org.beehive.jllm.model.format;
+package org.beehive.jitllm.model.format;
 
 import java.util.Optional;
 

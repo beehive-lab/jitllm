@@ -1,11 +1,11 @@
-package org.beehive.jllm.backend.tornado.layers;
+package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.inference.state.Qwen35State;
-import org.beehive.jllm.inference.weights.tornado.Qwen35TornadoWeights;
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.inference.state.Qwen35State;
+import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;

@@ -1,12 +1,12 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import org.beehive.jllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jllm.backend.tornado.memory.TornadoMemoryModel;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.memory.MemoryPlan;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.memory.TornadoMemoryModel;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.memory.MemoryPlan;
 
 /**
  * Builds a {@link MemoryPlan} from a model file, and refuses a load that cannot fit.
@@ -35,7 +35,7 @@ final class MemoryPreflight {
         var weights =
                 ModelLoader.weightFootprint(
                         modelFile,
-                        org.beehive.jllm.backend.tornado.plan.TornadoPlanRegistry.nativeDeviceTypes(
+                        org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry.nativeDeviceTypes(
                                 model.architectureId()));
         return TornadoMemoryModel.predict(
                 weights,
@@ -43,17 +43,17 @@ final class MemoryPreflight {
                 options.executionPolicy(),
                 TornadoDevices.current(),
                 configuredBudgetBytes(),
-                new org.beehive.jllm.runtime.memory.KeyValueReservation(
+                new org.beehive.jitllm.runtime.memory.KeyValueReservation(
                         options.maxConcurrentSessions(),
                         DelegatingModel.attachesSharedPool(
                                 model,
                                 options.storageOptions(),
-                                org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection
+                                org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection
                                         .mayHandle(
                                                 model.architectureId(),
                                                 loadedWeightType(modelFile),
                                                 options.executionPolicy())),
-                        org.beehive.jllm.runtime.memory.KeyValueReservation.BLOCK_SIZE_TOKENS,
+                        org.beehive.jitllm.runtime.memory.KeyValueReservation.BLOCK_SIZE_TOKENS,
                         options.storageOptions().usesFp16KeyValueCache()));
     }
 
@@ -62,11 +62,11 @@ final class MemoryPreflight {
      * loaded as they are. Anything else may be converted, so it is left unknown rather than
      * guessed.
      */
-    private static org.beehive.jllm.runtime.tensor.DataType loadedWeightType(Path modelFile) {
+    private static org.beehive.jitllm.runtime.tensor.DataType loadedWeightType(Path modelFile) {
         try {
-            return switch (org.beehive.jllm.format.GgufModelFacts.read(modelFile).quant()) {
-                case "F16" -> org.beehive.jllm.runtime.tensor.DataType.F16;
-                case "Q8_0" -> org.beehive.jllm.runtime.tensor.DataType.Q8_0;
+            return switch (org.beehive.jitllm.format.GgufModelFacts.read(modelFile).quant()) {
+                case "F16" -> org.beehive.jitllm.runtime.tensor.DataType.F16;
+                case "Q8_0" -> org.beehive.jitllm.runtime.tensor.DataType.Q8_0;
                 default -> null;
             };
         } catch (IOException | RuntimeException unreadable) {

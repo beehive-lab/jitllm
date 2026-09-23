@@ -1,8 +1,8 @@
-package org.beehive.jllm.inference.state;
+package org.beehive.jitllm.inference.state;
 
-import org.beehive.jllm.backend.tornado.workspace.TornadoWorkspaces;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 
 /**
  * Represents the base state structure used during LLM inference. This class provides a common
@@ -31,10 +31,10 @@ public abstract class State {
      * <p>Defaulted from the properties so the CLI, the benchmark harness and every existing test
      * behave as before. The facade resolves it at model load and hands it in.
      */
-    private final org.beehive.jllm.runtime.policy.StorageOptions storageOptions;
+    private final org.beehive.jitllm.runtime.policy.StorageOptions storageOptions;
 
     /** How this state was told to store key/value entries. */
-    public org.beehive.jllm.runtime.policy.StorageOptions storageOptions() {
+    public org.beehive.jitllm.runtime.policy.StorageOptions storageOptions() {
         return storageOptions;
     }
 
@@ -45,7 +45,7 @@ public abstract class State {
      * {@code Qwen3State} — reading the same system property with the same default, so a change to
      * one would have silently disagreed with the other.
      */
-    public static final int SPLIT_KV = Integer.getInteger("jllm.attention.splitKv.count", 8);
+    public static final int SPLIT_KV = Integer.getInteger("jitllm.attention.splitKv.count", 8);
 
     /**
      * Split-KV attention scratch, or {@code null} for a family that does not use it.
@@ -78,7 +78,7 @@ public abstract class State {
     protected final int prefillBatchWidth;
 
     /** The device arrays this session executes against, or {@code null} on the host-only path. */
-    public final org.beehive.jllm.backend.tornado.workspace.TornadoWorkspace workspace;
+    public final org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspace workspace;
 
     // kv cache
     public final FloatTensor[] keyCache; // (n_layer, seq_len, kv_dim)
@@ -113,7 +113,7 @@ public abstract class State {
      * workspace.positionHolder[1]} and {@code workspace.batchStartPosHolder[2]}.
      *
      * <p>0 while the table is this state's own — one sequence, one slot. When the state is built
-     * against a leased {@link org.beehive.jllm.runtime.kv.KvStorage} it is the lease's slot, and
+     * against a leased {@link org.beehive.jitllm.runtime.kv.KvStorage} it is the lease's slot, and
      * several states then address disjoint ranges of one shared table.
      */
     public final int kvSlot;
@@ -123,7 +123,7 @@ public abstract class State {
      * arrays. Held so the state can be asked what it is bound to; the storage itself is reached
      * through the wrappers above, resolved once here rather than per token.
      */
-    public final org.beehive.jllm.runtime.kv.KvLease kvLease;
+    public final org.beehive.jitllm.runtime.kv.KvLease kvLease;
 
     // On-device greedy sampling: the GPU argmax kernel writes the sampled token id here
     // (element 0), so only 1 int crosses to the host instead of the full vocab logits row.
@@ -135,7 +135,7 @@ public abstract class State {
 
     // stateful or autoregressive models.
 
-    // Batch-prefill buffers (allocated when jllm.prefillBatchSize > 1)
+    // Batch-prefill buffers (allocated when jitllm.prefillBatchSize > 1)
 
     /**
      * The storage options the next state built on this thread should use.
@@ -150,7 +150,7 @@ public abstract class State {
      * <p>It defaults to the properties, so nothing that does not use {@link #withStorageOptions}
      * changes behaviour.
      */
-    private static final ThreadLocal<org.beehive.jllm.runtime.policy.StorageOptions>
+    private static final ThreadLocal<org.beehive.jitllm.runtime.policy.StorageOptions>
             STORAGE_FOR_CONSTRUCTION = new ThreadLocal<>();
 
     /**
@@ -160,11 +160,11 @@ public abstract class State {
      * per thread, so a property set later in the same JVM would never be seen — which is the very
      * defect this replaces, reintroduced one layer down. It cost a red test to notice.
      */
-    private static org.beehive.jllm.runtime.policy.StorageOptions storageForConstruction() {
+    private static org.beehive.jitllm.runtime.policy.StorageOptions storageForConstruction() {
         var handedIn = STORAGE_FOR_CONSTRUCTION.get();
         return handedIn != null
                 ? handedIn
-                : org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties();
+                : org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties();
     }
 
     /**
@@ -174,7 +174,7 @@ public abstract class State {
      * @param build the construction, typically a {@code Model::createNewState} call
      */
     public static <T> T withStorageOptions(
-            org.beehive.jllm.runtime.policy.StorageOptions storage,
+            org.beehive.jitllm.runtime.policy.StorageOptions storage,
             java.util.function.Supplier<T> build) {
         var previous = STORAGE_FOR_CONSTRUCTION.get();
         STORAGE_FOR_CONSTRUCTION.set(java.util.Objects.requireNonNull(storage, "storage"));
@@ -203,7 +203,7 @@ public abstract class State {
      */
     private static int prefillBatchForConstruction() {
         Integer handedIn = PREFILL_BATCH_FOR_CONSTRUCTION.get();
-        return handedIn != null ? handedIn : Integer.getInteger("jllm.prefillBatchSize", 1);
+        return handedIn != null ? handedIn : Integer.getInteger("jitllm.prefillBatchSize", 1);
     }
 
     /**
@@ -242,8 +242,8 @@ public abstract class State {
      * benchmark harness, a test — behaves exactly as it did when these were {@code static final}
      * fields. A session replaces it once, before anything reads it.
      */
-    private org.beehive.jllm.runtime.policy.ExecutionPolicy executionPolicy =
-            org.beehive.jllm.runtime.policy.ExecutionPolicy.fromSystemProperties();
+    private org.beehive.jitllm.runtime.policy.ExecutionPolicy executionPolicy =
+            org.beehive.jitllm.runtime.policy.ExecutionPolicy.fromSystemProperties();
 
     /** Set once a plan has read the policy, so a later change is refused rather than ignored. */
     private boolean executionPolicyRead;
@@ -254,7 +254,7 @@ public abstract class State {
      * <p>Reading it locks it: a policy changed after a plan was built would describe a program
      * nobody compiled, and silently doing nothing is exactly the failure this migration removes.
      */
-    public org.beehive.jllm.runtime.policy.ExecutionPolicy executionPolicy() {
+    public org.beehive.jitllm.runtime.policy.ExecutionPolicy executionPolicy() {
         executionPolicyRead = true;
         return executionPolicy;
     }
@@ -264,7 +264,7 @@ public abstract class State {
      *
      * @throws IllegalStateException if a plan has already read the policy
      */
-    public void resolveExecutionPolicy(org.beehive.jllm.runtime.policy.ExecutionPolicy policy) {
+    public void resolveExecutionPolicy(org.beehive.jitllm.runtime.policy.ExecutionPolicy policy) {
         if (executionPolicyRead) {
             throw new IllegalStateException(
                     "the execution policy was already read by a plan;"
@@ -274,7 +274,7 @@ public abstract class State {
     }
 
     protected State(
-            Configuration config, int batchsize, org.beehive.jllm.runtime.kv.KvLease lease) {
+            Configuration config, int batchsize, org.beehive.jitllm.runtime.kv.KvLease lease) {
         // Assigned before createStateFields, which the subclass overrides and which needs to know
         // whether there is leased storage to bind rather than arrays to allocate.
         this.storageOptions = storageForConstruction();
@@ -291,7 +291,7 @@ public abstract class State {
         // Initialize all fields through the creation method
         // The workspace exists before the family fills it: a family says how large, and the
         // backend's allocator says what with.
-        this.workspace = new org.beehive.jllm.backend.tornado.workspace.TornadoWorkspace();
+        this.workspace = new org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspace();
         StateFields fields = createStateFields(config);
 
         this.x = fields.x;
@@ -455,7 +455,7 @@ public abstract class State {
         // The caller says whether this family has FP16 kernels at all; the storage options say
         // whether they were asked for. Both must hold.
         useFp16 = useFp16 && storageOptions.usesFp16KeyValueCache();
-        org.beehive.jllm.runtime.kv.KvStorage storage = kvLease != null ? kvLease.storage() : null;
+        org.beehive.jitllm.runtime.kv.KvStorage storage = kvLease != null ? kvLease.storage() : null;
         if (storage != null) {
             // Leased: the backend writes its own arrays in, and this state never learns what they
             // are. Nothing KV-shaped is allocated here — that is the whole point.
@@ -466,7 +466,7 @@ public abstract class State {
             // correct output, more memory and no explanation on a machine that asked for a shared
             // pool. The likeliest cause is a shaded jar that lost the service file.
             int[] layout = new int[2];
-            org.beehive.jllm.backend.tornado.workspace.TornadoWorkspaces.bindLeasedKeyValue(
+            org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces.bindLeasedKeyValue(
                     workspace, kvLease, layout);
             // The layout is the store's, not recomputed here: a state that derived its own would
             // address a pool laid out differently.
@@ -570,10 +570,10 @@ public abstract class State {
      * for an FP16 cache, single precision otherwise. The CPU forward pass reads and writes it
      * through {@code FloatTensor}, so accumulation stays FP32 either way.
      */
-    protected final org.beehive.jllm.tensor.standard.FloatTensor allocateKeyValue(int... dims) {
+    protected final org.beehive.jitllm.tensor.standard.FloatTensor allocateKeyValue(int... dims) {
         return storageOptions.usesFp16KeyValueCache()
-                ? org.beehive.jllm.tensor.standard.ArrayHalfFloatTensor.allocate(dims)
-                : org.beehive.jllm.tensor.standard.ArrayFloatTensor.allocate(dims);
+                ? org.beehive.jitllm.tensor.standard.ArrayHalfFloatTensor.allocate(dims)
+                : org.beehive.jitllm.tensor.standard.ArrayFloatTensor.allocate(dims);
     }
 
     /** The host tensors a family allocates during construction. */

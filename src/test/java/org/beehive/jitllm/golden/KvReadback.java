@@ -1,20 +1,20 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.model.loader.ModelLoader;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 /**
  * Diagnostic: characterises the wrapKeyCache host readback, which differs on every iteration under
- * -Djllm.diag.transfers even when the logits are bit-identical. Reports where in the buffer the
+ * -Djitllm.diag.transfers even when the logits are bit-identical. Reports where in the buffer the
  * differences sit and whether the changing region is ever non-zero.
  */
 public final class KvReadback {
@@ -63,13 +63,13 @@ public final class KvReadback {
 
             float[] prev =
                     snap(
-                            org.beehive.jllm.backend.tornado.TornadoForwardPass.forward(
+                            org.beehive.jitllm.backend.tornado.TornadoForwardPass.forward(
                                     model, state, tok, pos, plan));
             float[] prevKv = snap(state.workspace.wrapKeyCache);
             for (int i = 1; i <= iterations; i++) {
                 float[] logits =
                         snap(
-                                org.beehive.jllm.backend.tornado.TornadoForwardPass.forward(
+                                org.beehive.jitllm.backend.tornado.TornadoForwardPass.forward(
                                         model, state, tok, pos, plan));
                 float[] kv = snap(state.workspace.wrapKeyCache);
 
@@ -129,7 +129,7 @@ public final class KvReadback {
         return true;
     }
 
-    private static float[] snap(org.beehive.jllm.inference.Logits logits) {
+    private static float[] snap(org.beehive.jitllm.inference.Logits logits) {
         float[] out = new float[logits.size()];
         for (int i = 0; i < out.length; i++) {
             out[i] = logits.get(i);

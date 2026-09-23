@@ -1,4 +1,4 @@
-package org.beehive.jllm.arch;
+package org.beehive.jitllm.arch;
 
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
@@ -21,31 +21,31 @@ public final class ArchRules {
     public static final String TORNADO_VM = "uk.ac.manchester.tornado";
 
     /** The Tornado backend package. */
-    public static final String TORNADO_BACKEND = "org.beehive.jllm.backend.tornado";
+    public static final String TORNADO_BACKEND = "org.beehive.jitllm.backend.tornado";
 
-    public static final String MODEL = "org.beehive.jllm.model";
+    public static final String MODEL = "org.beehive.jitllm.model";
 
     /** The metrics seam — Rule 17's runtime-layer interface package. */
-    public static final String RUNTIME_METRICS = "org.beehive.jllm.runtime.metrics";
+    public static final String RUNTIME_METRICS = "org.beehive.jitllm.runtime.metrics";
 
     /** The runtime's tensor vocabulary — Rule 4's format-free side. */
-    public static final String RUNTIME_TENSOR = "org.beehive.jllm.runtime.tensor";
+    public static final String RUNTIME_TENSOR = "org.beehive.jitllm.runtime.tensor";
 
     /** GGUF and GGML types: file representation, which the runtime layer must not name. */
-    public static final String FORMAT_TYPES = "org.beehive.jllm.format";
+    public static final String FORMAT_TYPES = "org.beehive.jitllm.format";
 
     /** The backend-neutral program layer — Rule 3's subject. Today: the operation vocabulary. */
-    public static final String PROGRAM = "org.beehive.jllm.program";
+    public static final String PROGRAM = "org.beehive.jitllm.program";
 
     /** The runtime layer, in scope for Rule 14 alongside the program layer. */
-    public static final String RUNTIME = "org.beehive.jllm.runtime";
+    public static final String RUNTIME = "org.beehive.jitllm.runtime";
 
     public static final Set<String> GENERATION_PACKAGES =
             Set.of(
-                    "org.beehive.jllm.tokenizer",
-                    "org.beehive.jllm.model.format",
-                    "org.beehive.jllm.inference.sampler",
-                    "org.beehive.jllm.generation");
+                    "org.beehive.jitllm.tokenizer",
+                    "org.beehive.jitllm.model.format",
+                    "org.beehive.jitllm.inference.sampler",
+                    "org.beehive.jitllm.generation");
 
     /** Rule 11's type-specific list — the plan types most likely to leak out of the backend. */
     public static final Set<String> PLAN_TYPES =
@@ -79,7 +79,7 @@ public final class ArchRules {
                                         || dependsOnPackage(c, backendPrefix)));
     }
 
-    public static final String CPU_BACKEND = "org.beehive.jllm.backend.cpu";
+    public static final String CPU_BACKEND = "org.beehive.jitllm.backend.cpu";
 
     /**
      * It would have been possible to satisfy this by moving {@code InferenceCore} into {@code
@@ -103,7 +103,7 @@ public final class ArchRules {
     }
 
     /** The engine tier's package. Literal, because {@code inPackage} is a prefix match. */
-    public static final String ENGINE = "org.beehive.jllm.engine";
+    public static final String ENGINE = "org.beehive.jitllm.engine";
 
     /** Rule 18 — nothing below the engine may depend on it. */
     public static Set<String> rule18LowerTiersReachEngine(
@@ -122,7 +122,7 @@ public final class ArchRules {
     }
 
     /** The backend-neutral SPI package. Everything above the backend may name this. */
-    public static final String RUNTIME_BACKEND = "org.beehive.jllm.runtime.backend";
+    public static final String RUNTIME_BACKEND = "org.beehive.jitllm.runtime.backend";
 
     /**
      * {@code runtime.backend} holds identities, selectors, options and contracts; the
@@ -210,17 +210,17 @@ public final class ArchRules {
      * CLI is identified by type rather than package.
      */
     public static final Set<String> CLI_TYPES =
-            Set.of("org.beehive.jllm.JllmApp", "org.beehive.jllm.Options");
+            Set.of("org.beehive.jitllm.JitllmApp", "org.beehive.jitllm.Options");
 
-    public static final String CLI = "org.beehive.jllm.integration.cli";
+    public static final String CLI = "org.beehive.jitllm.integration.cli";
 
-    public static final String SERVER = "org.beehive.jllm.server";
+    public static final String SERVER = "org.beehive.jitllm.server";
 
     /**
      * The runnable API examples. They are an integration like the CLI: their whole purpose is to
      * show a caller what the facade looks like in use, and printing the answer is the showing.
      */
-    public static final String EXAMPLES = "org.beehive.jllm.examples";
+    public static final String EXAMPLES = "org.beehive.jitllm.examples";
 
     /**
      * Rule 8a defines generation policy as "the token loop, stop conditions, streaming, transport,
@@ -229,7 +229,7 @@ public final class ArchRules {
      * rules always meant. Before it existed the loops lived on {@code Model}, which is why {@code
      * Model} was in both allowlists — and why Rule 16's entry for it is now stale.
      */
-    public static final String GENERATION = "org.beehive.jllm.generation";
+    public static final String GENERATION = "org.beehive.jitllm.generation";
 
     /**
      * Rule 8a — generation policy is separate from forward execution. Lower layers must not reach
@@ -257,7 +257,7 @@ public final class ArchRules {
      * <p>Adding an architecture should mean adding a provider, not editing switch statements spread
      * across packages. Dispatch on {@code ModelType} is what this targets, not the enum's
      * existence: it is expected to survive as an internal identifier long after loading moves to
-     * the provider SPI, and the legacy path still selects it with {@code -Djllm.providers=false}.
+     * the provider SPI, and the legacy path still selects it with {@code -Djitllm.providers=false}.
      *
      * <p>The provider package is exempt because that is where enumerating families is the point.
      */
@@ -365,19 +365,19 @@ public final class ArchRules {
     /**
      * The format layer's own home today: GGUF, GGMLType and the tensor classes that decode them.
      */
-    public static final String FORMAT_LAYER = "org.beehive.jllm.format";
+    public static final String FORMAT_LAYER = "org.beehive.jitllm.format";
 
     /** Loading is where format and runtime meet, so the loading path is in scope by design. */
-    public static final String LOADERS = "org.beehive.jllm.model.loader";
+    public static final String LOADERS = "org.beehive.jitllm.model.loader";
 
     /**
      * The provider SPI is the loading path too — recognizing a file and reading it is what a
      * provider is for, so naming the format there is the rule working, not failing.
      */
-    public static final String PROVIDERS = "org.beehive.jllm.model.provider";
+    public static final String PROVIDERS = "org.beehive.jitllm.model.provider";
 
     /** Dispatching on this is Rule 15's subject; the enum itself is allowed to exist. */
-    public static final String MODEL_TYPE = "org.beehive.jllm.model.ModelType";
+    public static final String MODEL_TYPE = "org.beehive.jitllm.model.ModelType";
 
     /** Rule 4 — GGUF's types stay in the format layer and the loading path. */
     public static Set<String> rule4FormatTypesOutsideFormatAndLoaders(JavaClasses classes) {

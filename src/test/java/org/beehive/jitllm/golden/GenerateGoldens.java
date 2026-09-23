@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 
 /**
  * Writes the committed goldens. Invoked only by {@code scripts/regenerate-goldens.sh}, never by a
@@ -116,7 +116,7 @@ public final class GenerateGoldens {
                     Boolean.toString(
                             Boolean.parseBoolean(
                                     System.getProperty("tornado.recover.bailout", "false"))));
-            meta.put("device_sample", Boolean.toString(Boolean.getBoolean("jllm.deviceSample")));
+            meta.put("device_sample", Boolean.toString(Boolean.getBoolean("jitllm.deviceSample")));
             // Recorded as measured. This was hardcoded to false while GPU execution was
             // non-deterministic — a few repeats could not distinguish "reproducible" from "won the
             // race this time" (Q8_0 passed the repeat check and still diverged about 1 run in 4

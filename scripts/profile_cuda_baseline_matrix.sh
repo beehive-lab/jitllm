@@ -5,10 +5,10 @@ source "$HOME/.sdkman/bin/sdkman-init.sh" >/dev/null 2>&1
 sdk use java 21.0.2-open >/dev/null
 source "$HOME/TornadoVM/setvars.sh" >/dev/null
 
-export JLLM_ROOT=/home/orion/jllm
-cd "$JLLM_ROOT" || exit 1
+export JITLLM_ROOT=/home/orion/jitllm
+cd "$JITLLM_ROOT" || exit 1
 
-RESULTS_DIR="${RESULTS_DIR:-$JLLM_ROOT/perf-results/profile-cuda-baseline-$(date +%Y%m%d-%H%M%S)}"
+RESULTS_DIR="${RESULTS_DIR:-$JITLLM_ROOT/perf-results/profile-cuda-baseline-$(date +%Y%m%d-%H%M%S)}"
 PROMPT="write a matmul in java"
 MAX_TOKENS=2048
 GPU_MEMORY=20GB
@@ -49,10 +49,10 @@ for entry in "${models[@]}"; do
     printf "[%s] profiling %s / %s / max_tokens=%s / gpu_memory=%s\n" \
       "$(date +%H:%M:%S)" "$model" "$config" "$MAX_TOKENS" "$GPU_MEMORY" | tee -a "$RESULTS_DIR/run.log"
 
-    export JAVA_TOOL_OPTIONS="-Djllm.bench.ignoreEos=true -Djllm.metrics.format=json -Djllm.metrics.output=file -Djllm.metrics.file=$metrics"
+    export JAVA_TOOL_OPTIONS="-Djitllm.bench.ignoreEos=true -Djitllm.metrics.format=json -Djitllm.metrics.output=file -Djitllm.metrics.file=$metrics"
     start_ms=$(date +%s%3N)
     # shellcheck disable=SC2086
-    ./jllm --gpu --cuda \
+    ./jitllm --gpu --cuda \
       --model "$path" \
       --prompt "$PROMPT" \
       --max-tokens "$MAX_TOKENS" \

@@ -1,7 +1,7 @@
-package org.beehive.jllm.integration.cli;
+package org.beehive.jitllm.integration.cli;
 
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 
 /** The command-line warnings for experimental options, each printed once per process. */
 public final class ExperimentalWarnings {

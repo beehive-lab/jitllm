@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.math.TornadoMath;
@@ -17,7 +17,7 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * tables -- some layers reuse an earlier layer's KV cache, the FFN uses a GeGLU activation, and
  * every layer additionally mixes in a per-layer embedding (PLE). None of the existing fused kernels
  * match this shape, so this class provides purpose-built (but otherwise unfused/modular)
- * replacements; see {@link org.beehive.jllm.backend.cpu.InferenceCore#forwardJavaGemma4} for the
+ * replacements; see {@link org.beehive.jitllm.backend.cpu.InferenceCore#forwardJavaGemma4} for the
  * reference computation each of these mirrors.
  */
 // @formatter:off
@@ -209,7 +209,7 @@ public class Gemma4Kernels {
      * Qwen3Kernels.ropeRotationWithCacheCopy}'s {@code rotn} pattern for GQA).
      *
      * <p>{@code cacheBaseOffset} is the (possibly shared, see {@link
-     * org.beehive.jllm.inference.state.Gemma4State#cacheLayerBaseOffset}) base element offset of
+     * org.beehive.jitllm.inference.state.Gemma4State#cacheLayerBaseOffset}) base element offset of
      * this layer's slot in the flat {@code keyCache}/{@code valueCache} buffers.
      */
     public static void ropeNeoxRotateAndCacheCopy(

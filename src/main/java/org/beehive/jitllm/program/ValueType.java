@@ -1,4 +1,4 @@
-package org.beehive.jllm.program;
+package org.beehive.jitllm.program;
 
 /**
  * The type of a scalar an invocation supplies or reads back.

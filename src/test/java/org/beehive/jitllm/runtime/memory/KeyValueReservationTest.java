@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.memory;
+package org.beehive.jitllm.runtime.memory;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;

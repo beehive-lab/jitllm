@@ -1,9 +1,9 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.plan.ExecutionMode;
-import org.beehive.jllm.runtime.model.ArchitectureId;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * Which exact combinations have earned the lowered path as their default [D-1, D-2, D-3].

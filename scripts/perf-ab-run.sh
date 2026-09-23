@@ -22,7 +22,7 @@
 # For a flag-selected path rather than two builds, point both sides at one commit and
 # differentiate with per-side properties:
 #
-#   BASELINE_JVM_PROPS=-Djllm.lowering=false CANDIDATE_JVM_PROPS=-Djllm.lowering=true \
+#   BASELINE_JVM_PROPS=-Djitllm.lowering=false CANDIDATE_JVM_PROPS=-Djitllm.lowering=true \
 #   scripts/perf-ab-run.sh --baseline-ref HEAD --configuration lowering ...
 #
 # Exit codes are the gate's: 0 pass, 1 regression, 2 unstable environment, 3 usage error.
@@ -125,7 +125,7 @@ git -C "$REPO_ROOT" worktree add --detach "$WORKTREE" "$BASELINE_REF" > "$RESULT
 # a build against itself. BASELINE_JVM_PROPS/CANDIDATE_JVM_PROPS supply that, and
 # EXTRA_JVM_PROPS still applies to both sides.
 # The baseline side is an arbitrary older commit, which may predate the rename of
-# GPULlama3.java to jllm. Across that boundary three things differ: the launcher filename,
+# GPULlama3.java to jitllm. Across that boundary three things differ: the launcher filename,
 # the root environment variable, and the metrics system-property prefix. Comparing across
 # the rename is exactly what this tool is for, so pick the launcher that exists and set
 # both spellings of the other two — each build ignores the prefix it does not know.
@@ -133,7 +133,7 @@ git -C "$REPO_ROOT" worktree add --detach "$WORKTREE" "$BASELINE_REF" > "$RESULT
 # only kill the subshell and leave the caller with an empty launcher path.
 launcher_for() {
     local root="$1"
-    if   [ -x "$root/jllm" ];          then echo "$root/jllm"
+    if   [ -x "$root/jitllm" ];          then echo "$root/jitllm"
     elif [ -x "$root/llama-tornado" ]; then echo "$root/llama-tornado"
     else return 1
     fi
@@ -142,7 +142,7 @@ launcher_for() {
 metrics_props_for() {
     local metrics_file="$1"
     printf '%s %s' \
-        "-Djllm.metrics.format=json -Djllm.metrics.output=file -Djllm.metrics.file=$metrics_file" \
+        "-Djitllm.metrics.format=json -Djitllm.metrics.output=file -Djitllm.metrics.file=$metrics_file" \
         "-Dllama.metrics.format=json -Dllama.metrics.output=file -Dllama.metrics.file=$metrics_file"
 }
 
@@ -150,8 +150,8 @@ run_inference() {
     local root="$1" metrics_file="$2" run_log="$3" seed="$4" side_props="$5"
     local launcher
     launcher="$(launcher_for "$root")" \
-        || die "no launcher in $root (looked for jllm and llama-tornado)"
-    JLLM_ROOT="$root" LLAMA_ROOT="$root" \
+        || die "no launcher in $root (looked for jitllm and llama-tornado)"
+    JITLLM_ROOT="$root" LLAMA_ROOT="$root" \
     JAVA_TOOL_OPTIONS="$(metrics_props_for "$metrics_file") ${EXTRA_JVM_PROPS:-} $side_props" \
     "$launcher" --gpu "$BACKEND_FLAG" \
         --model "$MODELS_DIR/$MODEL_FILE" \

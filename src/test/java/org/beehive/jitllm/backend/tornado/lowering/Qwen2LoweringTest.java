@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -8,19 +8,19 @@ import static org.junit.Assert.fail;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.model.architecture.LlamaProgramDescription;
-import org.beehive.jllm.model.architecture.Qwen2ProgramDescription;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
-import org.beehive.jllm.model.qwen2.Qwen2Configuration;
-import org.beehive.jllm.program.InferenceProgram;
-import org.beehive.jllm.program.ProgramComponent;
-import org.beehive.jllm.program.op.OperationKind;
-import org.beehive.jllm.program.op.RoPE;
-import org.beehive.jllm.program.op.RopeLayout;
-import org.beehive.jllm.runtime.backend.CompileOptions;
-import org.beehive.jllm.runtime.backend.DeviceCapabilities;
-import org.beehive.jllm.runtime.backend.DeviceCapability;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.model.architecture.LlamaProgramDescription;
+import org.beehive.jitllm.model.architecture.Qwen2ProgramDescription;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.model.qwen2.Qwen2Configuration;
+import org.beehive.jitllm.program.InferenceProgram;
+import org.beehive.jitllm.program.ProgramComponent;
+import org.beehive.jitllm.program.op.OperationKind;
+import org.beehive.jitllm.program.op.RoPE;
+import org.beehive.jitllm.program.op.RopeLayout;
+import org.beehive.jitllm.runtime.backend.CompileOptions;
+import org.beehive.jitllm.runtime.backend.DeviceCapabilities;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 
 /**
@@ -191,7 +191,7 @@ public class Qwen2LoweringTest {
         List<ProgramComponent> components = new ArrayList<>(original.components());
         components.set(index, replacement);
         return InferenceProgram.of(
-                new org.beehive.jllm.program.ProgramSignature(
+                new org.beehive.jitllm.program.ProgramSignature(
                         original.signature().architecture(),
                         original.signature().policy(),
                         original.signature().capacity(),

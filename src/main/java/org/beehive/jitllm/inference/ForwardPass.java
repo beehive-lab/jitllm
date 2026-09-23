@@ -1,7 +1,7 @@
-package org.beehive.jllm.inference;
+package org.beehive.jitllm.inference;
 
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
 
 /**
  * One forward pass, without saying what performs it.

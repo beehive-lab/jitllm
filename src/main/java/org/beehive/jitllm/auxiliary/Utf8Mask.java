@@ -1,4 +1,4 @@
-package org.beehive.jllm.auxiliary;
+package org.beehive.jitllm.auxiliary;
 
 /** mask of a byte-sequence in UTF-8 encoding */
 public record Utf8Mask(int mask, int pattern, int len) {

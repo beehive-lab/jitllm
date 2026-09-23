@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -37,7 +37,7 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * slot, and rows that start mid-page, reach the last position of a 2048 context, and fill only part
  * of the chunk.
  *
- * <p>The timing screen at the end is opt-in ({@code JLLM_KERNEL_SCREEN=true}) and asserts nothing.
+ * <p>The timing screen at the end is opt-in ({@code JITLLM_KERNEL_SCREEN=true}) and asserts nothing.
  */
 // @formatter:on
 public class Qwen35AttentionScoredParityAccelTest {
@@ -251,9 +251,9 @@ public class Qwen35AttentionScoredParityAccelTest {
     @Test
     public void screen() throws Exception {
         assumeTrue(
-                "opt in with JLLM_KERNEL_SCREEN=true",
-                Boolean.getBoolean("jllm.kernelScreen")
-                        || "true".equals(System.getenv("JLLM_KERNEL_SCREEN")));
+                "opt in with JITLLM_KERNEL_SCREEN=true",
+                Boolean.getBoolean("jitllm.kernelScreen")
+                        || "true".equals(System.getenv("JITLLM_KERNEL_SCREEN")));
         Store store = new Store(9L);
         int[][] cases = {
             {32, 0}, {32, 480}, {32, 992}, {32, 2016}, {64, 0}, {64, 448}, {64, 960}, {64, 1984}

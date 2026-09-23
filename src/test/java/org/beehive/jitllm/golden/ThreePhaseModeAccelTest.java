@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -6,8 +6,8 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jllm.backend.tornado.TensorCoreSupport;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 /**
@@ -25,11 +25,11 @@ public class ThreePhaseModeAccelTest {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
-    private static final String PREFILL_DECODE = "jllm.withPrefillDecode";
-    private static final String PREFILL_BATCH = "jllm.prefillBatchSize";
+    private static final String PREFILL_DECODE = "jitllm.withPrefillDecode";
+    private static final String PREFILL_BATCH = "jitllm.prefillBatchSize";
 
     /**
      * The two modes every backend must run. No capability gate: unlike batched prefill, sequential

@@ -1,21 +1,21 @@
-package org.beehive.jllm.model.qwen35;
+package org.beehive.jitllm.model.qwen35;
 
 import java.util.List;
 import java.util.Set;
 import java.util.function.IntConsumer;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.inference.TokenGenerationLoop;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.inference.state.Qwen35State;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.inference.weights.tornado.TornadoWeights;
-import org.beehive.jllm.model.AbstractModel;
-import org.beehive.jllm.model.ModelType;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.runtime.model.ArchitectureId;
-import org.beehive.jllm.tokenizer.Qwen35Tokenizer;
-import org.beehive.jllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.inference.TokenGenerationLoop;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.inference.state.Qwen35State;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
+import org.beehive.jitllm.model.AbstractModel;
+import org.beehive.jitllm.model.ModelType;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.tokenizer.Qwen35Tokenizer;
+import org.beehive.jitllm.tokenizer.Tokenizer;
 
 /**
  * A loaded model of the {@code qwen35} architecture — the hybrid attention/delta-net stack behind
@@ -38,7 +38,7 @@ public class Qwen35 extends AbstractModel {
      * pass: without that, an accepted draft saves no work and the draft head's own block is added
      * cost. Read once, here, so a session cannot change it halfway through a sequence.
      */
-    private static final boolean SPECULATIVE = Boolean.getBoolean("jllm.qwen35.speculative");
+    private static final boolean SPECULATIVE = Boolean.getBoolean("jitllm.qwen35.speculative");
 
     private final Qwen35Configuration configuration;
 
@@ -153,7 +153,7 @@ public class Qwen35 extends AbstractModel {
             IntConsumer onTokenGenerated,
             TornadoVMMasterPlan tornadoVMPlan) {
         if (state.executionPolicy().phaseStrategy()
-                == org.beehive.jllm.runtime.policy.ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
+                == org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
             // Sequential and batched both enter here: the loop reads the batch width from the
             // policy and ingests the prompt in chunks of it, one token at a time when it is one.
             // The shared prefill loop, told that this family's decode loop charges the whole

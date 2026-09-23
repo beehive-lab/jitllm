@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -10,13 +10,13 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.model.loader.ModelLoader;
 
 // @formatter:off
 /**
@@ -41,7 +41,7 @@ import org.beehive.jllm.model.loader.ModelLoader;
  * subject. Step 2 is asserted to have moved the logits, so a reset that did nothing at all cannot
  * pass by making steps 1 and 4 trivially identical.
  *
- * <p>This is also the property the benchmark depends on: {@code JllmBench.runTest} calls every
+ * <p>This is also the property the benchmark depends on: {@code JitllmBench.runTest} calls every
  * repetition an independent sequence from position zero, and that is only true if the recurrent
  * state starts each one at zero on the device.
  */
@@ -169,7 +169,7 @@ abstract class Qwen35SequenceReset {
                 };
 
         int skippedSeed =
-                org.beehive.jllm.inference.PromptIngestion.of(state, promptTokens, 0).firstIndex();
+                org.beehive.jitllm.inference.PromptIngestion.of(state, promptTokens, 0).firstIndex();
         int budget = promptTokens.size() + tokens - skippedSeed;
         model.generateTokensGPU(
                 state, 0, promptTokens, Set.of(), budget, capturing, false, null, plan);

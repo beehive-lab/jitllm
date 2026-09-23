@@ -1,6 +1,6 @@
-package org.beehive.jllm.bench;
+package org.beehive.jitllm.bench;
 
-import static org.beehive.jllm.model.loader.ModelLoader.loadModel;
+import static org.beehive.jitllm.model.loader.ModelLoader.loadModel;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -10,18 +10,18 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
-import org.beehive.jllm.Options;
-import org.beehive.jllm.backend.cpu.CpuForwardPasses;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
-import org.beehive.jllm.backend.tornado.bench.SyntheticKernelBench;
-import org.beehive.jllm.format.GgufModelFacts;
-import org.beehive.jllm.inference.ForwardPass;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
+import org.beehive.jitllm.Options;
+import org.beehive.jitllm.backend.cpu.CpuForwardPasses;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
+import org.beehive.jitllm.backend.tornado.bench.SyntheticKernelBench;
+import org.beehive.jitllm.format.GgufModelFacts;
+import org.beehive.jitllm.inference.ForwardPass;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
 
 /**
- * llama-bench-style performance benchmark for jllm (GPU forward path).
+ * llama-bench-style performance benchmark for jitllm (GPU forward path).
  *
  * <p>Mirrors llama.cpp's {@code llama-bench}: a cartesian matrix of tests over one or more models —
  * prompt processing ({@code pp N}: N sequential forwards from position 0), token generation ({@code
@@ -31,7 +31,7 @@ import org.beehive.jllm.model.Model;
  * sampling, no host argmax (llama-bench parity).
  *
  * <pre>
- * jllm-bench (via jllm --bench):
+ * jitllm-bench (via jitllm --bench):
  *   -m  model.gguf[,model2.gguf]   models (repeatable / comma-separated)
  *   -p  512[,1024]                 prompt-processing sizes       (default 512)
  *   -n  128[,256]                  generation lengths            (default 128)
@@ -55,7 +55,7 @@ import org.beehive.jllm.model.Model;
  *   --synthetic-seq N              sequence length each slot attends for --synthetic
  * </pre>
  */
-public class JllmBench {
+public class JitllmBench {
 
     record TestSpec(int nPrompt, int nGen, int depth) {
         String name() {
@@ -92,7 +92,7 @@ public class JllmBench {
     }
 
     public static void main(String[] args) throws Exception {
-        // --cpu is pre-scanned with -b: jllm.enableTornadoVM is read once at class init, and
+        // --cpu is pre-scanned with -b: jitllm.enableTornadoVM is read once at class init, and
         // setting it unconditionally is what made every run report a GPU backend, CPU included.
         boolean cpu = false;
         for (String a : args) {
@@ -101,7 +101,7 @@ public class JllmBench {
             }
         }
         final boolean onCpu = cpu;
-        System.setProperty("jllm.enableTornadoVM", cpu ? "false" : "true");
+        System.setProperty("jitllm.enableTornadoVM", cpu ? "false" : "true");
 
         // Pre-scan -b: the batched-prefill plan + state buffers are gated on these system
         // properties, read once at class-init — set BEFORE any TornadoVM/State class loads.
@@ -116,8 +116,8 @@ public class JllmBench {
             batch = 1;
         }
         if (batch > 1) {
-            System.setProperty("jllm.withPrefillDecode", "true");
-            System.setProperty("jllm.prefillBatchSize", String.valueOf(batch));
+            System.setProperty("jitllm.withPrefillDecode", "true");
+            System.setProperty("jitllm.prefillBatchSize", String.valueOf(batch));
         }
         final int batchSize = batch;
 
@@ -174,8 +174,8 @@ public class JllmBench {
         }
         if (models.isEmpty()) {
             System.err.println(
-                    "usage: JllmBench -m model.gguf [-m model2.gguf] [-p 512] [-n 128] [-pg 512,128] [-d 0] [-r 5] [--cpu] [-o md|csv|json|jsonl|sql] [-oe fmt] [--delay s] [--no-warmup]"
-                            + " | JllmBench --synthetic [-b B] [--synthetic-seq N] [-o md|csv]");
+                    "usage: JitllmBench -m model.gguf [-m model2.gguf] [-p 512] [-n 128] [-pg 512,128] [-d 0] [-r 5] [--cpu] [-o md|csv|json|jsonl|sql] [-oe fmt] [--delay s] [--no-warmup]"
+                            + " | JitllmBench --synthetic [-b B] [--synthetic-seq N] [-o md|csv]");
             System.exit(1);
         }
         if (pps.isEmpty() && tgs.isEmpty() && pgs.isEmpty()) {
@@ -261,10 +261,10 @@ public class JllmBench {
         Model model = loadModel(options);
         // The plan checks this too, but a CPU run builds no plan: refuse an unimplemented native
         // request here rather than benchmark the JIT kernels under that name.
-        var benchPolicy = org.beehive.jllm.runtime.policy.ExecutionPolicy.fromSystemProperties();
-        org.beehive.jllm.integration.cli.ExperimentalWarnings.nativeLibraries(benchPolicy);
-        org.beehive.jllm.integration.cli.StartupDiagnostics.installTaskGraphChainOutput();
-        org.beehive.jllm.backend.tornado.NativeLibrarySupport.require(model, benchPolicy, !cpu);
+        var benchPolicy = org.beehive.jitllm.runtime.policy.ExecutionPolicy.fromSystemProperties();
+        org.beehive.jitllm.integration.cli.ExperimentalWarnings.nativeLibraries(benchPolicy);
+        org.beehive.jitllm.integration.cli.StartupDiagnostics.installTaskGraphChainOutput();
+        org.beehive.jitllm.backend.tornado.NativeLibrarySupport.require(model, benchPolicy, !cpu);
         long loadNs = System.nanoTime() - startedNs;
         State state = model.createNewState();
         // No plan on the CPU path: the host forward pass is the thing being measured, and building
@@ -274,10 +274,10 @@ public class JllmBench {
         ForwardPass hostForward =
                 cpu ? CpuForwardPasses.forArchitecture(model.architectureId()) : null;
 
-        if (org.beehive.jllm.integration.cli.StartupDiagnostics.verbose()) {
+        if (org.beehive.jitllm.integration.cli.StartupDiagnostics.verbose()) {
             var execution =
                     cpu
-                            ? new org.beehive.jllm.runtime.backend.ExecutionInfo(
+                            ? new org.beehive.jitllm.runtime.backend.ExecutionInfo(
                                     "CPU",
                                     System.getProperty("os.arch"),
                                     "Java " + System.getProperty("java.version"),
@@ -290,12 +290,12 @@ public class JllmBench {
                                     false)
                             : plan.executionInfo();
             System.err.print(
-                    org.beehive.jllm.integration.cli.StartupDiagnostics.render(
+                    org.beehive.jitllm.integration.cli.StartupDiagnostics.render(
                             model,
                             path,
                             execution,
                             "synthetic token workloads (no text sampling)",
-                            new org.beehive.jllm.integration.cli.ModelRunConfig(path, maxCtx, !cpu)
+                            new org.beehive.jitllm.integration.cli.ModelRunConfig(path, maxCtx, !cpu)
                                     .modelOptions(),
                             loadNs,
                             startedNs));
@@ -426,10 +426,10 @@ public class JllmBench {
             if (hostForward != null) {
                 hostForward.forward(model, state, toks[pos], pos);
             } else if (batch > 1) {
-                org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass.decode(
+                org.beehive.jitllm.backend.tornado.TornadoBatchPrefillPass.decode(
                         model, state, toks[pos], pos, (TornadoVMMasterPlanBatchPrefillDecode) plan);
             } else {
-                org.beehive.jllm.backend.tornado.TornadoForwardPass.forward(
+                org.beehive.jitllm.backend.tornado.TornadoForwardPass.forward(
                         model, state, toks[pos], pos, plan);
             }
         }
@@ -461,12 +461,12 @@ public class JllmBench {
             for (int off = 0; off < count; off += batch) {
                 int chunkSize = Math.min(batch, count - off);
                 int[] chunk = Arrays.copyOfRange(toks, start + off, start + off + chunkSize);
-                org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass.batchPrefill(
+                org.beehive.jitllm.backend.tornado.TornadoBatchPrefillPass.batchPrefill(
                         model, state, chunk, start + off, chunkSize, bp);
             }
         } else {
             for (int i = 0; i < count; i++) {
-                org.beehive.jllm.backend.tornado.TornadoForwardPass.forward(
+                org.beehive.jitllm.backend.tornado.TornadoForwardPass.forward(
                         model, state, toks[start + i], start + i, plan);
             }
         }
@@ -480,7 +480,7 @@ public class JllmBench {
         if (plan instanceof TornadoVMMasterPlanBatchPrefillDecode) {
             return "BATCH_PREFILL_DECODE";
         }
-        if (plan instanceof org.beehive.jllm.backend.tornado.TornadoVMMasterPlanPrefillDecode) {
+        if (plan instanceof org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanPrefillDecode) {
             return "PREFILL_DECODE";
         }
         return "STANDARD";
@@ -495,7 +495,7 @@ public class JllmBench {
 
     /** The backend name for the report heading and the metrics sidecar. */
     static String backendName() {
-        var device = org.beehive.jllm.backend.tornado.device.TornadoDevices.current();
+        var device = org.beehive.jitllm.backend.tornado.device.TornadoDevices.current();
         if (!device.capabilities().asSet().isEmpty()
                 || !"unavailable".equals(device.displayName())) {
             return device.backend().id().toUpperCase(java.util.Locale.ROOT);

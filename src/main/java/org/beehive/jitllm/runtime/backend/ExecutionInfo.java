@@ -1,6 +1,6 @@
-package org.beehive.jllm.runtime.backend;
+package org.beehive.jitllm.runtime.backend;
 
-import org.beehive.jllm.api.Experimental;
+import org.beehive.jitllm.api.Experimental;
 
 /**
  * Selected execution settings, describing the prepared plan rather than requested flags. The kernel

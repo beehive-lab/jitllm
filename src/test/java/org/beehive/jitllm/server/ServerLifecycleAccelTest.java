@@ -1,4 +1,4 @@
-package org.beehive.jllm.server;
+package org.beehive.jitllm.server;
 
 import static org.junit.Assert.*;
 import static org.junit.Assume.assumeTrue;
@@ -8,12 +8,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import org.beehive.jllm.api.LocalModel;
-import org.beehive.jllm.api.LocalModels;
-import org.beehive.jllm.api.ModelOptions;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.api.LocalModel;
+import org.beehive.jitllm.api.LocalModels;
+import org.beehive.jitllm.api.ModelOptions;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 /** Real CPU model: HTTP readiness, independent requests, streaming, and clean lifecycle. */

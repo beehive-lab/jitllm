@@ -1,4 +1,4 @@
-package org.beehive.jllm.server;
+package org.beehive.jitllm.server;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -62,7 +62,7 @@ public class OpenAIServerContextLengthTest {
         assertEquals("Llama-3.2-1B-Instruct-Q8_0", entry.get("id"));
         assertEquals("model", entry.get("object"));
         assertEquals(0, entry.get("created"));
-        assertEquals("jllm", entry.get("owned_by"));
+        assertEquals("jitllm", entry.get("owned_by"));
     }
 
     @Test

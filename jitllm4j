@@ -144,7 +144,7 @@ Config parseArgs(String[] args, List<Backend> installedBackends) {
     }
 
     if (profilerDumpDir == null) {
-        profilerDumpDir = System.getenv("JLLM_ROOT") + "/profiler-log.json";
+        profilerDumpDir = System.getenv("JITLLM_ROOT") + "/profiler-log.json";
     }
 
     // Default direct memory to 3x heap to accommodate K-quant dequantization
@@ -246,16 +246,16 @@ void printUsage() {
 
 String findLlamaJar(String llamaRoot) {
     var targetDir = Path.of(llamaRoot, "target");
-    try (var stream = Files.newDirectoryStream(targetDir, "jllm-*-SNAPSHOT.jar")) {
+    try (var stream = Files.newDirectoryStream(targetDir, "jitllm-*-SNAPSHOT.jar")) {
         var jars = new ArrayList<Path>();
         stream.forEach(jars::add);
         if (jars.isEmpty()) {
-            try (var fallback = Files.newDirectoryStream(targetDir, "jllm-*.jar")) {
+            try (var fallback = Files.newDirectoryStream(targetDir, "jitllm-*.jar")) {
                 fallback.forEach(jars::add);
             }
         }
         if (jars.isEmpty()) {
-            System.err.println("Error: No jllm JAR found in " + targetDir);
+            System.err.println("Error: No jitllm JAR found in " + targetDir);
             System.exit(1);
         }
         jars.sort(Comparator.reverseOrder());
@@ -355,8 +355,8 @@ List<String> buildCommand(Config cfg, String javaHome, String tornadoSdk, String
     ));
 
     if (cfg.useGpu()) cmd.add("-Duse.tornadovm=true");
-    if (cfg.verboseInit()) cmd.add("-Djllm.EnableTimingForTornadoVMInit=true");
-    if (cfg.diagnosticScalarBatchedPrefill()) cmd.add("-Djllm.qwen35.tensorCores=false");
+    if (cfg.verboseInit()) cmd.add("-Djitllm.EnableTimingForTornadoVMInit=true");
+    if (cfg.diagnosticScalarBatchedPrefill()) cmd.add("-Djitllm.qwen35.tensorCores=false");
 
     // Debug flags
     cmd.add("-Dtornado.debug=" + cfg.debug());
@@ -404,8 +404,8 @@ List<String> buildCommand(Config cfg, String javaHome, String tornadoSdk, String
     }
 
     String mainClass = cfg.bench()
-        ? "org.beehive.jllm.bench.JllmBench"
-        : "org.beehive.jllm.JllmApp";
+        ? "org.beehive.jitllm.bench.JitllmBench"
+        : "org.beehive.jitllm.JitllmApp";
     cmd.addAll(List.of("-cp", findLlamaJar(llamaRoot), mainClass));
 
     if (cfg.bench()) {
@@ -443,7 +443,7 @@ List<String> buildCommand(Config cfg, String javaHome, String tornadoSdk, String
 }
 
 String resolveLlamaRoot() {
-    var envRoot = System.getenv("JLLM_ROOT");
+    var envRoot = System.getenv("JITLLM_ROOT");
     if (envRoot != null && !envRoot.isBlank()) return envRoot;
 
     // Derive from the script's own location, same as set_paths does
@@ -452,7 +452,7 @@ String resolveLlamaRoot() {
                 .getProtectionDomain().getCodeSource().getLocation().toURI());
         return scriptPath.getParent().toString();
     } catch (Exception e) {
-        System.err.println("Error: JLLM_ROOT not set and could not determine script location");
+        System.err.println("Error: JITLLM_ROOT not set and could not determine script location");
         System.err.println("Note: check set_path in root dir -> source set_path");
         System.exit(1);
         return null;

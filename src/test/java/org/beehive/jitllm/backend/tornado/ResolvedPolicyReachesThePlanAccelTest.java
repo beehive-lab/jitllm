@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -6,17 +6,17 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.golden.ProgramIdentity;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.backend.DeviceCapability;
-import org.beehive.jllm.runtime.metrics.MetricsSink;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy.SamplingResidency;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.ProgramIdentity;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
+import org.beehive.jitllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency;
 import org.junit.Test;
 
 /**
@@ -135,12 +135,12 @@ public class ResolvedPolicyReachesThePlanAccelTest {
                     false);
         }
         String previousGpu = System.getProperty("use.tornadovm");
-        String previousLegacy = System.getProperty("jllm.kvcache.fp16");
-        String previousFp32 = System.getProperty("jllm.kvcache.fp32");
+        String previousLegacy = System.getProperty("jitllm.kvcache.fp16");
+        String previousFp32 = System.getProperty("jitllm.kvcache.fp32");
         System.setProperty("use.tornadovm", "true");
         try {
-            System.clearProperty("jllm.kvcache.fp16");
-            System.clearProperty("jllm.kvcache.fp32");
+            System.clearProperty("jitllm.kvcache.fp16");
+            System.clearProperty("jitllm.kvcache.fp32");
             Model fp16Model = ModelLoader.loadModel(model, CONTEXT_LENGTH, true, true);
             State fp16State = fp16Model.createNewState();
             assertTrue(
@@ -154,15 +154,15 @@ public class ResolvedPolicyReachesThePlanAccelTest {
                     "and the plan built from it must still be a plan",
                     entries.stream().anyMatch(e -> e.contains("logits.vocab_proj")));
 
-            System.setProperty("jllm.kvcache.fp32", "true");
+            System.setProperty("jitllm.kvcache.fp32", "true");
             Model fp32Model = ModelLoader.loadModel(model, CONTEXT_LENGTH, true, true);
             assertFalse(
-                    "with -Djllm.kvcache.fp32=true the state must hold FP32 key/value arrays only",
+                    "with -Djitllm.kvcache.fp32=true the state must hold FP32 key/value arrays only",
                     fp32Model.createNewState().usesFp16KeyValueCache());
         } finally {
             restore("use.tornadovm", previousGpu);
-            restore("jllm.kvcache.fp16", previousLegacy);
-            restore("jllm.kvcache.fp32", previousFp32);
+            restore("jitllm.kvcache.fp16", previousLegacy);
+            restore("jitllm.kvcache.fp32", previousFp32);
         }
     }
 

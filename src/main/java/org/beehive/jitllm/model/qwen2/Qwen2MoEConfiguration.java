@@ -1,6 +1,6 @@
-package org.beehive.jllm.model.qwen2;
+package org.beehive.jitllm.model.qwen2;
 
-import org.beehive.jllm.model.Configuration;
+import org.beehive.jitllm.model.Configuration;
 
 public record Qwen2MoEConfiguration(
         String quantization,

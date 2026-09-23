@@ -11,7 +11,7 @@ Usage:
     --metrics-dir /path/to/artifacts \\
     --commit $GITHUB_SHA --branch main \\
     --run-id $GITHUB_RUN_ID --run-number $GITHUB_RUN_NUMBER \\
-    --run-attempt 1 --workflow "jllm Build & Run" \\
+    --run-attempt 1 --workflow "jitllm Build & Run" \\
     --history docs/perf-history.jsonl
 """
 

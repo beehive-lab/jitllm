@@ -1,6 +1,6 @@
-package org.beehive.jllm.backend.tornado.workspace;
+package org.beehive.jitllm.backend.tornado.workspace;
 
-import org.beehive.jllm.inference.Logits;
+import org.beehive.jitllm.inference.Logits;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;

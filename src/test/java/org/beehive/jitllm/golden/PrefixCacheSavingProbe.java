@@ -1,20 +1,20 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.batch.TornadoBatchExecutor;
-import org.beehive.jllm.engine.LLMEngine;
-import org.beehive.jllm.engine.RequestHandle;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
-import org.beehive.jllm.runtime.kv.KvLease;
-import org.beehive.jllm.runtime.kv.KvStorage;
-import org.beehive.jllm.runtime.kv.KvStorageFactories;
-import org.beehive.jllm.runtime.kv.KvStorageRequest;
+import org.beehive.jitllm.backend.tornado.batch.TornadoBatchExecutor;
+import org.beehive.jitllm.engine.LLMEngine;
+import org.beehive.jitllm.engine.RequestHandle;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.kv.KvLease;
+import org.beehive.jitllm.runtime.kv.KvStorage;
+import org.beehive.jitllm.runtime.kv.KvStorageFactories;
+import org.beehive.jitllm.runtime.kv.KvStorageRequest;
 
 /**
  * What a prefix cache saves on a device, and whether the answers stay the same.
@@ -32,7 +32,7 @@ public final class PrefixCacheSavingProbe {
         int requests = Integer.getInteger("probe.requests", 8);
         int batch = Integer.getInteger("probe.b", 4);
         int contextLength = 512;
-        System.setProperty("jllm.prefillBatchSize", String.valueOf(batch));
+        System.setProperty("jitllm.prefillBatchSize", String.valueOf(batch));
 
         // A long shared opening, as served traffic has: the same system framing every time.
         String shared =

@@ -1,10 +1,10 @@
-package org.beehive.jllm.auxiliary.metrics;
+package org.beehive.jitllm.auxiliary.metrics;
 
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.util.Objects;
-import org.beehive.jllm.runtime.metrics.MetricKey;
-import org.beehive.jllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.runtime.metrics.MetricKey;
+import org.beehive.jitllm.runtime.metrics.MetricsSink;
 
 /**
  * A sink that writes each measurement to the platform logger — the alternative to library code

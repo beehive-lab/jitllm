@@ -1,6 +1,6 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 
 /** Per-session settings. */
 public final class SessionOptions {

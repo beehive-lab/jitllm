@@ -13,4 +13,4 @@
  * <p>It must not import TornadoVM [Rule 1], and it must not import an implementation package — both
  * are asserted in {@code DependencyRulesTest}.
  */
-package org.beehive.jllm.runtime.backend;
+package org.beehive.jitllm.runtime.backend;

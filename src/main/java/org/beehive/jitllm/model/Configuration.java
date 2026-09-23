@@ -1,6 +1,6 @@
-package org.beehive.jllm.model;
+package org.beehive.jitllm.model;
 
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 public interface Configuration {
 

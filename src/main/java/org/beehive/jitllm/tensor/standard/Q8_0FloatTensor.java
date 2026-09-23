@@ -1,4 +1,4 @@
-package org.beehive.jllm.tensor.standard;
+package org.beehive.jitllm.tensor.standard;
 
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
@@ -7,8 +7,8 @@ import jdk.incubator.vector.ByteVector;
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorOperators;
 import jdk.incubator.vector.VectorSpecies;
-import org.beehive.jllm.format.Float16;
-import org.beehive.jllm.format.GGMLType;
+import org.beehive.jitllm.format.Float16;
+import org.beehive.jitllm.format.GGMLType;
 
 public final class Q8_0FloatTensor extends FloatTensor {
 
@@ -84,7 +84,7 @@ public final class Q8_0FloatTensor extends FloatTensor {
      * divergence, not a defect — but it is one the default should not carry.
      */
     static final boolean QUANTIZE_ACTIVATION =
-            Boolean.parseBoolean(System.getProperty("jllm.quantizeActivation", "false"));
+            Boolean.parseBoolean(System.getProperty("jitllm.quantizeActivation", "false"));
 
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {

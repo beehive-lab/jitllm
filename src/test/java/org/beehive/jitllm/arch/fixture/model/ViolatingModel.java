@@ -1,12 +1,12 @@
-package org.beehive.jllm.arch.fixture.model;
+package org.beehive.jitllm.arch.fixture.model;
 
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 /**
- * Deliberate violator, used only by {@link org.beehive.jllm.arch.DependencyRulesSelfTest} to prove
+ * Deliberate violator, used only by {@link org.beehive.jitllm.arch.DependencyRulesSelfTest} to prove
  * the rules actually fail on bad code. Never imported by production code and never part of {@link
- * org.beehive.jllm.arch.ProductionClasses}.
+ * org.beehive.jitllm.arch.ProductionClasses}.
  *
  * <p>Breaks Rule 1 and Rule 2 (imports TornadoVM outside the backend, from a model package), Rule 5
  * (non-final field) and Rule 11 (references TaskGraph).

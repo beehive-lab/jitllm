@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,7 +42,7 @@ import uk.ac.manchester.tornado.runtime.library.spi.TornadoLibraryProvider;
  * is dlopened on their behalf. The tensor-core check is evaluated first and short-circuits for the
  * same reason.
  *
- * <p><b>{@code -Djllm.prefill.native=false} turns both off.</b> That is a supported operational
+ * <p><b>{@code -Djitllm.prefill.native=false} turns both off.</b> That is a supported operational
  * control, not an experiment: it is the escape hatch for a host whose vendor libraries load but
  * misbehave, and it is what the weight-handoff regression test flips to compare the native and JIT
  * paths in one process. There is deliberately no per-operation property — a configuration where
@@ -51,12 +51,12 @@ import uk.ac.manchester.tornado.runtime.library.spi.TornadoLibraryProvider;
 public final class NativePrefillSupport {
 
     /**
-     * The opt-in, {@code -Djllm.nativeLibraries=true} ({@code --with-native-libraries}); the legacy
-     * {@code -Djllm.prefill.native} is honoured when set. Resolved into {@link
+     * The opt-in, {@code -Djitllm.nativeLibraries=true} ({@code --with-native-libraries}); the legacy
+     * {@code -Djitllm.prefill.native} is honoured when set. Resolved into {@link
      * ExecutionPolicy#nativeLibraries()}, which is what the plan reads.
      */
     public static final String PROPERTY =
-            org.beehive.jllm.runtime.policy.ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY;
+            org.beehive.jitllm.runtime.policy.ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY;
 
     /**
      * The execution-plan id the capability probe borrows.
@@ -116,7 +116,7 @@ public final class NativePrefillSupport {
      * policy is fixed for a plan's life, which is what makes the two answers agree.
      */
     public static boolean nativeProjections(
-            org.beehive.jllm.runtime.policy.ExecutionPolicy policy) {
+            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy) {
         return policy.nativeLibraries()
                 && TensorCoreSupport.isTensorCoreCapableBackend()
                 && Probe.CUBLAS;
@@ -125,7 +125,7 @@ public final class NativePrefillSupport {
     /** {@link #nativeProjections(ExecutionPolicy)} for the policy the properties resolve to. */
     public static boolean nativeProjections() {
         return nativeProjections(
-                org.beehive.jllm.runtime.policy.ExecutionPolicy.fromSystemProperties());
+                org.beehive.jitllm.runtime.policy.ExecutionPolicy.fromSystemProperties());
     }
 
     /** Whether cuBLAS can be reached from this process at all. */
@@ -152,7 +152,7 @@ public final class NativePrefillSupport {
      */
     // @formatter:on
     public static boolean nativeAttention(
-            org.beehive.jllm.runtime.policy.ExecutionPolicy policy, SdpaShape shape) {
+            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy, SdpaShape shape) {
         if (!nativeProjections(policy) || !Probe.CUDNN) {
             return false;
         }
@@ -244,7 +244,7 @@ public final class NativePrefillSupport {
      * @param shape the attention shape this session would ask for
      */
     public static String describe(
-            org.beehive.jllm.runtime.policy.ExecutionPolicy policy,
+            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy,
             boolean fp16KeyValueCache,
             SdpaShape shape) {
         if (!policy.nativeLibraries()) {

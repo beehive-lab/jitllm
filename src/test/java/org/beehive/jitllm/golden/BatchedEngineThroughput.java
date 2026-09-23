@@ -1,19 +1,19 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.batch.TornadoBatchExecutor;
-import org.beehive.jllm.engine.LLMEngine;
-import org.beehive.jllm.engine.RequestHandle;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
-import org.beehive.jllm.runtime.kv.KvLease;
-import org.beehive.jllm.runtime.kv.KvStorage;
-import org.beehive.jllm.runtime.kv.KvStorageFactories;
-import org.beehive.jllm.runtime.kv.KvStorageRequest;
+import org.beehive.jitllm.backend.tornado.batch.TornadoBatchExecutor;
+import org.beehive.jitllm.engine.LLMEngine;
+import org.beehive.jitllm.engine.RequestHandle;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.kv.KvLease;
+import org.beehive.jitllm.runtime.kv.KvStorage;
+import org.beehive.jitllm.runtime.kv.KvStorageFactories;
+import org.beehive.jitllm.runtime.kv.KvStorageRequest;
 
 /**
  * Aggregate throughput through the engine at several batch widths.
@@ -34,7 +34,7 @@ public final class BatchedEngineThroughput {
 
         for (String width : widths) {
             int b = Integer.parseInt(width.trim());
-            System.setProperty("jllm.prefillBatchSize", String.valueOf(b));
+            System.setProperty("jitllm.prefillBatchSize", String.valueOf(b));
             run(modelPath, b, tokens, contextLength);
         }
     }

@@ -1,11 +1,11 @@
-package org.beehive.jllm.format;
+package org.beehive.jitllm.format;
 
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.runtime.tensor.ExecutionTarget;
-import org.beehive.jllm.runtime.tensor.Shape;
-import org.beehive.jllm.runtime.tensor.TensorDescriptor;
-import org.beehive.jllm.runtime.tensor.TensorLayout;
-import org.beehive.jllm.runtime.tensor.TensorRole;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
+import org.beehive.jitllm.runtime.tensor.Shape;
+import org.beehive.jitllm.runtime.tensor.TensorDescriptor;
+import org.beehive.jitllm.runtime.tensor.TensorLayout;
+import org.beehive.jitllm.runtime.tensor.TensorRole;
 
 /**
  * Builds a runtime {@link TensorDescriptor} from a GGUF tensor entry.

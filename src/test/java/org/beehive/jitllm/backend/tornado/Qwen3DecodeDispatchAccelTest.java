@@ -1,21 +1,21 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jllm.Options;
-import org.beehive.jllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16FFNLayersDecode;
-import org.beehive.jllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
-import org.beehive.jllm.backend.tornado.scheduling.LaneAttentionPolicy;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.backend.BackendId;
+import org.beehive.jitllm.Options;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16FFNLayersDecode;
+import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
+import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.junit.Test;
 
 // @formatter:off
@@ -72,7 +72,7 @@ import org.junit.Test;
 public class Qwen3DecodeDispatchAccelTest {
 
     private static final String GPU_PROPERTY = "use.tornadovm";
-    private static final String KV_FP16_PROPERTY = "jllm.kvcache.fp16";
+    private static final String KV_FP16_PROPERTY = "jitllm.kvcache.fp16";
     private static final int BATCH = 128;
     private static final int CONTEXT = 512;
 

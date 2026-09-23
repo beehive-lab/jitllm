@@ -1,15 +1,15 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.lang.foreign.Arena;
-import org.beehive.jllm.backend.cpu.Qwen35Forward;
-import org.beehive.jllm.inference.state.Qwen35State;
-import org.beehive.jllm.model.qwen35.Qwen35;
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
-import org.beehive.jllm.runtime.metrics.MetricsSink;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.backend.cpu.Qwen35Forward;
+import org.beehive.jitllm.inference.state.Qwen35State;
+import org.beehive.jitllm.model.qwen35.Qwen35;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.junit.Test;
 
 // @formatter:off
@@ -60,7 +60,7 @@ public class Qwen35SyntheticParityAccelTest {
         // Q4_0 projections stay on the floating-point path here. Their precision is covered on the
         // real model by the parity tests, against bounds written for it. This class gets its own
         // JVM (reuseForks=false), so the property is read before the layer builder loads.
-        System.setProperty("jllm.qwen35.packedIntegerDot", "false");
+        System.setProperty("jitllm.qwen35.packedIntegerDot", "false");
         try (Arena owned = Arena.ofShared()) {
             Qwen35Configuration config = Qwen35SyntheticModel.config();
             Qwen35SyntheticModel.Weights both = new Qwen35SyntheticModel(owned).weights(config);

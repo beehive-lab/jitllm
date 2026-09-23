@@ -1,7 +1,7 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
-import org.beehive.jllm.backend.tornado.PlanDispatchEvidence;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.PlanDispatchEvidence;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
 import org.junit.Test;
 
 /**
@@ -15,7 +15,7 @@ import org.junit.Test;
 public class Qwen35Fp16KvSequenceResetStandardAccelTest extends Qwen35SequenceReset {
 
     static {
-        System.setProperty("jllm.kvcache.fp16", "true");
+        System.setProperty("jitllm.kvcache.fp16", "true");
     }
 
     @Override

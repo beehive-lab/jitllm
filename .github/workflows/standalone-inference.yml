@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout_minutes }}
 
     steps:
-      - name: Checkout jllm
+      - name: Checkout jitllm
         uses: actions/checkout@v4
         with:
           clean: false
@@ -55,7 +55,7 @@ jobs:
       # compiles both JDK lines on the same self-hosted runner, so whatever is left in
       # target/ belongs to whichever cell finished last -- and a JDK 25 target/ under a
       # JDK 21 run fails with UnsupportedClassVersionError halfway through the matrix.
-      - name: Build jllm
+      - name: Build jitllm
         run: ./mvnw -q clean install -DskipTests -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
 
       # RUNNER_TEMP survives between runs on a self-hosted runner, so the results file and the

@@ -1,16 +1,16 @@
-package org.beehive.jllm.engine;
+package org.beehive.jitllm.engine;
 
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.IntConsumer;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.runtime.batch.BatchExecutor;
-import org.beehive.jllm.runtime.batch.BatchSlots;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
-import org.beehive.jllm.runtime.metrics.MetricKey;
-import org.beehive.jllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.batch.BatchExecutor;
+import org.beehive.jitllm.runtime.batch.BatchSlots;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.metrics.MetricKey;
+import org.beehive.jitllm.runtime.metrics.MetricsSink;
 
 /**
  * Continuous batching over one loaded model: submit requests, drive {@code step()}, collect tokens.

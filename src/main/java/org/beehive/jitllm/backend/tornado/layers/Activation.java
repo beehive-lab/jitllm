@@ -1,10 +1,10 @@
-package org.beehive.jllm.backend.tornado.layers;
+package org.beehive.jitllm.backend.tornado.layers;
 
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernels;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.model.Configuration;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.model.Configuration;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -33,11 +33,11 @@ public class Activation extends AbstractLayer implements ActivationTaskGraph {
      * same reason; this is the other half of that.
      */
     protected TaskGraph setupActivationTaskGraph(String name) {
-        org.beehive.jllm.runtime.tensor.DataType embedding =
-                weights instanceof org.beehive.jllm.inference.weights.tornado.TornadoWeights t
+        org.beehive.jitllm.runtime.tensor.DataType embedding =
+                weights instanceof org.beehive.jitllm.inference.weights.tornado.TornadoWeights t
                         ? t.getTokenEmbeddingTable().dataType()
                         : null;
-        if (embedding == org.beehive.jllm.runtime.tensor.DataType.Q4_0) {
+        if (embedding == org.beehive.jitllm.runtime.tensor.DataType.Q4_0) {
             return new TaskGraph(name)
                     .transferToDevice(DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX)
                     .task(

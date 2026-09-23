@@ -1,13 +1,13 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.model.format.ToolCallExtract;
-import org.beehive.jllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.model.format.ToolCallExtract;
+import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 
 /**
  * Turns a facade conversation into the tokens the model sees.

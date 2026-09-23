@@ -1,12 +1,12 @@
-package org.beehive.jllm.server;
+package org.beehive.jitllm.server;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.util.List;
-import org.beehive.jllm.api.ChatMessage;
-import org.beehive.jllm.api.ChatRole;
+import org.beehive.jitllm.api.ChatMessage;
+import org.beehive.jitllm.api.ChatRole;
 import org.junit.Test;
 
 /**

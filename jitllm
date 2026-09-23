@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-jllm: GPU-accelerated Java LLM runner with TornadoVM
+jitllm: GPU-accelerated Java LLM runner with TornadoVM
 Run LLM models using OpenCL, CUDA, or Metal backends.
 
 The backend is auto-detected from the installed TornadoVM SDK
@@ -58,11 +58,11 @@ class LlamaRunner:
     def __init__(self):
         self.java_home = os.environ.get("JAVA_HOME")
         self.tornado_sdk = os.environ.get("TORNADOVM_HOME")
-        self.llama_root = os.environ.get("JLLM_ROOT")
+        self.llama_root = os.environ.get("JITLLM_ROOT")
 
         if not all([self.java_home, self.tornado_sdk, self.llama_root]):
             print("Error: Required environment variables not set")
-            print("Please ensure JAVA_HOME, TORNADOVM_HOME, and JLLM_ROOT are defined")
+            print("Please ensure JAVA_HOME, TORNADOVM_HOME, and JITLLM_ROOT are defined")
             print("Note: check set_paths in root dir -> source set_paths")
             sys.exit(1)
 
@@ -71,7 +71,7 @@ class LlamaRunner:
         paths_to_check = {
             "JAVA_HOME": self.java_home,
             "TORNADOVM_HOME": self.tornado_sdk,
-            "JLLM_ROOT": self.llama_root,
+            "JITLLM_ROOT": self.llama_root,
         }
 
         for name, path in paths_to_check.items():
@@ -153,27 +153,27 @@ class LlamaRunner:
             cmd.append("-Duse.tornadovm=true")
 
         if args.verbose:
-            cmd.append("-Djllm.verbose=true")
+            cmd.append("-Djitllm.verbose=true")
 
         if args.with_prefill_decode or args.batch_prefill_size is not None:
-            cmd.append("-Djllm.withPrefillDecode=true")
+            cmd.append("-Djitllm.withPrefillDecode=true")
 
         if args.batch_prefill_size is not None:
-            cmd.append(f"-Djllm.prefillBatchSize={args.batch_prefill_size}")
+            cmd.append(f"-Djitllm.prefillBatchSize={args.batch_prefill_size}")
 
         if args.print_taskgraph_chain:
-            cmd.append("-Djllm.printTaskGraphChain=true")
+            cmd.append("-Djitllm.printTaskGraphChain=true")
             # The shell's COLUMNS is rarely exported; the printer wraps to it.
             os.environ.setdefault("COLUMNS", str(shutil.get_terminal_size().columns))
 
         if args.with_native_libraries:
-            cmd.append("-Djllm.nativeLibraries=true")
+            cmd.append("-Djitllm.nativeLibraries=true")
 
         if args.cuda_graphs:
-            cmd.append("-Djllm.cudaGraphs=true")
+            cmd.append("-Djitllm.cudaGraphs=true")
 
         if args.fp32_kv_cache:
-            cmd.append("-Djllm.kvcache.fp32=true")
+            cmd.append("-Djitllm.kvcache.fp32=true")
 
         # Debug options
         debug_config = []
@@ -248,11 +248,11 @@ class LlamaRunner:
         module_config: List[str] = []
 
         if getattr(args, "server", False):
-            main_class = "org.beehive.jllm.server.OpenAIServer"
+            main_class = "org.beehive.jitllm.server.OpenAIServer"
         elif getattr(args, "bench", False):
-            main_class = "org.beehive.jllm.bench.JllmBench"
+            main_class = "org.beehive.jitllm.bench.JitllmBench"
         else:
-            main_class = "org.beehive.jllm.JllmApp"
+            main_class = "org.beehive.jitllm.JitllmApp"
 
         module_config.extend(
             [
@@ -268,16 +268,16 @@ class LlamaRunner:
     def _find_llama_jar(self) -> str:
         """Find the LLaMA JAR file automatically using glob pattern."""
         target_dir = f"{self.llama_root}/target"
-        jar_pattern = f"{target_dir}/jllm-*-SNAPSHOT.jar"
+        jar_pattern = f"{target_dir}/jitllm-*-SNAPSHOT.jar"
         jar_files = glob.glob(jar_pattern)
 
         if not jar_files:
-            # Fallback: try any jllm jar
-            jar_pattern = f"{target_dir}/jllm-*.jar"
+            # Fallback: try any jitllm jar
+            jar_pattern = f"{target_dir}/jitllm-*.jar"
             jar_files = glob.glob(jar_pattern)
 
         if not jar_files:
-            raise FileNotFoundError(f"No jllm JAR file found in {target_dir}")
+            raise FileNotFoundError(f"No jitllm JAR file found in {target_dir}")
 
         # Sort to get the latest version if multiple exist
         jar_files.sort(reverse=True)
@@ -400,7 +400,7 @@ class LlamaRunner:
 
 
 def load_env_from_script():
-    if "JLLM_ROOT" in os.environ and os.environ["JLLM_ROOT"]:
+    if "JITLLM_ROOT" in os.environ and os.environ["JITLLM_ROOT"]:
         return
 
     system = platform.system()
@@ -443,7 +443,7 @@ def load_env_from_script():
 class OverviewHelpAction(argparse.Action):
     def __init__(self, option_strings, dest, **kwargs):
         super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS,
-                         help="Show this help; jllm COMMAND --help shows one command's options")
+                         help="Show this help; jitllm COMMAND --help shows one command's options")
 
     def __call__(self, parser, namespace, values, option_string=None):
         parser.print_usage()
@@ -491,7 +491,7 @@ COMMANDS = {"run": "Generate one response to --prompt", "chat": "Chat in the ter
 
 
 def overview_help():
-    """Every command and every option, for jllm --help."""
+    """Every command and every option, for jitllm --help."""
     full = create_parser()
     formatter = full._get_formatter()
     formatter.start_section("options")
@@ -506,7 +506,7 @@ def overview_help():
         formatter.add_arguments(visible)
         formatter.end_section()
     formatter.add_text("Options marked with commands in parentheses apply to those commands only. "
-                       "jllm COMMAND --help shows the options of one command.")
+                       "jitllm COMMAND --help shows the options of one command.")
     commands = "commands:\n" + "".join(f"  {name:<8}{text}\n" for name, text in COMMANDS.items())
     return commands + "\n" + formatter.format_help()
 
@@ -523,14 +523,14 @@ def parse_cli_args(argv):
         parser = create_parser()
     else:
         parser = argparse.ArgumentParser(
-            prog="jllm", usage="jllm {run,chat,serve,bench} --model FILE [options]",
+            prog="jitllm", usage="jitllm {run,chat,serve,bench} --model FILE [options]",
             description="Run, chat with, serve, or benchmark a local GGUF model on TornadoVM.",
             formatter_class=argparse.RawDescriptionHelpFormatter, add_help=False)
         parser.add_argument("-h", "--help", action=OverviewHelpAction)
         sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
         for command in commands:
             sub.add_parser(command, parents=[create_parser(command)], add_help=False,
-                           prog=f"jllm {command}", usage=f"jllm {command} --model FILE [options]",
+                           prog=f"jitllm {command}", usage=f"jitllm {command} --model FILE [options]",
                            help=COMMANDS[command], description=COMMANDS[command],
                            formatter_class=HelpFormatter, allow_abbrev=False)
     args = parser.parse_args(argv)
@@ -599,17 +599,17 @@ def parse_cli_args(argv):
 def create_parser(command=None) -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
-        prog="jllm" + (" " + command if command else ""),
+        prog="jitllm" + (" " + command if command else ""),
         # Always explicit: before Python 3.13, argparse's generated usage asserts when it wraps a
         # metavar with brackets or "|" (N[,N...], true|false), and every error message builds it.
-        usage=f"jllm {command} --model FILE [options]" if command else "jllm --model FILE [options]",
+        usage=f"jitllm {command} --model FILE [options]" if command else "jitllm --model FILE [options]",
         description=COMMANDS[command] if command else "GPU-accelerated LLM runner using TornadoVM",
         formatter_class=HelpFormatter,
         allow_abbrev=False,
         add_help=False,
     )
     parser.add_argument("-h", "--help", action="help",
-                        help="Show this command's options; jllm --help lists every command and option"
+                        help="Show this command's options; jitllm --help lists every command and option"
                         if command else "Show this help and exit")
 
     # Groups, in the order --help shows them: what to run, the command's own options, where it
@@ -658,7 +658,7 @@ def create_parser(command=None) -> argparse.ArgumentParser:
     engine.add_argument("--execute-after-show", action="store_true",
                         help="With --show-command, print the command and then run it")
 
-    # Legacy spellings of the subcommands (jllm --model F --server ...), accepted, not advertised.
+    # Legacy spellings of the subcommands (jitllm --model F --server ...), accepted, not advertised.
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("-i", "--interactive", "--chat", action="store_true", help=argparse.SUPPRESS)
     mode_group.add_argument("--instruct", action="store_true", default=False, help=argparse.SUPPRESS)
@@ -677,7 +677,7 @@ def create_parser(command=None) -> argparse.ArgumentParser:
     bench_group.add_argument("--output", choices=["md", "csv", "json", "jsonl", "sql"], metavar="FORMAT",
                              help="Result format: md, csv, json, jsonl or sql")
     bench_group.add_argument("--bench-args", default="", metavar="ARGS",
-                             help='Extra JllmBench options, e.g. --bench-args="-d 0,4096 -r 5"')
+                             help='Extra JitllmBench options, e.g. --bench-args="-d 0,4096 -r 5"')
 
     hw_group = parser.add_argument_group("Hardware Configuration")
     hw_group.add_argument("--gpu", dest="use_gpu", action="store_true",
@@ -697,7 +697,7 @@ def create_parser(command=None) -> argparse.ArgumentParser:
     debug_group.add_argument("--profiler", action="store_true", help="Enable the TornadoVM profiler")
     debug_group.add_argument("--profiler-dump-file", dest="profiler_dump_dir", default=None, metavar="FILE",
                              help="JSON file for the profiler's output "
-                                  "(default: profiler-log.json in the jllm directory)")
+                                  "(default: profiler-log.json in the jitllm directory)")
     # Old name: TornadoVM's property is called dump.dir but has always taken a file.
     debug_group.add_argument("--profiler-dump-dir", dest="profiler_dump_dir", default=argparse.SUPPRESS,
                              help=argparse.SUPPRESS)
@@ -714,7 +714,7 @@ def create_parser(command=None) -> argparse.ArgumentParser:
     verbose_group.add_argument("--print-taskgraph-chain", dest="print_taskgraph_chain", action="store_true",
                                help="Print the execution plan's TaskGraphs: when each runs, and its tasks "
                                     "(kernel and worker grid, or libraryTask for cuBLAS/cuDNN calls), with "
-                                    "repeated layer graphs shown once (jllm.printTaskGraphChain=true)")
+                                    "repeated layer graphs shown once (jitllm.printTaskGraphChain=true)")
     verbose_group.add_argument("--verbose-init", dest="verbose_init", action="store_true", help=argparse.SUPPRESS)
 
     advanced_group = parser.add_argument_group(
@@ -797,7 +797,7 @@ def validate_backend_selection(args):
         f"Error: {flag} was given without --gpu, so the model would run on the CPU.\n"
         f"  {flag} only chooses which TornadoVM backend to prefer; --gpu is what enables "
         f"acceleration.\n"
-        f"  Use: jllm --gpu {flag} ...   (or drop {flag} to run on the CPU "
+        f"  Use: jitllm --gpu {flag} ...   (or drop {flag} to run on the CPU "
         f"deliberately)"
     )
     sys.exit(1)
@@ -818,9 +818,9 @@ def main():
     for warning in resolve_verbosity(args):
         print(warning, file=sys.stderr)
 
-    # Set default profiler log path relative to JLLM_ROOT
+    # Set default profiler log path relative to JITLLM_ROOT
     if args.profiler_dump_dir is None:
-        llama_root = os.environ.get("JLLM_ROOT")
+        llama_root = os.environ.get("JITLLM_ROOT")
         args.profiler_dump_dir = os.path.join(llama_root, "profiler-log.json")
 
     # Set default seed if not provided

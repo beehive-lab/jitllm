@@ -1,3 +1,3 @@
-package org.beehive.jllm.auxiliary;
+package org.beehive.jitllm.auxiliary;
 
 public record Pair<First, Second>(First first, Second second) {}

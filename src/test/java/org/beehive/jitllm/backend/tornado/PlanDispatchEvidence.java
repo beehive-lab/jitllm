@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.beehive.jllm.backend.tornado.kernels.Qwen35MMAKernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -433,7 +433,7 @@ public final class PlanDispatchEvidence {
                     task + " kernel",
                     pair
                             ? java.util.Set.of(
-                                    org.beehive.jllm.backend.tornado.TensorCoreSupport
+                                    org.beehive.jitllm.backend.tornado.TensorCoreSupport
                                                     .isInt8MmaCapable()
                                             ? "gemmInt8BlockScaled"
                                             : "gemmMMATiledB")

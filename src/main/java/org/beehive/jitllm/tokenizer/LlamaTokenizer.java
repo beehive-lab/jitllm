@@ -1,4 +1,4 @@
-package org.beehive.jllm.tokenizer;
+package org.beehive.jitllm.tokenizer;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -12,7 +12,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-import org.beehive.jllm.auxiliary.Pair;
+import org.beehive.jitllm.auxiliary.Pair;
 
 /**
  * GPT-2-style BPE tokenizer (even though it's called "llama") with an explicit merges list.

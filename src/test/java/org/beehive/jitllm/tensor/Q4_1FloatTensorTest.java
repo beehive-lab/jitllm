@@ -1,4 +1,4 @@
-package org.beehive.jllm.tensor;
+package org.beehive.jitllm.tensor;
 
 import static org.junit.Assert.assertEquals;
 
@@ -6,10 +6,10 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Random;
-import org.beehive.jllm.format.GGMLType;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
-import org.beehive.jllm.tensor.standard.Q4_1FloatTensor;
+import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.tensor.standard.Q4_1FloatTensor;
 import org.junit.Test;
 
 /**

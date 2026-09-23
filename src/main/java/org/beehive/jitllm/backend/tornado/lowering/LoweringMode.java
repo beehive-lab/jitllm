@@ -1,16 +1,16 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import java.util.Locale;
 
 /**
- * What {@code jllm.lowering} asks for [D-6].
+ * What {@code jitllm.lowering} asks for [D-6].
  *
  * <p>It was a boolean opt-in while exactly one tuple was implemented and none was qualified. With a
  * qualification table there are three distinct questions — "use what is proven", "use it anyway, I
  * am gathering evidence", and "give me the old path" — and a boolean can only answer two.
  *
  * <p><b>One input, not two.</b> A second flag would let the two disagree, and a user reading {@code
- * -Djllm.lowering=true -Djllm.lowering.force=false} could not tell which wins.
+ * -Djitllm.lowering=true -Djitllm.lowering.force=false} could not tell which wins.
  */
 public enum LoweringMode {
 

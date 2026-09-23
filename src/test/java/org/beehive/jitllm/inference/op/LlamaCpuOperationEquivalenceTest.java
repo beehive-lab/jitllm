@@ -1,20 +1,20 @@
-package org.beehive.jllm.inference.op;
+package org.beehive.jitllm.inference.op;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Random;
-import org.beehive.jllm.auxiliary.Parallel;
-import org.beehive.jllm.backend.cpu.InferenceCore;
-import org.beehive.jllm.inference.state.LlamaState;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.standard.LlamaStandardWeights;
-import org.beehive.jllm.inference.weights.standard.StandardWeights;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.auxiliary.Parallel;
+import org.beehive.jitllm.backend.cpu.InferenceCore;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.standard.LlamaStandardWeights;
+import org.beehive.jitllm.inference.weights.standard.StandardWeights;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.junit.Test;
 
 /**

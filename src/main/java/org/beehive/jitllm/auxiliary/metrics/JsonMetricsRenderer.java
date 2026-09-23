@@ -1,4 +1,4 @@
-package org.beehive.jllm.auxiliary.metrics;
+package org.beehive.jitllm.auxiliary.metrics;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -11,16 +11,16 @@ import java.util.List;
  * <p>Enable via system properties:
  *
  * <pre>
- *   -Djllm.metrics.format=json
- *   -Djllm.metrics.output=stdout   # pipe to jq or another tool
+ *   -Djitllm.metrics.format=json
+ *   -Djitllm.metrics.output=stdout   # pipe to jq or another tool
  * </pre>
  *
  * <p>Or write to a file:
  *
  * <pre>
- *   -Djllm.metrics.format=json
- *   -Djllm.metrics.output=file
- *   -Djllm.metrics.file=/path/to/metrics.json
+ *   -Djitllm.metrics.format=json
+ *   -Djitllm.metrics.output=file
+ *   -Djitllm.metrics.file=/path/to/metrics.json
  * </pre>
  */
 public final class JsonMetricsRenderer implements MetricsRenderer {

@@ -1,10 +1,10 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.PlanDispatchEvidence;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.backend.tornado.PlanDispatchEvidence;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
 // @formatter:off
@@ -25,8 +25,8 @@ import org.junit.Test;
 public class Qwen35MmaBatchedPrefillWidth256Fp16KvParityAccelTest extends CpuGpuParity {
 
     static {
-        System.setProperty("jllm.qwen35.tensorCores", "true");
-        System.setProperty("jllm.kvcache.fp16", "true");
+        System.setProperty("jitllm.qwen35.tensorCores", "true");
+        System.setProperty("jitllm.kvcache.fp16", "true");
     }
 
     @Test

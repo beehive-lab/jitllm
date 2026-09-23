@@ -1,6 +1,6 @@
-package org.beehive.jllm.model.qwen35;
+package org.beehive.jitllm.model.qwen35;
 
-import org.beehive.jllm.model.Configuration;
+import org.beehive.jitllm.model.Configuration;
 
 /**
  * Configuration for the {@code qwen35} architecture — the hybrid stack shipped by the Qwen3.5,

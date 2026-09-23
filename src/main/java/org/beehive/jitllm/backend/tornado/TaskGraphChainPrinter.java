@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -11,7 +11,7 @@ import java.util.TreeSet;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.beehive.jllm.model.Model;
+import org.beehive.jitllm.model.Model;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -37,7 +37,7 @@ import uk.ac.manchester.tornado.api.common.SchedulableTask;
 public final class TaskGraphChainPrinter {
 
     /** Set by the launcher's {@code --print-taskgraph-chain}. */
-    public static final String PROPERTY = "jllm.printTaskGraphChain";
+    public static final String PROPERTY = "jitllm.printTaskGraphChain";
 
     private static final Pattern LAYER_SLOT = Pattern.compile("^[lL](\\d+)_");
     private static final Pattern FAMILY_POSITION = Pattern.compile(" \\d+/\\d+$");

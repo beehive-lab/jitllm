@@ -1,23 +1,23 @@
-package org.beehive.jllm.backend.cpu;
+package org.beehive.jitllm.backend.cpu;
 
-import org.beehive.jllm.auxiliary.Parallel;
-import org.beehive.jllm.inference.op.AttentionShape;
-import org.beehive.jllm.inference.op.CpuOperations;
-import org.beehive.jllm.inference.state.Gemma4State;
-import org.beehive.jllm.inference.state.Phi3State;
-import org.beehive.jllm.inference.state.Qwen2MoEState;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.standard.*;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.devstral.DevstralConfiguration;
-import org.beehive.jllm.model.gemma4.Gemma4Configuration;
-import org.beehive.jllm.model.granite.GraniteConfiguration;
-import org.beehive.jllm.model.phi3.Phi3Configuration;
-import org.beehive.jllm.model.qwen2.Qwen2Configuration;
-import org.beehive.jllm.model.qwen2.Qwen2MoEConfiguration;
-import org.beehive.jllm.model.qwen3.Qwen3Configuration;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.auxiliary.Parallel;
+import org.beehive.jitllm.inference.op.AttentionShape;
+import org.beehive.jitllm.inference.op.CpuOperations;
+import org.beehive.jitllm.inference.state.Gemma4State;
+import org.beehive.jitllm.inference.state.Phi3State;
+import org.beehive.jitllm.inference.state.Qwen2MoEState;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.standard.*;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.devstral.DevstralConfiguration;
+import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
+import org.beehive.jitllm.model.granite.GraniteConfiguration;
+import org.beehive.jitllm.model.phi3.Phi3Configuration;
+import org.beehive.jitllm.model.qwen2.Qwen2Configuration;
+import org.beehive.jitllm.model.qwen2.Qwen2MoEConfiguration;
+import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 
 /**
  * Low-level operations for model inference.

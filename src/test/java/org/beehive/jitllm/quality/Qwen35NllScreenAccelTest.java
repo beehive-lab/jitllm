@@ -1,4 +1,4 @@
-package org.beehive.jllm.quality;
+package org.beehive.jitllm.quality;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -11,15 +11,15 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.TornadoForwardPass;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.golden.TupleInfo;
-import org.beehive.jllm.inference.Logits;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.backend.tornado.TornadoForwardPass;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.golden.TupleInfo;
+import org.beehive.jitllm.inference.Logits;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
 import org.junit.Test;
 
 // @formatter:off
@@ -53,14 +53,14 @@ public class Qwen35NllScreenAccelTest {
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
-    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jllm.golden.Fp32KeyValueCache();
+    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     /** Tokens per passage, after tokenizing from the recorded offset. */
     private static final int TOKENS = 256;
 
     /** Where the result lands, so the two configurations can be compared afterwards. */
-    private static final String OUTPUT_PROPERTY = "jllm.nllScreen.out";
+    private static final String OUTPUT_PROPERTY = "jitllm.nllScreen.out";
 
     // @formatter:off
     /**
@@ -73,7 +73,7 @@ public class Qwen35NllScreenAccelTest {
      * as a prompt and scores only the decoded half.
      */
     // @formatter:on
-    private static final String BATCH_PROPERTY = "jllm.nllScreen.batch";
+    private static final String BATCH_PROPERTY = "jitllm.nllScreen.batch";
 
     /** One passage: a repository file, a byte offset, and the register it represents. */
     private record Passage(String name, String path, int byteOffset, int byteLength) {}
@@ -83,7 +83,7 @@ public class Qwen35NllScreenAccelTest {
                     new Passage("prose", "README.md", 0, 4000),
                     new Passage(
                             "java-source",
-                            "src/main/java/org/beehive/jllm/backend/tornado/kernels/"
+                            "src/main/java/org/beehive/jitllm/backend/tornado/kernels/"
                                     + "TransformerComputeKernelsQ4_0.java",
                             0,
                             4000),
@@ -115,8 +115,8 @@ public class Qwen35NllScreenAccelTest {
             if (batch > 1) {
                 // The plan is chosen from these, not from the state's width: sizing the state
                 // alone leaves the single-token plan in place.
-                System.setProperty("jllm.withPrefillDecode", "true");
-                System.setProperty("jllm.prefillBatchSize", String.valueOf(batch));
+                System.setProperty("jitllm.withPrefillDecode", "true");
+                System.setProperty("jitllm.prefillBatchSize", String.valueOf(batch));
             }
             Model model = ModelLoader.loadModel(modelPath, 1024, true, true);
             State state =
@@ -126,15 +126,15 @@ public class Qwen35NllScreenAccelTest {
             TornadoVMMasterPlan plan = TornadoVMMasterPlan.initializeTornadoVMPlan(state, model);
 
             boolean packed =
-                    org.beehive.jllm.backend.tornado.device.TornadoDevices.current()
+                    org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
                                     .capabilities()
                                     .supports(
-                                            org.beehive.jllm.runtime.backend.DeviceCapability
+                                            org.beehive.jitllm.runtime.backend.DeviceCapability
                                                     .PACKED_INTEGER_DOT)
                             && !"false"
                                     .equalsIgnoreCase(
                                             System.getProperty(
-                                                    "jllm.qwen35.packedIntegerDot", "true"));
+                                                    "jitllm.qwen35.packedIntegerDot", "true"));
             report.append("model=").append(modelPath.getFileName()).append('\n');
             // Identity, not a digest of it: the fixture's sha256 is pinned in GoldenFixture and
             // checked there, and hashing 15 GiB to restate it here would be the only slow thing in
@@ -151,11 +151,11 @@ public class Qwen35NllScreenAccelTest {
             report.append("plan=").append(plan.getClass().getSimpleName()).append('\n');
             // From this plan's own scheduler: the conversion tasks exist only on the MMA branch.
             var grids =
-                    org.beehive.jllm.backend.tornado.PlanDispatchEvidence.gridSchedulerIfAvailable(
+                    org.beehive.jitllm.backend.tornado.PlanDispatchEvidence.gridSchedulerIfAvailable(
                             plan);
             report.append("mmaBatchedProjections=")
                     .append(
-                            org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                            org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
                                     .qwen35MmaBatchedTasks(grids)
                                     .size())
                     .append('\n');
@@ -180,18 +180,18 @@ public class Qwen35NllScreenAccelTest {
             report.append("batchedAttentionKernel=")
                     .append(
                             batch > 1
-                                    ? org.beehive.jllm.backend.tornado.PlanDispatchEvidence
+                                    ? org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
                                             .batchedTaskKernels(plan, "attention")
                                     : java.util.Set.of("none"))
                     .append('\n');
             report.append("executionCombination=")
-                    .append(org.beehive.jllm.auxiliary.RunMetrics.snapshot().executionCombination())
+                    .append(org.beehive.jitllm.auxiliary.RunMetrics.snapshot().executionCombination())
                     .append('\n');
             verifyDispatch(grids, batch, model.configuration().dim());
             if (batch > 1) {
                 verifyBatchedScan(
                         batchedDeltaRuleKernel(plan),
-                        ((org.beehive.jllm.model.qwen35.Qwen35Configuration) model.configuration())
+                        ((org.beehive.jitllm.model.qwen35.Qwen35Configuration) model.configuration())
                                 .headValueDim());
             }
 
@@ -232,13 +232,13 @@ public class Qwen35NllScreenAccelTest {
                     int firstScored = batch > 1 ? TOKENS / 2 : 0;
                     if (batch > 1) {
                         var batchedPlan =
-                                (org.beehive.jllm.backend.tornado
+                                (org.beehive.jitllm.backend.tornado
                                                 .TornadoVMMasterPlanBatchPrefillDecode)
                                         plan;
                         for (int off = 0; off < firstScored; off += batch) {
                             int size = Math.min(batch, firstScored - off);
                             int[] chunk = java.util.Arrays.copyOfRange(tokens, off, off + size);
-                            org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass.batchPrefill(
+                            org.beehive.jitllm.backend.tornado.TornadoBatchPrefillPass.batchPrefill(
                                     model, state, chunk, off, size, batchedPlan);
                         }
                     }
@@ -250,13 +250,13 @@ public class Qwen35NllScreenAccelTest {
                         }
                         Logits logits =
                                 batch > 1
-                                        ? org.beehive.jllm.backend.tornado.TornadoBatchPrefillPass
+                                        ? org.beehive.jitllm.backend.tornado.TornadoBatchPrefillPass
                                                 .decode(
                                                         model,
                                                         state,
                                                         tokens[pair[0]],
                                                         pair[0],
-                                                        (org.beehive.jllm.backend.tornado
+                                                        (org.beehive.jitllm.backend.tornado
                                                                         .TornadoVMMasterPlanBatchPrefillDecode)
                                                                 plan)
                                         : TornadoForwardPass.forward(
@@ -353,7 +353,7 @@ public class Qwen35NllScreenAccelTest {
      */
     static String batchedDeltaRuleKernel(TornadoVMMasterPlan plan) {
         java.util.Set<String> kernels =
-                org.beehive.jllm.backend.tornado.PlanDispatchEvidence.batchedTaskKernels(
+                org.beehive.jitllm.backend.tornado.PlanDispatchEvidence.batchedTaskKernels(
                         plan, "ssm_delta_rule");
         assertEquals("one batched delta-rule kernel across the layers", 1, kernels.size());
         return kernels.iterator().next();

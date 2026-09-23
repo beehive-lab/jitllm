@@ -1,4 +1,4 @@
-package org.beehive.jllm.model.loader;
+package org.beehive.jitllm.model.loader;
 
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
@@ -8,25 +8,25 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.function.IntFunction;
-import org.beehive.jllm.Options;
-import org.beehive.jllm.auxiliary.RunMetrics;
-import org.beehive.jllm.backend.tornado.tensor.FP16TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.FP32TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.Q8_0TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensorLoader;
-import org.beehive.jllm.format.*;
-import org.beehive.jllm.format.GGMLType;
-import org.beehive.jllm.format.GGUF;
-import org.beehive.jllm.format.TensorDescriptors;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.ModelType;
-import org.beehive.jllm.model.provider.ModelProvider;
-import org.beehive.jllm.model.provider.ModelProviders;
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.tensor.ExecutionTarget;
-import org.beehive.jllm.runtime.tensor.TensorDescriptor;
-import org.beehive.jllm.tensor.standard.*;
+import org.beehive.jitllm.Options;
+import org.beehive.jitllm.auxiliary.RunMetrics;
+import org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
+import org.beehive.jitllm.format.*;
+import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.format.GGUF;
+import org.beehive.jitllm.format.TensorDescriptors;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.ModelType;
+import org.beehive.jitllm.model.provider.ModelProvider;
+import org.beehive.jitllm.model.provider.ModelProviders;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
+import org.beehive.jitllm.runtime.tensor.TensorDescriptor;
+import org.beehive.jitllm.tensor.standard.*;
 
 public abstract class ModelLoader {
 
@@ -118,14 +118,14 @@ public abstract class ModelLoader {
     }
 
     /**
-     * Whether discovered providers do the loading. Defaults to true; {@code -Djllm.providers=false}
+     * Whether discovered providers do the loading. Defaults to true; {@code -Djitllm.providers=false}
      * selects the {@code ModelType} dispatch this replaced.
      *
      * <p>The fallback exists for one release, so that a model which loads differently through a
      * provider has a way to be compared rather than a way to be stuck.
      */
     private static boolean providersEnabled() {
-        return !"false".equalsIgnoreCase(System.getProperty("jllm.providers", "true"));
+        return !"false".equalsIgnoreCase(System.getProperty("jitllm.providers", "true"));
     }
 
     /** For compatibility with langchain4j and quarkus. */
@@ -178,7 +178,7 @@ public abstract class ModelLoader {
             return BackendId.CPU;
         }
         BackendId resolved =
-                org.beehive.jllm.backend.tornado.device.TornadoDevices.current().id().backend();
+                org.beehive.jitllm.backend.tornado.device.TornadoDevices.current().id().backend();
         return BackendId.CPU.equals(resolved) ? BackendId.CUDA : resolved;
     }
 
@@ -205,7 +205,7 @@ public abstract class ModelLoader {
      *
      * <p>Lives here because Rule 4 permits the loaders to name GGUF and forbids it to the runtime
      * and the backends. What leaves this method is a neutral {@link
-     * org.beehive.jllm.runtime.memory.WeightFootprint}.
+     * org.beehive.jitllm.runtime.memory.WeightFootprint}.
      *
      * <p>The per-layer / global split follows the GGUF convention that a layer's tensors are named
      * {@code blk.N.*}. That is the same convention every loader in this package already relies on
@@ -225,20 +225,20 @@ public abstract class ModelLoader {
      * Q8_0 and F32 materialize as themselves, so every tuple measured on CUDA is predicted
      * byte-for-byte as before.
      */
-    public static org.beehive.jllm.runtime.memory.WeightFootprint weightFootprint(Path ggufPath)
+    public static org.beehive.jitllm.runtime.memory.WeightFootprint weightFootprint(Path ggufPath)
             throws IOException {
         return weightFootprint(
-                ggufPath, org.beehive.jllm.runtime.memory.DeviceRetention.converting());
+                ggufPath, org.beehive.jitllm.runtime.memory.DeviceRetention.converting());
     }
 
     /** {@link #weightFootprint(Path, DeviceRetention)} for a flat set of retained types. */
-    public static org.beehive.jllm.runtime.memory.WeightFootprint weightFootprint(
+    public static org.beehive.jitllm.runtime.memory.WeightFootprint weightFootprint(
             Path ggufPath,
-            java.util.Set<org.beehive.jllm.runtime.tensor.DataType> nativeDeviceTypes)
+            java.util.Set<org.beehive.jitllm.runtime.tensor.DataType> nativeDeviceTypes)
             throws IOException {
         return weightFootprint(
                 ggufPath,
-                org.beehive.jllm.runtime.memory.DeviceRetention.retaining(nativeDeviceTypes));
+                org.beehive.jitllm.runtime.memory.DeviceRetention.retaining(nativeDeviceTypes));
     }
 
     // @formatter:off
@@ -264,8 +264,8 @@ public abstract class ModelLoader {
      * @param retention what representation each tensor will occupy on the device
      */
     // @formatter:on
-    public static org.beehive.jllm.runtime.memory.WeightFootprint weightFootprint(
-            Path ggufPath, org.beehive.jllm.runtime.memory.DeviceRetention retention)
+    public static org.beehive.jitllm.runtime.memory.WeightFootprint weightFootprint(
+            Path ggufPath, org.beehive.jitllm.runtime.memory.DeviceRetention retention)
             throws IOException {
         GGUF gguf = GGUF.loadGGUFMetadata(ggufPath);
         long perLayer = 0;
@@ -280,14 +280,14 @@ public abstract class ModelLoader {
             for (int d : info.dimensions()) {
                 elements *= d;
             }
-            org.beehive.jllm.runtime.tensor.DataType source =
-                    org.beehive.jllm.format.DataTypeMapping.sourceType(info.ggmlType());
+            org.beehive.jitllm.runtime.tensor.DataType source =
+                    org.beehive.jitllm.format.DataTypeMapping.sourceType(info.ggmlType());
             // Per tensor, by name and representation: a model is not one dtype, and support can
             // differ by role as well as by format.
-            org.beehive.jllm.runtime.tensor.DataType materialized =
+            org.beehive.jitllm.runtime.tensor.DataType materialized =
                     retention.deviceType(info.name(), source);
             long bytes =
-                    org.beehive.jllm.format.TensorDescriptors.layoutOf(materialized)
+                    org.beehive.jitllm.format.TensorDescriptors.layoutOf(materialized)
                             .byteSize(elements);
             if (info.name().startsWith("blk.")) {
                 perLayer += bytes;
@@ -297,7 +297,7 @@ public abstract class ModelLoader {
                 globalTensors++;
             }
         }
-        return new org.beehive.jllm.runtime.memory.WeightFootprint(
+        return new org.beehive.jitllm.runtime.memory.WeightFootprint(
                 perLayer, perLayerTensors, global, globalTensors);
     }
 
@@ -350,11 +350,11 @@ public abstract class ModelLoader {
     /** Loads a tensor for the device <b>retaining Q4_K</b> rather than materializing it as Q8_0. */
     public static TornadoTensor loadTornadoTensorRetainingQ4_K(GGMLTensorEntry entry) {
         if (entry.ggmlType() == GGMLType.Q4_K) {
-            return org.beehive.jllm.backend.tornado.tensor.Q4_KTornadoTensor
+            return org.beehive.jitllm.backend.tornado.tensor.Q4_KTornadoTensor
                     .fromTornadoMemorySegment(entry.memorySegment());
         }
         if (entry.ggmlType() == GGMLType.Q6_K) {
-            return org.beehive.jllm.backend.tornado.tensor.Q6_KTornadoTensor
+            return org.beehive.jitllm.backend.tornado.tensor.Q6_KTornadoTensor
                     .fromTornadoMemorySegment(entry.memorySegment());
         }
         return loadTornadoTensor(entry);
@@ -371,7 +371,7 @@ public abstract class ModelLoader {
      */
     public static TornadoTensor loadTornadoTensorRetainingQ4_0(GGMLTensorEntry entry) {
         if (entry.ggmlType() == GGMLType.Q4_0) {
-            return org.beehive.jllm.backend.tornado.tensor.Q4_0TornadoTensor
+            return org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor
                     .fromTornadoMemorySegment(entry.memorySegment());
         }
         return loadTornadoTensor(entry);
@@ -391,33 +391,33 @@ public abstract class ModelLoader {
     public static TornadoTensor loadTornadoTensorNative(GGMLTensorEntry entry) {
         return switch (entry.ggmlType()) {
             case F32 ->
-                    org.beehive.jllm.backend.tornado.tensor.FP32TornadoTensor
+                    org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor
                             .fromTornadoMemorySegment(entry.memorySegment());
             case F16 ->
-                    org.beehive.jllm.backend.tornado.tensor.FP16TornadoTensor
+                    org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor
                             .fromTornadoMemorySegment(entry.memorySegment());
             case Q8_0 ->
-                    org.beehive.jllm.backend.tornado.tensor.Q8_0TornadoTensor
+                    org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor
                             .fromTornadoMemorySegment(entry.memorySegment());
             case Q4_0 ->
-                    org.beehive.jllm.backend.tornado.tensor.Q4_0TornadoTensor
+                    org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor
                             .fromTornadoMemorySegment(entry.memorySegment());
             case Q4_1 ->
-                    org.beehive.jllm.backend.tornado.tensor.Q4_1TornadoTensor
+                    org.beehive.jitllm.backend.tornado.tensor.Q4_1TornadoTensor
                             .fromTornadoMemorySegment(entry.memorySegment());
             case Q4_K ->
-                    org.beehive.jllm.backend.tornado.tensor.Q4_KTornadoTensor
+                    org.beehive.jitllm.backend.tornado.tensor.Q4_KTornadoTensor
                             .fromTornadoMemorySegment(entry.memorySegment());
             case Q5_K ->
-                    org.beehive.jllm.backend.tornado.tensor.Q5_KTornadoTensor
+                    org.beehive.jitllm.backend.tornado.tensor.Q5_KTornadoTensor
                             .fromTornadoMemorySegment(entry.memorySegment());
             case Q6_K ->
-                    org.beehive.jllm.backend.tornado.tensor.Q6_KTornadoTensor
+                    org.beehive.jitllm.backend.tornado.tensor.Q6_KTornadoTensor
                             .fromTornadoMemorySegment(entry.memorySegment());
             case BF16 -> TornadoTensorLoader.convertBF16ToFP16(rawTensorData(entry));
             default ->
                     throw new ModelLoadException(
-                            org.beehive.jllm.runtime.diagnostics.DiagnosticCode.MODEL_MALFORMED
+                            org.beehive.jitllm.runtime.diagnostics.DiagnosticCode.MODEL_MALFORMED
                                             .prefix()
                                     + entry.name()
                                     + " is "

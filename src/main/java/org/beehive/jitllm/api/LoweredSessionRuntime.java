@@ -1,8 +1,8 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.runtime.kv.KvLease;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.runtime.kv.KvLease;
 
 /**
  * A session on the lowered path: it owns logical values and <b>borrows</b> everything physical.
@@ -73,14 +73,14 @@ final class LoweredSessionRuntime implements SessionRuntime {
      */
     @Override
     public java.util.List<Integer> generateOnGpu(
-            org.beehive.jllm.model.Model model,
+            org.beehive.jitllm.model.Model model,
             int startPosition,
             java.util.List<Integer> promptTokens,
             java.util.Set<Integer> stopTokens,
             int budget,
-            org.beehive.jllm.inference.sampler.Sampler sampler,
+            org.beehive.jitllm.inference.sampler.Sampler sampler,
             java.util.function.IntConsumer onToken) {
-        return org.beehive.jllm.inference.TokenGenerationLoop.generateTokensGpu(
+        return org.beehive.jitllm.inference.TokenGenerationLoop.generateTokensGpu(
                 model,
                 workspace,
                 logical,

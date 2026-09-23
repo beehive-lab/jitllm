@@ -1,4 +1,4 @@
-package org.beehive.jllm.engine;
+package org.beehive.jitllm.engine;
 
 import java.util.ArrayList;
 import java.util.List;

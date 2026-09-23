@@ -1,7 +1,7 @@
-package org.beehive.jllm.inference.weights.standard;
+package org.beehive.jitllm.inference.weights.standard;
 
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 
 /**
  * A model-specific implementation of {@link StandardWeights} for the Qwen-3 model. This class

@@ -1,22 +1,22 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.backend.tornado.plan.ExecutionMode;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerDetectionService;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.architecture.ArchitectureInputs;
-import org.beehive.jllm.model.architecture.ModelArchitecture;
-import org.beehive.jllm.model.architecture.ModelArchitectures;
-import org.beehive.jllm.program.InferenceProgram;
-import org.beehive.jllm.runtime.backend.CompileOptions;
-import org.beehive.jllm.runtime.backend.DeviceCapabilities;
-import org.beehive.jllm.runtime.backend.DeviceCapability;
-import org.beehive.jllm.runtime.metrics.MetricsSink;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy.SamplingResidency;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.architecture.ArchitectureInputs;
+import org.beehive.jitllm.model.architecture.ModelArchitecture;
+import org.beehive.jitllm.model.architecture.ModelArchitectures;
+import org.beehive.jitllm.program.InferenceProgram;
+import org.beehive.jitllm.runtime.backend.CompileOptions;
+import org.beehive.jitllm.runtime.backend.DeviceCapabilities;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
+import org.beehive.jitllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * The one internal branch that decides whether a session's plan comes from the lowering or from the
@@ -24,7 +24,7 @@ import org.beehive.jllm.runtime.tensor.DataType;
  *
  * <h2>The legacy path is the default</h2>
  *
- * <p>Off unless {@code jllm.lowering} is set, and applicable to exactly one tuple: <b>Llama, FP16,
+ * <p>Off unless {@code jitllm.lowering} is set, and applicable to exactly one tuple: <b>Llama, FP16,
  * single-token</b>. Everything else — other families, {@code Q8_0}, the prefill/decode and
  * batch-prefill/decode modes — takes the path it took before, unchanged. Those modes stay green as
  * non-regression checks rather than being claimed by this slice (acceptance, corrected).
@@ -40,7 +40,7 @@ public final class LoweredPlanSelection {
      * <p>Was a boolean opt-in; {@code true}/{@code false} still parse, as {@code on}/{@code off}.
      * The name is unchanged so no existing script or invocation breaks.
      */
-    public static final String ENABLE_PROPERTY = "jllm.lowering";
+    public static final String ENABLE_PROPERTY = "jitllm.lowering";
 
     /**
      * Providers used to declare their supported modes independently, and two declared all three
@@ -144,7 +144,7 @@ public final class LoweredPlanSelection {
      *     comes with it, over-counting a reservation rather than missing one
      */
     public static boolean mayHandle(
-            org.beehive.jllm.runtime.model.ArchitectureId architecture,
+            org.beehive.jitllm.runtime.model.ArchitectureId architecture,
             DataType weightType,
             ExecutionPolicy policy) {
         return switch (mode()) {
@@ -270,7 +270,7 @@ public final class LoweredPlanSelection {
             BindingDomain domain,
             ExecutionPolicy policy,
             DataType keyValueRepresentation) {
-        var device = org.beehive.jllm.backend.tornado.device.TornadoDevices.current();
+        var device = org.beehive.jitllm.backend.tornado.device.TornadoDevices.current();
         return ProgramCacheKey.of(
                 describe(model, policy, keyValueRepresentation).signature(),
                 device.backend(),
@@ -368,6 +368,6 @@ public final class LoweredPlanSelection {
      * silently invalidate nothing while keying everything differently.
      */
     private static String deviceLabel() {
-        return org.beehive.jllm.backend.tornado.device.TornadoDevices.current().displayName();
+        return org.beehive.jitllm.backend.tornado.device.TornadoDevices.current().displayName();
     }
 }

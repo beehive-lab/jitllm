@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -6,9 +6,9 @@ import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
 import java.util.Set;
-import org.beehive.jllm.model.loader.ModelLoader;
-import org.beehive.jllm.runtime.memory.WeightFootprint;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.memory.WeightFootprint;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 
 /**

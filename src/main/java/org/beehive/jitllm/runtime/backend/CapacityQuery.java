@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.backend;
+package org.beehive.jitllm.runtime.backend;
 
 /** What a runtime can be asked about the key/value capacity it owns. */
 public interface CapacityQuery {

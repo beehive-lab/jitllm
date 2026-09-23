@@ -1,13 +1,13 @@
-package org.beehive.jllm.engine;
+package org.beehive.jitllm.engine;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
-import org.beehive.jllm.runtime.backend.CapacityQuery;
-import org.beehive.jllm.runtime.backend.KvCapacity;
-import org.beehive.jllm.runtime.kv.KvCacheManager;
-import org.beehive.jllm.runtime.kv.KvLease;
+import org.beehive.jitllm.runtime.backend.CapacityQuery;
+import org.beehive.jitllm.runtime.backend.KvCapacity;
+import org.beehive.jitllm.runtime.kv.KvCacheManager;
+import org.beehive.jitllm.runtime.kv.KvLease;
 
 /**
  * Admission and slot assignment for the engine: who runs next, and against which blocks.

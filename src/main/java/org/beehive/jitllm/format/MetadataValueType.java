@@ -1,4 +1,4 @@
-package org.beehive.jllm.format;
+package org.beehive.jitllm.format;
 
 public enum MetadataValueType {
     // The value is a 8-bit unsigned integer.

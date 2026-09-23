@@ -1,4 +1,4 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -9,14 +9,14 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.PlanDispatchEvidence;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.backend.tornado.PlanDispatchEvidence;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.model.loader.ModelLoader;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
 
@@ -50,14 +50,14 @@ import uk.ac.manchester.tornado.api.GridScheduler;
 public class Qwen35DequantGemmLifecycleAccelTest {
 
     static {
-        System.setProperty("jllm.qwen35.tensorCores", "true");
-        System.setProperty("jllm.kvcache.fp16", "true");
+        System.setProperty("jitllm.qwen35.tensorCores", "true");
+        System.setProperty("jitllm.kvcache.fp16", "true");
         // Graph capture on the first execution, replay on every later chunk and decode step.
-        System.setProperty("jllm.cudaGraphs", "true");
+        System.setProperty("jitllm.cudaGraphs", "true");
     }
 
     /**
-     * The width under test: 256 by default; {@code JLLM_LIFECYCLE_WIDTH} selects another, so a
+     * The width under test: 256 by default; {@code JITLLM_LIFECYCLE_WIDTH} selects another, so a
      * wider width can be validated the same way before it is recommended. The prompts and the
      * context scale with it so prompt A always spans two full chunks and a partial third.
      */
@@ -69,7 +69,7 @@ public class Qwen35DequantGemmLifecycleAccelTest {
      * reported rather than asserted.
      */
     private static final boolean INT8 =
-            org.beehive.jllm.backend.tornado.TensorCoreSupport.isInt8MmaCapable();
+            org.beehive.jitllm.backend.tornado.TensorCoreSupport.isInt8MmaCapable();
 
     /** relL2, max |diff| and argmax agreement over the logits rows of two runs. */
     private static void reportRowDistance(String what, List<float[]> a, List<float[]> b) {
@@ -110,7 +110,7 @@ public class Qwen35DequantGemmLifecycleAccelTest {
     private static final int CONTEXT = 4 * WIDTH;
 
     private static int width() {
-        String env = System.getenv("JLLM_LIFECYCLE_WIDTH");
+        String env = System.getenv("JITLLM_LIFECYCLE_WIDTH");
         return env == null ? 256 : Integer.parseInt(env);
     }
 
@@ -158,13 +158,13 @@ public class Qwen35DequantGemmLifecycleAccelTest {
         }
         assumeTrue(
                 "no tensor-core-capable device",
-                org.beehive.jllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend());
+                org.beehive.jitllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend());
         assertTrue(TornadoVMMasterPlan.CUDA_GRAPHS);
 
-        String previousPrefill = System.getProperty("jllm.withPrefillDecode");
-        String previousBatch = System.getProperty("jllm.prefillBatchSize");
-        System.setProperty("jllm.withPrefillDecode", "true");
-        System.setProperty("jllm.prefillBatchSize", String.valueOf(WIDTH));
+        String previousPrefill = System.getProperty("jitllm.withPrefillDecode");
+        String previousBatch = System.getProperty("jitllm.prefillBatchSize");
+        System.setProperty("jitllm.withPrefillDecode", "true");
+        System.setProperty("jitllm.prefillBatchSize", String.valueOf(WIDTH));
         try {
             // Direct path first, in a child JVM (see the class comment), and before this process
             // loads anything: the weights are copied into anonymous host memory (about 16 GiB per
@@ -225,7 +225,7 @@ public class Qwen35DequantGemmLifecycleAccelTest {
             } finally {
                 pairPlan.freeTornadoExecutionPlan();
             }
-            var qwen = (org.beehive.jllm.model.qwen35.Qwen35Configuration) model.configuration();
+            var qwen = (org.beehive.jitllm.model.qwen35.Qwen35Configuration) model.configuration();
             PlanDispatchEvidence.assertQwen35AttentionOutputOnDequantGemm(
                     pairA.scheduler(), WIDTH, qwen.dim(), qwen.attentionOutputInputDim());
             PlanDispatchEvidence.assertQwen35SsmOutOnDequantGemm(
@@ -295,8 +295,8 @@ public class Qwen35DequantGemmLifecycleAccelTest {
                     pairB.prompt().size(),
                     pairA.rows().size());
         } finally {
-            restore("jllm.withPrefillDecode", previousPrefill);
-            restore("jllm.prefillBatchSize", previousBatch);
+            restore("jitllm.withPrefillDecode", previousPrefill);
+            restore("jitllm.prefillBatchSize", previousBatch);
         }
     }
 
@@ -345,7 +345,7 @@ public class Qwen35DequantGemmLifecycleAccelTest {
                 };
         int seed = state.latestToken;
         int firstIndex =
-                org.beehive.jllm.inference.PromptIngestion.of(state, prompt, 0).firstIndex();
+                org.beehive.jitllm.inference.PromptIngestion.of(state, prompt, 0).firstIndex();
         // generateTokensGPUPrefillDecode ingests the whole prompt at positions 0..N-1, whatever
         // the first index (a seed the prompt opens with is fed once, as the prompt's own first
         // token), then decodes one row per position while pos < maxTokens: exactly
@@ -395,9 +395,9 @@ public class Qwen35DequantGemmLifecycleAccelTest {
         command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
         command.addAll(
                 java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments());
-        command.add("-Djllm.qwen35.tensorCores=true");
-        command.add("-Djllm.kvcache.fp16=true");
-        command.add("-Djllm.cudaGraphs=true");
+        command.add("-Djitllm.qwen35.tensorCores=true");
+        command.add("-Djitllm.kvcache.fp16=true");
+        command.add("-Djitllm.cudaGraphs=true");
         command.add("-cp");
         command.add(System.getProperty("java.class.path"));
         command.add(Qwen35DequantGemmLifecycleAccelTest.class.getName());
@@ -417,8 +417,8 @@ public class Qwen35DequantGemmLifecycleAccelTest {
 
     /** Child entry: the direct path at {@link #WIDTH} over prompt A; rows to {@code args[1]}. */
     public static void main(String[] args) throws Exception {
-        System.setProperty("jllm.withPrefillDecode", "true");
-        System.setProperty("jllm.prefillBatchSize", String.valueOf(WIDTH));
+        System.setProperty("jitllm.withPrefillDecode", "true");
+        System.setProperty("jitllm.prefillBatchSize", String.valueOf(WIDTH));
         Model model = ModelLoader.loadModel(Path.of(args[0]), CONTEXT, true, true);
         List<Integer> promptA = encode(model, PROMPT_A);
         State directState = State.withPrefillBatchSize(WIDTH, model::createNewState);

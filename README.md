@@ -1,7 +1,7 @@
-# jllm — LLM inference & serving for the JVM, on any GPU
+# jitllm — LLM inference & serving for the JVM, on any GPU
 
-[![build JDK21](https://github.com/beehive-lab/jllm/actions/workflows/build-and-run.yml/badge.svg)](https://github.com/beehive-lab/jllm/actions/workflows/build-and-run.yml)
-[![Maven Central](https://img.shields.io/maven-central/v/io.github.beehive-lab/jllm?&logo=apache-maven&color=blue)](https://central.sonatype.com/artifact/io.github.beehive-lab/jllm)
+[![build JDK21](https://github.com/beehive-lab/jitllm/actions/workflows/build-and-run.yml/badge.svg)](https://github.com/beehive-lab/jitllm/actions/workflows/build-and-run.yml)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.beehive-lab/jitllm?&logo=apache-maven&color=blue)](https://central.sonatype.com/artifact/io.github.beehive-lab/jitllm)
 ![Java 21](https://img.shields.io/badge/java-21-blue?logo=openjdk)
 ![Java 25](https://img.shields.io/badge/java-25-yellow?logo=openjdk)
 [![LangChain4j](https://img.shields.io/badge/LangChain4j-1.7.1+-purple?&logo=link&logoColor=white)](https://docs.langchain4j.dev/)
@@ -9,7 +9,7 @@
 ![OpenCL](https://img.shields.io/badge/OpenCL-supported-blue?logo=khronos)
 ![Apple](https://img.shields.io/badge/Metal-Apple%20Silicon-black?logo=apple)
 [![Docker](https://img.shields.io/badge/Docker-OpenCL%20%7C%20PTX-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/beehivelab/gpullama3.java-nvidia-openjdk-opencl)
-[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/beehive-lab/jllm)
+[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/beehive-lab/jitllm)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 -----------
@@ -23,7 +23,7 @@
 
 ### Think vLLM — but pure Java, and it runs on **any** GPU.
 
-**jllm** is a JVM-native LLM inference and serving engine. You write and ship plain Java; [**TornadoVM**](https://github.com/beehive-lab/TornadoVM) JIT-compiles the hot transformer kernels to **CUDA, OpenCL, or Apple Metal** at runtime — no JNI glue, no second toolchain, no native rebuild per GPU.
+**jitllm** is a JVM-native LLM inference and serving engine. You write and ship plain Java; [**TornadoVM**](https://github.com/beehive-lab/TornadoVM) JIT-compiles the hot transformer kernels to **CUDA, OpenCL, or Apple Metal** at runtime — no JNI glue, no second toolchain, no native rebuild per GPU.
 
 One `.jar` runs the same model on **NVIDIA, Intel, AMD, and Apple Silicon**, from a laptop to an RTX 5090.
 
@@ -37,7 +37,7 @@ Builds on [Llama3.java](https://github.com/mukel/llama3.java) by [Alfonso² Pete
 
 -----------
 
-## Why jllm
+## Why jitllm
 
 - 🟦 **Pure Java, all the way down.** Transformer kernels are written in Java and accelerated by TornadoVM — no CUDA C, no hand-written JNI. Debug and build with the toolchain you already have.
 - 🌍 **Write once, run on any GPU.** NVIDIA (CUDA), Intel & AMD (OpenCL), Apple Silicon (Metal). Backend is auto-detected from your TornadoVM SDK — switch with a flag, not a rebuild.
@@ -65,19 +65,19 @@ Grab a ready-to-run model from the [Hugging Face collections](#-model-collection
 
 ## 🧩 Serving: OpenAI-compatible (preview)
 
-jllm is growing into a **serving engine** — the vLLM-style path for the JVM:
+jitllm is growing into a **serving engine** — the vLLM-style path for the JVM:
 
-- 🌐 **OpenAI-compatible server** — `jllm serve` exposes `/v1/chat/completions` and `/v1/completions` with streaming and zero external dependencies. `/v1/models` reports the served context length, so clients size their prompts instead of guessing. Point any OpenAI client at `localhost`.
+- 🌐 **OpenAI-compatible server** — `jitllm serve` exposes `/v1/chat/completions` and `/v1/completions` with streaming and zero external dependencies. `/v1/models` reports the served context length, so clients size their prompts instead of guessing. Point any OpenAI client at `localhost`.
 - 🎯 **Tensor-core (MMA) batch prefill** on the CUDA backend, FP16 & Q8_0 — `--with-prefill-decode --batch-prefill-size N`.
-- 📈 **llama-bench-style benchmarking** — `jllm --bench` reports a pp/tg matrix with avg±stddev in md/csv/json/jsonl/sql. See [Running the CLI](#-running-the-cli) for the flag.
-- 🧮 **On-device greedy sampling** *(landing next)* — argmax on the GPU keeps logits device-side, cutting device→host traffic by ~500× per token. ([PR #134](https://github.com/beehive-lab/jllm/pull/134))
-- 📚 **Static batched decode** *(landing next)* — B independent sequences per step for up to **41× aggregate throughput** (Llama & Qwen3). ([PR #129](https://github.com/beehive-lab/jllm/pull/129))
+- 📈 **llama-bench-style benchmarking** — `jitllm --bench` reports a pp/tg matrix with avg±stddev in md/csv/json/jsonl/sql. See [Running the CLI](#-running-the-cli) for the flag.
+- 🧮 **On-device greedy sampling** *(landing next)* — argmax on the GPU keeps logits device-side, cutting device→host traffic by ~500× per token. ([PR #134](https://github.com/beehive-lab/jitllm/pull/134))
+- 📚 **Static batched decode** *(landing next)* — B independent sequences per step for up to **41× aggregate throughput** (Llama & Qwen3). ([PR #129](https://github.com/beehive-lab/jitllm/pull/129))
 
 -----------
 
 ## <img src="https://github.com/user-attachments/assets/51b76554-0b01-4e18-a567-600901ab8c5f" alt="LangChain4j" height="30" style="vertical-align: middle; margin-right: 8px;"> LangChain4j & Quarkus
 
-Since **LangChain4j v1.7.1**, `jllm` is an officially supported **model provider** — no glue code, GPU-accelerated out of the box.
+Since **LangChain4j v1.7.1**, `jitllm` is an officially supported **model provider** — no glue code, GPU-accelerated out of the box.
 
 ```java
 GPULlama3ChatModel model = GPULlama3ChatModel.builder()
@@ -98,7 +98,7 @@ GPULlama3ChatModel model = GPULlama3ChatModel.builder()
 ```xml
 <dependency>
     <groupId>io.github.beehive-lab</groupId>
-    <artifactId>jllm</artifactId>
+    <artifactId>jitllm</artifactId>
     <version>1.0.0-jdk21</version>
 </dependency>
 ```
@@ -107,7 +107,7 @@ GPULlama3ChatModel model = GPULlama3ChatModel.builder()
 ```xml
 <dependency>
     <groupId>io.github.beehive-lab</groupId>
-    <artifactId>jllm</artifactId>
+    <artifactId>jitllm</artifactId>
     <version>1.0.0-jdk25</version>
 </dependency>
 ```
@@ -116,12 +116,12 @@ GPULlama3ChatModel model = GPULlama3ChatModel.builder()
 
 **JDK 21**:
 ```groovy
-implementation 'io.github.beehive-lab:jllm:1.0.0-jdk21'
+implementation 'io.github.beehive-lab:jitllm:1.0.0-jdk21'
 ```
 
 **JDK 25**:
 ```groovy
-implementation 'io.github.beehive-lab:jllm:1.0.0-jdk25'
+implementation 'io.github.beehive-lab:jitllm:1.0.0-jdk25'
 ```
 <!-- DEPENDENCY-SNIPPETS:END -->
 
@@ -137,14 +137,14 @@ implementation 'io.github.beehive-lab:jllm:1.0.0-jdk25'
 
 ### Prerequisites
 
-- **Java 21 or 25** — required for the Vector API & TornadoVM. Each line has its own artifact (`-jdk21` / `-jdk25`); both launchers work on either, while `jllm4j` itself needs Java 25 to run.
-- **[TornadoVM](https://github.com/beehive-lab/TornadoVM)** with an OpenCL, CUDA, or Metal backend. `jllm`/`jllm4j` auto-detect whichever backend your installed SDK was built with.
+- **Java 21 or 25** — required for the Vector API & TornadoVM. Each line has its own artifact (`-jdk21` / `-jdk25`); both launchers work on either, while `jitllm4j` itself needs Java 25 to run.
+- **[TornadoVM](https://github.com/beehive-lab/TornadoVM)** with an OpenCL, CUDA, or Metal backend. `jitllm`/`jitllm4j` auto-detect whichever backend your installed SDK was built with.
 - **GCC/G++ 13+** — to build TornadoVM's native components.
 
 ### TornadoVM: released SDK for running, `develop` for building this branch
 
 A **released** TornadoVM SDK — from the [official website](https://www.tornadovm.org/downloads) or
-[SDKMAN!](https://sdkman.io/sdks/tornadovm/) (`sdk install tornadovm`) — runs the published jllm
+[SDKMAN!](https://sdkman.io/sdks/tornadovm/) (`sdk install tornadovm`) — runs the published jitllm
 artifacts and the JBang catalog. **Building this branch from source is different:** its kernels
 use TornadoVM APIs that exist only on TornadoVM's `develop` branch (in-kernel reads of MMA
 accumulators, byte-offset int8 fragment loads, `cp.async` staging), so the build depends on
@@ -156,36 +156,36 @@ which are built from the same revision and are not available on Maven Central.
 ### Build from source (development)
 
 ```bash
-git clone https://github.com/beehive-lab/jllm.git && cd jllm
+git clone https://github.com/beehive-lab/jitllm.git && cd jitllm
 
 # 1. Fresh checkout: resolve upstream TornadoVM develop, build the SDK for your backend and JDK
 #    (cuda | opencl | metal; auto-detected if omitted), install its Maven artifacts, record what
 #    was built. Nothing here touches an SDK you installed yourself.
 scripts/tornadovm-dev.sh setup --backend cuda --jdk 21
 
-# 2. Build jllm against exactly that TornadoVM (./mvnw with -Dtornadovm.version=<what was built>)
+# 2. Build jitllm against exactly that TornadoVM (./mvnw with -Dtornadovm.version=<what was built>)
 scripts/tornadovm-dev.sh build clean install -DskipTests
 
 # 3. Run with the matching SDK
 eval "$(scripts/tornadovm-dev.sh env)"        # exports TORNADOVM_HOME and PATH for this shell
-./jllm --gpu --model model.gguf --prompt "..."
+./jitllm --gpu --model model.gguf --prompt "..."
 ```
 
 | task | command |
 |---|---|
 | Rebuild without touching TornadoVM | `scripts/tornadovm-dev.sh build clean package -DskipTests` (reuses the prepared installation) |
-| Build against one specific installation | `scripts/tornadovm-dev.sh build --install ~/.jllm/tornadovm/cuda-jdk21/<commit>-r<recipe> …` |
+| Build against one specific installation | `scripts/tornadovm-dev.sh build --install ~/.jitllm/tornadovm/cuda-jdk21/<commit>-r<recipe> …` |
 | Remove old installations | `scripts/tornadovm-dev.sh prune --yes` (explicit; never automatic) |
 | Advance to the latest `develop` | `scripts/tornadovm-dev.sh refresh --backend cuda --jdk 21` |
 | Reproduce an exact revision | `scripts/tornadovm-dev.sh setup --ref <40-hex commit> --backend cuda --jdk 21` |
 | What is prepared | `scripts/tornadovm-dev.sh status` (revision, artifact version, JDK, backend, SDK path) |
-| Build a jllm release tag | check out the tag, then `./mvnw -P release -Dtornadovm.release.version=<X.Y.Z> clean package` — a release depends on a published TornadoVM release and refuses `-dev` coordinates |
+| Build a jitllm release tag | check out the tag, then `./mvnw -P release -Dtornadovm.release.version=<X.Y.Z> clean package` — a release depends on a published TornadoVM release and refuses `-dev` coordinates |
 
 `scripts/tornadovm-dev.sh build` is the reliable build entry point: it reuses the prepared
 installation, passes the exact artifact version that installation produced and that
 installation's own Maven repository to `./mvnw`, and never fetches or rebuilds TornadoVM on its
-own (launching `jllm` never does either). Installations live under
-`~/.jllm/tornadovm/<backend>-jdk<N>/<commit>-r<recipe>/` — the checkout, its SDK, its Maven
+own (launching `jitllm` never does either). Installations live under
+`~/.jitllm/tornadovm/<backend>-jdk<N>/<commit>-r<recipe>/` — the checkout, its SDK, its Maven
 repository (`m2/`) and a `provenance.json` — and are immutable; `current` is only a convenience
 pointer to the last one prepared, and nothing is deleted unless you run
 `scripts/tornadovm-dev.sh prune --yes` (which removes every installation on that line except
@@ -203,32 +203,32 @@ which is exactly what `scripts/tornadovm-dev.sh build` adds; without them it fai
 
 ## ▶️ Running the CLI
 
-Use the `jllm` script with `--gpu`. The backend (OpenCL, CUDA, or Metal) is auto-detected from
+Use the `jitllm` script with `--gpu`. The backend (OpenCL, CUDA, or Metal) is auto-detected from
 your installed TornadoVM SDK (`TORNADOVM_HOME/etc/tornado.backend`) — no need to select it manually. If your
 SDK was built with more than one backend, force one with `--opencl`, `--cuda` (NVIDIA), or `--metal`
 (Apple Silicon); forcing a backend that isn't part of the installed SDK errors out.
 
 ```bash
 # Basic GPU inference — backend auto-detected
-./jllm --gpu --verbose \
+./jitllm --gpu --verbose \
   --model beehive-llama-3.2-1b-instruct-fp16.gguf \
   --prompt "Explain the benefits of GPU acceleration."
 
 # Force a specific backend (only needed for multi-backend SDKs)
-./jllm --gpu --cuda \
+./jitllm --gpu --cuda \
   --model beehive-llama-3.2-1b-instruct-fp16.gguf \
   --prompt "Explain the benefits of GPU acceleration."
 ```
 
 Swap in any tested model — e.g. `beehive-llama-3.2-3b-instruct-fp16.gguf` or `...-8b-...`.
 
-### `jllm4j` — zero-dependency Java 25 script
+### `jitllm4j` — zero-dependency Java 25 script
 
-Same backend auto-detection as `jllm`. A single-file Java 25 launcher that replaces the Python
+Same backend auto-detection as `jitllm`. A single-file Java 25 launcher that replaces the Python
 script (needs `java 25+` on your PATH):
 
 ```bash
-./jllm4j --gpu --verbose-init --metal \
+./jitllm4j --gpu --verbose-init --metal \
   --model Mistral-7B-Instruct-v0.3.Q8_0.gguf --prompt "what is java"
 ```
 
@@ -296,14 +296,14 @@ Default device allocation is **14GB**. Larger models need more — raise it with
 | 8B+ | 20GB+ | `--gpu-memory 20GB` |
 
 ```bash
-./jllm --gpu --model beehive-llama-3.2-3b-instruct-fp16.gguf \
+./jitllm --gpu --model beehive-llama-3.2-3b-instruct-fp16.gguf \
   --prompt "Tell me a joke" --gpu-memory 15GB
 ```
 
 Still out of memory? Use Q4_0 instead of Q8_0, or close other GPU apps. The error to look for:
 
 ```
-org.beehive.jllm.api.InsufficientDeviceMemoryException: [GPUL-MEM-001] This configuration
+org.beehive.jitllm.api.InsufficientDeviceMemoryException: [GPUL-MEM-001] This configuration
 needs about 13826.6 MiB of device memory but the configured budget is 1024.0 MiB
 (short by 12802.6 MiB).
   Dominant component: weights (per-layer) at 13313.0 MiB
@@ -342,8 +342,8 @@ execution path, and memory-estimate assumptions. Startup timings are printed onc
 the ending performance block contains only request metrics.
 
 `--verbose-init` remains a hidden deprecated alias for `--verbose`.
-For direct Java launches, use `-Djllm.verbose=true`. The legacy
-`-Djllm.EnableTimingForTornadoVMInit=true` setting still enables the report and, in
+For direct Java launches, use `-Djitllm.verbose=true`. The legacy
+`-Djitllm.EnableTimingForTornadoVMInit=true` setting still enables the report and, in
 addition, the older per-stage initialization log lines; `--verbose` no longer sets it.
 The full Java command is printed by `--show-command`, not by `--verbose`.
 The summary is CLI-only; library callers can explicitly use `GenerationSession.prepare()`
@@ -356,18 +356,18 @@ to prepare a session and obtain its execution settings without advancing its pos
 `--show-command` prints the exact Java + JVM invocation used under the hood, so you can replicate it in IntelliJ, Maven, Gradle, or any launcher:
 
 ```bash
-jllm --gpu --model beehive-llama-3.2-1b-instruct-fp16.gguf \
+jitllm --gpu --model beehive-llama-3.2-1b-instruct-fp16.gguf \
   --prompt "tell me a joke" --show-command
 ```
 
 Each command has focused help:
 
 ```bash
-./jllm --help
-./jllm run --help
-./jllm chat --help
-./jllm serve --help
-./jllm bench --help
+./jitllm --help
+./jitllm run --help
+./jitllm chat --help
+./jitllm serve --help
+./jitllm bench --help
 ```
 
 | Command | Purpose | Key options |
@@ -377,7 +377,7 @@ Each command has focused help:
 | `serve` | OpenAI-compatible HTTP API | `--host`, `--port`; experimental `--continuous-batching` |
 | `bench` | Repeated prefill/decode workloads | `--pp`, `--tg`, `--depth`, `--repetitions`, `--output` |
 
-`./jllm --help` lists every command and option; `./jllm COMMAND --help` shows one command's.
+`./jitllm --help` lists every command and option; `./jitllm COMMAND --help` shows one command's.
 Options are grouped as Engine Configuration (model, prompt, sampling, context, prefill mode,
 `-v`/`--verbose`), the command's own group (Server, Benchmark), Hardware Configuration, Debug
 and Profiling, TornadoVM Execution Verbose, and Advanced Options, where experimental options
@@ -392,10 +392,10 @@ load, so it drives memory use (`--ctx` and `--context-length` are accepted spell
 or the context is full. Benchmark context is derived from its workload sizes and depths.
 
 ```bash
-./jllm run -m model.gguf --gpu -c 4096 --max-new-tokens 128 --prompt "Explain SIMD."
-./jllm chat -m model.gguf --gpu -c 4096 --max-new-tokens 128
-./jllm serve -m model.gguf --gpu -c 4096 --host 127.0.0.1 --port 8080 -v
-./jllm bench -m model.gguf --gpu --pp 128,512 --tg 64 --depth 0,4096 --repetitions 3 --output json
+./jitllm run -m model.gguf --gpu -c 4096 --max-new-tokens 128 --prompt "Explain SIMD."
+./jitllm chat -m model.gguf --gpu -c 4096 --max-new-tokens 128
+./jitllm serve -m model.gguf --gpu -c 4096 --host 127.0.0.1 --port 8080 -v
+./jitllm bench -m model.gguf --gpu --pp 128,512 --tg 64 --depth 0,4096 --repetitions 3 --output json
 ```
 
 **Key/value cache precision.** The KV cache is stored in **FP16 by default** (accumulation
@@ -420,7 +420,7 @@ history in each HTTP request; `chat` retains terminal conversation history local
 **Experimental: continuous batching.** `serve --continuous-batching SLOTS` decodes up to
 `SLOTS` HTTP requests together in one batch instead of one at a time, with
 `--max-queued-requests` and `--prefix-cache-entries` as its options (listed under
-*Experimental* in `jllm serve --help`). It prints a warning when enabled and currently supports
+*Experimental* in `jitllm serve --help`). It prints a warning when enabled and currently supports
 CUDA tensor-core devices, FP16 Llama/Qwen3 weights and greedy (`temperature=0`) requests
 only; its pool follows the KV cache setting (FP16 by default). Prefill chunking and CUDA graphs are
 rejected in that mode because this executor does not implement them. JIT/device setup remains
@@ -446,9 +446,9 @@ on stderr so HTTP responses and benchmark JSON/CSV stay separate.
 
 ```bash
 # Peek at what TornadoVM is doing
-./jllm --gpu --model model.gguf --prompt "..." --print-kernel      # generated GPU kernel
-./jllm --gpu --model model.gguf --prompt "..." --print-bytecodes   # TornadoVM bytecodes
-./jllm --gpu --model model.gguf --prompt "..." --debug --full-dump # everything
+./jitllm --gpu --model model.gguf --prompt "..." --print-kernel      # generated GPU kernel
+./jitllm --gpu --model model.gguf --prompt "..." --print-bytecodes   # TornadoVM bytecodes
+./jitllm --gpu --model model.gguf --prompt "..." --debug --full-dump # everything
 ```
 
 -----------
@@ -457,14 +457,14 @@ on stderr so HTTP responses and benchmark JSON/CSV stay separate.
 
 - ✅ **GGUF models** — full FP16, partial Q8_0 / Q4_0.
 - ✅ **Chat, instruction, and interactive** modes (`--interactive`, `--instruct`).
-- ✅ **Automatic backend detection** — `jllm`/`jllm4j` detect and use whichever backend (OpenCL, CUDA, or Metal) your installed TornadoVM SDK was built with; override with `--opencl`/`--cuda`/`--metal`.
+- ✅ **Automatic backend detection** — `jitllm`/`jitllm4j` detect and use whichever backend (OpenCL, CUDA, or Metal) your installed TornadoVM SDK was built with; override with `--opencl`/`--cuda`/`--metal`.
 - ✅ **Cross-platform**: NVIDIA (OpenCL · CUDA), Intel (OpenCL), Apple (OpenCL · Metal).
 - ✅ **Serving** — OpenAI-compatible API, llama-bench-style benchmarking, tensor-core (MMA) batch prefill.
 - 🧪 **Native libraries** (experimental, `--with-native-libraries`) — cuBLAS projections and a fused cuDNN first-chunk attention for Qwen3 FP16 batched prefill on CUDA tensor-core devices; off by default (JIT kernels), refused for every other configuration.
 - ✅ **Faster CUDA decode** (Qwen3 FP16) — grouped decode graphs, warp-butterfly matrix-vector reductions and a lane-cooperative attention kernel, all selected by device capability with no flag.
 - 🧩 **Coming next** — static batched decode, on-device sampling (preview; see [Serving](#-serving-openai-compatible-preview)).
 
-📄 [Transformer optimizations in TornadoVM](docs/TORNADOVM_TRANSFORMER_OPTIMIZATIONS.md) · 🧭 [Project roadmap](docs/jllm-roadmap.md)
+📄 [Transformer optimizations in TornadoVM](docs/TORNADOVM_TRANSFORMER_OPTIMIZATIONS.md) · 🧭 [Project roadmap](docs/jitllm-roadmap.md)
 
 -----------
 

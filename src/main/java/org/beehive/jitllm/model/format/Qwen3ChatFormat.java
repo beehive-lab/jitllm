@@ -1,7 +1,7 @@
-package org.beehive.jllm.model.format;
+package org.beehive.jitllm.model.format;
 
 import java.util.*;
-import org.beehive.jllm.tokenizer.Qwen3Tokenizer;
+import org.beehive.jitllm.tokenizer.Qwen3Tokenizer;
 
 /** Utility tailored for the Chat Markup Language (ChatML) prompt format. */
 public class Qwen3ChatFormat implements ChatFormat {

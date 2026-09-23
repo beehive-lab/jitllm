@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.utils;
+package org.beehive.jitllm.backend.tornado.utils;
 
 import uk.ac.manchester.tornado.api.math.TornadoMath;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;

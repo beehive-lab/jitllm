@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.cpu;
+package org.beehive.jitllm.backend.cpu;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -6,8 +6,8 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import java.util.List;
-import org.beehive.jllm.inference.ForwardPass;
-import org.beehive.jllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.inference.ForwardPass;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.junit.Test;
 
 /**

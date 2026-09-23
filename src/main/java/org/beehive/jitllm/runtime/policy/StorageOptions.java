@@ -1,8 +1,8 @@
-package org.beehive.jllm.runtime.policy;
+package org.beehive.jitllm.runtime.policy;
 
 import java.util.Objects;
-import org.beehive.jllm.api.Experimental;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.api.Experimental;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * How a model's key/value storage is shaped: the choices that are <b>not</b> execution policy.
@@ -27,13 +27,13 @@ public record StorageOptions(DataType keyValueRepresentation, boolean sharedKeyV
     /**
      * The name of the property that selects an FP32 key/value cache instead of the FP16 default.
      */
-    public static final String FP32_PROPERTY = "jllm.kvcache.fp32";
+    public static final String FP32_PROPERTY = "jitllm.kvcache.fp32";
 
     /**
      * The earlier spelling, which selected FP16 when FP32 was the default. Still honoured when set:
      * {@code true} is the default now, and {@code false} asks for FP32.
      */
-    public static final String LEGACY_FP16_PROPERTY = "jllm.kvcache.fp16";
+    public static final String LEGACY_FP16_PROPERTY = "jitllm.kvcache.fp16";
 
     /** Half-precision key/value storage, each session with its own cache — the default. */
     public static StorageOptions fp16() {
@@ -74,7 +74,7 @@ public record StorageOptions(DataType keyValueRepresentation, boolean sharedKeyV
         }
         boolean useFp32 = fp32 || (legacy != null && !Boolean.parseBoolean(legacy));
         return new StorageOptions(
-                useFp32 ? DataType.F32 : DataType.F16, Boolean.getBoolean("jllm.kv.sharedPool"));
+                useFp32 ? DataType.F32 : DataType.F16, Boolean.getBoolean("jitllm.kv.sharedPool"));
     }
 
     /** Whether key/value entries are half precision. */

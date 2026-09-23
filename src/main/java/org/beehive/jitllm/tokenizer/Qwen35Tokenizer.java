@@ -1,4 +1,4 @@
-package org.beehive.jllm.tokenizer;
+package org.beehive.jitllm.tokenizer;
 
 import java.util.Map;
 

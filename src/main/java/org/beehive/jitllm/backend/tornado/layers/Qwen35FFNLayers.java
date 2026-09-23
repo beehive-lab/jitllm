@@ -1,27 +1,27 @@
-package org.beehive.jllm.backend.tornado.layers;
+package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jllm.backend.tornado.kernels.Qwen35AttentionKernels;
-import org.beehive.jllm.backend.tornado.kernels.Qwen35DeltaNetKernels;
-import org.beehive.jllm.backend.tornado.kernels.Qwen3Kernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
-import org.beehive.jllm.backend.tornado.kernels.TransformerPagedKvKernels;
-import org.beehive.jllm.backend.tornado.plan.FusedOperandSupport;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jllm.inference.state.Qwen35State;
-import org.beehive.jllm.inference.weights.tornado.Qwen35TornadoWeights;
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35AttentionKernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35DeltaNetKernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
+import org.beehive.jitllm.backend.tornado.plan.FusedOperandSupport;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.inference.state.Qwen35State;
+import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
@@ -799,14 +799,14 @@ public class Qwen35FFNLayers
      */
     // @formatter:on
     private int attentionSplits() {
-        var device = org.beehive.jllm.backend.tornado.device.TornadoDevices.current();
+        var device = org.beehive.jitllm.backend.tornado.device.TornadoDevices.current();
         boolean eligible =
                 fp16Kv()
                         && config.headSize() == SPLIT_KV_MAX_HEAD
-                        && org.beehive.jllm.runtime.backend.BackendId.CUDA.equals(device.backend())
+                        && org.beehive.jitllm.runtime.backend.BackendId.CUDA.equals(device.backend())
                         && device.capabilities()
                                 .supports(
-                                        org.beehive.jllm.runtime.backend.DeviceCapability
+                                        org.beehive.jitllm.runtime.backend.DeviceCapability
                                                 .SPLIT_KV_ATTENTION);
         return eligible ? Qwen35Configuration.DECODE_ATTENTION_SPLITS : 1;
     }
@@ -1046,14 +1046,14 @@ public class Qwen35FFNLayers
             TornadoDevices.current()
                             .capabilities()
                             .supports(
-                                    org.beehive.jllm.runtime.backend.DeviceCapability
+                                    org.beehive.jitllm.runtime.backend.DeviceCapability
                                             .PACKED_INTEGER_DOT)
                     // The escape hatch is for the tests whose subject is addressing rather than
                     // arithmetic: they compare the device against the host exactly, which a
                     // quantized activation cannot do. Not a user option, and not a CLI flag.
                     && !"false"
                             .equalsIgnoreCase(
-                                    System.getProperty("jllm.qwen35.packedIntegerDot", "true"));
+                                    System.getProperty("jitllm.qwen35.packedIntegerDot", "true"));
 
     /**
      * Whether {@code wrapSsmOut} holds the activation {@code ssm_out_quantize} quantized.

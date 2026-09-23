@@ -1,6 +1,6 @@
-package org.beehive.jllm.inference;
+package org.beehive.jitllm.inference;
 
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 
 /**
  * The scores a sampler reads — indexed floats, and nothing else.

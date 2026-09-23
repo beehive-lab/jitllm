@@ -1,4 +1,4 @@
-package org.beehive.jllm.program;
+package org.beehive.jitllm.program;
 
 /** A phase of one inference program. */
 public enum PhaseId {

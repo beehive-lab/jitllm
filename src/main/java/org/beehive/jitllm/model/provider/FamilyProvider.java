@@ -1,7 +1,7 @@
-package org.beehive.jllm.model.provider;
+package org.beehive.jitllm.model.provider;
 
-import org.beehive.jllm.format.ModelSource;
-import org.beehive.jllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.format.ModelSource;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 
 /**
  * The shape every built-in family provider has: one identity, one loader, and recognition that asks

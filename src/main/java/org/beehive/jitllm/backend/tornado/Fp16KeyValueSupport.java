@@ -1,16 +1,16 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
 import java.util.Optional;
-import org.beehive.jllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jllm.backend.tornado.plan.ExecutionMode;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerDetectionService;
-import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.runtime.backend.BackendId;
-import org.beehive.jllm.runtime.diagnostics.DiagnosticCode;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
-import org.beehive.jllm.runtime.policy.StorageOptions;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.policy.StorageOptions;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * Which configurations really store and read the key/value cache in half precision.
@@ -194,7 +194,7 @@ public final class Fp16KeyValueSupport {
     public static boolean nvidiaDevice() {
         return TornadoDevices.current()
                 .capabilities()
-                .supports(org.beehive.jllm.runtime.backend.DeviceCapability.SINGLE_PASS_RMS);
+                .supports(org.beehive.jitllm.runtime.backend.DeviceCapability.SINGLE_PASS_RMS);
     }
 
     private static ExecutionMode executionMode(ExecutionPolicy policy) {

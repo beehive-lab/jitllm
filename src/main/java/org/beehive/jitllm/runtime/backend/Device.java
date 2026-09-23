@@ -1,6 +1,6 @@
-package org.beehive.jllm.runtime.backend;
+package org.beehive.jitllm.runtime.backend;
 
-import org.beehive.jllm.api.Experimental;
+import org.beehive.jitllm.api.Experimental;
 
 /**
  * A <b>resolved</b> device: the answer a backend gives to a {@link DeviceSelector}.

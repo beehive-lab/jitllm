@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.layers;
+package org.beehive.jitllm.backend.tornado.layers;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -8,19 +8,19 @@ import static org.junit.Assume.assumeTrue;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.TensorCoreSupport;
-import org.beehive.jllm.backend.tornado.kernels.Qwen35Int8Kernels;
-import org.beehive.jllm.backend.tornado.tensor.FP32TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.Q4_0TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.Q4_1TornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.Q5_KTornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.Q6_KTornadoTensor;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jllm.inference.state.Qwen35State;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.tornado.Qwen35TornadoWeights;
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35Int8Kernels;
+import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q4_1TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q5_KTornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q6_KTornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.inference.state.Qwen35State;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.After;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -202,7 +202,7 @@ public class Qwen35Int8TopologyAccelTest {
 
     private static Qwen35BatchPrefillLayers build(Qwen35Configuration config) {
         System.setProperty("use.tornadovm", "true");
-        System.setProperty("jllm.qwen35.tensorCores", "true");
+        System.setProperty("jitllm.qwen35.tensorCores", "true");
         Qwen35State state =
                 (Qwen35State) State.withPrefillBatchSize(WIDTH, () -> new Qwen35State(config, -1));
         return new Qwen35BatchPrefillLayers(state, weights(config), config, WIDTH);

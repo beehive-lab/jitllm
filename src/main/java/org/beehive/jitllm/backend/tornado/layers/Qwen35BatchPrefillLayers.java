@@ -1,23 +1,23 @@
-package org.beehive.jllm.backend.tornado.layers;
+package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.IntStream;
-import org.beehive.jllm.backend.tornado.TensorCoreSupport;
-import org.beehive.jllm.backend.tornado.kernels.Qwen35BatchKernels;
-import org.beehive.jllm.backend.tornado.kernels.Qwen35Int8Kernels;
-import org.beehive.jllm.backend.tornado.kernels.Qwen35MMAKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
-import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
-import org.beehive.jllm.backend.tornado.plan.FusedOperandSupport;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jllm.inference.state.Qwen35State;
-import org.beehive.jllm.inference.weights.tornado.Qwen35TornadoWeights;
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35BatchKernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35Int8Kernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
+import org.beehive.jitllm.backend.tornado.plan.FusedOperandSupport;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.inference.state.Qwen35State;
+import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -66,7 +66,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     /**
      * Whether this family's eligible batched projections run on the tensor cores.
      *
-     * <p>On by default; {@code -Djllm.qwen35.tensorCores=false} (a developer diagnostic, not a
+     * <p>On by default; {@code -Djitllm.qwen35.tensorCores=false} (a developer diagnostic, not a
      * launcher option) keeps the scalar batched kernels, whose multiplicands are not FP16 and whose
      * outputs are therefore not bit-identical to the tensor-core path. It applies only where the
      * backend has tensor cores ({@code TensorCoreSupport.isTensorCoreCapableBackend()}, CUDA);
@@ -81,7 +81,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      */
     // @formatter:on
     private static final boolean TENSOR_CORES =
-            Boolean.parseBoolean(System.getProperty("jllm.qwen35.tensorCores", "true"));
+            Boolean.parseBoolean(System.getProperty("jitllm.qwen35.tensorCores", "true"));
 
     private static final int MATVEC_LOCAL = 128;
     private static final int ELEMENTWISE_LOCAL = 128;

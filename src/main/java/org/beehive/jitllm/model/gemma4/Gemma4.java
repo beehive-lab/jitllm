@@ -1,20 +1,20 @@
-package org.beehive.jllm.model.gemma4;
+package org.beehive.jitllm.model.gemma4;
 
 import java.util.List;
 import java.util.Set;
 import java.util.function.IntConsumer;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.inference.TokenGenerationLoop;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.inference.state.Gemma4State;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.inference.weights.tornado.Gemma4TornadoWeights;
-import org.beehive.jllm.model.AbstractModel;
-import org.beehive.jllm.model.ModelType;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.tokenizer.Gemma4Tokenizer;
-import org.beehive.jllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.inference.TokenGenerationLoop;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.inference.state.Gemma4State;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.inference.weights.tornado.Gemma4TornadoWeights;
+import org.beehive.jitllm.model.AbstractModel;
+import org.beehive.jitllm.model.ModelType;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.tokenizer.Gemma4Tokenizer;
+import org.beehive.jitllm.tokenizer.Tokenizer;
 
 public class Gemma4 extends AbstractModel {
 
@@ -67,7 +67,7 @@ public class Gemma4 extends AbstractModel {
      * as part of layer 0's per-layer-embedding setup.
      */
     @Override
-    public void stagePerTokenDeviceInputs(org.beehive.jllm.inference.state.State state, int token) {
+    public void stagePerTokenDeviceInputs(org.beehive.jitllm.inference.state.State state, int token) {
         gatherPerLayerTokenEmbeddingRow((Gemma4State) state, token);
     }
 
@@ -83,7 +83,7 @@ public class Gemma4 extends AbstractModel {
     // @formatter:on
     @Override
     public void stageBatchDeviceInputs(
-            org.beehive.jllm.inference.state.State state, int[] tokens, int chunkSize) {
+            org.beehive.jitllm.inference.state.State state, int[] tokens, int chunkSize) {
         Gemma4State gemma4State = (Gemma4State) state;
         int nEmbdPerLayer = configuration.embeddingLengthPerLayer();
         int perLayerTotal = configuration.numberOfLayers() * nEmbdPerLayer;
@@ -95,11 +95,11 @@ public class Gemma4 extends AbstractModel {
         // chunk, sequentially: 9.10 ms when the table is Q8_0 and 31.77 ms when it is Q5_K, inside
         // the timed window and counted by no kernel profiler. Each row writes its own disjoint
         // slice of the destination and reads a tensor nothing mutates.
-        org.beehive.jllm.auxiliary.Parallel.parallelFor(
+        org.beehive.jitllm.auxiliary.Parallel.parallelFor(
                 0,
                 chunkSize,
                 b ->
-                        org.beehive.jllm.backend.tornado.tensor.TornadoTensorLoader
+                        org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader
                                 .copyEmbeddingRowToFloatArray(
                                         gemma4Weights.perLayerTokenEmbd,
                                         tokens[b],
@@ -114,7 +114,7 @@ public class Gemma4 extends AbstractModel {
         int nEmbdPerLayer = configuration.embeddingLengthPerLayer();
         int perLayerTotal = configuration.numberOfLayers() * nEmbdPerLayer;
         float scale = (float) Math.sqrt(nEmbdPerLayer);
-        org.beehive.jllm.backend.tornado.tensor.TornadoTensorLoader.copyEmbeddingRowToFloatArray(
+        org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader.copyEmbeddingRowToFloatArray(
                 gemma4Weights.perLayerTokenEmbd,
                 token,
                 perLayerTotal,
@@ -156,7 +156,7 @@ public class Gemma4 extends AbstractModel {
             IntConsumer onTokenGenerated,
             TornadoVMMasterPlan tornadoVMPlan) {
         if (state.executionPolicy().phaseStrategy()
-                == org.beehive.jllm.runtime.policy.ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
+                == org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
             // Prompt ingestion as its own phase, charging the whole prompt against the budget as
             // this family's decode loop does. Without this the batched plan is built and never
             // driven: the interleaved loop would run it by the single-token plan's graph indices.
@@ -187,7 +187,7 @@ public class Gemma4 extends AbstractModel {
 
     /** Its own identity, stated rather than derived. */
     @Override
-    public org.beehive.jllm.runtime.model.ArchitectureId architectureId() {
-        return org.beehive.jllm.runtime.model.ArchitectureId.of("gemma4");
+    public org.beehive.jitllm.runtime.model.ArchitectureId architectureId() {
+        return org.beehive.jitllm.runtime.model.ArchitectureId.of("gemma4");
     }
 }

@@ -1,15 +1,15 @@
-package org.beehive.jllm.backend.tornado.plan;
+package org.beehive.jitllm.backend.tornado.plan;
 
 import java.util.Set;
-import org.beehive.jllm.backend.tornado.lowering.TornadoSupportSets;
-import org.beehive.jllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
-import org.beehive.jllm.backend.tornado.plan.components.fp16.LlamaFP16PlanComponents;
-import org.beehive.jllm.backend.tornado.plan.components.q8_0.LlamaQ8_0PlanComponents;
-import org.beehive.jllm.inference.state.LlamaState;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.runtime.model.ArchitectureId;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
+import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.components.fp16.LlamaFP16PlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.components.q8_0.LlamaQ8_0PlanComponents;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * Llama's plan components — all three plan shapes, both representations.
@@ -47,7 +47,7 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
         // Q4_0 reaches here as itself rather than as a Q8_0 materialization: the loader retained it
         // because every per-layer weight in the file is Q4_0 and these layers have kernels for it.
         if (weights == DataType.Q4_0) {
-            return new org.beehive.jllm.backend.tornado.plan.components.q4_0
+            return new org.beehive.jitllm.backend.tornado.plan.components.q4_0
                     .LlamaQ4_0PlanComponents(typed, model);
         }
         return new LlamaQ8_0PlanComponents(typed, model);

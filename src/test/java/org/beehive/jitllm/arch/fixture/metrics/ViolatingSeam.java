@@ -1,6 +1,6 @@
-package org.beehive.jllm.arch.fixture.metrics;
+package org.beehive.jitllm.arch.fixture.metrics;
 
-import org.beehive.jllm.model.AbstractModel;
+import org.beehive.jitllm.model.AbstractModel;
 
 /**
  * Deliberate Rule 17 violation: a type inside the metrics seam that depends on a layer above it.

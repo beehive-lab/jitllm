@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.metrics;
+package org.beehive.jitllm.runtime.metrics;
 
 /**
  * The sink that discards everything, reached through {@link MetricsSink#disabled()}.

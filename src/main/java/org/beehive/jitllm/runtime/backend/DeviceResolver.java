@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.backend;
+package org.beehive.jitllm.runtime.backend;
 
 /**
  * Resolves the device this process actually runs an accelerator on — implemented by a backend,

@@ -1,12 +1,12 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-import org.beehive.jllm.runtime.model.ArchitectureId;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy.PhaseStrategy;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.After;
 import org.junit.Test;
 

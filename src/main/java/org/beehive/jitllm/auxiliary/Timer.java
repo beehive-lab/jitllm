@@ -1,4 +1,4 @@
-package org.beehive.jllm.auxiliary;
+package org.beehive.jitllm.auxiliary;
 
 import java.util.concurrent.TimeUnit;
 

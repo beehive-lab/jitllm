@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
@@ -8,12 +8,12 @@ import static org.junit.Assume.assumeTrue;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.Options;
-import org.beehive.jllm.golden.GoldenFixture;
-import org.beehive.jllm.golden.GoldenFixture.Fixture;
-import org.beehive.jllm.inference.sampler.Sampler;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jitllm.Options;
+import org.beehive.jitllm.golden.GoldenFixture;
+import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.ModelLoader;
 import org.junit.Test;
 
 /**
@@ -58,9 +58,9 @@ public class FacadeParityAccelTest {
                 LocalModels.load(modelPath, ModelOptions.builder().contextLength(512).build())) {
             assertEquals(
                     "the Q8_0 fixture's weights execute as Q8_0",
-                    java.util.Optional.of(org.beehive.jllm.runtime.tensor.DataType.Q8_0),
+                    java.util.Optional.of(org.beehive.jitllm.runtime.tensor.DataType.Q8_0),
                     model.info().weightType());
-            assertEquals(org.beehive.jllm.runtime.tensor.DataType.Q8_0, model.info().computeType());
+            assertEquals(org.beehive.jitllm.runtime.tensor.DataType.Q8_0, model.info().computeType());
         } finally {
             restore(previous);
         }
@@ -151,7 +151,7 @@ public class FacadeParityAccelTest {
                 Sampler.selectSampler(model.configuration().vocabularySize(), 0.0f, 0.95f, 42L);
         List<String> streamed = new ArrayList<>();
         String text =
-                org.beehive.jllm.generation.ModelGeneration.runInstructOnceLangChain4J(
+                org.beehive.jitllm.generation.ModelGeneration.runInstructOnceLangChain4J(
                         model, sampler, options, streamed::add);
         return text;
     }

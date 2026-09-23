@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.kernels;
+package org.beehive.jitllm.backend.tornado.kernels;
 
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.enums.MMAShape;
@@ -48,7 +48,7 @@ public final class Gemma4BatchPrefillKernels {
      * slightly worse, so this is a measured optimum and not a rounding.
      */
     // @formatter:on
-    private static final int DIM_TILE = Integer.getInteger("jllm.gemma4.dimTile", 16);
+    private static final int DIM_TILE = Integer.getInteger("jitllm.gemma4.dimTile", 16);
 
     // ── Norms ────────────────────────────────────────────────────────────────
 

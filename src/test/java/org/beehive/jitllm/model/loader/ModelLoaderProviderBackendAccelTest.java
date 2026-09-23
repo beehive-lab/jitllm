@@ -1,12 +1,12 @@
-package org.beehive.jllm.model.loader;
+package org.beehive.jitllm.model.loader;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assume.assumeFalse;
 import static org.junit.Assume.assumeTrue;
 
-import org.beehive.jllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jllm.runtime.backend.BackendId;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.junit.Test;
 
 public class ModelLoaderProviderBackendAccelTest {

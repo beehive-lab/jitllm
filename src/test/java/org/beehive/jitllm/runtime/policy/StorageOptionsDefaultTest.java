@@ -1,9 +1,9 @@
-package org.beehive.jllm.runtime.policy;
+package org.beehive.jitllm.runtime.policy;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.After;
 import org.junit.Test;
 

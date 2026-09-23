@@ -1,21 +1,21 @@
-package org.beehive.jllm.backend.tornado.bench;
+package org.beehive.jitllm.backend.tornado.bench;
 
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.layers.type.fp16.decode.LlamaFP16LayersBatchDecodeMMA;
-import org.beehive.jllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16LayersBatchDecodeMMA;
-import org.beehive.jllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
-import org.beehive.jllm.inference.state.LlamaState;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jllm.inference.weights.tornado.TornadoWeights;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.model.llama.LlamaConfiguration;
-import org.beehive.jllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.LlamaFP16LayersBatchDecodeMMA;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16LayersBatchDecodeMMA;
+import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -45,12 +45,12 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * the single-stream greedy reference — a bit-exact end-to-end correctness check — while the
  * aggregate B×tok/s is the batching win.
  *
- * <p>Configured with a {@link BatchDecodeOptions}. {@code -Djllm.prefillBatchSize} must still equal
+ * <p>Configured with a {@link BatchDecodeOptions}. {@code -Djitllm.prefillBatchSize} must still equal
  * the batch size, because the prefill plan is sized for it:
  *
  * <pre>
  *   var options = BatchDecodeOptions.of(32);          // batch 32, 512 context, 64 tokens
- *   BatchedDecodeEngine.run(model, prompt, options);  // with -Djllm.prefillBatchSize=32
+ *   BatchedDecodeEngine.run(model, prompt, options);  // with -Djitllm.prefillBatchSize=32
  * </pre>
  *
  * <p>The {@code -Dbatch.decode.*} properties this once took are <b>gone</b>; see {@link #run(Model,
@@ -63,13 +63,13 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  *       BACKEND=cuda}); tested on TornadoVM 5.0.1-jdk21-dev, JDK 21.
  *   <li>Build this project: {@code mvn -Pjdk21 -Dtornadovm.base.version=5.0.1
  *       -Djdk.version.suffix=-jdk21-dev clean package -DskipTests}
- *   <li>Take {@code jllm --show-command.}, swap the main class to this harness, and pass the
- *       configuration below as a {@link BatchDecodeOptions}. Keep {@code -Djllm.prefillBatchSize}
+ *   <li>Take {@code jitllm --show-command.}, swap the main class to this harness, and pass the
+ *       configuration below as a {@link BatchDecodeOptions}. Keep {@code -Djitllm.prefillBatchSize}
  *       equal to its batch size.
  * </ol>
  *
  * <p>Qwen3, static batch (all B streams bit-exact vs single-stream greedy), with {@code
- * -Djllm.prefillBatchSize=32}:
+ * -Djitllm.prefillBatchSize=32}:
  *
  * <pre>
  *   BatchDecodeOptions.of(32)
@@ -77,7 +77,7 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * </pre>
  *
  * <p>Qwen3, continuous multi-request serving (paged KV + prefix cache), with {@code
- * -Djllm.prefillBatchSize=16}:
+ * -Djitllm.prefillBatchSize=16}:
  *
  * <pre>
  *   new BatchDecodeOptions(16, 512, 64, true,   // batch, context, tokens, CUDA graphs
@@ -181,9 +181,9 @@ public class BatchedDecodeEngine {
         int decodeCtx = options.decodeContext();
         int nDecode = options.decodeTokens();
         boolean cudaGraphs = options.cudaGraphs();
-        if (Integer.getInteger("jllm.prefillBatchSize", 1) != B) {
+        if (Integer.getInteger("jitllm.prefillBatchSize", 1) != B) {
             throw new IllegalStateException(
-                    "Set -Djllm.prefillBatchSize="
+                    "Set -Djitllm.prefillBatchSize="
                             + B
                             + " to match the"
                             + " batch size ("
@@ -260,8 +260,8 @@ public class BatchedDecodeEngine {
         String lastLayerId;
         java.util.function.Consumer<GridScheduler> updateLayerSched;
         if (isQwen3) {
-            var qState = (org.beehive.jllm.inference.state.Qwen3State) state;
-            var qWeights = (org.beehive.jllm.inference.weights.tornado.Qwen3TornadoWeights) weights;
+            var qState = (org.beehive.jitllm.inference.state.Qwen3State) state;
+            var qWeights = (org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights) weights;
             Qwen3FP16LayersBatchDecodeMMA q =
                     paged
                             ? new Qwen3FP16LayersBatchDecodeMMA(

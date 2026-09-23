@@ -1,8 +1,8 @@
-package org.beehive.jllm.runtime.backend;
+package org.beehive.jitllm.runtime.backend;
 
 import java.util.Locale;
 import java.util.Objects;
-import org.beehive.jllm.api.Experimental;
+import org.beehive.jitllm.api.Experimental;
 
 /**
  * Which execution implementation — the CPU, or one of TornadoVM's accelerator backends.

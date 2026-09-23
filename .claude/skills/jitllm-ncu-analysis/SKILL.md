@@ -1,7 +1,7 @@
 ---
-name: jllm-ncu-analysis
+name: jitllm-ncu-analysis
 description: >
-  Nsight Compute workflow for one jllm CUDA kernel. Use after nsys, the
+  Nsight Compute workflow for one jitllm CUDA kernel. Use after nsys, the
   TornadoVM profiler or the metrics output has already named the hot kernel.
 tags:
   - gpullama
@@ -10,11 +10,11 @@ tags:
 license: Apache-2.0
 ---
 
-# Nsight Compute on one jllm kernel
+# Nsight Compute on one jitllm kernel
 
 ## When to use
 
-Only with a named target kernel, identified by `jllm-nsys-analysis`, the TornadoVM
+Only with a named target kernel, identified by `jitllm-nsys-analysis`, the TornadoVM
 profiler, or generated-kernel inspection. Never run broad `ncu` collection over a whole
 decode loop: replay serializes every launch and the run stops being the run you were
 studying.
@@ -27,7 +27,7 @@ TornadoVM generates kernel names from task names, so the name in the timeline is
 match. Confirm it against the generated source rather than guessing:
 
 ```bash
-./jllm --gpu --model "<model.gguf>" --prompt "hi" -n 1 --print-kernel
+./jitllm --gpu --model "<model.gguf>" --prompt "hi" -n 1 --print-kernel
 ```
 
 Which kernel a run selects depends on device capability, not on backend name: warp-shuffle
@@ -44,7 +44,7 @@ bounded number of steady-state launches:
 ncu --section SpeedOfLight --csv \
     --kernel-name regex:"<kernel>" \
     --launch-skip 32 --launch-count 16 \
-    -- ./jllm --gpu --model "<model.gguf>" \
+    -- ./jitllm --gpu --model "<model.gguf>" \
          --prompt "<prompt>" -n 128 --seed 42
 ```
 
@@ -90,7 +90,7 @@ Never modify TornadoVM to make a measurement look better.
 ## 5. What to hand back
 
 - the target kernel regex and why that kernel;
-- the exact `ncu` command and the exact `jllm` command;
+- the exact `ncu` command and the exact `jitllm` command;
 - the raw relevant output, or the path to the exported metrics (outside the repository);
 - the speed-of-light classification;
 - occupancy, register and shared-memory observations;

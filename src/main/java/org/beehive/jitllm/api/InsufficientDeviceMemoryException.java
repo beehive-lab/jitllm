@@ -1,7 +1,7 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
-import org.beehive.jllm.runtime.diagnostics.DiagnosticCode;
-import org.beehive.jllm.runtime.memory.MemoryPlan;
+import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.runtime.memory.MemoryPlan;
 
 /**
  * A load refused because the configuration is predicted not to fit the configured device budget.

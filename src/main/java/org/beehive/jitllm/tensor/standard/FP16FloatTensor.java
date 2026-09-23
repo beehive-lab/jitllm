@@ -1,4 +1,4 @@
-package org.beehive.jllm.tensor.standard;
+package org.beehive.jitllm.tensor.standard;
 
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteOrder;
@@ -6,7 +6,7 @@ import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.ShortVector;
 import jdk.incubator.vector.VectorOperators;
 import jdk.incubator.vector.VectorSpecies;
-import org.beehive.jllm.format.GGMLType;
+import org.beehive.jitllm.format.GGMLType;
 
 public final class FP16FloatTensor extends FloatTensor {
 

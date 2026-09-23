@@ -64,7 +64,7 @@ format it is not — 18-byte blocks addressed as 34-byte ones, which yields weig
 magnitude and fluent, wrong text.
 
 Retaining is worth roughly half a model's device footprint. Measured on one file,
-`Llama-3.2-1B-Instruct-Q4_0.gguf`, switching only `-Djllm.q4_0.retain`:
+`Llama-3.2-1B-Instruct-Q4_0.gguf`, switching only `-Djitllm.q4_0.retain`:
 
 | | device peak | decode |
 | --- | --- | --- |
@@ -81,8 +81,8 @@ as a numerical result nobody can attribute.
 ## Backends
 
 `BackendId` is `CPU`, `CUDA`, `OPENCL` or `METAL`. CUDA, OpenCL and Metal are
-*TornadoVM* backends: capabilities of one jllm backend, selected by which SDK is
-installed, not separate jllm backends.
+*TornadoVM* backends: capabilities of one jitllm backend, selected by which SDK is
+installed, not separate jitllm backends.
 
 The launcher detects installed backends from `$TORNADOVM_HOME/etc/tornado.backend`. On a
 multi-backend SDK, `--cuda`/`--opencl`/`--metal` force one and set TornadoVM's own

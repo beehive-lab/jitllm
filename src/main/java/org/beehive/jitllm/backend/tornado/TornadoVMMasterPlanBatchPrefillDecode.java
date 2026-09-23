@@ -1,14 +1,14 @@
-package org.beehive.jllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado;
 
-import org.beehive.jllm.auxiliary.RunMetrics;
-import org.beehive.jllm.backend.tornado.plan.BatchPrefillDecodeForwardPlan;
-import org.beehive.jllm.backend.tornado.plan.ForwardPlanFactory;
-import org.beehive.jllm.backend.tornado.plan.layout.BatchPrefillDecodeForwardTaskGraphLayout;
-import org.beehive.jllm.inference.state.State;
-import org.beehive.jllm.model.Configuration;
-import org.beehive.jllm.model.Model;
-import org.beehive.jllm.runtime.metrics.MetricsSink;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.auxiliary.RunMetrics;
+import org.beehive.jitllm.backend.tornado.plan.BatchPrefillDecodeForwardPlan;
+import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
+import org.beehive.jitllm.backend.tornado.plan.layout.BatchPrefillDecodeForwardTaskGraphLayout;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
@@ -35,13 +35,13 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
 
     /**
      * Rule 16: library code routes its output through the platform logger, so an embedder can
-     * silence or redirect it. Reached only under {@code jllm.EnableTimingForTornadoVMInit}.
+     * silence or redirect it. Reached only under {@code jitllm.EnableTimingForTornadoVMInit}.
      */
     private static final System.Logger LOGGER =
             System.getLogger(TornadoVMMasterPlanBatchPrefillDecode.class.getName());
 
     @Override
-    public org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
         var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
         return PlanDiagnostics.describe(
                 state,
@@ -86,7 +86,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
             // The device the plan was built for and the kernel families it was granted, then
             // the batched-prefill path the layer builder actually chose from them; the same
             // facts the tests read off the plan, reported where a user can see them.
-            var device = org.beehive.jllm.backend.tornado.device.TornadoDevices.current();
+            var device = org.beehive.jitllm.backend.tornado.device.TornadoDevices.current();
             LOGGER.log(
                     System.Logger.Level.INFO,
                     "TornadoVM device: {0} ({1}) capabilities {2}",
@@ -95,7 +95,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
                     device.capabilities());
             var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
             if (layers
-                    instanceof org.beehive.jllm.backend.tornado.layers.Qwen35BatchPrefillLayers q) {
+                    instanceof org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers q) {
                 LOGGER.log(
                         System.Logger.Level.INFO,
                         "qwen35 batched prefill: {0}",

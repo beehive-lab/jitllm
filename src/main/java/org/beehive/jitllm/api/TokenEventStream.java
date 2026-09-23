@@ -1,10 +1,10 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
-import org.beehive.jllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.tokenizer.Tokenizer;
 
 /**
  * Turns the loop's raw token ids into the facade's ordered event stream [A5].

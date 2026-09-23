@@ -1,4 +1,4 @@
-package org.beehive.jllm.model.architecture;
+package org.beehive.jitllm.model.architecture;
 
 /**
  * The one place an execution policy becomes the string a program signature carries.

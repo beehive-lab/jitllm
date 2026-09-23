@@ -1,8 +1,8 @@
-package org.beehive.jllm.runtime.backend;
+package org.beehive.jitllm.runtime.backend;
 
 import java.util.Locale;
 import java.util.Objects;
-import org.beehive.jllm.api.Experimental;
+import org.beehive.jitllm.api.Experimental;
 
 /**
  * One thing a device can do that changes what is lowered onto it.
@@ -124,7 +124,7 @@ public final class DeviceCapability {
      * matrixVectorGenericWithResidualSimd32} and {@code matrixVectorGenericSimd32} is lowered and
      * evaluated correctly here — nothing about whether running them is a good idea. Whether to
      * prefer them over their shared-memory twins is a workload question, and it lives in {@link
-     * org.beehive.jllm.backend.tornado.scheduling.Fp16GemvReductionPolicy}, which is what the
+     * org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvReductionPolicy}, which is what the
      * layers actually branch on.
      *
      * <p>Granted on CUDA, where {@code simdShuffleDown} is correct and where the CPU-parity gates

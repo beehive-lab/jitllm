@@ -1,7 +1,7 @@
-package org.beehive.jllm.backend.tornado.tensor;
+package org.beehive.jitllm.backend.tornado.tensor;
 
 import java.lang.foreign.MemorySegment;
-import org.beehive.jllm.format.GGMLType;
+import org.beehive.jitllm.format.GGMLType;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 
 /**
@@ -19,7 +19,7 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
  * </pre>
  *
  * <p>A weight is {@code d * scale(sub) * q - dmin * min(sub)}, decoded inside the dot product by
- * {@link org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K} — the same shape
+ * {@link org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K} — the same shape
  * the Q8_0 kernels already use, which is why this needs no new plumbing: the layers pass {@link
  * #asByteArray()} just as they do for Q8_0, and only the kernel that reads it differs.
  *

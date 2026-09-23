@@ -1,4 +1,4 @@
-package org.beehive.jllm.backend.tornado.layers;
+package org.beehive.jitllm.backend.tornado.layers;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -48,7 +48,7 @@ import org.junit.Test;
 public class RmsFinalizePairingTest {
 
     private static final Path LAYERS =
-            Paths.get("src/main/java/org/beehive/jllm/backend/tornado/layers");
+            Paths.get("src/main/java/org/beehive/jitllm/backend/tornado/layers");
 
     private static final Pattern REDUCE = Pattern.compile("\"([a-z0-9_]+)_rms_reduce\"");
     private static final Pattern FINALIZE = Pattern.compile("\"([a-z0-9_]+)_rms_finalize\"");

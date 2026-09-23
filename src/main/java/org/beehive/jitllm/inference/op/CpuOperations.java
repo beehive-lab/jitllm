@@ -1,8 +1,8 @@
-package org.beehive.jllm.inference.op;
+package org.beehive.jitllm.inference.op;
 
-import org.beehive.jllm.auxiliary.Parallel;
-import org.beehive.jllm.runtime.tensor.LongIndexedTensor;
-import org.beehive.jllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.auxiliary.Parallel;
+import org.beehive.jitllm.runtime.tensor.LongIndexedTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 
 /**
  * The host's implementations of the operation vocabulary.

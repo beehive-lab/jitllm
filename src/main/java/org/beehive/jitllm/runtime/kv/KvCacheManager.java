@@ -1,10 +1,10 @@
-package org.beehive.jllm.runtime.kv;
+package org.beehive.jitllm.runtime.kv;
 
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Set;
-import org.beehive.jllm.runtime.backend.CapacityQuery;
-import org.beehive.jllm.runtime.backend.KvCapacity;
+import org.beehive.jitllm.runtime.backend.CapacityQuery;
+import org.beehive.jitllm.runtime.backend.KvCapacity;
 
 /**
  * Owns KV block storage and leases it to sessions.

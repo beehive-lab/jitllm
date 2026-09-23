@@ -1,7 +1,7 @@
-package org.beehive.jllm.runtime.backend;
+package org.beehive.jitllm.runtime.backend;
 
 import java.util.Objects;
-import org.beehive.jllm.api.Experimental;
+import org.beehive.jitllm.api.Experimental;
 
 /**
  * The stable, opaque identity of a resolved device — what equality and the compiled-program cache

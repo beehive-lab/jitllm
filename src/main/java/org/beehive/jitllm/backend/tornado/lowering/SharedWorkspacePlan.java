@@ -1,9 +1,9 @@
-package org.beehive.jllm.backend.tornado.lowering;
+package org.beehive.jitllm.backend.tornado.lowering;
 
 import java.util.Objects;
-import org.beehive.jllm.backend.tornado.TornadoVMMasterPlan;
-import org.beehive.jllm.backend.tornado.workspace.TornadoLogits;
-import org.beehive.jllm.inference.Logits;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoLogits;
+import org.beehive.jitllm.inference.Logits;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
@@ -35,7 +35,7 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 public final class SharedWorkspacePlan implements TornadoVMMasterPlan, InvocationBoundary {
 
     @Override
-    public org.beehive.jllm.runtime.backend.ExecutionInfo executionInfo() {
+    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
         synchronized (lock) {
             return shared.executionInfo();
         }

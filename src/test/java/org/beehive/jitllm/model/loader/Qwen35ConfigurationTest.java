@@ -1,10 +1,10 @@
-package org.beehive.jllm.model.loader;
+package org.beehive.jitllm.model.loader;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-import org.beehive.jllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
 import org.junit.Test;
 
 /**

@@ -1,4 +1,4 @@
-package org.beehive.jllm.auxiliary.metrics;
+package org.beehive.jitllm.auxiliary.metrics;
 
 /** Renders a {@link RunMetricsSnapshot} to a string for a specific output format. */
 @FunctionalInterface

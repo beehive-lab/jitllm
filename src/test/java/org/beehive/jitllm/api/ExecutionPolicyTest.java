@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
@@ -7,10 +7,10 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.util.OptionalInt;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy.Overrides;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy.PhaseStrategy;
-import org.beehive.jllm.runtime.policy.ExecutionPolicy.SamplingResidency;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy.Overrides;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency;
 import org.junit.Test;
 
 public class ExecutionPolicyTest {
@@ -124,11 +124,11 @@ public class ExecutionPolicyTest {
     @Test
     public void theDefaultsMatchTodaysPropertyDerivedValues() {
         String[] properties = {
-            "jllm.withPrefillDecode",
-            "jllm.prefillBatchSize",
-            "jllm.deviceSample",
-            "jllm.attention.splitKv",
-            "jllm.attention.splitKv.count"
+            "jitllm.withPrefillDecode",
+            "jitllm.prefillBatchSize",
+            "jitllm.deviceSample",
+            "jitllm.attention.splitKv",
+            "jitllm.attention.splitKv.count"
         };
         String[] saved = new String[properties.length];
         for (int i = 0; i < properties.length; i++) {
@@ -142,11 +142,11 @@ public class ExecutionPolicyTest {
                     ExecutionPolicy.builder().build(),
                     fromProperties);
 
-            System.setProperty("jllm.withPrefillDecode", "true");
-            System.setProperty("jllm.prefillBatchSize", "8");
-            System.setProperty("jllm.deviceSample", "true");
-            System.setProperty("jllm.attention.splitKv", "true");
-            System.setProperty("jllm.attention.splitKv.count", "16");
+            System.setProperty("jitllm.withPrefillDecode", "true");
+            System.setProperty("jitllm.prefillBatchSize", "8");
+            System.setProperty("jitllm.deviceSample", "true");
+            System.setProperty("jitllm.attention.splitKv", "true");
+            System.setProperty("jitllm.attention.splitKv.count", "16");
             assertEquals(
                     ExecutionPolicy.builder()
                             .phaseStrategy(PhaseStrategy.PREFILL_DECODE)
@@ -159,7 +159,7 @@ public class ExecutionPolicyTest {
             // And it is read per call, not folded: a second read sees the change. That is the
             // defect this whole task removes, so reproducing it in the resolver would be
             // self-defeating.
-            System.setProperty("jllm.deviceSample", "false");
+            System.setProperty("jitllm.deviceSample", "false");
             assertEquals(
                     SamplingResidency.HOST,
                     ExecutionPolicy.fromSystemProperties().samplingResidency());

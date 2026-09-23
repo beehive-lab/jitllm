@@ -1,6 +1,6 @@
-package org.beehive.jllm.runtime.memory;
+package org.beehive.jitllm.runtime.memory;
 
-import org.beehive.jllm.api.Experimental;
+import org.beehive.jitllm.api.Experimental;
 
 /**
  * One line of a memory plan: a logical buffer group, its size, and what the backend does to it.

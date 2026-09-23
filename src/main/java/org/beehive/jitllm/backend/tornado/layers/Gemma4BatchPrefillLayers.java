@@ -1,15 +1,15 @@
-package org.beehive.jllm.backend.tornado.layers;
+package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jllm.backend.tornado.kernels.Gemma4BatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
-import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jllm.inference.state.Gemma4State;
-import org.beehive.jllm.inference.weights.tornado.Gemma4TornadoWeights;
-import org.beehive.jllm.model.gemma4.Gemma4Configuration;
-import org.beehive.jllm.runtime.tensor.DataType;
+import org.beehive.jitllm.backend.tornado.kernels.Gemma4BatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.inference.state.Gemma4State;
+import org.beehive.jitllm.inference.weights.tornado.Gemma4TornadoWeights;
+import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -80,7 +80,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      */
     // @formatter:on
     private static final boolean STAGED_ATTENTION =
-            !Boolean.getBoolean("jllm.gemma4.unstagedAttention");
+            !Boolean.getBoolean("jitllm.gemma4.unstagedAttention");
 
     // @formatter:off
     /**
@@ -95,7 +95,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     // @formatter:on
     public static final int SPLIT_K_SLICES = 4;
 
-    private static final boolean SPLIT_K = !Boolean.getBoolean("jllm.gemma4.noSplitK");
+    private static final boolean SPLIT_K = !Boolean.getBoolean("jitllm.gemma4.noSplitK");
 
     // @formatter:off
     /**
@@ -107,14 +107,14 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      */
     // @formatter:on
     private static final boolean DEQUANT_GATE_UP =
-            !Boolean.getBoolean("jllm.gemma4.noDequantGateUp");
+            !Boolean.getBoolean("jitllm.gemma4.noDequantGateUp");
 
     private static final boolean DEQUANT_PROJECTIONS =
-            !Boolean.getBoolean("jllm.gemma4.noDequantProjections");
+            !Boolean.getBoolean("jitllm.gemma4.noDequantProjections");
 
     /** The split-K pair separately, so its own A/B does not also revert the query/key/value one. */
     private static final boolean DEQUANT_SPLIT_K =
-            DEQUANT_PROJECTIONS && !Boolean.getBoolean("jllm.gemma4.noDequantSplitK");
+            DEQUANT_PROJECTIONS && !Boolean.getBoolean("jitllm.gemma4.noDequantSplitK");
 
     private final Gemma4State state;
     private final Gemma4TornadoWeights weights;

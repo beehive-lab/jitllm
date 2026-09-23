@@ -1,4 +1,4 @@
-package org.beehive.jllm.runtime.metrics;
+package org.beehive.jitllm.runtime.metrics;
 
 /**
  * What a metric measures, and in what unit.

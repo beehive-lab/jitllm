@@ -1,6 +1,6 @@
-package org.beehive.jllm.inference;
+package org.beehive.jitllm.inference;
 
-import org.beehive.jllm.inference.state.State;
+import org.beehive.jitllm.inference.state.State;
 
 /**
  * Where a generation loop reads its continuation seed and records the token it produced.

@@ -1,6 +1,6 @@
-package org.beehive.jllm.golden;
+package org.beehive.jitllm.golden;
 
-import org.beehive.jllm.runtime.policy.StorageOptions;
+import org.beehive.jitllm.runtime.policy.StorageOptions;
 import org.junit.rules.ExternalResource;
 
 /**

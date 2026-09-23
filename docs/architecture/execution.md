@@ -89,7 +89,7 @@ nothing above it can observe them except through metrics.
 
 Lowering is gated by a qualification table rather than switched on wholesale, because a
 lowered path that is merely *implemented* has not been shown to agree with the legacy one
-on that family, dtype and mode. `jllm.lowering` selects between three answers:
+on that family, dtype and mode. `jitllm.lowering` selects between three answers:
 
 | Mode | Behaviour |
 | --- | --- |
@@ -103,7 +103,7 @@ lowering and silently got the old path would measure the old path and record it 
 one.
 
 **No silent fallback**, generally. A device selector this build cannot honour throws
-`UnsupportedOperationException`; an unimplemented lowering under `jllm.lowering=on` throws
+`UnsupportedOperationException`; an unimplemented lowering under `jitllm.lowering=on` throws
 `UnsupportedLoweringException`. A configuration is never quietly substituted for a
 different one.
 

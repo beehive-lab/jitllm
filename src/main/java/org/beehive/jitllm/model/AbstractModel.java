@@ -1,8 +1,8 @@
-package org.beehive.jllm.model;
+package org.beehive.jitllm.model;
 
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.model.format.ChatFormat;
-import org.beehive.jllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.tokenizer.Tokenizer;
 
 public abstract class AbstractModel implements Model {
 

@@ -1,10 +1,10 @@
 ---
-name: port-model-to-jllm
-description: Port a new model architecture to jllm. Use when a GGUF file is not recognized, when a family needs its own program description or lowering, or when deciding whether an existing family's implementation can be reused for a new one.
+name: port-model-to-jitllm
+description: Port a new model architecture to jitllm. Use when a GGUF file is not recognized, when a family needs its own program description or lowering, or when deciding whether an existing family's implementation can be reused for a new one.
 license: MIT
 ---
 
-# Port a model architecture to jllm
+# Port a model architecture to jitllm
 
 A port is: recognize the file, describe the computation once in the neutral operation
 vocabulary, implement it on the CPU as the reference, let each backend lower it, and prove
@@ -62,8 +62,8 @@ step answers.
 A useful first command, on a real file:
 
 ```bash
-JAVA_TOOL_OPTIONS="-Djllm.metrics.format=json -Djllm.metrics.output=stdout" \
-  ./jllm --model <model.gguf> --prompt hi -n 1 --verbose-init
+JAVA_TOOL_OPTIONS="-Djitllm.metrics.format=json -Djitllm.metrics.output=stdout" \
+  ./jitllm --model <model.gguf> --prompt hi -n 1 --verbose-init
 ```
 
 An unrecognized file fails with `[GPUL-MOD-002]` and prints the declared architecture and
@@ -152,7 +152,7 @@ switch to edit, and adding one fails the architecture rules.
 - No model architecture package importing TornadoVM (rule 2).
 - Fusion and kernel choice belong to the backend. The program says what is computed.
 - An architecture, dtype or mode combination that is not supported **fails by name**:
-  `UnsupportedLoweringException` for an unimplemented lowering under `jllm.lowering=on`,
+  `UnsupportedLoweringException` for an unimplemented lowering under `jitllm.lowering=on`,
   `UnsupportedOperationException` for a device selector this build cannot honour. Never
   substitute silently, and never convert a representation a backend did not accept.
 
@@ -163,8 +163,8 @@ switch to edit, and adding one fails the architecture rules.
 A synthetic fixture proves the decomposition. Only a real one proves the port.
 
 - **Fixture identity.** Record the file's SHA-256 and where it came from. Add it to
-  `GoldenFixture` so the suite can find it under `$JLLM_TEST_MODELS` or
-  `~/.jllm/test-models/`, and so an absent fixture skips with a named reason instead
+  `GoldenFixture` so the suite can find it under `$JITLLM_TEST_MODELS` or
+  `~/.jitllm/test-models/`, and so an absent fixture skips with a named reason instead
   of passing.
 - **Deterministic CPU reference.** Generate on the CPU path, twice, and confirm the two
   agree before comparing anything to them.
@@ -217,7 +217,7 @@ A family may reuse another's computation. It may not borrow its identity.
   and the known limitations in
   [`docs/architecture/verification.md`](../../../docs/architecture/verification.md).
 - Register every provider in `META-INF/services/`, and check the shaded jar carries them:
-  `jar tf target/jllm-*.jar | grep META-INF/services/org.beehive.` — CI asserts the
+  `jar tf target/jitllm-*.jar | grep META-INF/services/org.beehive.` — CI asserts the
   count, because a missing entry loses the family silently at runtime.
 - Run the architecture rules and the addition-workflow tests: `./mvnw test`.
 - Add the model's rows to `.github/workflows/standalone-inference.yml`, and add an entry to

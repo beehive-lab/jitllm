@@ -1,4 +1,4 @@
-package org.beehive.jllm.api;
+package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertTrue;
 
@@ -41,7 +41,7 @@ import org.junit.Test;
  */
 public class StableSurfaceTest {
 
-    private static final Path API_SOURCE = Path.of("src/main/java/org/beehive/jllm/api");
+    private static final Path API_SOURCE = Path.of("src/main/java/org/beehive/jitllm/api");
     private static final Path MAIN_SOURCE = Path.of("src/main/java");
 
     /** The types this release freezes. Changing this set is an API decision, not a refactor. */
@@ -114,12 +114,12 @@ public class StableSurfaceTest {
         for (String stable : STABLE) {
             assertTrue(
                     stable + " is declared stable but still carries a type-level @Experimental",
-                    !annotated.contains("org.beehive.jllm.api." + stable));
+                    !annotated.contains("org.beehive.jitllm.api." + stable));
         }
         for (String experimental : EXPERIMENTAL_API) {
             assertTrue(
                     experimental + " is declared experimental but carries no @Experimental",
-                    annotated.contains("org.beehive.jllm.api." + experimental));
+                    annotated.contains("org.beehive.jitllm.api." + experimental));
         }
     }
 
@@ -136,7 +136,7 @@ public class StableSurfaceTest {
         java.util.Map<String, Set<String>> leaks = new TreeMap<>();
 
         for (String name : STABLE) {
-            Class<?> type = Class.forName("org.beehive.jllm.api." + name);
+            Class<?> type = Class.forName("org.beehive.jitllm.api." + name);
             List<Class<?>> family = new ArrayList<>(List.of(type));
             family.addAll(List.of(type.getClasses()));
             for (Class<?> c : family) {
@@ -185,16 +185,16 @@ public class StableSurfaceTest {
     public void noInternalTypeAppearsInThePublicSurface() throws Exception {
         String[] forbidden = {
             "uk.ac.manchester.tornado",
-            "org.beehive.jllm.backend.",
-            "org.beehive.jllm.format.",
-            "org.beehive.jllm.inference.",
-            "org.beehive.jllm.tensor.",
+            "org.beehive.jitllm.backend.",
+            "org.beehive.jitllm.format.",
+            "org.beehive.jitllm.inference.",
+            "org.beehive.jitllm.tensor.",
         };
         java.util.Map<String, Set<String>> leaks = new TreeMap<>();
         Set<String> all = new TreeSet<>(STABLE);
         all.addAll(EXPERIMENTAL_API);
         for (String name : all) {
-            Class<?> type = Class.forName("org.beehive.jllm.api." + name);
+            Class<?> type = Class.forName("org.beehive.jitllm.api." + name);
             List<Class<?>> family = new ArrayList<>(List.of(type));
             family.addAll(List.of(type.getClasses()));
             for (Class<?> c : family) {
@@ -240,13 +240,13 @@ public class StableSurfaceTest {
         Set<String> annotated = annotatedTypes();
         for (String required :
                 List.of(
-                        "org.beehive.jllm.runtime.backend.BackendId",
-                        "org.beehive.jllm.runtime.backend.DeviceSelector",
-                        "org.beehive.jllm.runtime.policy.ExecutionPolicy",
-                        "org.beehive.jllm.runtime.policy.StorageOptions",
-                        "org.beehive.jllm.runtime.memory.MemoryPlan",
-                        "org.beehive.jllm.runtime.tensor.DataType",
-                        "org.beehive.jllm.runtime.diagnostics.DiagnosticCode")) {
+                        "org.beehive.jitllm.runtime.backend.BackendId",
+                        "org.beehive.jitllm.runtime.backend.DeviceSelector",
+                        "org.beehive.jitllm.runtime.policy.ExecutionPolicy",
+                        "org.beehive.jitllm.runtime.policy.StorageOptions",
+                        "org.beehive.jitllm.runtime.memory.MemoryPlan",
+                        "org.beehive.jitllm.runtime.tensor.DataType",
+                        "org.beehive.jitllm.runtime.diagnostics.DiagnosticCode")) {
             assertTrue(
                     required
                             + " is reachable from the public facade and must carry"

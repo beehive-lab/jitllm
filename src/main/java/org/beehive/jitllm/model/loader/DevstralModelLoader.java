@@ -1,27 +1,27 @@
-package org.beehive.jllm.model.loader;
+package org.beehive.jitllm.model.loader;
 
-import static org.beehive.jllm.model.loader.ModelLoader.*;
+import static org.beehive.jitllm.model.loader.ModelLoader.*;
 
 import java.nio.channels.FileChannel;
 import java.util.Map;
-import org.beehive.jllm.auxiliary.Pair;
-import org.beehive.jllm.backend.tornado.tensor.TornadoTensorLoader;
-import org.beehive.jllm.format.DataTypeMapping;
-import org.beehive.jllm.format.GGMLTensorEntry;
-import org.beehive.jllm.format.GGMLType;
-import org.beehive.jllm.format.GGUF;
-import org.beehive.jllm.inference.weights.Weights;
-import org.beehive.jllm.inference.weights.standard.LlamaStandardWeights;
-import org.beehive.jllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jllm.model.devstral.Devstral;
-import org.beehive.jllm.model.devstral.DevstralConfiguration;
-import org.beehive.jllm.model.format.DevstralChatFormat;
-import org.beehive.jllm.runtime.tensor.DataType;
-import org.beehive.jllm.runtime.tensor.ExecutionTarget;
-import org.beehive.jllm.tensor.standard.ArrayFloatTensor;
-import org.beehive.jllm.tokenizer.DevstralTokenizer;
-import org.beehive.jllm.tokenizer.Tokenizer;
-import org.beehive.jllm.tokenizer.Vocabulary;
+import org.beehive.jitllm.auxiliary.Pair;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
+import org.beehive.jitllm.format.DataTypeMapping;
+import org.beehive.jitllm.format.GGMLTensorEntry;
+import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.format.GGUF;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.inference.weights.standard.LlamaStandardWeights;
+import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
+import org.beehive.jitllm.model.devstral.Devstral;
+import org.beehive.jitllm.model.devstral.DevstralConfiguration;
+import org.beehive.jitllm.model.format.DevstralChatFormat;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
+import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
+import org.beehive.jitllm.tokenizer.DevstralTokenizer;
+import org.beehive.jitllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.tokenizer.Vocabulary;
 
 public class DevstralModelLoader extends AbstractModelLoader<Devstral, DevstralConfiguration> {
 
