@@ -47,11 +47,11 @@ public final class GraniteState extends State {
         // Key-value cache with Granite dimensions
         int kvDim = (config.dim() * config.numberOfKeyValueHeads()) / config.numberOfHeads();
         fields.keyCache =
-                Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength(), kvDim))
+                Stream.generate(() -> allocateKeyValue(config.contextLength(), kvDim))
                         .limit(config.numberOfLayers())
                         .toArray(FloatTensor[]::new);
         fields.valueCache =
-                Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength(), kvDim))
+                Stream.generate(() -> allocateKeyValue(config.contextLength(), kvDim))
                         .limit(config.numberOfLayers())
                         .toArray(FloatTensor[]::new);
 

@@ -46,11 +46,11 @@ public final class DevstralState extends State {
         fields.logits = ArrayFloatTensor.allocate(dc.vocabularySize());
 
         fields.keyCache =
-                Stream.generate(() -> ArrayFloatTensor.allocate(dc.contextLength(), kvDim))
+                Stream.generate(() -> allocateKeyValue(dc.contextLength(), kvDim))
                         .limit(dc.numberOfLayers())
                         .toArray(FloatTensor[]::new);
         fields.valueCache =
-                Stream.generate(() -> ArrayFloatTensor.allocate(dc.contextLength(), kvDim))
+                Stream.generate(() -> allocateKeyValue(dc.contextLength(), kvDim))
                         .limit(dc.numberOfLayers())
                         .toArray(FloatTensor[]::new);
 

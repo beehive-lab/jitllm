@@ -277,8 +277,8 @@ public final class Qwen35State extends State {
         fields.valueCache = new FloatTensor[blocks];
         for (int l = 0; l < blocks; l++) {
             if (!config.isRecurrentLayer(l)) {
-                fields.keyCache[l] = ArrayFloatTensor.allocate(config.contextLength(), kvDim);
-                fields.valueCache[l] = ArrayFloatTensor.allocate(config.contextLength(), kvDim);
+                fields.keyCache[l] = allocateKeyValue(config.contextLength(), kvDim);
+                fields.valueCache[l] = allocateKeyValue(config.contextLength(), kvDim);
             }
         }
 

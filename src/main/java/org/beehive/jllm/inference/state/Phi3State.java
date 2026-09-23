@@ -81,11 +81,11 @@ public class Phi3State extends State {
 
         // Key-value cache with Phi3 dimensions
         fields.keyCache =
-                Stream.generate(() -> ArrayFloatTensor.allocate(contextLength, kvDim))
+                Stream.generate(() -> allocateKeyValue(contextLength, kvDim))
                         .limit(nLayers)
                         .toArray(FloatTensor[]::new);
         fields.valueCache =
-                Stream.generate(() -> ArrayFloatTensor.allocate(contextLength, kvDim))
+                Stream.generate(() -> allocateKeyValue(contextLength, kvDim))
                         .limit(nLayers)
                         .toArray(FloatTensor[]::new);
 

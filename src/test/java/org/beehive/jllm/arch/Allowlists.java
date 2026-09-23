@@ -138,6 +138,7 @@ public final class Allowlists {
                     "org.beehive.jllm.model.ModelType$11",
                     "org.beehive.jllm.model.ModelType$12",
                     "org.beehive.jllm.tensor.standard.ArrayFloatTensor",
+                    "org.beehive.jllm.tensor.standard.ArrayHalfFloatTensor",
                     "org.beehive.jllm.tensor.standard.BF16FloatTensor",
                     "org.beehive.jllm.tensor.standard.FloatTensor",
                     "org.beehive.jllm.tensor.standard.FP16FloatTensor",

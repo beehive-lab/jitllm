@@ -573,6 +573,17 @@ public abstract class State {
     // Abstract method - subclasses implement their specific allocation logic and sizes
     protected abstract StateFields createStateFields(Configuration config);
 
+    /**
+     * A host key/value tensor in the representation this state's storage selects: half precision
+     * for an FP16 cache, single precision otherwise. The CPU forward pass reads and writes it
+     * through {@code FloatTensor}, so accumulation stays FP32 either way.
+     */
+    protected final org.beehive.jllm.tensor.standard.FloatTensor allocateKeyValue(int... dims) {
+        return storageOptions.usesFp16KeyValueCache()
+                ? org.beehive.jllm.tensor.standard.ArrayHalfFloatTensor.allocate(dims)
+                : org.beehive.jllm.tensor.standard.ArrayFloatTensor.allocate(dims);
+    }
+
     /** The host tensors a family allocates during construction. */
     static class StateFields {
         public FloatTensor x, xb, xb2, hb, hb2, q, k, v, att, logits;
