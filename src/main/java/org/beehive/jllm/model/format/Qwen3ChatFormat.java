@@ -153,6 +153,14 @@ public class Qwen3ChatFormat implements ChatFormat {
     }
 
     /**
+     * {@code </think>}, for every model routed here — DeepSeek-R1 reasons without an off-switch.
+     */
+    @Override
+    public int reasoningEndToken() {
+        return tokenizer.getThinkEndToken();
+    }
+
+    /**
      * Qwen3 thinking control. When thinking is disabled, primes a pre-closed {@code
      * <think>\n\n</think>\n\n} block right after the assistant header so the model skips its
      * reasoning phase — matching the {@code enable_thinking=false} branch of the official Qwen3

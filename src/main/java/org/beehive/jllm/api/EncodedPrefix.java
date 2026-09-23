@@ -44,6 +44,16 @@ final class EncodedPrefix {
         tokens.clear();
     }
 
+    /** Forgets everything from {@code size} on: the cache is rewound to that position. */
+    void truncate(int size) {
+        tokens.subList(size, tokens.size()).clear();
+    }
+
+    /** The retained tokens, in order. */
+    List<Integer> tokens() {
+        return List.copyOf(tokens);
+    }
+
     /**
      * What of {@code full} still has to be encoded.
      *
