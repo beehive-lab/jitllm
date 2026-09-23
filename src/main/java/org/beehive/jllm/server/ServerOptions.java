@@ -31,13 +31,6 @@ record ServerOptions(
             throw new IllegalArgumentException(
                     "Continuous batching does not support prefill chunking or CUDA graphs");
         }
-        if (batchSlots > 1
-                && org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties()
-                        .usesFp16KeyValueCache()) {
-            throw new IllegalArgumentException(
-                    "Continuous batching reads an FP32 key/value cache; pass --fp32-kv-cache"
-                            + " (FP16 is the default)");
-        }
     }
 
     /** Whether requests are decoded together by the experimental continuous-batch engine. */
@@ -51,8 +44,8 @@ record ServerOptions(
      */
     static final String CONTINUOUS_BATCHING_WARNING =
             "WARNING: continuous batching is experimental. It currently supports CUDA tensor-core"
-                    + " devices, FP16 Llama/Qwen3 weights, an FP32 key/value cache"
-                    + " (--fp32-kv-cache) and greedy requests (temperature 0); prefill chunking and"
+                    + " devices, FP16 Llama/Qwen3 weights and greedy requests (temperature 0);"
+                    + " prefill chunking and"
                     + " CUDA graphs are not supported, and its setup time and memory are not"
                     + " reported.";
 

@@ -1301,5 +1301,75 @@ public class Qwen3Kernels {
                     cacheOff + ic + halfEmbdHead, qkvBatch.get(vHeadBase + ic + halfEmbdHead));
         }
     }
+
+    // FP16-cache twin of batchedDecodePagedRopeWithKVCacheQwen3Packed: identical arithmetic, the
+    // cache stored in binary16.
+    /**
+     * Paged Qwen3 split-half RoPE + KV write (block-table indirection). {@code blockCfg} packs
+     * {@code blockSize | (maxBlocksPerSlot << 16)}. Paired flash attention is the shared {@code
+     * batchedDecodePagedAttentionFP16Out} (qDim == nHeads*nEmbdHead).
+     */
+    public static void batchedDecodePagedRopeWithKVCacheQwen3PackedKVFP16(
+            KernelContext context,
+            IntArray seqPositions,
+            IntArray blockTable,
+            FloatArray qkvBatch,
+            HalfFloatArray keyPool,
+            HalfFloatArray valuePool,
+            float ropeTheta,
+            int kvDim,
+            int nEmbdHead,
+            int layerIndex,
+            int numLayers,
+            int blockCfg,
+            int qDim) {
+        int blockSize = blockCfg & 0xFFFF;
+        int maxBlocksPerSlot = blockCfg >>> 16;
+        int globalIdx = context.globalIdx;
+        int halfQDim = qDim / 2;
+        int batchIdx = globalIdx / halfQDim;
+        int pairIdx = globalIdx % halfQDim;
+        int qkvStride = qDim + 2 * kvDim;
+
+        int pos = seqPositions.get(batchIdx);
+
+        int halfEmbdHead = nEmbdHead / 2;
+        int ic = pairIdx % halfEmbdHead;
+        int headIdx = pairIdx / halfEmbdHead;
+
+        float freq = 1.0f / TornadoMath.pow(ropeTheta, 2.0f * ic / (float) nEmbdHead);
+        float val = pos * freq;
+        float fcr = TornadoMath.cos(val);
+        float fci = TornadoMath.sin(val);
+
+        int qHeadBase = batchIdx * qkvStride + headIdx * nEmbdHead;
+        float v0q = qkvBatch.get(qHeadBase + ic);
+        float v1q = qkvBatch.get(qHeadBase + ic + halfEmbdHead);
+        qkvBatch.set(qHeadBase + ic, v0q * fcr - v1q * fci);
+        qkvBatch.set(qHeadBase + ic + halfEmbdHead, v0q * fci + v1q * fcr);
+
+        if (pairIdx < kvDim / 2) {
+            int kHeadIdx = pairIdx / halfEmbdHead;
+            int kHeadBase = batchIdx * qkvStride + qDim + kHeadIdx * nEmbdHead;
+            int vHeadBase = batchIdx * qkvStride + qDim + kvDim + kHeadIdx * nEmbdHead;
+            float v0k = qkvBatch.get(kHeadBase + ic);
+            float v1k = qkvBatch.get(kHeadBase + ic + halfEmbdHead);
+            float rotK0 = v0k * fcr - v1k * fci;
+            float rotK1 = v0k * fci + v1k * fcr;
+
+            int physBlock = blockTable.get(batchIdx * maxBlocksPerSlot + pos / blockSize);
+            int cacheOff =
+                    physBlock * (numLayers * blockSize * kvDim)
+                            + layerIndex * (blockSize * kvDim)
+                            + (pos % blockSize) * kvDim
+                            + kHeadIdx * nEmbdHead;
+            keyPool.set(cacheOff + ic, new HalfFloat(rotK0));
+            keyPool.set(cacheOff + ic + halfEmbdHead, new HalfFloat(rotK1));
+            valuePool.set(cacheOff + ic, new HalfFloat(qkvBatch.get(vHeadBase + ic)));
+            valuePool.set(
+                    cacheOff + ic + halfEmbdHead,
+                    new HalfFloat(qkvBatch.get(vHeadBase + ic + halfEmbdHead)));
+        }
+    }
 }
 // @formatter:on

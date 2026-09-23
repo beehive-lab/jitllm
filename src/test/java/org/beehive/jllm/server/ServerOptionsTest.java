@@ -73,24 +73,18 @@ public class ServerOptionsTest {
     }
 
     @Test
-    public void continuousBatchingNeedsTheFp32CacheAskedFor() {
+    public void continuousBatchingTakesEitherCache() {
         String fp32 = org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY;
         String previous = System.getProperty(fp32);
         try {
             System.clearProperty(fp32);
-            IllegalArgumentException refused =
-                    assertThrows(
-                            IllegalArgumentException.class,
-                            () ->
-                                    ServerOptions.parse(
-                                            new String[] {
-                                                "-m",
-                                                "model.gguf",
-                                                "--gpu",
-                                                "--continuous-batching",
-                                                "2"
-                                            }));
-            assertTrue(refused.getMessage(), refused.getMessage().contains("--fp32-kv-cache"));
+            assertEquals(
+                    2,
+                    ServerOptions.parse(
+                                    new String[] {
+                                        "-m", "model.gguf", "--gpu", "--continuous-batching", "2"
+                                    })
+                            .batchSlots());
             assertEquals(
                     2,
                     ServerOptions.parse(

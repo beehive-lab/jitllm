@@ -496,8 +496,6 @@ def parse_cli_args(argv):
             parser.error("--continuous-batching requires --gpu")
         if batching and (args.with_prefill_decode or args.batch_prefill_size is not None or args.cuda_graphs):
             parser.error("continuous batching does not support --with-prefill-decode, --batch-prefill-size, or --cuda-graphs")
-        if batching and not args.fp32_kv_cache:
-            parser.error("continuous batching reads an FP32 key/value cache; pass --fp32-kv-cache (FP16 is the default)")
     if mode in {"serve", "bench"} and (args.prompt is not None or args.system_prompt is not None or args.max_new_tokens is not None):
         parser.error("prompt and generation-limit options belong to run/chat; serve receives them in HTTP requests")
     if mode != "serve" and supplied & {"--port", "--host", "--continuous-batching", "--max-queued-requests", "--prefix-cache-entries"}:
@@ -599,8 +597,8 @@ def create_parser(command=None) -> argparse.ArgumentParser:
     experimental_group = parser.add_argument_group(
         "Experimental: continuous batching (serve)",
         "Decodes several HTTP requests in one batch. Currently: CUDA tensor-core devices, FP16 "
-        "Llama/Qwen3 weights, --fp32-kv-cache, greedy requests (temperature 0); no prefill "
-        "chunking or CUDA graphs. Prints a warning when enabled.")
+        "Llama/Qwen3 weights, greedy requests (temperature 0); no prefill chunking or CUDA "
+        "graphs. Prints a warning when enabled.")
     experimental_group.add_argument("--continuous-batching", type=int, default=None, metavar="SLOTS",
                                     help="Enable continuous batching with this many request slots (at least 2)")
     experimental_group.add_argument("--max-queued-requests", type=int, default=64,

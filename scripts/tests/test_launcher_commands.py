@@ -68,8 +68,8 @@ class Commands(unittest.TestCase):
         self.reject("serve", "-m", "stub.gguf", "--continuous-batching", "2", "--fp32-kv-cache")
         self.reject("serve", "-m", "stub.gguf", "--gpu", "--fp32-kv-cache", "--continuous-batching", "1")
         self.reject("serve", "-m", "stub.gguf", "--gpu", "--fp32-kv-cache", "--continuous-batching", "2", "--cuda-graphs")
-        # It reads an FP32 cache, and FP16 is the default: it must be asked for.
-        self.reject("serve", "-m", "stub.gguf", "--gpu", "--continuous-batching", "2")
+        # Either cache: the engine reads FP16 (the default) and FP32 pools alike.
+        self.parse("serve", "-m", "stub.gguf", "--gpu", "--continuous-batching", "2")
         # Its options are refused on their own rather than silently doing nothing.
         self.reject("serve", "-m", "stub.gguf", "--gpu", "--prefix-cache-entries", "4")
         self.reject("serve", "-m", "stub.gguf", "--gpu", "--max-queued-requests", "4")

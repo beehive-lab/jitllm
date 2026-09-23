@@ -84,10 +84,7 @@ public final class EngineInferenceService implements AutoCloseable {
                                         blockTokens,
                                         model.configuration().numberOfLayers(),
                                         model.kvCacheDim(),
-                                        // FP32: the continuous-batch kernels read an FP32 pool
-                                        // only,
-                                        // and OpenAIServer refuses the FP16 default for them.
-                                        false));
+                                        fp16KeyValue()));
         this.manager.attach(store);
         if (prefixCacheEntries > 0) {
             this.manager.enablePrefixCache(prefixCacheEntries);
@@ -238,8 +235,14 @@ public final class EngineInferenceService implements AutoCloseable {
         }
     }
 
+    /** The pool's representation: FP16 by default, FP32 when asked for. */
+    private static boolean fp16KeyValue() {
+        return org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties()
+                .usesFp16KeyValueCache();
+    }
+
     private static long bytesPerBlock(Model model, int blockTokens) {
-        long bytesPerValue = 4L; // the FP32 pool above
+        long bytesPerValue = fp16KeyValue() ? 2L : 4L;
         return 2L
                 * model.kvCacheDim()
                 * blockTokens

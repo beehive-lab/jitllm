@@ -133,10 +133,6 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
                             + " key/value storage, got "
                             + storage.getClass().getName());
         }
-        if (store.keyPool() == null || store.valuePool() == null) {
-            throw new IllegalArgumentException(
-                    "Continuous batching requires an FP32 key/value cache (--fp32-kv-cache)");
-        }
         this.store = store;
         this.dim = config.dim();
         this.stopTokens = model.chatFormat().getStopTokens();
@@ -165,8 +161,8 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
                             (Qwen3Configuration) config,
                             batchSize,
                             blocksPerSlot * store.blockSizeTokens(),
-                            store.keyPool(),
-                            store.valuePool(),
+                            store.keyPool() != null ? store.keyPool() : store.keyPoolFP16(),
+                            store.valuePool() != null ? store.valuePool() : store.valuePoolFP16(),
                             seqPositions,
                             store.blockTable(),
                             store.blockSizeTokens(),
@@ -182,8 +178,8 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
                             (LlamaConfiguration) config,
                             batchSize,
                             blocksPerSlot * store.blockSizeTokens(),
-                            store.keyPool(),
-                            store.valuePool(),
+                            store.keyPool() != null ? store.keyPool() : store.keyPoolFP16(),
+                            store.valuePool() != null ? store.valuePool() : store.valuePoolFP16(),
                             seqPositions,
                             store.blockTable(),
                             store.blockSizeTokens(),

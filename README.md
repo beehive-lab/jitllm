@@ -414,8 +414,8 @@ history in each HTTP request; `chat` retains terminal conversation history local
 `SLOTS` HTTP requests together in one batch instead of one at a time, with
 `--max-queued-requests` and `--prefix-cache-entries` as its options (listed under
 *Experimental* in `jllm serve --help`). It prints a warning when enabled and currently supports
-CUDA tensor-core devices, FP16 Llama/Qwen3 weights, an FP32 KV cache (`--fp32-kv-cache`,
-required) and greedy (`temperature=0`) requests only. Prefill chunking and CUDA graphs are
+CUDA tensor-core devices, FP16 Llama/Qwen3 weights and greedy (`temperature=0`) requests
+only; its pool follows the KV cache setting (FP16 by default). Prefill chunking and CUDA graphs are
 rejected in that mode because this executor does not implement them. JIT/device setup remains
 lazy there and is labeled accordingly in verbose output; its memory estimate is unavailable.
 Prefix caching requires continuous batching and is disabled by default. Not to be confused with

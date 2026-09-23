@@ -47,4 +47,4 @@ materialized as Q8_0 runs, and is decided as, Q8_0.
 | OpenCL (other devices) | any | any | any | refused (blocked) | non-NVIDIA scheduler layers keep an FP32 cache; no such device here |
 | OpenCL | Qwen3.5 / Qwen3.8 | any | any | refused | verified on CUDA only |
 | Metal | any | any | any | refused (blocked) | no verified FP16 cache path; no Metal device here |
-| CUDA | continuous batching (`serve --continuous-batching`, experimental) | F16 | batched decode | refused | engine kernels read an FP32 pool; `--fp32-kv-cache` required |
+| CUDA (tensor-core) | continuous batching (`serve --continuous-batching`, experimental): Llama, Qwen3 | F16 | batched decode over the shared pool | supported | tested, token streams only (the engine samples on the device): FP16 and FP32 pools give identical greedy streams — Llama 1B F16 41 and 28 tokens to the stop token, Qwen3 0.6B F16 64 and 64 tokens, two concurrent requests with 150- and 300-token prompts — `EngineFp16KvAccelTest`; the decode kernels are FP16-storage twins of the FP32 ones |
