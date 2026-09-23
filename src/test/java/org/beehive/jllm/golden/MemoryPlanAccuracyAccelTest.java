@@ -9,6 +9,7 @@ import org.beehive.jllm.backend.tornado.memory.TornadoMemoryModel;
 import org.beehive.jllm.golden.GoldenFixture.Fixture;
 import org.beehive.jllm.model.Model;
 import org.beehive.jllm.model.loader.ModelLoader;
+import org.beehive.jllm.runtime.memory.BufferClass;
 import org.beehive.jllm.runtime.memory.MemoryPlan;
 import org.beehive.jllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
@@ -58,11 +59,11 @@ public class MemoryPlanAccuracyAccelTest {
     @Test
     public void theModelNeverUnderPredictsAndStaysWithinFivePercent() throws Exception {
         Threshold[] cases = {
-            new Threshold(Fixture.LLAMA_3_2_1B_F16, singleToken(), "F16 single-token", 2362),
-            new Threshold(Fixture.LLAMA_3_2_1B_F16, sequentialPrefill(), "F16 sequential", 2365),
-            new Threshold(Fixture.LLAMA_3_2_1B_F16, batchedPrefill(8), "F16 batched(8)", 4234),
-            new Threshold(Fixture.LLAMA_3_2_1B_Q8_0, singleToken(), "Q8_0 single-token", 1256),
-            new Threshold(Fixture.LLAMA_3_2_1B_Q8_0, batchedPrefill(8), "Q8_0 batched(8)", 2262),
+            new Threshold(Fixture.LLAMA_3_2_1B_F16, singleToken(), "F16 single-token", 2375),
+            new Threshold(Fixture.LLAMA_3_2_1B_F16, sequentialPrefill(), "F16 sequential", 2390),
+            new Threshold(Fixture.LLAMA_3_2_1B_F16, batchedPrefill(8), "F16 batched(8)", 2399),
+            new Threshold(Fixture.LLAMA_3_2_1B_Q8_0, singleToken(), "Q8_0 single-token", 1277),
+            new Threshold(Fixture.LLAMA_3_2_1B_Q8_0, batchedPrefill(8), "Q8_0 batched(8)", 1298),
         };
 
         StringBuilder report = new StringBuilder("\n");
@@ -148,9 +149,15 @@ public class MemoryPlanAccuracyAccelTest {
                 predicted > fileBytes * 3 / 2);
     }
 
-    /** The multiplicity must be visible in the breakdown, not folded into a global fudge factor. */
+    /**
+     * The multiplicity must be visible in the breakdown, not folded into a global fudge factor —
+     * and it is one for the weights of a batched plan now: its decode graphs consume the copy its
+     * prefill graphs uploaded. Measured (2026-09-23, TornadoVM 7.0.1-dev): Llama-3.2-1B F16
+     * batched(8) runs in 2399 MiB against 2375 MiB single-token, where a second weight copy would
+     * have needed ~4.2 GB; the difference is the 128-row tensor-core staging.
+     */
     @Test
-    public void batchedPrefillReportsItsDuplicationExplicitly() throws Exception {
+    public void batchedPrefillChargesItsStagingNotASecondWeightCopy() throws Exception {
         Path path = GoldenFixture.locate(Fixture.LLAMA_3_2_1B_F16);
         if (path == null) {
             assumeTrue("environment absent", false);
@@ -160,14 +167,20 @@ public class MemoryPlanAccuracyAccelTest {
 
         assertTrue("single-token duplicates nothing", single.duplicationBytes() == 0);
         assertTrue(
-                "batched prefill must report duplication explicitly, and did not",
-                batched.duplicationBytes() > 0);
-        assertTrue(
-                "the duplication must be the per-layer weights, which is what was measured;"
-                        + " reported "
+                "batched prefill shares one weight copy between its graph families; reported "
                         + batched.duplicationBytes() / MIB
+                        + " MiB of duplication",
+                batched.duplicationBytes() == 0);
+        long staging =
+                batched.components().stream()
+                        .filter(c -> c.bufferClass() == BufferClass.BATCH_STAGING)
+                        .mapToLong(c -> c.logicalBytes())
+                        .sum();
+        assertTrue(
+                "the extra is the padded staging, which is what was measured; reported "
+                        + staging / MIB
                         + " MiB",
-                batched.duplicationBytes() / MIB > 1500 && batched.duplicationBytes() / MIB < 2100);
+                staging / MIB >= 10 && staging / MIB <= 40);
         System.out.println(batched.describe());
     }
 

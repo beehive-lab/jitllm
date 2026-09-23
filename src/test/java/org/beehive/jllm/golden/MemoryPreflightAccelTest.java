@@ -136,7 +136,8 @@ public class MemoryPreflightAccelTest {
     }
 
     /**
-     * Batched prefill must predict more than single-token, and say where the difference comes from.
+     * Batched prefill must predict more than single-token, and say where the difference comes from:
+     * its staging buffers, since the weights are shared between its two graph families.
      */
     @Test
     public void batchedPrefillPredictsItsExtraCost() throws Exception {
@@ -160,9 +161,14 @@ public class MemoryPreflightAccelTest {
         assertTrue(
                 "batched prefill must predict more than single-token",
                 batched.predictedBudgetBytes() > single.predictedBudgetBytes());
+        // The decode graphs consume the weights the batched-prefill graphs uploaded, so the plan
+        // holds them once (measured: this model runs batched in a 2600 MB budget, where counting
+        // them twice predicted 4.2 GB). What batched prefill adds is its staging, not a copy.
+        assertEquals("the weights are not charged twice", 0L, batched.duplicationBytes());
         assertTrue(
-                "and the difference must be reported as duplication rather than hidden",
-                batched.duplicationBytes() > 0);
+                "the extra is batch staging",
+                logicalBytesOf(batched, org.beehive.jllm.runtime.memory.BufferClass.BATCH_STAGING)
+                        > 0);
         // Key/value storage is compared on its own: single-token Llama F16 is the lowered tuple,
         // so it reserves the shared pool and its scratch block, while batched prefill keeps a
         // private cache. The two differ by exactly that one block, and by nothing else.
