@@ -51,18 +51,27 @@ public class Fp16KeyValueSupportTest {
         }
     }
 
+    /** The reported Q8_0 batched prefill, implemented: its writers and hand-off now carry FP16. */
     @Test
-    public void theReportedQ8BatchPrefillBugIsRefused() {
-        Optional<String> reason =
+    public void llamaQ8IsSupportedInEveryModeAndQ4InSingleToken() {
+        for (ExecutionMode mode : ExecutionMode.values()) {
+            assertEquals(
+                    mode.toString(),
+                    Optional.empty(),
+                    check("llama", DataType.Q8_0, mode, BackendId.CUDA, true, true));
+        }
+        assertEquals(
+                Optional.empty(),
+                check("llama", DataType.Q4_0, ExecutionMode.STANDARD, BackendId.CUDA, true, false));
+        assertTrue(
                 check(
-                        "llama",
-                        DataType.Q8_0,
-                        ExecutionMode.BATCH_PREFILL_DECODE,
-                        BackendId.CUDA,
-                        true,
-                        true);
-        assertTrue(reason.isPresent());
-        assertTrue(reason.get(), reason.get().contains("Q8_0"));
+                                "llama",
+                                DataType.Q4_0,
+                                ExecutionMode.BATCH_PREFILL_DECODE,
+                                BackendId.CUDA,
+                                true,
+                                true)
+                        .isPresent());
     }
 
     @Test
@@ -89,7 +98,7 @@ public class Fp16KeyValueSupportTest {
                 check("qwen3", DataType.F16, ExecutionMode.STANDARD, BackendId.CUDA, false, false)
                         .isPresent());
         assertTrue(
-                check("llama", DataType.Q4_0, ExecutionMode.STANDARD, BackendId.CUDA, true, true)
+                check("qwen3", DataType.Q8_0, ExecutionMode.STANDARD, BackendId.CUDA, true, true)
                         .isPresent());
         assertTrue(
                 check("mistral", DataType.F16, ExecutionMode.STANDARD, BackendId.CUDA, false, true)

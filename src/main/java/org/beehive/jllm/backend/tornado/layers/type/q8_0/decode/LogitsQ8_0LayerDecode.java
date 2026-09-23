@@ -34,14 +34,26 @@ public class LogitsQ8_0LayerDecode extends LogitsQ8_0Layer {
 
     // @formatter:on
 
+    /** The cache the decode layers persist: FP16 when the state holds one, as with FP16 weights. */
+    private Object keyCache() {
+        return state.usesFp16KeyValueCache()
+                ? state.workspace.wrapKeyCacheFP16
+                : state.workspace.wrapKeyCache;
+    }
+
+    private Object valueCache() {
+        return state.usesFp16KeyValueCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
+    }
+
     @Override
     protected void configureAdditionalConsumes(TaskGraph logits) {
-        logits.consumeFromDevice(
-                lastTaskGraphID, state.workspace.wrapKeyCache, state.workspace.wrapValueCache);
+        logits.consumeFromDevice(lastTaskGraphID, keyCache(), valueCache());
     }
 
     @Override
     protected void configureAdditionalPersists(TaskGraph logits) {
-        logits.persistOnDevice(state.workspace.wrapKeyCache, state.workspace.wrapValueCache);
+        logits.persistOnDevice(keyCache(), valueCache());
     }
 }

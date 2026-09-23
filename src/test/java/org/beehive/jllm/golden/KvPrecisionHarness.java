@@ -33,7 +33,7 @@ public final class KvPrecisionHarness {
     private KvPrecisionHarness() {}
 
     /** Logits at every sampled position, and the tokens that were fed back. */
-    public record Trace(List<float[]> rows, int[] tokens) {}
+    public record Trace(List<float[]> rows, int[] tokens, String executionMode, String kvCache) {}
 
     /** How close two traces are, row by row; the worst row decides. */
     public record Comparison(
@@ -134,8 +134,12 @@ public final class KvPrecisionHarness {
                 };
         int skippedSeed = PromptIngestion.of(state, prompt, 0).firstIndex();
         int budget = prompt.size() + decodeSteps - skippedSeed;
+        String executionMode = "cpu";
+        String kvCache = state.usesFp16KeyValueCache() ? "FP16" : "FP32";
         if (gpu) {
             TornadoVMMasterPlan plan = TornadoVMMasterPlan.initializeTornadoVMPlan(state, model);
+            executionMode = plan.executionInfo().mode();
+            kvCache = plan.executionInfo().kvCache();
             try {
                 model.generateTokensGPU(
                         state, 0, prompt, Set.of(), budget, sampler, false, null, plan);
@@ -145,15 +149,46 @@ public final class KvPrecisionHarness {
         } else {
             model.generateTokens(state, 0, prompt, Set.of(), budget, sampler, false, null);
         }
-        return new Trace(rows, fed.stream().mapToInt(Integer::intValue).toArray());
+        return new Trace(
+                rows, fed.stream().mapToInt(Integer::intValue).toArray(), executionMode, kvCache);
     }
 
-    /** The FP32 reference, then the FP16 run forced onto its tokens, compared. */
+    /**
+     * The FP32 reference, then the FP16 run forced onto its tokens, compared.
+     *
+     * @param expectedMode the execution mode both plans must report, or {@code null} for any: a row
+     *     must not pass on a different path than the one it names
+     */
     public static Comparison compareFp16AgainstFp32(
-            Model model, boolean gpu, int prefillBatchSize, List<Integer> prompt, int steps) {
+            Model model,
+            boolean gpu,
+            int prefillBatchSize,
+            List<Integer> prompt,
+            int steps,
+            String expectedMode) {
         Trace reference = run(model, gpu, DataType.F32, prefillBatchSize, prompt, steps, null);
         Trace fp16 =
                 run(model, gpu, DataType.F16, prefillBatchSize, prompt, steps, reference.tokens());
+        assertTrue(
+                "the reference must run an FP32 cache: " + reference.kvCache(),
+                reference.kvCache().equals("FP32"));
+        assertTrue(
+                "the test must run an FP16 cache: " + fp16.kvCache(),
+                fp16.kvCache().equals("FP16"));
+        if (expectedMode != null) {
+            assertTrue(
+                    "expected the "
+                            + expectedMode
+                            + " plan, the reference ran "
+                            + reference.executionMode(),
+                    reference.executionMode().equals(expectedMode));
+            assertTrue(
+                    "expected the "
+                            + expectedMode
+                            + " plan, the FP16 run ran "
+                            + fp16.executionMode(),
+                    fp16.executionMode().equals(expectedMode));
+        }
         return compare(reference, fp16);
     }
 

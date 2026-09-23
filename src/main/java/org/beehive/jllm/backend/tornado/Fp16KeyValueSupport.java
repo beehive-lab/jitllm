@@ -69,22 +69,33 @@ public final class Fp16KeyValueSupport {
                 return Optional.empty();
             }
             case "llama", "qwen3" -> {
-                if (c.weights() != DataType.F16) {
-                    return Optional.of("the " + c.weights() + " layers keep an FP32 cache");
-                }
                 if (!c.nvidiaScheduler()) {
                     return Optional.of("the non-NVIDIA decode layers keep an FP32 cache");
+                }
+                boolean q8 = c.weights() == DataType.Q8_0;
+                boolean f16 = c.weights() == DataType.F16;
+                boolean q4Llama = c.weights() == DataType.Q4_0 && c.architecture().equals("llama");
+                if (!f16 && !(q8 && c.architecture().equals("llama")) && !q4Llama) {
+                    return Optional.of("the " + c.weights() + " layers keep an FP32 cache");
                 }
                 return switch (c.mode()) {
                     case STANDARD -> Optional.empty();
                     case PREFILL_DECODE ->
-                            Optional.of("the sequential prefill/decode layers keep an FP32 cache");
-                    case BATCH_PREFILL_DECODE ->
-                            c.tensorCores()
+                            q8
                                     ? Optional.empty()
                                     : Optional.of(
-                                            "batched prefill without tensor-core MMA writes an"
+                                            "the "
+                                                    + c.weights()
+                                                    + " sequential prefill/decode layers keep an"
                                                     + " FP32 cache");
+                    case BATCH_PREFILL_DECODE ->
+                            q4Llama
+                                    ? Optional.of("Q4_0 has no batched prefill")
+                                    : c.tensorCores()
+                                            ? Optional.empty()
+                                            : Optional.of(
+                                                    "batched prefill without tensor-core MMA"
+                                                            + " writes an FP32 cache");
                 };
             }
             default -> {

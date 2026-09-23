@@ -69,7 +69,7 @@ public class CpuFp16KvPrecisionAccelTest {
             List<Integer> prompt = KvPrecisionHarness.longPrompt(model, PROMPT_TOKENS);
             var comparison =
                     KvPrecisionHarness.compareFp16AgainstFp32(
-                            model, false, prefillBatchSize, prompt, DECODE_STEPS);
+                            model, false, prefillBatchSize, prompt, DECODE_STEPS, null);
             System.out.println(
                     "[kv-precision] cpu "
                             + fixture

@@ -2,7 +2,6 @@ package org.beehive.jllm.backend.tornado.layers.type.q4_0;
 
 import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
-import org.beehive.jllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jllm.backend.tornado.layers.type.q8_0.LlamaQ8_0FFNLayers;
 import org.beehive.jllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -145,24 +144,7 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
                 config.kvDim(),
                 LOCAL_WORK_GROUP_SIZE_ALLOC);
 
-        unifiedLayer.task(
-                "rope_and_kv_cache",
-                TransformerPagedKvKernels::ropeRotationWithCacheCopyPrecomputedPaged,
-                context,
-                state.workspace.positionHolder,
-                state.workspace.wrapQ,
-                state.workspace.wrapK,
-                state.workspace.wrapV,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                weights.freq_cis_realFlat.asFloatArray(),
-                weights.freq_cis_imagFlat.asFloatArray(),
-                config.kvDim(),
-                config.headSize(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride);
+        ropeAndKeyValueCache(unifiedLayer, layerIndex);
 
         configureAttention(unifiedLayer, layerIndex);
 

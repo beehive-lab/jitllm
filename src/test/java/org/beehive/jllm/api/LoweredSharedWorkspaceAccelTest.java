@@ -277,8 +277,16 @@ public class LoweredSharedWorkspaceAccelTest {
         String previousLowering = System.getProperty(LoweredPlanSelection.ENABLE_PROPERTY);
         System.setProperty(GPU_PROPERTY, "true");
         System.setProperty(LoweredPlanSelection.ENABLE_PROPERTY, "true");
+        // FP32: this is about the shared-pool fallback, and Qwen2's GPU layers keep an FP32
+        // cache, so the FP16 default is refused for them.
         try (LocalModel loaded =
-                LocalModels.load(model, ModelOptions.builder().contextLength(256).build())) {
+                LocalModels.load(
+                        model,
+                        ModelOptions.builder()
+                                .contextLength(256)
+                                .storageOptions(
+                                        org.beehive.jllm.runtime.policy.StorageOptions.fp32())
+                                .build())) {
             TextGenerationModel generator = (TextGenerationModel) loaded;
             long before = LoweredPlanSelection.loweredPlanCount();
             String text;

@@ -149,24 +149,7 @@ public class LlamaQ8_0FFNLayers
         // any Llama 3.1 frequency scaling) instead of a constant baked into the kernel.
         // The paged twin differs in the KV index only: the block-table walk replaces
         // layer*contextLength*kvDim + pos*kvDim.
-        unifiedLayer.task(
-                "rope_and_kv_cache",
-                TransformerPagedKvKernels::ropeRotationWithCacheCopyPrecomputedPaged,
-                context,
-                state.workspace.positionHolder,
-                state.workspace.wrapQ, // Q (in/out)
-                state.workspace.wrapK, // K (in/out)
-                state.workspace.wrapV, // V (in only)
-                state.workspace.wrapKeyCache, // Key cache (out)
-                state.workspace.wrapValueCache, // Value cache (out)
-                weights.freq_cis_realFlat.asFloatArray(),
-                weights.freq_cis_imagFlat.asFloatArray(),
-                config.kvDim(),
-                config.headSize(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride);
+        ropeAndKeyValueCache(unifiedLayer, layerIndex);
 
         // Attention
         configureAttention(unifiedLayer, layerIndex);
@@ -242,6 +225,8 @@ public class LlamaQ8_0FFNLayers
     }
 
     protected TaskGraph configureLayerDataTransfers(TaskGraph unifiedLayer, int layerIndex) {
+        Object keyCache = keyCache();
+        Object valueCache = valueCache();
         // First layer: Transfer initial data to device (one-time transfer)
         if (layerIndex == 0) {
             // Transfer all attention-related data: query, key, value matrices and their caches
@@ -258,8 +243,8 @@ public class LlamaQ8_0FFNLayers
                     state.workspace.wrapQ,
                     state.workspace.wrapK,
                     state.workspace.wrapV, //
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache, //
+                    keyCache,
+                    valueCache, //
                     state.workspace.wrapAtt,
                     state.workspace.wrapHb,
                     weights.freq_cis_realFlat.asFloatArray(),
@@ -278,8 +263,8 @@ public class LlamaQ8_0FFNLayers
                     state.workspace.wrapQ,
                     state.workspace.wrapK,
                     state.workspace.wrapV, //
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache, //
+                    keyCache,
+                    valueCache, //
                     state.workspace.wrapAtt,
                     state.workspace.wrapHb, //
                     state.workspace.positionHolder //
@@ -347,8 +332,88 @@ public class LlamaQ8_0FFNLayers
         return tornadoForwardScheduler;
     }
 
+    /**
+     * RoPE on Q and K, and K and V appended to the cache. Shared by every weight type of this
+     * family, so a subclass cannot write one cache representation while attention reads another.
+     */
+    protected void ropeAndKeyValueCache(TaskGraph unifiedLayer, int layerIndex) {
+        // The cache representation is independent of the weights: Q, K and V are FP32
+        // activations here, so the FP16-cache kernels are the ones the FP16 weights use.
+        if (useFp16KVCache()) {
+            unifiedLayer.task(
+                    "rope_and_kv_cache",
+                    TransformerPagedKvKernels::ropeRotationWithCacheCopyPrecomputedFP16Paged,
+                    context,
+                    state.workspace.positionHolder,
+                    state.workspace.wrapQ, // Q (in/out)
+                    state.workspace.wrapK, // K (in/out)
+                    state.workspace.wrapV, // V (in only)
+                    state.workspace.wrapKeyCacheFP16, // Key cache (out, FP16)
+                    state.workspace.wrapValueCacheFP16, // Value cache (out, FP16)
+                    weights.freq_cis_realFlat.asFloatArray(),
+                    weights.freq_cis_imagFlat.asFloatArray(),
+                    config.kvDim(),
+                    config.headSize(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        } else {
+            unifiedLayer.task(
+                    "rope_and_kv_cache",
+                    TransformerPagedKvKernels::ropeRotationWithCacheCopyPrecomputedPaged,
+                    context,
+                    state.workspace.positionHolder,
+                    state.workspace.wrapQ, // Q (in/out)
+                    state.workspace.wrapK, // K (in/out)
+                    state.workspace.wrapV, // V (in only)
+                    state.workspace.wrapKeyCache, // Key cache (out)
+                    state.workspace.wrapValueCache, // Value cache (out)
+                    weights.freq_cis_realFlat.asFloatArray(),
+                    weights.freq_cis_imagFlat.asFloatArray(),
+                    config.kvDim(),
+                    config.headSize(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        }
+    }
+
+    /** The key cache every graph of this family binds: FP16 when the state holds one. */
+    protected Object keyCache() {
+        return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    /** The value cache, following {@link #keyCache()}. */
+    protected Object valueCache() {
+        return useFp16KVCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
+    }
+
     /** Attention is dtype-independent — a Q4_0 sibling reuses this unchanged. */
     protected TaskGraph configureAttention(TaskGraph unifiedLayer, int layerIndex) {
+        if (useFp16KVCache()) {
+            // Flash attention over the half-precision cache, FP32 accumulation.
+            return unifiedLayer.task(
+                    "attention",
+                    TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
+                    context,
+                    state.workspace.wrapQ,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    state.workspace.wrapXb,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    config.kvDim(),
+                    config.kvMul(),
+                    state.workspace.positionHolder,
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        }
         if (schedulerType == SchedulerType.NVIDIA) {
             return unifiedLayer.task(
                     "attention",
