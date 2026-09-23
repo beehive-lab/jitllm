@@ -298,6 +298,10 @@ public final class OpenAIServer implements AutoCloseable {
     }
 
     public static void main(String[] args) throws IOException {
+        org.beehive.jllm.integration.cli.CliErrors.reportDiagnostics(() -> run(args));
+    }
+
+    private static void run(String[] args) throws IOException {
         if (java.util.Arrays.asList(args).contains("--help")
                 || java.util.Arrays.asList(args).contains("-h")) {
             System.out.println(

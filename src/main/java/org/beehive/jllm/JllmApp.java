@@ -163,6 +163,10 @@ public class JllmApp {
      * @throws IOException if model loading or file operations fail.
      */
     static void main(String[] args) throws IOException {
+        org.beehive.jllm.integration.cli.CliErrors.reportDiagnostics(() -> run(args));
+    }
+
+    private static void run(String[] args) throws IOException {
         Options options = Options.parseOptions(args);
         long startedNs = System.nanoTime();
         ModelOptions modelOptions =
