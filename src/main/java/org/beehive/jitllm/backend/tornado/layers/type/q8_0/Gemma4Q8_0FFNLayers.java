@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 
+import org.beehive.jitllm.backend.tornado.kernels.Gemma4AttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
@@ -89,6 +90,9 @@ public class Gemma4Q8_0FFNLayers
     // @formatter:on
     private final boolean batchedPlan;
 
+    /** Whether the state holds its key/value cache in half precision; decided at allocation. */
+    private final boolean fp16KeyValue;
+
     public Gemma4Q8_0FFNLayers(
             String taskGraphName,
             Gemma4State state,
@@ -108,6 +112,22 @@ public class Gemma4Q8_0FFNLayers
         super(taskGraphName, state, weights, config, schedulerType);
         this.batchedPlan = batchedPlan;
         this.gemma4State = state;
+        this.fp16KeyValue = state.usesFp16KeyValueCache();
+        if (fp16KeyValue
+                && !Gemma4AttentionKernels.decodeGroupFits(
+                        config.kvMul(), config.headDimSwa(), config.headDimFull())) {
+            throw new UnsupportedOperationException(
+                    "gemma4 FP16 key/value decode attention needs "
+                            + Gemma4AttentionKernels.DECODE_GROUP
+                            + " query heads per key/value head and heads of at most "
+                            + Gemma4AttentionKernels.DECODE_MAX_HEAD
+                            + " in multiples of 32; this model has "
+                            + config.kvMul()
+                            + " and "
+                            + config.headDimSwa()
+                            + "/"
+                            + config.headDimFull());
+        }
         this.nHead = config.numberOfHeads();
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.kvMul = config.kvMul();
@@ -394,23 +414,41 @@ public class Gemma4Q8_0FFNLayers
                     headDim,
                     HEAD_NORM_LOCAL_SIZE,
                     config.rmsNormEps());
-            unifiedLayer.task(
-                    tn(layerIndex, "rope_and_cache"),
-                    Gemma4Kernels::ropeNeoxRotateAndCacheCopy,
-                    context,
-                    gemma4State.workspace.positionHolder,
-                    gemma4State.workspace.wrapQ,
-                    gemma4State.workspace.wrapK,
-                    gemma4State.workspace.wrapV,
-                    gemma4State.workspace.wrapKeyCache,
-                    gemma4State.workspace.wrapValueCache,
-                    freqCisReal,
-                    freqCisImag,
-                    nHeadKv,
-                    headDim,
-                    kvDim,
-                    cacheBaseOffset);
-
+            if (fp16KeyValue) {
+                unifiedLayer.task(
+                        tn(layerIndex, "rope_and_cache"),
+                        Gemma4AttentionKernels::ropeNeoxRotateAndCacheCopyFP16,
+                        context,
+                        gemma4State.workspace.positionHolder,
+                        gemma4State.workspace.wrapQ,
+                        gemma4State.workspace.wrapK,
+                        gemma4State.workspace.wrapV,
+                        gemma4State.workspace.wrapKeyCacheFP16,
+                        gemma4State.workspace.wrapValueCacheFP16,
+                        freqCisReal,
+                        freqCisImag,
+                        nHeadKv,
+                        headDim,
+                        kvDim,
+                        cacheBaseOffset);
+            } else {
+                unifiedLayer.task(
+                        tn(layerIndex, "rope_and_cache"),
+                        Gemma4Kernels::ropeNeoxRotateAndCacheCopy,
+                        context,
+                        gemma4State.workspace.positionHolder,
+                        gemma4State.workspace.wrapQ,
+                        gemma4State.workspace.wrapK,
+                        gemma4State.workspace.wrapV,
+                        gemma4State.workspace.wrapKeyCache,
+                        gemma4State.workspace.wrapValueCache,
+                        freqCisReal,
+                        freqCisImag,
+                        nHeadKv,
+                        headDim,
+                        kvDim,
+                        cacheBaseOffset);
+            }
         } else {
             unifiedLayer.task(
                     tn(layerIndex, "rope_q_only"),
@@ -424,7 +462,34 @@ public class Gemma4Q8_0FFNLayers
         }
 
         int splits = attentionSplits();
-        if (splits > 1) {
+        if (fp16KeyValue) {
+            int slices = decodeSlices(isSwa);
+            unifiedLayer.task(
+                    tn(layerIndex, "attention_group"),
+                    Gemma4AttentionKernels::attentionDecodeGroupFP16,
+                    context,
+                    gemma4State.workspace.wrapQ,
+                    gemma4State.workspace.wrapKeyCacheFP16,
+                    gemma4State.workspace.wrapValueCacheFP16,
+                    gemma4State.workspace.wrapAttSplit,
+                    gemma4State.workspace.positionHolder,
+                    headDim,
+                    kvDim,
+                    cacheBaseOffset,
+                    windowSize,
+                    slices);
+            unifiedLayer.task(
+                    tn(layerIndex, "attention_combine"),
+                    Gemma4AttentionKernels::combineDecodeGroup,
+                    context,
+                    gemma4State.workspace.wrapAttSplit,
+                    gemma4State.workspace.wrapXb,
+                    gemma4State.workspace.positionHolder,
+                    nHead,
+                    headDim,
+                    windowSize,
+                    slices);
+        } else if (splits > 1) {
             unifiedLayer.task(
                     tn(layerIndex, "attention_split"),
                     Gemma4Kernels::attentionWithSlidingWindowSplit,
@@ -925,8 +990,8 @@ public class Gemma4Q8_0FFNLayers
                     gemma4State.workspace.wrapQ,
                     gemma4State.workspace.wrapK,
                     gemma4State.workspace.wrapV,
-                    gemma4State.workspace.wrapKeyCache,
-                    gemma4State.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     gemma4State.workspace.wrapAtt,
                     gemma4State.workspace.wrapHb,
                     gemma4State.workspace.wrapPerLayerInputs,
@@ -965,16 +1030,36 @@ public class Gemma4Q8_0FFNLayers
     // @formatter:on
     private void bindKeyValueCache(TaskGraph unifiedLayer) {
         if (batchedPlan) {
-            unifiedLayer.consumeFromDevice(
-                    "decodeActivation",
-                    gemma4State.workspace.wrapKeyCache,
-                    gemma4State.workspace.wrapValueCache);
+            unifiedLayer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
             return;
         }
-        unifiedLayer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
-                gemma4State.workspace.wrapKeyCache,
-                gemma4State.workspace.wrapValueCache);
+        unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, keyCache(), valueCache());
+    }
+
+    /** The key cache in the representation the state allocated. */
+    private Object keyCache() {
+        return fp16KeyValue
+                ? gemma4State.workspace.wrapKeyCacheFP16
+                : gemma4State.workspace.wrapKeyCache;
+    }
+
+    /** The value cache in the representation the state allocated. */
+    private Object valueCache() {
+        return fp16KeyValue
+                ? gemma4State.workspace.wrapValueCacheFP16
+                : gemma4State.workspace.wrapValueCache;
+    }
+
+    /**
+     * Slices the grouped decode attention is launched with for a layer: the whole window for a
+     * sliding layer, the whole context for a full one. Idle slices return at once.
+     */
+    private int decodeSlices(boolean isSwa) {
+        int span =
+                isSwa
+                        ? Math.min(config.slidingWindowSize(), config.contextLength())
+                        : config.contextLength();
+        return Gemma4AttentionKernels.decodeSlices(span);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
@@ -1199,7 +1284,18 @@ public class Gemma4Q8_0FFNLayers
             } else {
                 gridScheduler.addWorkerGrid(prefix + "rope_q_only", ropeWorker);
             }
-            if (attentionSplits() > 1) {
+            if (fp16KeyValue) {
+                gridScheduler.addWorkerGrid(
+                        prefix + "attention_group",
+                        WorkerGridFactory.genericWorker(
+                                nHeadKv
+                                        * decodeSlices(config.isSwa(i))
+                                        * Gemma4AttentionKernels.DECODE_LANES,
+                                Gemma4AttentionKernels.DECODE_LANES));
+                gridScheduler.addWorkerGrid(
+                        prefix + "attention_combine",
+                        WorkerGridFactory.genericWorker(nHead * headDim, 128));
+            } else if (attentionSplits() > 1) {
                 gridScheduler.addWorkerGrid(
                         prefix + "attention_split",
                         WorkerGridFactory.genericWorker(

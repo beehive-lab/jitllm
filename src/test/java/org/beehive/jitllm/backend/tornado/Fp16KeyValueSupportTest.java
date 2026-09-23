@@ -98,6 +98,20 @@ public class Fp16KeyValueSupportTest {
         assertTrue(
                 check("gemma4", DataType.F16, ExecutionMode.STANDARD, BackendId.CUDA, true, true)
                         .isPresent());
+        // The quantized gemma4 layers write and read FP16 in both of the family's modes, on CUDA.
+        for (DataType weights : new DataType[] {DataType.Q8_0, DataType.Q4_0}) {
+            for (ExecutionMode mode :
+                    new ExecutionMode[] {
+                        ExecutionMode.STANDARD, ExecutionMode.BATCH_PREFILL_DECODE
+                    }) {
+                assertTrue(
+                        weights + " " + mode,
+                        check("gemma4", weights, mode, BackendId.CUDA, true, true).isEmpty());
+                assertTrue(
+                        weights + " " + mode + " on OpenCL",
+                        check("gemma4", weights, mode, BackendId.OPENCL, true, true).isPresent());
+            }
+        }
         // OpenCL is verified on NVIDIA-class devices only.
         assertTrue(
                 Fp16KeyValueSupport.unsupported(

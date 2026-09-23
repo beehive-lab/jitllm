@@ -14,17 +14,13 @@ import org.junit.Test;
  * after the first attends a window that begins inside an earlier chunk, and then scores decode
  * positions whose window has moved past everything the first chunk wrote.
  *
- * <p>Same limit as the short screen, against the same host reference. Its own class, and so its own
+ * <p>On the default FP16 key/value cache, which the host reference then holds in FP16 too; the
+ * short screens keep the FP32 one. Same limit as the short screen. Its own class, and so its own
  * JVM: device memory a closed session frees returns to TornadoVM's buffer provider rather than to
  * the driver.
  */
 // @formatter:on
 public class Gemma4Q8_0LongPrefixNllScreenAccelTest {
-
-    /** Compared against references captured with an FP32 key/value cache. */
-    @org.junit.ClassRule
-    public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
-            new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     static final Gemma4BatchedPrefillNllScreenAccelTest.Schedule LONG =
             new Gemma4BatchedPrefillNllScreenAccelTest.Schedule(512, 1100, 48, 9000);

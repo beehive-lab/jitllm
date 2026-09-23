@@ -58,10 +58,7 @@ public class Gemma4BatchDecodeActivation implements ActivationTaskGraph {
                 weights instanceof TornadoWeights t ? t.getTokenEmbeddingTable().dataType() : null;
         TaskGraph tg =
                 new TaskGraph("decodeActivation")
-                        .consumeFromDevice(
-                                lastBatchLayerId,
-                                state.workspace.wrapKeyCache,
-                                state.workspace.wrapValueCache)
+                        .consumeFromDevice(lastBatchLayerId, keyCache(state), valueCache(state))
                         .transferToDevice(
                                 DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX);
         switch (embedding) {
@@ -90,10 +87,21 @@ public class Gemma4BatchDecodeActivation implements ActivationTaskGraph {
                     throw new UnsupportedOperationException(
                             "gemma4 batched decode has no embedding conversion for " + embedding);
         }
-        return tg.persistOnDevice(
-                state.workspace.wrapX,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache);
+        return tg.persistOnDevice(state.workspace.wrapX, keyCache(state), valueCache(state));
+    }
+
+    /** The key cache in the representation the state allocated. */
+    private static Object keyCache(State state) {
+        return state.usesFp16KeyValueCache()
+                ? state.workspace.wrapKeyCacheFP16
+                : state.workspace.wrapKeyCache;
+    }
+
+    /** The value cache in the representation the state allocated. */
+    private static Object valueCache(State state) {
+        return state.usesFp16KeyValueCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
     }
 
     @Override

@@ -83,6 +83,17 @@ public final class Fp16KeyValueSupport {
                         ? Optional.empty()
                         : Optional.of("the qwen35 FP16 cache is verified on CUDA only");
             }
+            case "gemma4" -> {
+                // The quantized layers' FP16 writers and grouped attention, in both of this
+                // family's modes; measured on CUDA only. The FP16/BF16 layers keep FP32.
+                if (!BackendId.CUDA.equals(c.backend())) {
+                    return Optional.of("the gemma4 FP16 cache is verified on CUDA only");
+                }
+                if (c.weights() != DataType.Q8_0 && c.weights() != DataType.Q4_0) {
+                    return Optional.of("the gemma4 " + c.weights() + " layers keep an FP32 cache");
+                }
+                return Optional.empty();
+            }
             case "llama", "qwen3" -> {
                 if (!c.nvidiaScheduler()) {
                     return Optional.of("the non-NVIDIA decode layers keep an FP32 cache");
@@ -164,7 +175,8 @@ public final class Fp16KeyValueSupport {
                         + ": "
                         + reason
                         + ". Run with --fp32-kv-cache, or load with"
-                        + " ModelOptions.builder().storageOptions(StorageOptions.fp32()) from Java");
+                        + " ModelOptions.builder().storageOptions(StorageOptions.fp32()) from"
+                        + " Java");
     }
 
     /** The combination this model and policy resolve to on the current device. */

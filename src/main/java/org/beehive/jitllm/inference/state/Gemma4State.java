@@ -188,6 +188,11 @@ public final class Gemma4State extends State {
         return offsets;
     }
 
+    /** Whether this state's storage asks for an FP16 cache; read while the fields are built. */
+    private boolean usesFp16KeyValue() {
+        return storageOptions().usesFp16KeyValueCache();
+    }
+
     /** Total number of elements needed for the (deduplicated) flat KV cache buffer. */
     private static int totalCacheElements(Gemma4Configuration config, int[] cacheLayerBaseOffset) {
         int nHeadKv = config.numberOfKeyValueHeads();
@@ -271,9 +276,17 @@ public final class Gemma4State extends State {
         // cacheLayerBaseOffset).
         int[] gpuCacheLayerBaseOffset = computeCacheLayerBaseOffsets(config);
         int totalCacheElements = Math.max(1, totalCacheElements(config, gpuCacheLayerBaseOffset));
-        workspace.wrapKeyCache = TornadoWorkspaces.floats(totalCacheElements);
-        workspace.wrapValueCache = TornadoWorkspaces.floats(totalCacheElements);
-        TornadoWorkspaces.zeroKeyValue(workspace);
+        if (usesFp16KeyValue()) {
+            // One representation only: every Gemma 4 graph that reaches an FP16 state binds the
+            // FP16 pair, so an FP32 pair beside it would be device memory nothing reads. Left
+            // null, a graph that forgot the representation fails when it is built.
+            workspace.wrapKeyCacheFP16 = TornadoWorkspaces.zeroedHalfFloats(totalCacheElements);
+            workspace.wrapValueCacheFP16 = TornadoWorkspaces.zeroedHalfFloats(totalCacheElements);
+        } else {
+            workspace.wrapKeyCache = TornadoWorkspaces.floats(totalCacheElements);
+            workspace.wrapValueCache = TornadoWorkspaces.floats(totalCacheElements);
+            TornadoWorkspaces.zeroKeyValue(workspace);
+        }
         // An activation in Q8 blocks, for the packed-integer projections: four quants per int, one
         // scale and one sum of quants per block of 32. Sized for the widest activation any of them
         // reads and used as a prefix by the narrower ones. This family's feed-forward width differs
@@ -289,8 +302,17 @@ public final class Gemma4State extends State {
         // layer -- 256 on the sliding-window layers, 512 on the full ones -- while the buffer is
         // one allocation shared by every layer's graph.
         workspace.wrapAttSplit =
-                TornadoWorkspaces.floats(
-                        nHead * config.attentionSplits() * (config.maxHeadDim() + 2));
+                usesFp16KeyValue()
+                        ? TornadoWorkspaces.floats(
+                                nHeadKv
+                                        * org.beehive.jitllm.backend.tornado.kernels
+                                                .Gemma4AttentionKernels.decodeSlices(
+                                                config.contextLength())
+                                        * org.beehive.jitllm.backend.tornado.kernels
+                                                .Gemma4AttentionKernels.decodePartialStride(
+                                                config.maxHeadDim()))
+                        : TornadoWorkspaces.floats(
+                                nHead * config.attentionSplits() * (config.maxHeadDim() + 2));
         workspace.positionHolder = TornadoWorkspaces.ints(1);
 
         workspace.temp = TornadoWorkspaces.floats(1 + ((dim + localSize - 1) / localSize));

@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.ArrayList;
 import java.util.List;
+import org.beehive.jitllm.backend.tornado.kernels.Gemma4AttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4BatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -123,6 +124,9 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     private final KernelContext context = new KernelContext();
     private final int batchSize;
 
+    /** Whether the state holds its key/value cache in half precision; decided at allocation. */
+    private final boolean fp16KeyValue;
+
     private final int paddedBatch;
 
     private final int nHead;
@@ -167,6 +171,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         this.weights = weights;
         this.config = config;
         this.batchSize = batchSize;
+        this.fp16KeyValue = state.usesFp16KeyValueCache();
         this.paddedBatch = (batchSize + 127) & ~127;
         this.nHead = config.numberOfHeads();
         this.nHeadKv = config.numberOfKeyValueHeads();
@@ -302,6 +307,16 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         }
     }
 
+    /** The key cache in the representation the state allocated. */
+    private Object keyCache() {
+        return fp16KeyValue ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    /** The value cache in the representation the state allocated. */
+    private Object valueCache() {
+        return fp16KeyValue ? state.workspace.wrapValueCacheFP16 : state.workspace.wrapValueCache;
+    }
+
     // @formatter:off
     /**
      * This layer's RoPE pair: uploaded by the first layer of its kind, bound from that graph by
@@ -390,8 +405,8 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     state.workspace.w2Out);
             layer.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.wrapXFP16Batch,
                     state.workspace.wrapPerLayerInputsBatch,
                     state.workspace.wrapPerLayerProjScratchBatch,
@@ -426,8 +441,8 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     state.workspace.w2Out);
             layer.consumeFromDevice(
                     pred,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.wrapXFP16Batch,
                     state.workspace.wrapPerLayerInputsBatch,
                     state.workspace.wrapPerLayerProjScratchBatch,
@@ -543,23 +558,41 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     stride,
                     HEAD_LOCAL_SIZE,
                     config.rmsNormEps());
-            layer.task(
-                    "batch_rope_kv",
-                    Gemma4BatchPrefillKernels::batchedRopeAndCache,
-                    context,
-                    state.workspace.batchStartPosHolder,
-                    state.workspace.qkvResultBatch,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
-                    freqCisReal,
-                    freqCisImag,
-                    nHead,
-                    nHeadKv,
-                    headDim,
-                    kvDim,
-                    stride,
-                    cacheBaseOffset);
-
+            if (fp16KeyValue) {
+                layer.task(
+                        "batch_rope_kv",
+                        Gemma4AttentionKernels::batchedRopeAndCacheFP16,
+                        context,
+                        state.workspace.batchStartPosHolder,
+                        state.workspace.qkvResultBatch,
+                        state.workspace.wrapKeyCacheFP16,
+                        state.workspace.wrapValueCacheFP16,
+                        freqCisReal,
+                        freqCisImag,
+                        nHead,
+                        nHeadKv,
+                        headDim,
+                        kvDim,
+                        stride,
+                        cacheBaseOffset);
+            } else {
+                layer.task(
+                        "batch_rope_kv",
+                        Gemma4BatchPrefillKernels::batchedRopeAndCache,
+                        context,
+                        state.workspace.batchStartPosHolder,
+                        state.workspace.qkvResultBatch,
+                        state.workspace.wrapKeyCache,
+                        state.workspace.wrapValueCache,
+                        freqCisReal,
+                        freqCisImag,
+                        nHead,
+                        nHeadKv,
+                        headDim,
+                        kvDim,
+                        stride,
+                        cacheBaseOffset);
+            }
         } else {
             if (!DEQUANT_PROJECTIONS && allQ8(weights.wqLayered[layerIndex])) {
                 layer.task(
@@ -609,27 +642,49 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     stride);
         }
 
-        layer.task(
-                "batch_attention",
-                STAGED_ATTENTION
-                        ? Gemma4BatchPrefillKernels::batchedSlidingWindowAttentionStaged
-                        : Gemma4BatchPrefillKernels::batchedSlidingWindowAttention,
-                context,
-                state.workspace.batchStartPosHolder,
-                state.workspace.qkvResultBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                state.workspace.attnOutFP16,
-                state.workspace.attnScoresBatch,
-                nHead,
-                headDim,
-                kvDim,
-                kvMul,
-                stride,
-                cacheBaseOffset,
-                windowSize,
-                config.contextLength(),
-                HEAD_LOCAL_SIZE);
+        if (fp16KeyValue) {
+            layer.task(
+                    "batch_attention",
+                    Gemma4AttentionKernels::batchedSlidingWindowAttentionStagedFP16,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.qkvResultBatch,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    state.workspace.attnOutFP16,
+                    state.workspace.attnScoresBatch,
+                    nHead,
+                    headDim,
+                    kvDim,
+                    kvMul,
+                    stride,
+                    cacheBaseOffset,
+                    windowSize,
+                    config.contextLength(),
+                    HEAD_LOCAL_SIZE);
+        } else {
+            layer.task(
+                    "batch_attention",
+                    STAGED_ATTENTION
+                            ? Gemma4BatchPrefillKernels::batchedSlidingWindowAttentionStaged
+                            : Gemma4BatchPrefillKernels::batchedSlidingWindowAttention,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.qkvResultBatch,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    state.workspace.attnOutFP16,
+                    state.workspace.attnScoresBatch,
+                    nHead,
+                    headDim,
+                    kvDim,
+                    kvMul,
+                    stride,
+                    cacheBaseOffset,
+                    windowSize,
+                    config.contextLength(),
+                    HEAD_LOCAL_SIZE);
+        }
 
         if (SPLIT_K && (DEQUANT_SPLIT_K || !allQ8(weights.woLayered[layerIndex]))) {
             addDequant(layer, "woDequant", weights.woLayered[layerIndex], 0);
