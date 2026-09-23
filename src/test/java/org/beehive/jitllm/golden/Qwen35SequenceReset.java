@@ -66,12 +66,16 @@ abstract class Qwen35SequenceReset {
      */
     void verifyAttentionDispatch(TornadoVMMasterPlan plan) {}
 
+    /** The fixture the property is asked of. {@code qwen35} unless a subclass names another. */
+    Fixture fixture() {
+        return Fixture.QWEN3_8_27B_Q4_0;
+    }
+
     void assertResetRestoresTheSequence(int prefillBatchSize) throws Exception {
-        Path modelPath = GoldenFixture.locate(Fixture.QWEN3_8_27B_Q4_0);
+        Path modelPath = GoldenFixture.locate(fixture());
         if (modelPath == null) {
             System.out.println(
-                    "[SKIP] environment absent — "
-                            + GoldenFixture.absentMessage(Fixture.QWEN3_8_27B_Q4_0));
+                    "[SKIP] environment absent — " + GoldenFixture.absentMessage(fixture()));
             assumeTrue("environment absent", false);
         }
         if (!TupleInfo.acceleratorPresent()) {

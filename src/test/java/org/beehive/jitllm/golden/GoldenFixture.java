@@ -123,6 +123,10 @@ public final class GoldenFixture {
          * family cannot use Llama's all-or-nothing retention: 241 Q4_0 tensors, {@code ffn_down}
          * Q4_1 on blocks 0-3 only, a Q4_K {@code token_embd} that is also the output projection,
          * and a Q5_K {@code per_layer_token_embd} that never reaches the device.
+         *
+         * <p>Both quantized files are pinned at upstream revision {@code 0314792d}. The Q8_0 hash
+         * moved there from {@code 0a8488b1} with the repository's chat-template update; the Q4_0
+         * file at that revision is the one pinned before.
          */
         GEMMA_4_E2B_BF16(
                 "gemma-4-E2B-it-BF16.gguf",
@@ -132,7 +136,7 @@ public final class GoldenFixture {
         GEMMA_4_E2B_Q8_0(
                 "gemma-4-E2B-it-Q8_0.gguf",
                 "Q8_0",
-                "0a8488b149e1f700712c35d5bf0a3795f9dcc2563b4944d5ef2fb89375f9483e",
+                "605d3c2647d7c58c1e4b5375ccb5702acf94c2611b4c8d4877812f8fdd32d053",
                 "gemma-4-e2b"),
         GEMMA_4_E2B_Q4_0(
                 "gemma-4-E2B-it-Q4_0.gguf",

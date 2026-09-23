@@ -217,6 +217,42 @@ abstract class CpuGpuParity {
     static final Bounds Q4_0_PACKED_ACTIVATION =
             new Bounds(1.7e-4, 1e-2, 0.06, 0.015, 0.99995, 0.05, 0.5);
 
+    // @formatter:off
+    /**
+     * Gemma 4's <b>batched</b> prefill on the Q8_0 file, whose prompt rows go through tensor-core
+     * GEMMs with FP16 operands and FP32 accumulation while the single-token path keeps FP32
+     * activations.
+     *
+     * <p>An envelope for that measured arithmetic, not a looser view of {@link #Q8_0}. Measured on
+     * gemma-4-E2B-it-Q8_0.gguf, CUDA, teacher-forced over 63 rows at a prefill width of 7 — whole
+     * chunks and a partial one — against the host: relative L2 1.144e-4, largest absolute
+     * difference 3.59e-4 of the reference RMS, one elementwise violation in 16.5 million, cosine
+     * 1.0000000, argmax 0/63, top-5 5/5. The rows at width 7 and width 32 are <b>bit-identical</b>,
+     * so the difference from the single-token path is the prefill arithmetic and not where the
+     * chunks break. The limits carry about a factor of two; {@code decisionGap} does not move.
+     */
+    // @formatter:on
+    static final Bounds GEMMA4_Q8_0_BATCHED =
+            new Bounds(1.7e-4, 1e-2, 7e-4, 2.5e-4, 0.99999, 1e-4, 0.5);
+
+    // @formatter:off
+    /**
+     * Gemma 4's <b>batched</b> prefill on the Q4_0 file: the prompt rows through FP16-operand
+     * tensor-core GEMMs over weights decoded to FP16, the decoded rows through the packed-integer
+     * projections {@link #Q4_0_PACKED_ACTIVATION} covers.
+     *
+     * <p>Measured on gemma-4-E2B-it-Q4_0.gguf, CUDA, teacher-forced over 63 rows at width 7:
+     * elementwise 5.93%, largest absolute difference 0.0536 of the reference RMS, relative L2
+     * 0.0171, cosine deficit 4.55e-5, argmax 1/63 at a near-tie (the decision gap held), top-5
+     * 4.873/5. Width 7 and width 32 are bit-identical, and the batched NLL screens — one inside the
+     * sliding window, one 1100 positions past it — score no worse than the host. Against the same
+     * host, single-token decoding measures 3.57%, 0.0576, 0.0091 and 3.6e-5. The limits below carry
+     * about 1.5x; {@code decisionGap} does not move.
+     */
+    // @formatter:on
+    static final Bounds GEMMA4_Q4_0_BATCHED =
+            new Bounds(1.7e-4, 1e-2, 0.08, 0.025, 0.99993, 0.09, 0.5);
+
     /** The CPU reference against the accelerator running its default single-token path. */
     void assertParity(Fixture fixture, Bounds bounds) throws Exception {
         assertParity(fixture, bounds, 1);
