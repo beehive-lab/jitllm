@@ -126,6 +126,10 @@ final class DelegatingModel implements TextGenerationModel {
         this.executionPolicy = executionPolicy;
         this.storageOptions = storageOptions;
         this.configuration = new ConfigurationView(delegate.configuration());
+        // Before any cache or pool is sized: the model is loaded, so the weight representation
+        // and family are known, and the storage and policy are the model's defaults.
+        org.beehive.jllm.backend.tornado.Fp16KeyValueSupport.require(
+                delegate, executionPolicy, storageOptions, gpu);
         // One weight representation is all today's Weights can report: it carries a single
         // materialized type for the whole set. Per-tensor descriptors make a genuinely
         // mixed answer possible, and ModelInfo can already express it — see weightTypes().
@@ -306,10 +310,16 @@ final class DelegatingModel implements TextGenerationModel {
                                         + " ModelOptions.builder().maxConcurrentSessions(n)"));
             }
             int contextLength = requested > 0 ? requested : modelContext;
-            KvLease lease = sessions.acquire(contextLength);
             // Resolved once, here, and carried by the session. Nothing reads
             // it per token, and nothing re-reads a system property after this point.
             ExecutionPolicy policy = options.executionPolicy().applyTo(executionPolicy);
+            if (!policy.equals(executionPolicy)) {
+                // A session that overrides the execution mode can select layers the model's own
+                // policy did not, so the cache it would share is checked again before the lease.
+                org.beehive.jllm.backend.tornado.Fp16KeyValueSupport.require(
+                        delegate, policy, storageOptions, gpu);
+            }
+            KvLease lease = sessions.acquire(contextLength);
             session =
                     new DelegatingSession(
                             this, delegate, gpu, contextLength, lease, policy, thinking);

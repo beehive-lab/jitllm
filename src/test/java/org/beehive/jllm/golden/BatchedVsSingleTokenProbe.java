@@ -86,7 +86,7 @@ public final class BatchedVsSingleTokenProbe {
                                         blockTokens,
                                         model.configuration().numberOfLayers(),
                                         model.kvCacheDim(),
-                                        State.USE_FP16_KV));
+                                        false)); // the engine reads an FP32 pool only
         manager.attach(store);
         KvLease lease = manager.acquire(contextLength);
         State state = model.createNewState(lease);

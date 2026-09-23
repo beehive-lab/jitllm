@@ -22,6 +22,11 @@ import org.junit.Test;
  */
 public class LoweredMistralParityAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     @Test
     public void mistralLowersAndReproducesTheLegacyLogitsExactly() throws Exception {
         assertLoweredMatchesLegacy(Fixture.MISTRAL_7B_Q8_0);

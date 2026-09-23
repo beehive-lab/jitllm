@@ -11,6 +11,11 @@ import org.junit.Test;
  */
 public class Qwen3BatchedPrefillParityAccelTest extends CpuGpuParity {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     private static final int BATCH = 128;
 
     @Test

@@ -391,6 +391,14 @@ Benchmark context is derived from its workload sizes and depths.
 ./jllm bench -m model.gguf --gpu --pp 128,512 --tg 64 --depth 0,4096 --repetitions 3 --output json
 ```
 
+**Key/value cache precision.** The KV cache is stored in **FP16 by default** (accumulation
+stays FP32). `--fp32-kv-cache` selects FP32, the compatibility and numerical-reference
+choice. A configuration whose kernels do not implement the FP16 cache is refused before
+the model's cache or plan is built, naming the combination and pointing at
+`--fp32-kv-cache`; it never falls back to FP32 silently. The supported set is tracked in
+[docs/architecture/kv-cache-support.md](docs/architecture/kv-cache-support.md). The old
+`--fp16-kv-cache` flag was removed and is refused with this migration.
+
 Existing flag-based invocations remain supported: default/`--instruct` → `run`,
 `--interactive`/`--chat`/`-i` → `chat`, `--server` → `serve`, and `--bench` → `bench`.
 Conflicting modes and options for another command are rejected. `--max-tokens`/`-n`
@@ -405,8 +413,8 @@ history in each HTTP request; `chat` retains terminal conversation history local
 `serve --parallel N` counts **request slots**, whereas `--batch-prefill-size N` counts
 **prompt tokens per chunk**. One request slot uses the regular facade and honors its
 prefill policy. More than one slot enables the existing experimental continuous-batch
-engine: CUDA tensor-core devices, FP16 Llama/Qwen3 weights, FP32 KV cache, and greedy (`temperature=0`) requests
-only. Prefill chunking and CUDA graphs are rejected in that mode because this executor
+engine: CUDA tensor-core devices, FP16 Llama/Qwen3 weights, an FP32 KV cache
+(`--fp32-kv-cache`, required), and greedy (`temperature=0`) requests only. Prefill chunking and CUDA graphs are rejected in that mode because this executor
 does not implement them. JIT/device setup remains lazy there and is labeled accordingly
 in verbose output; its memory estimate is unavailable. Prefix caching requires parallel
 mode and is disabled by default.

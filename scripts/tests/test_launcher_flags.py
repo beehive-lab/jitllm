@@ -170,6 +170,25 @@ class VerbosityOptions(unittest.TestCase):
         self.assertIn("-Djllm.verbose=true", cmd)
         self.assertNotIn("-Djllm.EnableTimingForTornadoVMInit=true", cmd)
 
+    def base_command(self, *flags):
+        args = launcher.create_parser().parse_args(["--model", "stub.gguf", *flags])
+        with tempfile.TemporaryDirectory() as sdk:
+            open(os.path.join(sdk, "tornado-argfile"), "w").close()
+            os.makedirs(os.path.join(sdk, "target"))
+            open(os.path.join(sdk, "target", "jllm-1.0.0-jdk21.jar"), "w").close()
+            runner = launcher.LlamaRunner.__new__(launcher.LlamaRunner)
+            runner.tornado_sdk = sdk
+            runner.java_home, runner.llama_root = "/stub/java", sdk
+            args.installed_backends, args.backend = [launcher.Backend.CUDA], launcher.Backend.CUDA
+            return runner._build_base_command(args)
+
+    def test_kv_cache_is_fp16_unless_fp32_is_asked_for(self):
+        default = self.base_command()
+        self.assertFalse([a for a in default if "kvcache" in a], "FP16 is the Java default")
+        self.assertIn("-Djllm.kvcache.fp32=true", self.base_command("--fp32-kv-cache"))
+        self.assertNotIn("--fp16-kv-cache", launcher.create_parser().format_help())
+        self.assertIn("--fp32-kv-cache", launcher.create_parser().format_help())
+
     def test_help_exposes_only_the_new_verbosity_interface(self):
         text = launcher.create_parser().format_help()
         self.assertIn("--verbose", text)

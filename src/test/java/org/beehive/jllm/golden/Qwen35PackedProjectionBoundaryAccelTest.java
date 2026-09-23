@@ -46,6 +46,11 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 // @formatter:on
 public class Qwen35PackedProjectionBoundaryAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     private static final int QK = 32;
 
     /** Token ids to take embeddings from. Arbitrary, fixed, and spread across the vocabulary. */

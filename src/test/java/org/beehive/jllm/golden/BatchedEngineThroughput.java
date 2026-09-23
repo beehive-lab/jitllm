@@ -56,7 +56,7 @@ public final class BatchedEngineThroughput {
                                         blockTokens,
                                         model.configuration().numberOfLayers(),
                                         model.kvCacheDim(),
-                                        State.USE_FP16_KV));
+                                        false)); // the engine reads an FP32 pool only
         manager.attach(store);
 
         KvLease planLease = manager.acquire(blockTokens);

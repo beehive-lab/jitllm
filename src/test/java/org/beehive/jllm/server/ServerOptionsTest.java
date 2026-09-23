@@ -71,18 +71,46 @@ public class ServerOptionsTest {
     }
 
     @Test
-    public void parallelServingRejectsHalfPrecisionKvCache() {
-        String previous = System.getProperty("jllm.kvcache.fp16");
+    public void parallelServingNeedsTheFp32CacheAskedFor() {
+        String fp32 = org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY;
+        String previous = System.getProperty(fp32);
         try {
-            System.setProperty("jllm.kvcache.fp16", "true");
-            assertThrows(
-                    IllegalArgumentException.class,
-                    () ->
-                            ServerOptions.parse(
-                                    new String[] {"-m", "model.gguf", "--gpu", "--parallel", "2"}));
+            System.clearProperty(fp32);
+            IllegalArgumentException refused =
+                    assertThrows(
+                            IllegalArgumentException.class,
+                            () ->
+                                    ServerOptions.parse(
+                                            new String[] {
+                                                "-m", "model.gguf", "--gpu", "--parallel", "2"
+                                            }));
+            assertTrue(refused.getMessage(), refused.getMessage().contains("--fp32-kv-cache"));
+            assertEquals(
+                    2,
+                    ServerOptions.parse(
+                                    new String[] {
+                                        "-m",
+                                        "model.gguf",
+                                        "--gpu",
+                                        "--parallel",
+                                        "2",
+                                        "--fp32-kv-cache"
+                                    })
+                            .parallel());
         } finally {
-            if (previous == null) System.clearProperty("jllm.kvcache.fp16");
-            else System.setProperty("jllm.kvcache.fp16", previous);
+            if (previous == null) System.clearProperty(fp32);
+            else System.setProperty(fp32, previous);
         }
+    }
+
+    @Test
+    public void theRemovedFp16FlagIsRefusedWithTheMigration() {
+        IllegalArgumentException refused =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                ServerOptions.parse(
+                                        new String[] {"-m", "model.gguf", "--fp16-kv-cache"}));
+        assertTrue(refused.getMessage(), refused.getMessage().contains("--fp32-kv-cache"));
     }
 }

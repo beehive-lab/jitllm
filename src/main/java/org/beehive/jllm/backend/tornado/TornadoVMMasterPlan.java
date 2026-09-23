@@ -97,6 +97,11 @@ public interface TornadoVMMasterPlan {
     private static TornadoVMMasterPlan buildPlan(State state, Model model, MetricsSink sink) {
         TornadoVMMasterPlan plan;
 
+        // Every GPU plan passes here, the facade's and the harness's alike, so an FP16 cache the
+        // selected layers do not implement is refused before any device buffer exists. The facade
+        // has already asked at load; this covers the callers that build a state themselves.
+        Fp16KeyValueSupport.require(model, state.executionPolicy(), state.storageOptions(), true);
+
         // The lowering's opt-in is consulted here, in the one factory every caller reaches, rather
         // than at each construction site. It was branched at two sites before — the API session and
         // the golden harness — which is why the CLI, the server and the benchmark script silently

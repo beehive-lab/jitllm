@@ -135,39 +135,42 @@ public class ResolvedPolicyReachesThePlanAccelTest {
                     false);
         }
         String previousGpu = System.getProperty("use.tornadovm");
-        String previousKv = System.getProperty("jllm.kvcache.fp16");
+        String previousLegacy = System.getProperty("jllm.kvcache.fp16");
+        String previousFp32 = System.getProperty("jllm.kvcache.fp32");
         System.setProperty("use.tornadovm", "true");
         try {
             System.clearProperty("jllm.kvcache.fp16");
-            Model fp32Model = ModelLoader.loadModel(model, CONTEXT_LENGTH, true, true);
-            assertFalse(
-                    "with the property clear the state must hold FP32 key/value arrays",
-                    fp32Model.createNewState().usesFp16KeyValueCache());
-
-            System.setProperty("jllm.kvcache.fp16", "true");
+            System.clearProperty("jllm.kvcache.fp32");
             Model fp16Model = ModelLoader.loadModel(model, CONTEXT_LENGTH, true, true);
             State fp16State = fp16Model.createNewState();
             assertTrue(
-                    "with it set the state must hold FP16 arrays — otherwise the option never"
-                            + " reached allocation and the description would name a dtype the"
-                            + " buffers do not have",
+                    "with no property set the state must hold FP16 arrays, the default — otherwise"
+                            + " the default never reached allocation and the description would"
+                            + " name a dtype the buffers do not have",
                     fp16State.usesFp16KeyValueCache());
 
             var entries = gridEntries(fp16Model, ExecutionPolicy.builder().build(), fp16State);
             assertTrue(
                     "and the plan built from it must still be a plan",
                     entries.stream().anyMatch(e -> e.contains("logits.vocab_proj")));
+
+            System.setProperty("jllm.kvcache.fp32", "true");
+            Model fp32Model = ModelLoader.loadModel(model, CONTEXT_LENGTH, true, true);
+            assertFalse(
+                    "with -Djllm.kvcache.fp32=true the state must hold FP32 key/value arrays only",
+                    fp32Model.createNewState().usesFp16KeyValueCache());
         } finally {
-            if (previousGpu == null) {
-                System.clearProperty("use.tornadovm");
-            } else {
-                System.setProperty("use.tornadovm", previousGpu);
-            }
-            if (previousKv == null) {
-                System.clearProperty("jllm.kvcache.fp16");
-            } else {
-                System.setProperty("jllm.kvcache.fp16", previousKv);
-            }
+            restore("use.tornadovm", previousGpu);
+            restore("jllm.kvcache.fp16", previousLegacy);
+            restore("jllm.kvcache.fp32", previousFp32);
+        }
+    }
+
+    private static void restore(String key, String previous) {
+        if (previous == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, previous);
         }
     }
 

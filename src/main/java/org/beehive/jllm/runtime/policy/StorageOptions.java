@@ -25,16 +25,56 @@ public record StorageOptions(DataType keyValueRepresentation, boolean sharedKeyV
     }
 
     /**
+     * The name of the property that selects an FP32 key/value cache instead of the FP16 default.
+     */
+    public static final String FP32_PROPERTY = "jllm.kvcache.fp32";
+
+    /**
+     * The earlier spelling, which selected FP16 when FP32 was the default. Still honoured when set:
+     * {@code true} is the default now, and {@code false} asks for FP32.
+     */
+    public static final String LEGACY_FP16_PROPERTY = "jllm.kvcache.fp16";
+
+    /** Half-precision key/value storage, each session with its own cache — the default. */
+    public static StorageOptions fp16() {
+        return new StorageOptions(DataType.F16, false);
+    }
+
+    /** Single-precision key/value storage: the compatibility and numerical-reference choice. */
+    public static StorageOptions fp32() {
+        return new StorageOptions(DataType.F32, false);
+    }
+
+    /**
      * The defaults this build runs with, from the {@code llama.*} system properties.
+     *
+     * <p>FP16 unless {@value #FP32_PROPERTY} is {@code true}, or the legacy {@value
+     * #LEGACY_FP16_PROPERTY} is {@code false}. Setting both to ask for different representations is
+     * refused rather than resolved by precedence.
      *
      * <p>Read per call rather than folded into a constant, for the reason {@link
      * ExecutionPolicy#fromSystemProperties()} gives: a constant is the defect being removed.
      * Nothing calls this in a loop — a model resolves it once, at load.
      */
     public static StorageOptions fromSystemProperties() {
+        boolean fp32 = Boolean.getBoolean(FP32_PROPERTY);
+        String legacy = System.getProperty(LEGACY_FP16_PROPERTY);
+        if (fp32 && Boolean.parseBoolean(legacy)) {
+            throw new IllegalArgumentException(
+                    "-D"
+                            + FP32_PROPERTY
+                            + "=true and -D"
+                            + LEGACY_FP16_PROPERTY
+                            + "=true ask for different key/value caches; FP16 is the default, so"
+                            + " drop "
+                            + LEGACY_FP16_PROPERTY
+                            + " and keep "
+                            + FP32_PROPERTY
+                            + " only if you want FP32");
+        }
+        boolean useFp32 = fp32 || (legacy != null && !Boolean.parseBoolean(legacy));
         return new StorageOptions(
-                Boolean.getBoolean("jllm.kvcache.fp16") ? DataType.F16 : DataType.F32,
-                Boolean.getBoolean("jllm.kv.sharedPool"));
+                useFp32 ? DataType.F32 : DataType.F16, Boolean.getBoolean("jllm.kv.sharedPool"));
     }
 
     /** Whether key/value entries are half precision. */

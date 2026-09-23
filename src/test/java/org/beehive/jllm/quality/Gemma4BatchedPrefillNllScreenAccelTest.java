@@ -50,6 +50,11 @@ import org.junit.Test;
 // @formatter:on
 public class Gemma4BatchedPrefillNllScreenAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     /** Chunk width the batched graphs are built for. */
     private static final int BATCH = 256;
 

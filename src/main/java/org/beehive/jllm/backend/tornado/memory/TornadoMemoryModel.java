@@ -117,7 +117,9 @@ public final class TornadoMemoryModel {
                 policy,
                 device,
                 configuredBudgetBytes,
-                KeyValueReservation.singlePrivate());
+                KeyValueReservation.singlePrivate(
+                        org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties()
+                                .usesFp16KeyValueCache()));
     }
 
     /**
@@ -173,7 +175,7 @@ public final class TornadoMemoryModel {
                         config.contextLength(), config.keyValueLayerCount(), config.kvDim());
         // FP16 KV is a storage choice, so it must be read rather than assumed FP32 — assuming
         // FP32 would over-predict a configured FP16 cache by exactly its own size.
-        int kvElementBytes = kvBytesPerElement();
+        int kvElementBytes = keyValue.bytesPerElement();
         components.add(
                 new MemoryComponent(
                         keyValueComponentName(keyValue),
@@ -303,7 +305,7 @@ public final class TornadoMemoryModel {
                         + "; context "
                         + config.contextLength()
                         + "; kv "
-                        + (kvBytesPerElement() == 2 ? "FP16" : "FP32")
+                        + (keyValue.fp16() ? "FP16" : "FP32")
                         + keyValueAssumption(keyValue)
                         + (nativePrefill && stackedPerLayer > 0 ? "; native prefill" : "")
                         + "; native-array header "
@@ -330,16 +332,6 @@ public final class TornadoMemoryModel {
                 : " per session; each of up to "
                         + keyValue.sessions()
                         + " open sessions allocates its own session state";
-    }
-
-    /**
-     * Bytes per key/value element, from the selected storage representation.
-     *
-     * <p>Read from the same switch the state reads, so the prediction and the allocation cannot
-     * disagree about which representation was chosen.
-     */
-    private static int kvBytesPerElement() {
-        return org.beehive.jllm.inference.state.State.USE_FP16_KV ? 2 : 4;
     }
 
     /**

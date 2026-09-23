@@ -26,6 +26,11 @@ import org.junit.Test;
  */
 public class LoweredPhi3ParityAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     @Test
     public void phi3LowersAndReproducesTheLegacyLogitsExactly_q8_0() throws Exception {
         assertLoweredMatchesLegacy(Fixture.PHI3_MINI_4K_Q8_0);

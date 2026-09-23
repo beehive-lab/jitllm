@@ -24,10 +24,16 @@ record ServerOptions(
         if (parallel > 1
                 && (Boolean.getBoolean("jllm.withPrefillDecode")
                         || Integer.getInteger("jllm.prefillBatchSize", 1) > 1
-                        || Boolean.getBoolean("jllm.cudaGraphs")
-                        || Boolean.getBoolean("jllm.kvcache.fp16"))) {
+                        || Boolean.getBoolean("jllm.cudaGraphs"))) {
             throw new IllegalArgumentException(
-                    "Parallel serving requires FP32 KV cache and does not support prefill chunking or CUDA graphs");
+                    "Parallel serving does not support prefill chunking or CUDA graphs");
+        }
+        if (parallel > 1
+                && org.beehive.jllm.runtime.policy.StorageOptions.fromSystemProperties()
+                        .usesFp16KeyValueCache()) {
+            throw new IllegalArgumentException(
+                    "Parallel serving reads an FP32 key/value cache; pass --fp32-kv-cache"
+                            + " (FP16 is the default)");
         }
     }
 
@@ -51,10 +57,16 @@ record ServerOptions(
                     System.setProperty("jllm.verbose", "true");
                     continue;
                 }
-                case "--fp16-kv-cache" -> {
-                    System.setProperty("jllm.kvcache.fp16", "true");
+                case "--fp32-kv-cache" -> {
+                    System.setProperty(
+                            org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY, "true");
                     continue;
                 }
+                case "--fp16-kv-cache" ->
+                        throw new IllegalArgumentException(
+                                "--fp16-kv-cache was removed: FP16 is now the default key/value"
+                                        + " cache. Drop the flag, or pass --fp32-kv-cache to keep"
+                                        + " an FP32 cache");
                 case "--cuda-graphs" -> {
                     System.setProperty("jllm.cudaGraphs", "true");
                     continue;

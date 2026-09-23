@@ -21,9 +21,10 @@ import org.beehive.jllm.api.Experimental;
  * @param sessions how many sessions may be open at once, at least 1
  * @param pooled whether the sessions share one pool reserved at load
  * @param blockSizeTokens tokens per storage block, at least 1
+ * @param fp16 whether entries are stored in half precision rather than single
  */
 @Experimental
-public record KeyValueReservation(int sessions, boolean pooled, int blockSizeTokens) {
+public record KeyValueReservation(int sessions, boolean pooled, int blockSizeTokens, boolean fp16) {
 
     /** The block size every key/value store in the tree is laid out with. */
     public static final int BLOCK_SIZE_TOKENS = 16;
@@ -36,8 +37,13 @@ public record KeyValueReservation(int sessions, boolean pooled, int blockSizeTok
     }
 
     /** One session with its own cache — the shape of a plan made without knowing the pool. */
-    public static KeyValueReservation singlePrivate() {
-        return new KeyValueReservation(1, false, BLOCK_SIZE_TOKENS);
+    public static KeyValueReservation singlePrivate(boolean fp16) {
+        return new KeyValueReservation(1, false, BLOCK_SIZE_TOKENS, fp16);
+    }
+
+    /** Bytes one stored key or value element occupies. */
+    public int bytesPerElement() {
+        return fp16 ? 2 : 4;
     }
 
     /**

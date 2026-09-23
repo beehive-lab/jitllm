@@ -53,7 +53,8 @@ final class MemoryPreflight {
                                                 model.architectureId(),
                                                 loadedWeightType(modelFile),
                                                 options.executionPolicy())),
-                        org.beehive.jllm.runtime.memory.KeyValueReservation.BLOCK_SIZE_TOKENS));
+                        org.beehive.jllm.runtime.memory.KeyValueReservation.BLOCK_SIZE_TOKENS,
+                        options.storageOptions().usesFp16KeyValueCache()));
     }
 
     /**

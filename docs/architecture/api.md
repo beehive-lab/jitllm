@@ -55,7 +55,7 @@ embeddings is a `LocalModel` and nothing else.
 | `backend` | `BackendId`, or resolved from `-Duse.tornadovm` |
 | `device` | a `DeviceSelector`; a selector this build cannot honour throws rather than falling back |
 | `executionPolicy` | phase strategy, prefill batch size, sampling residency, attention options |
-| `storageOptions` | KV dtype and paging |
+| `storageOptions` | KV dtype (FP16 by default; `StorageOptions.fp32()` for FP32) and paging |
 | `thinkingMode` | default for sessions of this model |
 | `maxConcurrentSessions` | how many sessions may be open at once (default 1) |
 
@@ -66,6 +66,11 @@ the reservation. Otherwise each open session allocates its own cache. Opening on
 the limit throws `IllegalStateException` carrying `GPUL-MEM-003`; closing a session frees its place.
 Callers that hold several sessions of one model at once must set it. `LocalModels.preflight` and
 the CLI's `-v` report size the key/value cache accordingly.
+
+An FP16 cache the loaded model's kernels do not implement is refused with
+`IllegalArgumentException` (`GPUL-CFG-002`) when the model loads, or when a session's execution
+policy override selects such a path, before any cache is allocated. The message names the
+combination and the FP32 setting. See [kv-cache-support.md](kv-cache-support.md).
 
 | `SessionOptions` | |
 | --- | --- |

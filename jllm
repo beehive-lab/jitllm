@@ -162,8 +162,8 @@ class LlamaRunner:
         if args.cuda_graphs:
             cmd.append("-Djllm.cudaGraphs=true")
 
-        if args.fp16_kv_cache:
-            cmd.append("-Djllm.kvcache.fp16=true")
+        if args.fp32_kv_cache:
+            cmd.append("-Djllm.kvcache.fp32=true")
 
         if args.diagnostic_scalar_batched_prefill:
             cmd.append("-Djllm.qwen35.tensorCores=false")
@@ -468,6 +468,9 @@ def parse_cli_args(argv):
         parser.error("--ctx-size must be positive")
     if mode == "serve" and args.max_tokens < 0:
         parser.error("--ctx-size must be non-negative (0 serves the model's own context)")
+    if args.fp16_kv_cache:
+        parser.error("--fp16-kv-cache was removed: FP16 is now the default key/value cache. "
+                     "Drop the flag, or pass --fp32-kv-cache to keep an FP32 cache")
     if args.max_new_tokens is not None and args.max_new_tokens <= 0:
         parser.error("--max-new-tokens must be positive")
     if mode == "run" and args.prompt is None:
@@ -481,8 +484,10 @@ def parse_cli_args(argv):
             parser.error("--parallel and --max-queued-requests must be positive; --prefix-cache-entries must be non-negative")
         if args.parallel > 1 and not args.use_gpu:
             parser.error("--parallel > 1 requires --gpu")
-        if args.parallel > 1 and (args.with_prefill_decode or args.batch_prefill_size is not None or args.cuda_graphs or args.fp16_kv_cache):
-            parser.error("parallel serving requires FP32 KV cache and does not support --with-prefill-decode, --batch-prefill-size, or --cuda-graphs")
+        if args.parallel > 1 and (args.with_prefill_decode or args.batch_prefill_size is not None or args.cuda_graphs):
+            parser.error("parallel serving does not support --with-prefill-decode, --batch-prefill-size, or --cuda-graphs")
+        if args.parallel > 1 and not args.fp32_kv_cache:
+            parser.error("parallel serving reads an FP32 key/value cache; pass --fp32-kv-cache (FP16 is the default)")
         if args.parallel == 1 and args.prefix_cache_entries:
             parser.error("--prefix-cache-entries requires --parallel > 1")
     if mode in {"serve", "bench"} and (args.prompt is not None or args.system_prompt is not None or args.max_new_tokens is not None):
@@ -590,10 +595,13 @@ def create_parser(command=None) -> argparse.ArgumentParser:
 
     # Benchmark (llama-bench style)
     parser.add_argument(
-        "--fp16-kv-cache",
+        "--fp32-kv-cache",
         action="store_true",
-        help="Hold the key/value cache in half precision (halves its bandwidth and footprint; accumulation stays FP32)",
+        help="Hold the key/value cache in FP32 instead of the FP16 default (compatibility and numerical reference; "
+             "required where the FP16 cache is not supported, which the run reports)",
     )
+    # Removed: FP16 became the default. Parsed only to refuse it with the migration.
+    parser.add_argument("--fp16-kv-cache", action="store_true", help=argparse.SUPPRESS)
     # Kernel selection is automatic and lives in Java (device capability plus the workload's
     # shape decide between the int8 tensor-core pair, the FP16 tensor-core kernels and the
     # scalar kernels). The two spellings below survive for compatibility only and are kept

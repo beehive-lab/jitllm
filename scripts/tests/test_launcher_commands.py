@@ -52,7 +52,7 @@ class Commands(unittest.TestCase):
         self.reject("run", "-m", "stub.gguf")
 
     def test_server_forwards_host_capacity_and_request_slots(self):
-        args = self.java_args("serve", "-m", "stub.gguf", "--gpu", "--host", "127.0.0.2",
+        args = self.java_args("serve", "-m", "stub.gguf", "--gpu", "--fp32-kv-cache", "--host", "127.0.0.2",
                               "--port", "8081", "-c", "4096", "--parallel", "4",
                               "--max-queued-requests", "12", "--prefix-cache-entries", "8")
         for key, value in [("--host", "127.0.0.2"), ("--port", "8081"),
@@ -63,7 +63,18 @@ class Commands(unittest.TestCase):
         self.assertNotIn("--temperature", args)
         self.reject("serve", "-m", "stub.gguf", "--parallel", "2")
         self.reject("serve", "-m", "stub.gguf", "--gpu", "--parallel", "2", "--cuda-graphs")
-        self.reject("serve", "-m", "stub.gguf", "--gpu", "--parallel", "2", "--fp16-kv-cache")
+        # Parallel serving reads an FP32 cache, and FP16 is the default: it must be asked for.
+        self.reject("serve", "-m", "stub.gguf", "--gpu", "--parallel", "2")
+        self.parse("serve", "-m", "stub.gguf", "--gpu", "--parallel", "2", "--fp32-kv-cache")
+
+    def test_removed_fp16_flag_is_refused_with_the_migration(self):
+        for prefix in (["run", "--prompt", "hi"], ["chat"], ["serve"], ["bench"], ["--prompt", "hi"]):
+            with self.subTest(prefix=prefix):
+                stderr = io.StringIO()
+                with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    launcher.parse_cli_args(prefix + ["-m", "stub.gguf", "--fp16-kv-cache"])
+                self.assertIn("--fp32-kv-cache", stderr.getvalue())
+                self.assertIn("default", stderr.getvalue())
 
     def test_server_context_defaults_to_model_and_accepts_ctx_aliases(self):
         args = self.java_args("--server", "-m", "stub.gguf", "--gpu", "--port", "8090")

@@ -15,6 +15,11 @@ import org.junit.Test;
 // @formatter:on
 public class Gemma4Q4_0BatchedPrefillNllScreenAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     @Test
     public void theBatchedPrefillDoesNotMakeHeldOutTextLessLikely() throws Exception {
         Gemma4BatchedPrefillNllScreenAccelTest.screen(Fixture.GEMMA_4_E2B_Q4_0);

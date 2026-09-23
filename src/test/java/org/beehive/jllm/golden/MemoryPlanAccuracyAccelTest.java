@@ -44,6 +44,11 @@ import org.junit.Test;
  */
 public class MemoryPlanAccuracyAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     private static final long MIB = 1048576L;
 
     /** Lowest repeatably successful budget, per the campaign in the class javadoc. */

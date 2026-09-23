@@ -13,6 +13,11 @@ import org.junit.Test;
  */
 public class LlamaBatchedPrefillParityAccelTest extends CpuGpuParity {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     /** A whole tensor-core tile, so the GEMM path runs unpadded. */
     private static final int BATCH = 128;
 

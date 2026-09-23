@@ -19,6 +19,11 @@ import org.junit.Test;
 
 public class MemoryPreflightAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     private static final String GPU_PROPERTY = "use.tornadovm";
     private static final String BUDGET = "tornado.device.memory";
 

@@ -26,19 +26,6 @@ import org.beehive.jllm.tensor.standard.FloatTensor;
 public abstract class State {
 
     /**
-     * When set ({@code -Djllm.kvcache.fp16=true}), model states that support it additionally
-     * allocate half-precision KV caches, and the NVIDIA decode path reads/writes those instead of
-     * the FP32 ones (halving KV bandwidth; accumulation stays FP32).
-     *
-     * <p><b>Read where the arrays are allocated, and where a pool is sized — nowhere else.</b> The
-     * key/value representation is <i>storage</i>, not policy, so it does not live in {@code
-     * ExecutionPolicy}; and a consumer that wants to know what a state actually holds asks {@link
-     * #usesFp16KeyValueCache()} rather than re-deriving it from a property. The two answers are not
-     * always the same: a leased state holds whatever the pool was built with.
-     */
-    @Deprecated public static final boolean USE_FP16_KV = Boolean.getBoolean("jllm.kvcache.fp16");
-
-    /**
      * How this state's key/value storage is shaped, resolved <b>per construction</b>.
      *
      * <p>Defaulted from the properties so the CLI, the benchmark harness and every existing test
@@ -509,8 +496,8 @@ public abstract class State {
      * Whether this state's key/value cache is held in half precision.
      *
      * <p>Answered from what was <b>allocated</b>, not from the property that requested it. Every
-     * reader used to write {@code State.USE_FP16_KV && state.workspace.wrapKeyCacheFP16 != null} —
-     * the property <i>and</i> the null check, because the property alone is not the truth: a family
+     * reader used to write {@code USE_FP16_KV && state.workspace.wrapKeyCacheFP16 != null} — the
+     * property <i>and</i> the null check, because the property alone is not the truth: a family
      * whose state has no FP16 arrays, or a leased state whose pool was built in FP32, holds FP32
      * whatever the property says. Asking the state removes both the global read and the chance of
      * writing only half of that condition.

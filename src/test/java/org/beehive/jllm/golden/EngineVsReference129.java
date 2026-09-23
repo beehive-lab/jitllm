@@ -63,7 +63,7 @@ public final class EngineVsReference129 {
                                         blockTokens,
                                         model.configuration().numberOfLayers(),
                                         model.kvCacheDim(),
-                                        State.USE_FP16_KV));
+                                        false)); // the engine reads an FP32 pool only
         manager.attach(store);
 
         KvLease planLease = manager.acquire(blockTokens);

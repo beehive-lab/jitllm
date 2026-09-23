@@ -84,7 +84,10 @@ public final class EngineInferenceService implements AutoCloseable {
                                         blockTokens,
                                         model.configuration().numberOfLayers(),
                                         model.kvCacheDim(),
-                                        State.USE_FP16_KV));
+                                        // FP32: the continuous-batch kernels read an FP32 pool
+                                        // only,
+                                        // and OpenAIServer refuses the FP16 default for them.
+                                        false));
         this.manager.attach(store);
         if (prefixCacheEntries > 0) {
             this.manager.enablePrefixCache(prefixCacheEntries);
@@ -236,7 +239,7 @@ public final class EngineInferenceService implements AutoCloseable {
     }
 
     private static long bytesPerBlock(Model model, int blockTokens) {
-        long bytesPerValue = State.USE_FP16_KV ? 2L : 4L;
+        long bytesPerValue = 4L; // the FP32 pool above
         return 2L
                 * model.kvCacheDim()
                 * blockTokens

@@ -27,6 +27,11 @@ import org.beehive.jllm.backend.tornado.PlanDispatchEvidence;
 // @formatter:on
 public class Qwen35MmaCrossWidthCaptureAccelTest extends Qwen35CrossWidthCaptureAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     static {
         System.setProperty("jllm.qwen35.tensorCores", "true");
     }

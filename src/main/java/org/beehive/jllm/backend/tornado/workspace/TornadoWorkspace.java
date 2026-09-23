@@ -51,10 +51,10 @@ public final class TornadoWorkspace {
     public FloatArray
             wrapValueCache; // FloatArray wrapper for the value cache, optimized for TornadoVM.
     public HalfFloatArray
-            wrapKeyCacheFP16; // Optional half-precision key cache (see USE_FP16_KV); null unless
+            wrapKeyCacheFP16; // Optional half-precision key cache (see StorageOptions); null unless
     // enabled.
     public HalfFloatArray
-            wrapValueCacheFP16; // Optional half-precision value cache (see USE_FP16_KV); null
+            wrapValueCacheFP16; // Optional half-precision value cache (see StorageOptions); null
 
     // unless enabled.
     // @formatter:off

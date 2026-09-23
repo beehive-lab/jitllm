@@ -9,6 +9,11 @@ import org.junit.Test;
  */
 public class Qwen35SequenceResetStandardAccelTest extends Qwen35SequenceReset {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     @Test
     public void qwen3_8_27b_q4_0_resetRestoresTheSequenceStandard() throws Exception {
         assertResetRestoresTheSequence(1);

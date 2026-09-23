@@ -16,6 +16,11 @@ import org.junit.Test;
  */
 public class Qwen35BatchedPrefillParityAccelTest extends CpuGpuParity {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     static {
         // The scalar batched path, which the tensor-core default would otherwise replace: this
         // class is the scalar kernels' coverage; the Qwen35Mma* classes cover the tensor cores.

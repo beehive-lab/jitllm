@@ -41,6 +41,11 @@ import org.junit.Test;
 // @formatter:on
 public class Qwen35CrossWidthCaptureAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     /** Odd on purpose: neither 32 nor 64 divides it, so both widths end on a partial chunk. */
     private static final int FORCED_TOKENS = 37;
 

@@ -45,6 +45,11 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  */
 public class CompiledProgramIdentityAccelTest {
 
+    /** Compared against references captured with an FP32 key/value cache. */
+    @org.junit.ClassRule
+    public static final org.beehive.jllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
+            new org.beehive.jllm.golden.Fp32KeyValueCache();
+
     /** "≥ 100 tokens" from the gate definition. */
     private static final int DECODE_TOKENS = 120;
 
