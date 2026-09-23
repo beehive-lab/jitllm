@@ -67,7 +67,7 @@ Grab a ready-to-run model from the [Hugging Face collections](#-model-collection
 
 jllm is growing into a **serving engine** — the vLLM-style path for the JVM:
 
-- 🌐 **OpenAI-compatible server** — `jllm serve` exposes `/v1/chat/completions` and `/v1/completions` with streaming and zero external dependencies. Point any OpenAI client at `localhost`.
+- 🌐 **OpenAI-compatible server** — `jllm serve` exposes `/v1/chat/completions` and `/v1/completions` with streaming and zero external dependencies. `/v1/models` reports the served context length, so clients size their prompts instead of guessing. Point any OpenAI client at `localhost`.
 - 🎯 **Tensor-core (MMA) batch prefill** on the CUDA backend, FP16 & Q8_0 — `--with-prefill-decode --batch-prefill-size N`.
 - 📈 **llama-bench-style benchmarking** — `jllm --bench` reports a pp/tg matrix with avg±stddev in md/csv/json/jsonl/sql. See [Running the CLI](#-running-the-cli) for the flag.
 - 🧮 **On-device greedy sampling** *(landing next)* — argmax on the GPU keeps logits device-side, cutting device→host traffic by ~500× per token. ([PR #134](https://github.com/beehive-lab/jllm/pull/134))
@@ -376,9 +376,10 @@ Each command has focused help:
 | `bench` | Repeated prefill/decode workloads | `--pp`, `--tg`, `--depth`, `--repetitions`, `--output` |
 
 Model, GPU/backend selection, KV precision, execution policy, and `-v`/`--verbose`
-are shared. `--ctx-size` (`-c`) sets context capacity for run/chat/serve;
-`--max-new-tokens` separately limits generated tokens in run/chat. The default context
-is 512 tokens, and the default generation limit is the context capacity.
+are shared. `--ctx-size` (`-c`, also `--ctx`/`--context-length`) sets context capacity
+for run/chat/serve; `--max-new-tokens` separately limits generated tokens in run/chat.
+The default context is 512 tokens for run/chat and the model's own for serve (a larger
+request is clamped to it); the default generation limit is the context capacity.
 Benchmark context is derived from its workload sizes and depths.
 
 ```bash

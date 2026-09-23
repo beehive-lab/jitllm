@@ -37,11 +37,27 @@ public class ServerOptionsTest {
     }
 
     @Test
+    public void contextDefaultsToTheModelsOwnAndAcceptsCtxAliases() {
+        assertEquals(
+                0, ServerOptions.parse(new String[] {"-m", "model.gguf"}).model().contextLength());
+        var options =
+                ServerOptions.parse(
+                        new String[] {"--model", "model.gguf", "--port", "8090", "--ctx", "8192"});
+        assertEquals(8192, options.model().contextLength());
+        assertEquals(8090, options.port());
+        assertEquals(
+                2048,
+                ServerOptions.parse(new String[] {"-m", "model.gguf", "--context-length", "2048"})
+                        .model()
+                        .contextLength());
+    }
+
+    @Test
     public void rejectsUnknownOptionsInvalidCapacityAndDuplicateContext() {
         for (String[] extra :
                 new String[][] {
                     {"--temperature", "1"},
-                    {"--ctx-size", "0"},
+                    {"--ctx-size", "-1"},
                     {"--port", "65536"},
                     {"--parallel", "0"},
                     {"--ctx-size", "100", "--max-tokens", "200"}

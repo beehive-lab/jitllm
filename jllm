@@ -469,8 +469,12 @@ def parse_cli_args(argv):
     mode = args.command or ("serve" if args.server else "bench" if args.bench else "chat" if args.interactive else "run")
     args.command = mode
     args.server, args.bench, args.interactive, args.instruct = (mode == v for v in ("serve", "bench", "chat", "run"))
-    if mode != "bench" and args.max_tokens <= 0:
+    if args.max_tokens is None:
+        args.max_tokens = 0 if mode == "serve" else 512
+    if mode not in {"bench", "serve"} and args.max_tokens <= 0:
         parser.error("--ctx-size must be positive")
+    if mode == "serve" and args.max_tokens < 0:
+        parser.error("--ctx-size must be non-negative (0 serves the model's own context)")
     if args.max_new_tokens is not None and args.max_new_tokens <= 0:
         parser.error("--max-new-tokens must be positive")
     if mode == "run" and args.prompt is None:
@@ -496,7 +500,7 @@ def parse_cli_args(argv):
         parser.error("Benchmark options require bench/--bench")
     if mode in {"serve", "bench"} and supplied & {"--temperature", "--top-p", "--seed", "--stream", "--echo", "--suffix"}:
         parser.error("Generation options belong to run/chat; HTTP sampling is configured per request")
-    if mode == "bench" and supplied & {"--ctx-size", "-c", "--max-tokens", "-n"}:
+    if mode == "bench" and supplied & {"--ctx-size", "-c", "--ctx", "--context-length", "--max-tokens", "-n"}:
         parser.error("bench derives context from --pp/--tg/--depth; omit --ctx-size")
     if mode == "bench":
         for field in ("pp", "tg", "depth"):
@@ -550,8 +554,9 @@ def create_parser(command=None) -> argparse.ArgumentParser:
         help="Random seed (default: current timestamp)",
     )
     context_group = llm_group.add_mutually_exclusive_group()
-    context_group.add_argument("-c", "--ctx-size", dest="max_tokens", type=int, default=512,
-                               help="Context capacity in tokens, including prompt and generated text")
+    context_group.add_argument("-c", "--ctx-size", "--ctx", "--context-length", dest="max_tokens", type=int, default=None,
+                               help="Context capacity in tokens, including prompt and generated text "
+                                    "(default: 512 for run/chat; the model's own for serve, where 0 also means the model's own)")
     context_group.add_argument("-n", "--max-tokens", dest="max_tokens", type=int,
                                default=argparse.SUPPRESS, action=LegacyContextAction,
                                help=argparse.SUPPRESS)

@@ -34,7 +34,8 @@ record ServerOptions(
     static ServerOptions parse(String[] args) {
         Path path = null;
         String host = "127.0.0.1";
-        int port = 8080, context = 512, parallel = 1;
+        // 0 serves the model's own context, as ModelOptions and the loaders define it.
+        int port = 8080, context = 0, parallel = 1;
         int queued = Integer.getInteger("server.maxQueuedRequests", 64);
         int prefixes = Integer.getInteger("server.prefixCacheEntries", 0);
         boolean gpu = Boolean.getBoolean("use.tornadovm"), contextSet = false;
@@ -78,7 +79,7 @@ record ServerOptions(
                 case "--model", "-m" -> path = Path.of(value);
                 case "--host" -> host = value;
                 case "--port", "-p" -> port = Integer.parseInt(value);
-                case "--ctx-size", "-c", "--max-tokens", "-n" -> {
+                case "--ctx-size", "-c", "--ctx", "--context-length", "--max-tokens", "-n" -> {
                     if (contextSet)
                         throw new IllegalArgumentException("Specify context capacity once");
                     contextSet = true;

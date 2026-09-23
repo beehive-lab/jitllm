@@ -11,7 +11,9 @@ import org.beehive.jllm.runtime.policy.ExecutionPolicy;
 public record ModelRunConfig(Path model, int contextLength, boolean gpu) {
     public ModelRunConfig {
         Objects.requireNonNull(model, "model");
-        if (contextLength <= 0) throw new IllegalArgumentException("--ctx-size must be positive");
+        if (contextLength < 0)
+            throw new IllegalArgumentException(
+                    "--ctx-size must be non-negative (0 means the model's own)");
     }
 
     public ModelOptions modelOptions() {

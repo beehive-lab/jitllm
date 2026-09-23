@@ -65,6 +65,16 @@ class Commands(unittest.TestCase):
         self.reject("serve", "-m", "stub.gguf", "--gpu", "--parallel", "2", "--cuda-graphs")
         self.reject("serve", "-m", "stub.gguf", "--gpu", "--parallel", "2", "--fp16-kv-cache")
 
+    def test_server_context_defaults_to_model_and_accepts_ctx_aliases(self):
+        args = self.java_args("--server", "-m", "stub.gguf", "--gpu", "--port", "8090")
+        self.assertEqual("0", args[args.index("--ctx-size") + 1])
+        for flag in ("--ctx", "--context-length"):
+            args = self.java_args("serve", "-m", "stub.gguf", flag, "8192")
+            self.assertEqual("8192", args[args.index("--ctx-size") + 1])
+        self.assertEqual(512, self.parse("run", "-m", "stub.gguf", "--prompt", "hi").max_tokens)
+        self.reject("run", "-m", "stub.gguf", "--prompt", "hi", "--ctx", "0")
+        self.reject("bench", "-m", "stub.gguf", "--ctx", "1024")
+
     def test_benchmark_workloads_and_quoted_legacy_arguments(self):
         args = self.java_args("bench", "-m", "stub.gguf", "--gpu", "--pp", "32,64",
                               "--tg", "16", "--depth", "0,128", "--repetitions", "2",
