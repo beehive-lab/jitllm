@@ -34,7 +34,7 @@ inputs:
     default: 'What is the capital of France?'
   max_tokens:
     description: >-
-      Token budget. Must comfortably exceed the prompt length: when -n does not, generation stops
+      Context budget (-c). Must comfortably exceed the prompt length: when it does not, generation stops
       after ingestion and the row reports zero decode tokens while still exiting 0. 160 is enough
       for every model in the matrix to reach the expected answer, including Qwen3, whose thinking
       mode spends ~135 tokens getting there.
@@ -85,10 +85,10 @@ runs:
         # exit code for a timeout.
         set +e
         python3 - "$RUN_LOG" ${{ inputs.timeout_minutes }} \
-          ./jllm --gpu \
+          ./jllm --gpu -v \
           --model $MODELS_DIR/${{ inputs.model_file }} \
           --prompt "${{ inputs.prompt }}" \
-          -n ${{ inputs.max_tokens }} \
+          -c ${{ inputs.max_tokens }} \
           --seed ${{ inputs.seed }} \
           ${{ inputs.flags }} <<'RUNNER'
         import os, signal, subprocess, sys, threading
@@ -206,8 +206,9 @@ runs:
         fi
 
         # The requested backend is a matrix label, not evidence. Assert what actually executed:
-        # jllm prints the backend it resolved from $TORNADOVM_HOME/etc/tornado.backend,
-        # and RunMetrics records the execution path the run itself took.
+        # jllm prints the backend it resolved from $TORNADOVM_HOME/etc/tornado.backend (under
+        # -v, which the run above passes), and RunMetrics records the execution path the run
+        # itself took.
         if ! grep -qE "Detected TornadoVM backend: ${{ inputs.backend }}\b" "$RUN_LOG"; then
           echo "::error::$ROW_LABEL requested backend '${{ inputs.backend }}' but the run did not report resolving it"
           record "WRONG-BACKEND" "requested ${{ inputs.backend }}"
@@ -241,7 +242,7 @@ runs:
             # tr die of SIGPIPE, `pipefail` takes their status and `bash -e` killed the step
             # right here -- before record ran, so the row vanished and the job reported a bare
             # exit code. Every other pipeline in this file is already guarded for this.
-            SNIPPET=$(tr -d '\000' < "$RUN_LOG" | grep -vE "Detected TornadoVM|achieved tok/s|Tokens:|^====|^$|WARNING" | head -c 200 || true)
+            SNIPPET=$(tr -d '\000' < "$RUN_LOG" | grep -vE "Detected TornadoVM|achieved tok/s|Tokens:|^====|^$|WARNING|^──|^  [^ ].* : |^  Initialization$" | head -c 200 || true)
             echo "::error::$ROW_LABEL ran but its output does not contain '$EXPECT' — the accelerator produced wrong numbers. Got: $SNIPPET"
             record "WRONG-OUTPUT" "expected '$EXPECT'; got: $SNIPPET"
             exit 0
