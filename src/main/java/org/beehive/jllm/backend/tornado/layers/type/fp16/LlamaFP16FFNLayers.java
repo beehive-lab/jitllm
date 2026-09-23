@@ -451,7 +451,7 @@ public class LlamaFP16FFNLayers
                 && layerIndex == Integer.getInteger("jllm.diag.layer", 0)) {
             unifiedLayer.transferToHost(
                     uk.ac.manchester.tornado.api.enums.DataTransferMode.EVERY_EXECUTION,
-                    state.workspace.wrapKeyCache,
+                    keyCache(),
                     state.workspace.wrapX,
                     state.workspace.wrapQ,
                     state.workspace.wrapXbFP16,

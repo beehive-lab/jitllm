@@ -43,7 +43,7 @@ public class KvBindingTest {
         LlamaState noLease = new LlamaState(config(), -1, null);
         assertNotNull(
                 "no lease means no backend storage was requested, which is not an error",
-                noLease.workspace.wrapKeyCache);
+                ownKeyCache(noLease));
         assertNotNull(noLease.workspace.wrapBlockTable);
 
         // A CPU-only runtime: a real lease, no storage attached. Valid, and needing no CPU binder.
@@ -55,7 +55,7 @@ public class KvBindingTest {
             KvLease lease = manager.acquire(CONTEXT);
             assertNull("the premise of this case", lease.storage());
             LlamaState state = new LlamaState(config(), -1, lease);
-            assertNotNull(state.workspace.wrapKeyCache);
+            assertNotNull(ownKeyCache(state));
             lease.close();
         }
     }
@@ -169,5 +169,17 @@ public class KvBindingTest {
 
         @Override
         public void close() {}
+    }
+
+    /**
+     * The key array a private state allocated, in whichever representation its storage selects —
+     * and only that one: FP16 is the default, and no FP32 pair is kept beside it.
+     */
+    private static Object ownKeyCache(State state) {
+        if (state.usesFp16KeyValueCache()) {
+            assertNull("no unused FP32 pair beside the FP16 cache", state.workspace.wrapKeyCache);
+            return state.workspace.wrapKeyCacheFP16;
+        }
+        return state.workspace.wrapKeyCache;
     }
 }

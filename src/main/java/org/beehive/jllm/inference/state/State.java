@@ -484,10 +484,15 @@ public abstract class State {
         // One sequence's private table, identity-mapped: logical block i is physical block i.
         // Addressed only at slot 0 — it is sized blocksPerSeq, so no larger slot fits in it.
         TornadoWorkspaces.identityBlockTable(workspace, blocksPerSeq);
-        TornadoWorkspaces.privateKeyValueFP32(workspace, kvElements);
         if (useFp16) {
+            // One representation only. Every path that reaches an FP16 state binds the FP16
+            // pair (the support rule refuses the rest), so an FP32 pair beside it would be
+            // host memory nothing reads. Left null, a binding that forgot the representation
+            // fails when the graph is built rather than reading zeros.
             workspace.wrapKeyCacheFP16 = TornadoWorkspaces.zeroedHalfFloats(kvElements);
             workspace.wrapValueCacheFP16 = TornadoWorkspaces.zeroedHalfFloats(kvElements);
+        } else {
+            TornadoWorkspaces.privateKeyValueFP32(workspace, kvElements);
         }
         return false;
     }
