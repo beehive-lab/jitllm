@@ -1,5 +1,6 @@
 """CLI contracts: modes, validation before loading, and Java argument forwarding."""
 import io
+import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from test_launcher_flags import launcher
@@ -122,6 +123,27 @@ class Commands(unittest.TestCase):
                      "--server", "--interactive"):
             self.assertNotIn(gone, text)
 
+    def test_every_option_shares_a_line_with_its_description_at_80_columns(self):
+        previous = os.environ.get("COLUMNS")
+        os.environ["COLUMNS"] = "80"
+        try:
+            stdout = io.StringIO()
+            with redirect_stdout(stdout), self.assertRaises(SystemExit):
+                launcher.parse_cli_args(["--help"])
+            texts = [stdout.getvalue()] + [launcher.create_parser(c).format_help()
+                                           for c in ("run", "chat", "serve", "bench")]
+        finally:
+            if previous is None:
+                os.environ.pop("COLUMNS")
+            else:
+                os.environ["COLUMNS"] = previous
+        for text in texts:
+            for line in text.splitlines():
+                self.assertLessEqual(len(line), 80, line)
+                if line.startswith("  -"):
+                    self.assertRegex(line, r"^  \S.*?\S {2,}\S", "description pushed to the next line: " + line)
+                self.assertFalse(line.endswith("-"), "broken at a hyphen: " + line)
+
     def test_one_spelling_per_option_in_help_but_old_spellings_still_parse(self):
         help_text = launcher.create_parser("run").format_help()
         self.assertIn("-c, --ctx-size N", help_text)
@@ -129,6 +151,12 @@ class Commands(unittest.TestCase):
         self.assertEqual(4096, self.parse("run", "-m", "stub.gguf", "--prompt", "hi", "--ctx", "4096").max_tokens)
         self.assertIn("usage: jllm run --model FILE [options]", help_text)
         self.reject("run", "-m", "stub.gguf", "--prompt", "hi", "--echo", "true")
+        # The profiler option takes a file; the old directory spelling still parses.
+        self.assertIn("--profiler-dump-file FILE", help_text)
+        self.assertNotIn("--profiler-dump-dir", help_text)
+        for flag in ("--profiler-dump-file", "--profiler-dump-dir"):
+            self.assertEqual("p.json", self.parse("run", "-m", "stub.gguf", "--prompt", "hi",
+                                                  flag, "p.json").profiler_dump_dir)
 
     def test_removed_fp16_flag_is_refused_with_the_migration(self):
         for prefix in (["run", "--prompt", "hi"], ["chat"], ["serve"], ["bench"], ["--prompt", "hi"]):
@@ -166,6 +194,8 @@ class Commands(unittest.TestCase):
         for command in ("run", "chat", "serve", "bench"):
             help_text = launcher.create_parser(command).format_help()
             self.assertIn("--verbose", help_text)
-            self.assertEqual(command == "serve", "--port" in help_text)
-            self.assertEqual(command == "bench", "--pp" in help_text)
+            self.assertEqual(command == "serve", "--port N" in help_text)
+            self.assertEqual(command == "bench", "--pp N[,N...]" in help_text)
+            self.assertIn("-h, --help", help_text)
+            self.assertIn("jllm --help lists every command", " ".join(help_text.split()))
             self.assertEqual(command == "run", "--prompt " in help_text)

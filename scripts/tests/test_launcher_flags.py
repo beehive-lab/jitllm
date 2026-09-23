@@ -13,7 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -81,64 +81,16 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TensorCoreFlagCompatibility(unittest.TestCase):
-    """Kernel selection is automatic; the old spellings survive as deprecated aliases."""
+class RemovedKernelSelectionFlags(unittest.TestCase):
+    """Kernel selection is automatic; the scalar-prefill diagnostic is a Java property only."""
 
-    def _args(self, tensor_cores=False, no_tensor_cores=False, diagnostic=False):
-        class A:
-            pass
-
-        a = A()
-        a.tensor_cores = tensor_cores
-        a.no_tensor_cores = no_tensor_cores
-        a.diagnostic_scalar_batched_prefill = diagnostic
-        return a
-
-    def test_defaults_select_nothing(self):
-        a = self._args()
-        self.assertEqual(launcher.resolve_deprecated_tensor_core_flags(a), [])
-        self.assertFalse(a.diagnostic_scalar_batched_prefill)
-
-    def test_tensor_cores_is_a_deprecated_no_op(self):
-        a = self._args(tensor_cores=True)
-        warnings = launcher.resolve_deprecated_tensor_core_flags(a)
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("deprecated", warnings[0])
-        self.assertFalse(a.diagnostic_scalar_batched_prefill)
-
-    def test_no_tensor_cores_maps_to_the_diagnostic(self):
-        a = self._args(no_tensor_cores=True)
-        warnings = launcher.resolve_deprecated_tensor_core_flags(a)
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("--diagnostic-scalar-batched-prefill", warnings[0])
-        self.assertTrue(a.diagnostic_scalar_batched_prefill)
-
-    def test_contradictory_flags_are_rejected(self):
-        for kw in ({"no_tensor_cores": True}, {"diagnostic": True}):
-            with self.subTest(kw=kw), redirect_stdout(io.StringIO()):
+    def test_the_diagnostic_and_its_old_spellings_are_gone(self):
+        text = launcher.create_parser().format_help()
+        for flag in ("--diagnostic-scalar-batched-prefill", "--no-tensor-cores", "--tensor-cores"):
+            with self.subTest(flag=flag), redirect_stderr(io.StringIO()):
+                self.assertNotIn(flag, text)
                 with self.assertRaises(SystemExit):
-                    launcher.resolve_deprecated_tensor_core_flags(self._args(tensor_cores=True, **kw))
-
-    def test_help_hides_the_deprecated_spellings_and_shows_the_diagnostic(self):
-        parser = launcher.create_parser()
-        text = parser.format_help()
-        self.assertNotIn("--tensor-cores", text)
-        self.assertNotIn("--no-tensor-cores", text)
-        self.assertIn("--diagnostic-scalar-batched-prefill", text)
-        self.assertIn("int8", text)
-
-    def test_only_the_diagnostic_reaches_the_jvm(self):
-        parser = launcher.create_parser()
-        runner = launcher.LlamaRunner.__new__(launcher.LlamaRunner)
-        runner.tornado_sdk = "/nonexistent"
-        for argv, expect in (
-            (["--gpu", "--model", "m"], False),
-            (["--gpu", "--model", "m", "--diagnostic-scalar-batched-prefill"], True),
-        ):
-            with self.subTest(argv=argv):
-                args = parser.parse_args(argv)
-                launcher.resolve_deprecated_tensor_core_flags(args)
-                self.assertEqual(args.diagnostic_scalar_batched_prefill, expect)
+                    launcher.create_parser().parse_args(["--model", "m", flag])
 
 
 class VerbosityOptions(unittest.TestCase):
