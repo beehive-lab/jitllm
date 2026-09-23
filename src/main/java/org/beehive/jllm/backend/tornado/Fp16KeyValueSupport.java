@@ -81,13 +81,9 @@ public final class Fp16KeyValueSupport {
                 return switch (c.mode()) {
                     case STANDARD -> Optional.empty();
                     case PREFILL_DECODE ->
-                            q8
-                                    ? Optional.empty()
-                                    : Optional.of(
-                                            "the "
-                                                    + c.weights()
-                                                    + " sequential prefill/decode layers keep an"
-                                                    + " FP32 cache");
+                            q4Llama
+                                    ? Optional.of("Q4_0 has no sequential prefill/decode plan")
+                                    : Optional.empty();
                     case BATCH_PREFILL_DECODE ->
                             q4Llama
                                     ? Optional.of("Q4_0 has no batched prefill")

@@ -504,6 +504,18 @@ public class LlamaFP16FFNLayers
         return splitKvAttention && schedulerType == SchedulerType.NVIDIA;
     }
 
+    /** The key cache every graph of this family binds: FP16 when the state holds one. */
+    protected Object keyCache() {
+        return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    /** The value cache, following {@link #keyCache()}. */
+    protected Object valueCache() {
+        return useFp16KVCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
+    }
+
     /**
      * Whether this graph addresses KV through the block table.
      *

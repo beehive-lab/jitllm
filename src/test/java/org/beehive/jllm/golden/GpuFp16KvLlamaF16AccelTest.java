@@ -15,4 +15,9 @@ public class GpuFp16KvLlamaF16AccelTest {
     public void batchedPrefill() throws Exception {
         GpuFp16KvPrecision.check(Fixture.LLAMA_3_2_1B_F16, GpuFp16KvPrecision.Mode.BATCHED);
     }
+
+    @Test
+    public void prefillDecode() throws Exception {
+        GpuFp16KvPrecision.check(Fixture.LLAMA_3_2_1B_F16, GpuFp16KvPrecision.Mode.PREFILL_DECODE);
+    }
 }

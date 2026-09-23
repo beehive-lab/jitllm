@@ -15,4 +15,9 @@ public class GpuFp16KvQwen3F16AccelTest {
     public void batchedPrefill() throws Exception {
         GpuFp16KvPrecision.check(Fixture.QWEN3_0_6B_F16, GpuFp16KvPrecision.Mode.BATCHED);
     }
+
+    @Test
+    public void prefillDecode() throws Exception {
+        GpuFp16KvPrecision.check(Fixture.QWEN3_0_6B_F16, GpuFp16KvPrecision.Mode.PREFILL_DECODE);
+    }
 }

@@ -83,7 +83,7 @@ public class Fp16KeyValueSupportTest {
         assertTrue(
                 check(
                                 "llama",
-                                DataType.F16,
+                                DataType.Q4_0,
                                 ExecutionMode.PREFILL_DECODE,
                                 BackendId.CUDA,
                                 true,

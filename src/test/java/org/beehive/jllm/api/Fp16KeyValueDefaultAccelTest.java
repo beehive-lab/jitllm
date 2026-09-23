@@ -17,8 +17,9 @@ import org.junit.Test;
  * FP16 is the default key/value cache through the library, explicitly — a configuration whose
  * kernels do not implement it is refused before anything is allocated, and FP32 stays available.
  *
- * <p>Uses Phi-3, which has no FP16 cache path on the GPU, as the refused family, and Llama F16
- * single-token as the supported neighbour.
+ * <p>Uses Phi-3 as a refused family while it has no FP16 cache path on the GPU, Llama F16
+ * single-token as the supported neighbour, and Llama Q4_0 — single-token only — for a session
+ * override into a mode it does not have.
  */
 public class Fp16KeyValueDefaultAccelTest {
 
@@ -82,7 +83,7 @@ public class Fp16KeyValueDefaultAccelTest {
      */
     @Test
     public void aSessionOverrideIntoAnUnsupportedModeIsRefused() throws Exception {
-        Path file = fixtureOrSkip(Fixture.LLAMA_3_2_1B_F16);
+        Path file = fixtureOrSkip(Fixture.LLAMA_3_2_1B_Q4_0);
         onGpu(
                 () -> {
                     try (LocalModel model =
