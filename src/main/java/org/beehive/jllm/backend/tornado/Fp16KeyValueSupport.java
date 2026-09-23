@@ -75,7 +75,7 @@ public final class Fp16KeyValueSupport {
                 boolean q8 = c.weights() == DataType.Q8_0;
                 boolean f16 = c.weights() == DataType.F16;
                 boolean q4Llama = c.weights() == DataType.Q4_0 && c.architecture().equals("llama");
-                if (!f16 && !(q8 && c.architecture().equals("llama")) && !q4Llama) {
+                if (!f16 && !q8 && !q4Llama) {
                     return Optional.of("the " + c.weights() + " layers keep an FP32 cache");
                 }
                 return switch (c.mode()) {

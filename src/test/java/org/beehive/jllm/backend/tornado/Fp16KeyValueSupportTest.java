@@ -58,6 +58,10 @@ public class Fp16KeyValueSupportTest {
             assertEquals(
                     mode.toString(),
                     Optional.empty(),
+                    check("qwen3", DataType.Q8_0, mode, BackendId.CUDA, true, true));
+            assertEquals(
+                    mode.toString(),
+                    Optional.empty(),
                     check("llama", DataType.Q8_0, mode, BackendId.CUDA, true, true));
         }
         assertEquals(
@@ -98,7 +102,7 @@ public class Fp16KeyValueSupportTest {
                 check("qwen3", DataType.F16, ExecutionMode.STANDARD, BackendId.CUDA, false, false)
                         .isPresent());
         assertTrue(
-                check("qwen3", DataType.Q8_0, ExecutionMode.STANDARD, BackendId.CUDA, true, true)
+                check("qwen3", DataType.Q4_0, ExecutionMode.STANDARD, BackendId.CUDA, true, true)
                         .isPresent());
         assertTrue(
                 check("mistral", DataType.F16, ExecutionMode.STANDARD, BackendId.CUDA, false, true)

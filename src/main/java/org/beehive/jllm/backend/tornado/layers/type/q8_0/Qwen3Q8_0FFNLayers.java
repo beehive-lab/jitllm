@@ -258,25 +258,47 @@ public class Qwen3Q8_0FFNLayers
                 nEmbdHead, // local memory size
                 config.rmsNormEps()); // epsilon
 
-        // Fused RoPE Rotation + KV Cache Write
-        unifiedLayer.task(
-                "rope_and_kv_cache",
-                Qwen3PagedKvKernels::ropeRotationWithCacheCopyPaged,
-                context,
-                qwen3State.workspace.positionHolder, // current position
-                qwen3State.workspace.wrapQ, // Q vectors (in/out, rotated)
-                qwen3State.workspace.wrapK, // K vectors (in/out, rotated)
-                qwen3State.workspace.wrapV, // V vectors (in only)
-                qwen3State.workspace.wrapKeyCache, // key cache (out)
-                qwen3State.workspace.wrapValueCache, // value cache (out)
-                config.ropeTheta(),
-                config.numberOfKeyValueHeads(), // nHeadKv
-                nEmbdHead, // head dimension
-                nEmbdGqa, // kvDim
-                layerIndex, // layer index for cache offset
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride); // max sequence length
+        // Fused RoPE Rotation + KV Cache Write. The cache kernels read FP32 activations, never
+        // the weights, so an FP16 cache takes the kernels the FP16 weights use.
+        if (useFp16KVCache()) {
+            unifiedLayer.task(
+                    "rope_and_kv_cache",
+                    Qwen3PagedKvKernels::ropeRotationWithCacheCopyFP16Paged,
+                    context,
+                    qwen3State.workspace.positionHolder, // current position
+                    qwen3State.workspace.wrapQ, // Q vectors (in/out, rotated)
+                    qwen3State.workspace.wrapK, // K vectors (in/out, rotated)
+                    qwen3State.workspace.wrapV, // V vectors (in only)
+                    qwen3State.workspace.wrapKeyCacheFP16, // key cache (out, FP16)
+                    qwen3State.workspace.wrapValueCacheFP16, // value cache (out, FP16)
+                    config.ropeTheta(),
+                    config.numberOfKeyValueHeads(), // nHeadKv
+                    nEmbdHead, // head dimension
+                    nEmbdGqa, // kvDim
+                    layerIndex, // layer index for cache offset
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride); // max sequence length
+        } else {
+            unifiedLayer.task(
+                    "rope_and_kv_cache",
+                    Qwen3PagedKvKernels::ropeRotationWithCacheCopyPaged,
+                    context,
+                    qwen3State.workspace.positionHolder, // current position
+                    qwen3State.workspace.wrapQ, // Q vectors (in/out, rotated)
+                    qwen3State.workspace.wrapK, // K vectors (in/out, rotated)
+                    qwen3State.workspace.wrapV, // V vectors (in only)
+                    qwen3State.workspace.wrapKeyCache, // key cache (out)
+                    qwen3State.workspace.wrapValueCache, // value cache (out)
+                    config.ropeTheta(),
+                    config.numberOfKeyValueHeads(), // nHeadKv
+                    nEmbdHead, // head dimension
+                    nEmbdGqa, // kvDim
+                    layerIndex, // layer index for cache offset
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride); // max sequence length
+        }
 
         if (isMetalBackend) {
             // Metal: single-workgroup-per-head online-softmax attention, writing directly to
@@ -304,25 +326,47 @@ public class Qwen3Q8_0FFNLayers
             // Split-KV (flash-decoding) attention.
             // Phase 1: split each head's KV range across attentionSplits workgroups; partials ->
             // wrapAttSplit.
-            unifiedLayer.task(
-                    "attention",
-                    TransformerPagedKvKernels::processHeadsFlashAttentionSplitKVPaged,
-                    context,
-                    qwen3State.workspace.wrapQ, // query vectors
-                    qwen3State.workspace.wrapKeyCache, // key cache
-                    qwen3State.workspace.wrapValueCache, // value cache
-                    state.workspace
-                            .wrapAttSplit, // scratch: per-head split partials (compact layout)
-                    config.numberOfHeads(), // nHeads
-                    nEmbdHead, // headSize
-                    nEmbdGqa, // kvDim
-                    gqa, // kvMul (nHeads / nHeadKv)
-                    qwen3State.workspace.positionHolder, // position
-                    layerIndex, // layer index
-                    state.workspace.wrapBlockTable,
-                    state.kvBlockCfg,
-                    state.kvBlockStride, // context length
-                    attentionSplits); // number of KV splits per head
+            if (useFp16KVCache()) {
+                unifiedLayer.task(
+                        "attention",
+                        TransformerPagedKvKernels::processHeadsFlashAttentionSplitKVFP16Paged,
+                        context,
+                        qwen3State.workspace.wrapQ, // query vectors
+                        qwen3State.workspace.wrapKeyCacheFP16, // key cache (FP16)
+                        qwen3State.workspace.wrapValueCacheFP16, // value cache (FP16)
+                        state.workspace
+                                .wrapAttSplit, // scratch: per-head split partials (compact layout)
+                        config.numberOfHeads(), // nHeads
+                        nEmbdHead, // headSize
+                        nEmbdGqa, // kvDim
+                        gqa, // kvMul (nHeads / nHeadKv)
+                        qwen3State.workspace.positionHolder, // position
+                        layerIndex, // layer index
+                        state.workspace.wrapBlockTable,
+                        state.kvBlockCfg,
+                        state.kvBlockStride, // context length
+                        attentionSplits); // number of KV splits per head
+            } else {
+                unifiedLayer.task(
+                        "attention",
+                        TransformerPagedKvKernels::processHeadsFlashAttentionSplitKVPaged,
+                        context,
+                        qwen3State.workspace.wrapQ, // query vectors
+                        qwen3State.workspace.wrapKeyCache, // key cache
+                        qwen3State.workspace.wrapValueCache, // value cache
+                        state.workspace
+                                .wrapAttSplit, // scratch: per-head split partials (compact layout)
+                        config.numberOfHeads(), // nHeads
+                        nEmbdHead, // headSize
+                        nEmbdGqa, // kvDim
+                        gqa, // kvMul (nHeads / nHeadKv)
+                        qwen3State.workspace.positionHolder, // position
+                        layerIndex, // layer index
+                        state.workspace.wrapBlockTable,
+                        state.kvBlockCfg,
+                        state.kvBlockStride, // context length
+                        attentionSplits); // number of KV splits per head
+            }
             // Phase 2: combine the per-head split partials into the final attention output ->
             // wrapXb.
             unifiedLayer.task(
@@ -442,10 +486,7 @@ public class Qwen3Q8_0FFNLayers
                     LOCAL_WORK_GROUP_SIZE_ALLOC);
         }
 
-        unifiedLayer.persistOnDevice(
-                state.workspace.wrapX,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache);
+        unifiedLayer.persistOnDevice(state.workspace.wrapX, keyCache(), valueCache());
 
         return unifiedLayer;
     }
@@ -466,6 +507,18 @@ public class Qwen3Q8_0FFNLayers
     }
 
     /** Configure data transfers for first and subsequent layers */
+    /** The key cache every graph of this family binds: FP16 when the state holds one. */
+    protected Object keyCache() {
+        return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    /** The value cache, following {@link #keyCache()}. */
+    protected Object valueCache() {
+        return useFp16KVCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
+    }
+
     protected TaskGraph configureLayerDataTransfers(TaskGraph unifiedLayer, int layerIndex) {
         if (layerIndex == 0) {
             // First layer: Transfer temporary buffers and QKV state every execution
@@ -487,8 +540,8 @@ public class Qwen3Q8_0FFNLayers
                     qwen3State.workspace.wrapQ,
                     qwen3State.workspace.wrapK,
                     qwen3State.workspace.wrapV,
-                    qwen3State.workspace.wrapKeyCache,
-                    qwen3State.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     qwen3State.workspace.wrapAtt,
                     qwen3State.workspace.wrapHb);
             // EVERY_EXECUTION, not once: acquiring or releasing a lease rewrites the table,
@@ -511,8 +564,8 @@ public class Qwen3Q8_0FFNLayers
                     qwen3State.workspace.wrapQ,
                     qwen3State.workspace.wrapK,
                     qwen3State.workspace.wrapV,
-                    qwen3State.workspace.wrapKeyCache,
-                    qwen3State.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     qwen3State.workspace.wrapAtt,
                     qwen3State.workspace.wrapHb,
                     qwen3State.workspace.positionHolder);

@@ -46,6 +46,20 @@ public final class GpuFp16KvPrecision {
     public static void check(Fixture fixture, Mode mode) throws Exception {
         Path file = GoldenFixture.locate(fixture);
         assumeTrue("environment absent: " + GoldenFixture.absentMessage(fixture), file != null);
+        check(file, fixture.toString(), mode);
+    }
+
+    /**
+     * A model without a pinned fixture, by file name under the fixture directory: the larger
+     * models, which are here to show the result does not depend on size.
+     */
+    public static void check(String fileName, Mode mode) throws Exception {
+        Path file = GoldenFixture.modelsRoot().resolve(fileName);
+        assumeTrue("environment absent: " + file, java.nio.file.Files.isRegularFile(file));
+        check(file, fileName, mode);
+    }
+
+    private static void check(Path file, String fixture, Mode mode) throws Exception {
         assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
         String[] keys = {"use.tornadovm", "jllm.withPrefillDecode", "jllm.prefillBatchSize"};
         String[] previous = new String[keys.length];

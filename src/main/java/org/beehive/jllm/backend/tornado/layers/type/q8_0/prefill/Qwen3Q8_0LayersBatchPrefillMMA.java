@@ -106,6 +106,24 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     }
 
     // @formatter:off
+    /**
+     * Whether the cache is half precision: the representation the state holds, which the decode
+     * layers after this prefill bind as well. Batched prefill runs on the tensor-core device only.
+     */
+    private boolean useFp16KVCache() {
+        return state.usesFp16KeyValueCache();
+    }
+
+    private Object keyCache() {
+        return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    private Object valueCache() {
+        return useFp16KVCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
+    }
+
     private TaskGraph createBatchPrefillLayerTaskGraph(int layerIndex) {
         String graphName = "batchPrefillLayer_" + layerIndex;
         if (layerIndex == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
@@ -125,8 +143,8 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.workspace.ffnScaleBatch,
                     state.workspace.wrapXbFP16Batch,
                     state.workspace.qkvResultBatch,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.normedXFFNFP16,
                     state.workspace.gateUpResultBatch,
                     state.workspace.attnOutFP16,
@@ -150,8 +168,8 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.workspace.ffnScaleBatch,
                     state.workspace.wrapXbFP16Batch,
                     state.workspace.qkvResultBatch,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.normedXFFNFP16,
                     state.workspace.gateUpResultBatch,
                     state.workspace.attnOutFP16,
@@ -227,44 +245,87 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 kvDim,
                 config.rmsNormEps());
 
-        batchPrefillLayer.task(
-                "batch_rope_kv",
-                Qwen3PagedKvKernels::batchedRopeWithKVCacheQwen3PackedPaged,
-                context,
-                state.workspace.batchStartPosHolder,
-                state.workspace.qkvResultBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                config.ropeTheta(),
-                kvDim,
-                nEmbdHead,
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride,
-                qDim);
+        // Same packed QKV layout and FP16 attention output as the FP16-weight layers, so the
+        // half-precision cache takes their kernels: the weights never reach these two tasks.
+        if (useFp16KVCache()) {
+            batchPrefillLayer.task(
+                    "batch_rope_kv",
+                    Qwen3PagedKvKernels::batchedRopeWithKVCacheQwen3PackedFP16Paged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.qkvResultBatch,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    config.ropeTheta(),
+                    kvDim,
+                    nEmbdHead,
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    qDim);
 
-        // Register-partitioned flash attention over the packed buffer.
-        // The 'dim' parameter doubles as the packed-Q stride base and the
-        // attnOutFP16 row width — both are qDim for Qwen3.
-        batchPrefillLayer.task(
-                "batch_attention",
-                TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionFP16OutPaged,
-                context,
-                state.workspace.batchStartPosHolder,
-                state.workspace.qkvResultBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                state.workspace.attnOutFP16,
-                config.numberOfHeads(),
-                nEmbdHead,
-                kvDim,
-                gqa,
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride,
-                qDim);
+            // Register-partitioned flash attention over the packed buffer.
+            // The 'dim' parameter doubles as the packed-Q stride base and the
+            // attnOutFP16 row width — both are qDim for Qwen3.
+            batchPrefillLayer.task(
+                    "batch_attention",
+                    TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionFP16OutKVFP16Paged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.qkvResultBatch,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    state.workspace.attnOutFP16,
+                    config.numberOfHeads(),
+                    nEmbdHead,
+                    kvDim,
+                    gqa,
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    qDim);
+        } else {
+            batchPrefillLayer.task(
+                    "batch_rope_kv",
+                    Qwen3PagedKvKernels::batchedRopeWithKVCacheQwen3PackedPaged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.qkvResultBatch,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    config.ropeTheta(),
+                    kvDim,
+                    nEmbdHead,
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    qDim);
+
+            // Register-partitioned flash attention over the packed buffer.
+            // The 'dim' parameter doubles as the packed-Q stride base and the
+            // attnOutFP16 row width — both are qDim for Qwen3.
+            batchPrefillLayer.task(
+                    "batch_attention",
+                    TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionFP16OutPaged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.qkvResultBatch,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    state.workspace.attnOutFP16,
+                    config.numberOfHeads(),
+                    nEmbdHead,
+                    kvDim,
+                    gqa,
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    qDim);
+        }
 
         // Output projection: [M=batch, N=dim, K=qDim]
         batchPrefillLayer.task(
@@ -337,10 +398,7 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         state.workspace.wrapXBatch,
                         state.workspace.w2Out);
 
-        batchPrefillLayer.persistOnDevice(
-                state.workspace.wrapXBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache);
+        batchPrefillLayer.persistOnDevice(state.workspace.wrapXBatch, keyCache(), valueCache());
 
         return batchPrefillLayer;
     }

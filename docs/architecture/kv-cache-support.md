@@ -35,7 +35,8 @@ materialized as Q8_0 runs, and is decided as, Q8_0.
 | CUDA | Llama | Q8_0 (and materialized Q8_0) | single-token, sequential prefill/decode, batched prefill (MMA) | supported | tested: Llama 1B Q8_0 — single-token and prefill/decode cos ≥ 0.9999996, rel L2 ≤ 9.3e-4; batched cos ≥ 0.9999997, rel L2 ≤ 7.5e-4; top-1 100% — `GpuFp16KvLlamaQ8AccelTest`. Structural: other Llama sizes (3B, 8B) and Q4_1/Q4_K/Q5_K/Q6_K files loaded as Q8_0 |
 | CUDA | Llama | Q4_0 (retained) | single-token | supported | tested: Llama 1B Q4_0 cos ≥ 0.9999996, rel L2 ≤ 9.4e-4 — `GpuFp16KvLlamaQ4AccelTest` |
 | CUDA | Qwen3.5 / Qwen3.8 | Q4_0 (+ mixed) | all | supported | `Qwen35Fp16Kv*` sequence-reset and parity goldens |
-| CUDA | Qwen3 | Q8_0 (and materialized Q8_0) | all | refused | Q8_0 layers keep an FP32 cache |
+| CUDA | Qwen3 | Q8_0 (and materialized Q8_0) | single-token, sequential prefill/decode, batched prefill (MMA) | supported | tested: Qwen3 0.6B Q8_0 — single-token and prefill/decode cos ≥ 0.9999994, rel L2 ≤ 0.0012; batched cos ≥ 0.9999989, rel L2 ≤ 0.0015; top-1 100% — `GpuFp16KvQwen3Q8AccelTest` |
+| CUDA | Llama, Qwen3 at 8B | Q8_0 | batched prefill (MMA) | supported | tested: Llama-3.1-8B Q8_0 cos ≥ 0.9999996, rel L2 ≤ 9.3e-4; Qwen3-8B Q8_0 cos ≥ 0.9999962, rel L2 ≤ 0.0028; top-1 100% — `GpuFp16KvLlama8BQ8AccelTest`, `GpuFp16KvQwen3_8BQ8AccelTest`; end-to-end generation coherent with `--cuda-graphs` (the reported configuration) |
 | CUDA | Llama, Qwen3 | F16 | sequential prefill/decode | refused | F16 prefill/decode layers force the FP32 cache |
 | CUDA | Llama, Qwen3 | F16, Q8_0 | batched prefill without tensor cores | refused | scalar batched-prefill kernels write FP32 only |
 | CUDA | Llama, Qwen3 | any | non-NVIDIA scheduler | refused | non-NVIDIA decode layers keep an FP32 cache |
