@@ -5,10 +5,10 @@ source "$HOME/.sdkman/bin/sdkman-init.sh" >/dev/null 2>&1
 sdk use java 21.0.2-open >/dev/null
 source "$HOME/TornadoVM/setvars.sh" >/dev/null
 
-export JLLM_ROOT=/home/orion/jllm
-cd "$JLLM_ROOT" || exit 1
+export JITLLM_ROOT=/home/orion/jitllm
+cd "$JITLLM_ROOT" || exit 1
 
-RESULTS_DIR="${RESULTS_DIR:-$JLLM_ROOT/perf-results/manual-cuda-half2-fp16kv-$(date +%Y%m%d-%H%M%S)}"
+RESULTS_DIR="${RESULTS_DIR:-$JITLLM_ROOT/perf-results/manual-cuda-half2-fp16kv-$(date +%Y%m%d-%H%M%S)}"
 PROMPT="write a matmul in java"
 MAX_TOKENS=2048
 GPU_MEMORY=20GB
@@ -18,7 +18,7 @@ mkdir -p "$RESULTS_DIR"
 printf "results_dir=%s\n" "$RESULTS_DIR" | tee "$RESULTS_DIR/run.log"
 printf "java=%s\n" "$(java -version 2>&1 | head -1)" | tee -a "$RESULTS_DIR/run.log"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>&1 | tee -a "$RESULTS_DIR/run.log"
-printf "jvm_extra=-Djllm.kvcache.fp16=true\n" | tee -a "$RESULTS_DIR/run.log"
+printf "jvm_extra=-Djitllm.kvcache.fp16=true\n" | tee -a "$RESULTS_DIR/run.log"
 
 printf "model\tconfig\tstatus\teval_rate\tprompt_eval_rate\ttotal_ms\tmetrics\tlog\n" > "$RESULTS_DIR/summary.tsv"
 
@@ -51,10 +51,10 @@ for entry in "${models[@]}"; do
       continue
     fi
 
-    export JAVA_TOOL_OPTIONS="-Djllm.kvcache.fp16=true -Djllm.metrics.format=json -Djllm.metrics.output=file -Djllm.metrics.file=$metrics"
+    export JAVA_TOOL_OPTIONS="-Djitllm.kvcache.fp16=true -Djitllm.metrics.format=json -Djitllm.metrics.output=file -Djitllm.metrics.file=$metrics"
     start_ms=$(date +%s%3N)
     # shellcheck disable=SC2086
-    ./jllm --gpu --cuda \
+    ./jitllm --gpu --cuda \
       --model "$path" \
       --prompt "$PROMPT" \
       --max-tokens "$MAX_TOKENS" \

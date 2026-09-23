@@ -1,4 +1,4 @@
-name: Prepare jllm Release
+name: Prepare jitllm Release
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       tornadovm_release:
-        description: 'Published TornadoVM release this jllm release depends on (e.g. 6.2.0); must be on Maven Central and carry the APIs this code needs'
+        description: 'Published TornadoVM release this jitllm release depends on (e.g. 6.2.0); must be on Maven Central and carry the APIs this code needs'
         required: true
         type: string
       previous_version:
@@ -29,7 +29,7 @@ env:
 
 jobs:
   prepare-release:
-    if: github.repository == 'beehive-lab/jllm'
+    if: github.repository == 'beehive-lab/jitllm'
     runs-on: [self-hosted, Linux, x64]
     permissions:
       contents: write
@@ -78,7 +78,7 @@ jobs:
           sed -i 's|<revision>.*</revision>|<revision>${{ env.VERSION }}</revision>|' pom.xml
           echo "✅ Maven version updated to ${{ env.VERSION }}"
 
-      - name: Select the TornadoVM release this jllm release depends on
+      - name: Select the TornadoVM release this jitllm release depends on
         run: |
           set -euo pipefail
           if [[ ! "${{ inputs.tornadovm_release }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -101,7 +101,7 @@ jobs:
             echo "== $(java -version 2>&1 | head -1)"
             ./mvnw -B -q -P release -Dgpg.skip=true -Dmaven.javadoc.skip=true \
               -Dmaven.repo.local="$(mktemp -d)" clean package -DskipTests
-            echo "   jllm $(./mvnw -q help:evaluate -Dexpression=project.version -DforceStdout) against tornado-api $(./mvnw -q -P release help:evaluate -Dexpression=tornadovm.version -DforceStdout)"
+            echo "   jitllm $(./mvnw -q help:evaluate -Dexpression=project.version -DforceStdout) against tornado-api $(./mvnw -q -P release help:evaluate -Dexpression=tornadovm.version -DforceStdout)"
           done
 
       - name: Update README.md
@@ -127,7 +127,7 @@ jobs:
           \`\`\`xml
           <dependency>
               <groupId>io.github.beehive-lab</groupId>
-              <artifactId>jllm</artifactId>
+              <artifactId>jitllm</artifactId>
               <version>${VERSION}-jdk21</version>
           </dependency>
           \`\`\`
@@ -136,7 +136,7 @@ jobs:
           \`\`\`xml
           <dependency>
               <groupId>io.github.beehive-lab</groupId>
-              <artifactId>jllm</artifactId>
+              <artifactId>jitllm</artifactId>
               <version>${VERSION}-jdk25</version>
           </dependency>
           \`\`\`
@@ -145,12 +145,12 @@ jobs:
 
           **JDK 21**:
           \`\`\`groovy
-          implementation 'io.github.beehive-lab:jllm:${VERSION}-jdk21'
+          implementation 'io.github.beehive-lab:jitllm:${VERSION}-jdk21'
           \`\`\`
 
           **JDK 25**:
           \`\`\`groovy
-          implementation 'io.github.beehive-lab:jllm:${VERSION}-jdk25'
+          implementation 'io.github.beehive-lab:jitllm:${VERSION}-jdk25'
           \`\`\`
           EOF
 
@@ -283,7 +283,7 @@ jobs:
           if [ ! -f "$CHANGELOG_FILE" ]; then
             echo "# Changelog" > "$CHANGELOG_FILE"
             echo "" >> "$CHANGELOG_FILE"
-            echo "All notable changes to jllm will be documented in this file." >> "$CHANGELOG_FILE"
+            echo "All notable changes to jitllm will be documented in this file." >> "$CHANGELOG_FILE"
             echo "" >> "$CHANGELOG_FILE"
           fi
           

@@ -2,7 +2,7 @@
 #
 # benchmark_backends.sh
 #
-# Measures jllm inference performance across the three TornadoVM GPU
+# Measures jitllm inference performance across the three TornadoVM GPU
 # backends (OpenCL, PTX, CUDA) over the full model/quantization/configuration
 # matrix from .github/workflows/build-and-run.yml.
 #
@@ -27,7 +27,7 @@ set -o pipefail
 # ──────────────────────────────────────────────────────────────────────────────
 JAVA_SDK="${JAVA_SDK:-21.0.2-open}"
 TORNADO_ROOT="${TORNADO_ROOT:-$HOME/TornadoVM}"
-JLLM_ROOT_DIR="${JLLM_ROOT_DIR:-$HOME/jllm}"
+JITLLM_ROOT_DIR="${JITLLM_ROOT_DIR:-$HOME/jitllm}"
 MODELS_DIR="${MODELS_DIR:-/opt/models}"
 
 PROMPT="${PROMPT:-Write a long, detailed adventure story about a young explorer discovering a hidden ancient city in the jungle. Include vivid descriptions.}"
@@ -46,7 +46,7 @@ else
 fi
 
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-RESULTS_DIR="${RESULTS_DIR:-$JLLM_ROOT_DIR/perf-results/$TIMESTAMP}"
+RESULTS_DIR="${RESULTS_DIR:-$JITLLM_ROOT_DIR/perf-results/$TIMESTAMP}"
 mkdir -p "$RESULTS_DIR"
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -114,10 +114,10 @@ build_tornadovm() {
 # rep so repeats sample genuine run-to-run variance. $5=seed, $6=flags.
 run_inference() {
     local backend="$1" model_file="$2" metrics_file="$3" run_log="$4" seed="$5" flags="$6"
-    export JAVA_TOOL_OPTIONS="-Djllm.metrics.format=json -Djllm.metrics.output=file -Djllm.metrics.file=$metrics_file"
+    export JAVA_TOOL_OPTIONS="-Djitllm.metrics.format=json -Djitllm.metrics.output=file -Djitllm.metrics.file=$metrics_file"
     # shellcheck disable=SC2086
-    ( cd "$JLLM_ROOT_DIR" && \
-      ./jllm --gpu \
+    ( cd "$JITLLM_ROOT_DIR" && \
+      ./jitllm --gpu \
         --model "$MODELS_DIR/$model_file" \
         --prompt "$PROMPT" \
         --max-tokens "$MAX_TOKENS" \
@@ -151,7 +151,7 @@ for backend in "${BACKEND_LIST[@]}"; do
     # setvars.sh is regenerated each build and points at the new dist dir.
     # shellcheck disable=SC1091
     source "$TORNADO_ROOT/setvars.sh" >/dev/null 2>&1
-    export JLLM_ROOT="$JLLM_ROOT_DIR"
+    export JITLLM_ROOT="$JITLLM_ROOT_DIR"
     log "TORNADOVM_HOME=$TORNADOVM_HOME"
 
     while IFS='|' read -r model_file model quant config flags scope; do

@@ -1,0 +1,874 @@
+#!/usr/bin/env python3
+"""
+jitllm: GPU-accelerated Java LLM runner with TornadoVM
+Run LLM models using OpenCL, CUDA, or Metal backends.
+
+The backend is auto-detected from the installed TornadoVM SDK
+(TORNADOVM_HOME/etc/tornado.backend) - no need to select it manually.
+"""
+
+import argparse
+import shlex
+import shutil
+import textwrap
+import glob
+import os
+import subprocess
+import sys
+import time
+import platform
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+from enum import Enum
+
+
+class Backend(Enum):
+    OPENCL = "opencl"
+    CUDA = "cuda"
+    METAL = "metal"
+
+
+# Maps the names TornadoVM writes to etc/tornado.backend to our Backend enum.
+BACKEND_NAME_MAP: Dict[str, Backend] = {
+    "opencl-backend": Backend.OPENCL,
+    "cuda-backend": Backend.CUDA,
+    "metal-backend": Backend.METAL,
+}
+
+# TornadoVM system property that ranks each backend for "driver 0" (default
+# device) selection when more than one backend is loaded - see
+# TornadoOptions.*_BACKEND_PRIORITY. Defaults there favor OpenCL (10) over
+# everything else (0), which doesn't match BACKEND_PRIORITY below, so we set
+# these explicitly whenever more than one backend is installed.
+BACKEND_PRIORITY_PROPERTY: Dict[Backend, str] = {
+    Backend.OPENCL: "tornado.opencl.priority",
+    Backend.CUDA: "tornado.cuda.priority",
+    Backend.METAL: "tornado.metal.priority",
+}
+
+# When an SDK is built with more than one backend, prefer this one for
+# properties that need a single "primary" backend (e.g. the printed message,
+# and which backend becomes TornadoVM's default device).
+BACKEND_PRIORITY: List[Backend] = [Backend.CUDA, Backend.OPENCL, Backend.METAL]
+
+
+class LlamaRunner:
+    """Main class for managing LLM execution with GPU acceleration."""
+
+    def __init__(self):
+        self.java_home = os.environ.get("JAVA_HOME")
+        self.tornado_sdk = os.environ.get("TORNADOVM_HOME")
+        self.llama_root = os.environ.get("JITLLM_ROOT")
+
+        if not all([self.java_home, self.tornado_sdk, self.llama_root]):
+            print("Error: Required environment variables not set")
+            print("Please ensure JAVA_HOME, TORNADOVM_HOME, and JITLLM_ROOT are defined")
+            print("Note: check set_paths in root dir -> source set_paths")
+            sys.exit(1)
+
+    def _validate_paths(self):
+        """Validate that required paths exist."""
+        paths_to_check = {
+            "JAVA_HOME": self.java_home,
+            "TORNADOVM_HOME": self.tornado_sdk,
+            "JITLLM_ROOT": self.llama_root,
+        }
+
+        for name, path in paths_to_check.items():
+            if not Path(path).exists():
+                print(f"Error: {name} path does not exist: {path}")
+                sys.exit(1)
+
+    def detect_installed_backends(self) -> List[Backend]:
+        """Return every backend the installed TornadoVM SDK was built with (tornado.backend order)."""
+        backend_file = Path(self.tornado_sdk) / "etc" / "tornado.backend"
+        if not backend_file.exists():
+            print(f"Error: Could not detect TornadoVM backend - {backend_file} not found")
+            print("Note: this file is written by the TornadoVM installer; make sure TORNADOVM_HOME points at a valid SDK")
+            sys.exit(1)
+
+        installed_names: List[str] = []
+        for line in backend_file.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("tornado.backends="):
+                installed_names = [b.strip() for b in line.split("=", 1)[1].split(",") if b.strip()]
+                break
+
+        if not installed_names:
+            print(f"Error: No backends declared in {backend_file}")
+            sys.exit(1)
+
+        installed = [BACKEND_NAME_MAP[n] for n in installed_names if n in BACKEND_NAME_MAP]
+        if not installed:
+            print(f"Error: Unsupported backend(s) in {backend_file}: {', '.join(installed_names)}")
+            sys.exit(1)
+
+        return installed
+
+    @staticmethod
+    def select_primary_backend(installed: List[Backend]) -> Backend:
+        """Pick which installed backend to report/default to when the SDK has more than one."""
+        for backend in BACKEND_PRIORITY:
+            if backend in installed:
+                return backend
+        return installed[0]
+
+    def _tornado_argfile(self) -> str:
+        """The SDK's own JVM argument file, which is the source of truth for how to start it.
+
+        It carries the module path, the Graal/JVMCI arrangement, the per-backend export lists
+        and the preview flag -- all of which differ by TornadoVM version, JDK and installed
+        backends. Reproducing them here is how a launcher silently starts the wrong thing on a
+        JDK it was not written for. The SDK writes it at build time, and the `tornado` launcher
+        refreshes it from the template on every invocation.
+        """
+        argfile = os.path.join(self.tornado_sdk, "tornado-argfile")
+        if not os.path.isfile(argfile):
+            print(
+                f"Error: {argfile} not found.\n"
+                f"Run '{self.tornado_sdk}/bin/tornado --devices' once to generate it from "
+                f"tornado-argfile.template, or reinstall the SDK.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return argfile
+
+    def _build_base_command(self, args: argparse.Namespace) -> List[str]:
+        """Build the base Java command with JVM options."""
+        cmd = [
+            f"{self.java_home}/bin/java",
+            f"@{self._tornado_argfile()}",
+            f"-Xms{args.heap_min}",
+            f"-Xmx{args.heap_max}",
+            # Not supplied by the argfile: the Vector API is what FloatTensor's static
+            # initializer reaches for, and without it every run dies in class initialization.
+            "--add-modules",
+            "jdk.incubator.vector",
+            # Prompt ingestion emits more interpreter bytecode than the default buffer holds.
+            "-Dtornado.tvm.maxbytecodesize=65536",
+        ]
+
+        # GPU options
+        if args.use_gpu:
+            cmd.append("-Duse.tornadovm=true")
+
+        if args.verbose:
+            cmd.append("-Djitllm.verbose=true")
+
+        if args.with_prefill_decode or args.batch_prefill_size is not None:
+            cmd.append("-Djitllm.withPrefillDecode=true")
+
+        if args.batch_prefill_size is not None:
+            cmd.append(f"-Djitllm.prefillBatchSize={args.batch_prefill_size}")
+
+        if args.print_taskgraph_chain:
+            cmd.append("-Djitllm.printTaskGraphChain=true")
+            # The shell's COLUMNS is rarely exported; the printer wraps to it.
+            os.environ.setdefault("COLUMNS", str(shutil.get_terminal_size().columns))
+
+        if args.with_native_libraries:
+            cmd.append("-Djitllm.nativeLibraries=true")
+
+        if args.cuda_graphs:
+            cmd.append("-Djitllm.cudaGraphs=true")
+
+        if args.fp32_kv_cache:
+            cmd.append("-Djitllm.kvcache.fp32=true")
+
+        # Debug options
+        debug_config = []
+
+        if args.debug:
+            debug_config.extend(
+                [
+                    "-Dtornado.debug=true",
+                    "-Dtornado.threadInfo=True"
+                    if args.threads
+                    else "-Dtornado.threadInfo=false",
+                ]
+            )
+        else:
+            debug_config.extend(
+                [
+                    "-Dtornado.threadInfo=True"
+                    if args.threads
+                    else "-Dtornado.threadInfo=false",
+                    "-Dtornado.debug=false",
+                ]
+            )
+
+        # Additional debug options
+        debug_config.extend(
+            [
+                "-Dtornado.fullDebug=True"
+                if args.full_dump
+                else "-Dtornado.fullDebug=false",
+                "-Dtornado.printKernel=True"
+                if args.print_kernel
+                else "-Dtornado.printKernel=false",
+                "-Dtornado.print.bytecodes=True"
+                if args.print_bytecodes
+                else "-Dtornado.print.bytecodes=false",
+            ]
+        )
+
+        cmd.extend(debug_config)
+
+        # Additional TornadoVM settings
+        tornado_runtime_config = [
+            f"-Dtornado.device.memory={args.gpu_memory}",
+            f"-Dtornado.profiler={str(args.profiler).lower()}",
+            "-Dtornado.log.profiler=false",
+            f"-Dtornado.profiler.dump.dir={args.profiler_dump_dir}",
+            "-Dtornado.enable.fastMathOptimizations=true",
+            "-Dtornado.enable.mathOptimizations=false",
+            "-Dtornado.enable.nativeFunctions=true",
+            "-Dtornado.loop.interchange=true",
+            f"-Dtornado.eventpool.maxwaitevents={args.max_wait_events}",
+        ]
+        cmd.extend(tornado_runtime_config)
+
+        # Backend-specific configuration
+        if Backend.OPENCL in args.installed_backends:
+            # OpenCL specific flags
+            cmd.append(f"-Dtornado.opencl.compiler.flags={args.opencl_flags}")
+
+        if len(args.installed_backends) > 1:
+            # More than one backend is loaded, so pin TornadoVM's own driver-0
+            # (default device) selection to match args.backend - otherwise it
+            # falls back to its own defaults (OpenCL beats everything else).
+            # args.backend goes first (whether auto-picked or --backend
+            # override), then the rest of BACKEND_PRIORITY as a tiebreak.
+            effective_priority = [args.backend] + [b for b in BACKEND_PRIORITY if b != args.backend]
+            n = len(effective_priority)
+            for rank, backend in enumerate(effective_priority):
+                if backend in args.installed_backends:
+                    cmd.append(f"-D{BACKEND_PRIORITY_PROPERTY[backend]}={n - rank}")
+
+        module_config: List[str] = []
+
+        if getattr(args, "server", False):
+            main_class = "org.beehive.jitllm.server.OpenAIServer"
+        elif getattr(args, "bench", False):
+            main_class = "org.beehive.jitllm.bench.JitllmBench"
+        else:
+            main_class = "org.beehive.jitllm.JitllmApp"
+
+        module_config.extend(
+            [
+                "-cp",
+                self._find_llama_jar(),
+                main_class,
+            ]
+        )
+        cmd.extend(module_config)
+
+        return cmd
+
+    def _find_llama_jar(self) -> str:
+        """Find the LLaMA JAR file automatically using glob pattern."""
+        target_dir = f"{self.llama_root}/target"
+        jar_pattern = f"{target_dir}/jitllm-*-SNAPSHOT.jar"
+        jar_files = glob.glob(jar_pattern)
+
+        if not jar_files:
+            # Fallback: try any jitllm jar
+            jar_pattern = f"{target_dir}/jitllm-*.jar"
+            jar_files = glob.glob(jar_pattern)
+
+        if not jar_files:
+            raise FileNotFoundError(f"No jitllm JAR file found in {target_dir}")
+
+        # Sort to get the latest version if multiple exist
+        jar_files.sort(reverse=True)
+        return jar_files[0]
+
+    def _add_llama_args(self, cmd: List[str], args: argparse.Namespace) -> List[str]:
+        """Add LLaMA-specific arguments to the command."""
+        if getattr(args, "server", False):
+            # HTTP options are separate from terminal prompts and sampling.
+            srv = ["--model", args.model_path, "--host", args.host, "--port", str(args.port),
+                   "--ctx-size", str(args.max_tokens)]
+            if args.continuous_batching:
+                srv += ["--continuous-batching", str(args.continuous_batching),
+                        "--max-queued-requests", str(args.max_queued_requests),
+                        "--prefix-cache-entries", str(args.prefix_cache_entries)]
+            if args.use_gpu:
+                srv.append("--gpu")
+            return cmd + srv
+        if getattr(args, "bench", False):
+            # llama-bench mode: model(s) + benchmark options only. If --bench-args already
+            # supplies -m, use those verbatim (don't also prepend --model → duplicate rows).
+            extra = shlex.split(args.bench_args) if args.bench_args else []
+            bench_args = extra if ("-m" in extra or "--model" in extra) else ["-m", args.model_path] + extra
+            # Without --gpu the benchmark measures the host forward pass; say so explicitly, or it
+            # builds an accelerator plan and reports a GPU backend for a run the user asked to be
+            # on the CPU.
+            if not args.use_gpu and "--cpu" not in bench_args:
+                bench_args = bench_args + ["--cpu"]
+            for field, option in [("pp", "-p"), ("tg", "-n"), ("depth", "-d"), ("repetitions", "-r"), ("output", "-o")]:
+                value = getattr(args, field, None)
+                if value is not None:
+                    if option in extra:
+                        raise ValueError(f"{option} is specified both directly and in --bench-args")
+                    bench_args.extend([option, str(value)])
+            if args.batch_prefill_size is not None:
+                if "-b" in extra or "--batch-size" in extra:
+                    raise ValueError("Specify prefill width once (--batch-prefill-size or --bench-args -b)")
+                bench_args.extend(["-b", str(args.batch_prefill_size)])
+            return cmd + bench_args
+        llama_args = [
+            "-m",
+            args.model_path,
+            "--temperature",
+            str(args.temperature),
+            "--top-p",
+            str(args.top_p),
+            "--seed",
+            str(args.seed),
+            "--ctx-size",
+            str(args.max_tokens),
+            "--stream",
+            str(args.stream).lower(),
+        ]
+
+        if args.max_new_tokens is not None:
+            llama_args.extend(["--max-new-tokens", str(args.max_new_tokens)])
+        if args.suffix is not None:
+            llama_args.extend(["--suffix", args.suffix])
+        if args.prompt is not None:
+            llama_args.extend(["-p", args.prompt])
+
+        if args.system_prompt:
+            llama_args.extend(["-sp", args.system_prompt])
+
+        if args.interactive:
+            llama_args.append("--interactive")
+        elif args.instruct:
+            llama_args.append("--instruct")
+
+        return cmd + llama_args
+
+    def run(self, args: argparse.Namespace) -> int:
+        """Execute the LLaMA model with the specified arguments."""
+        self._validate_paths()
+
+        # Build the complete command
+        cmd = self._build_base_command(args)
+        cmd = self._add_llama_args(cmd, args)
+
+        # Print command if requested (before verbose output)
+        if args.show_command:
+            print("Full Java command:")
+            print("-" * 80)
+
+            # Create a properly formatted command for easy copy-paste
+            escaped_cmd = []
+            for arg in cmd:
+                # Escape arguments that contain spaces or special characters
+                if " " in arg or '"' in arg or "'" in arg:
+                    escaped_cmd.append(f'"{arg}"')
+                else:
+                    escaped_cmd.append(arg)
+
+            # Print as a continuous line that can be easily copied
+            print(" ".join(escaped_cmd))
+            print("-" * 80)
+            print()
+
+            # If user only wants to see the command without executing
+            if not args.execute_after_show:
+                print("Command built successfully. Exiting without execution.")
+                print(
+                    "Use --execute-after-show to run the command after displaying it."
+                )
+                return 0
+
+        # Execute the command
+        try:
+            result = subprocess.run(cmd, check=True)
+            return result.returncode
+        except subprocess.CalledProcessError as e:
+            print(f"Error: Command failed with return code {e.returncode}")
+            return e.returncode
+        except KeyboardInterrupt:
+            print("\nOperation cancelled by user")
+            return 130
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
+
+
+def load_env_from_script():
+    if "JITLLM_ROOT" in os.environ and os.environ["JITLLM_ROOT"]:
+        return
+
+    system = platform.system()
+
+    if system == "Windows":
+        # Call set_paths.cmd and capture output as environment
+        result = subprocess.run(
+            ["cmd.exe", "/c", "set_paths.cmd && set"],
+            capture_output=True,
+            text=True,
+            shell=False,
+        )
+        if result.returncode != 0:
+            print("Failed to run set_paths.cmd")
+            sys.exit(1)
+
+        # Parse environment variables from output
+        for line in result.stdout.splitlines():
+            if "=" in line:
+                key, value = line.strip().split("=", 1)
+                os.environ[key] = value
+
+    elif system in ("Linux", "Darwin"):
+        # Source the set_paths file and capture env
+        command = ["bash", "-c", "source ./set_paths && env"]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            print("Failed to source set_paths")
+            sys.exit(1)
+
+        for line in result.stdout.splitlines():
+            if "=" in line:
+                key, value = line.strip().split("=", 1)
+                os.environ[key] = value
+    else:
+        print(f"Unsupported OS: {system}")
+        sys.exit(1)
+
+
+class OverviewHelpAction(argparse.Action):
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS,
+                         help="Show this help; jitllm COMMAND --help shows one command's options")
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.print_usage()
+        print()
+        print(parser.description)
+        print()
+        print(overview_help())
+        parser.exit()
+
+
+class LegacyContextAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace.legacy_context = True
+
+
+class HelpFormatter(argparse.HelpFormatter):
+    """Keeps every option on one line with its description, uses the terminal's full width, and
+    shows a default only where it tells the reader something (not None, False or empty)."""
+
+    def __init__(self, prog, indent_increment=2, max_help_position=40, width=None):
+        if width is None:
+            width = shutil.get_terminal_size().columns - 2
+        super().__init__(prog, indent_increment, max_help_position, width)
+
+    # Break lines at spaces only, so option names and values such as --continuous-batching or
+    # -cl-denorms-are-zero are never split across lines.
+    def _split_lines(self, text, width):
+        return textwrap.wrap(self._whitespace_matcher.sub(" ", text).strip(), width, break_on_hyphens=False)
+
+    def _fill_text(self, text, width, indent):
+        return textwrap.fill(self._whitespace_matcher.sub(" ", text).strip(), width, initial_indent=indent,
+                             subsequent_indent=indent, break_on_hyphens=False)
+
+    def _get_help_string(self, action):
+        help_text = action.help or ""
+        if ("default" in help_text or action.default in (None, False, "", argparse.SUPPRESS)
+                or not action.option_strings):
+            return help_text
+        return help_text + " (default: %(default)s)"
+
+
+COMMANDS = {"run": "Generate one response to --prompt", "chat": "Chat in the terminal",
+            "serve": "Start the OpenAI-compatible HTTP API", "bench": "Measure inference performance"}
+
+
+def overview_help():
+    """Every command and every option, for jitllm --help."""
+    full = create_parser()
+    formatter = full._get_formatter()
+    formatter.start_section("options")
+    formatter.add_argument(OverviewHelpAction(["-h", "--help"], "help"))
+    formatter.end_section()
+    for group in full._action_groups:
+        visible = [a for a in group._group_actions if a.help is not argparse.SUPPRESS]
+        if not visible or group.title in ("positional arguments", "options", "optional arguments"):
+            continue
+        formatter.start_section(group.title)
+        formatter.add_text(group.description)
+        formatter.add_arguments(visible)
+        formatter.end_section()
+    formatter.add_text("Options marked with commands in parentheses apply to those commands only. "
+                       "jitllm COMMAND --help shows the options of one command.")
+    commands = "commands:\n" + "".join(f"  {name:<8}{text}\n" for name, text in COMMANDS.items())
+    return commands + "\n" + formatter.format_help()
+
+
+def parse_bool(value):
+    if value.lower() not in {"true", "false"}:
+        raise argparse.ArgumentTypeError("expected true or false")
+    return value.lower() == "true"
+
+
+def parse_cli_args(argv):
+    commands = ("run", "chat", "serve", "bench")
+    if argv and argv[0].startswith("-") and argv[0] not in {"-h", "--help"}:
+        parser = create_parser()
+    else:
+        parser = argparse.ArgumentParser(
+            prog="jitllm", usage="jitllm {run,chat,serve,bench} --model FILE [options]",
+            description="Run, chat with, serve, or benchmark a local GGUF model on TornadoVM.",
+            formatter_class=argparse.RawDescriptionHelpFormatter, add_help=False)
+        parser.add_argument("-h", "--help", action=OverviewHelpAction)
+        sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
+        for command in commands:
+            sub.add_parser(command, parents=[create_parser(command)], add_help=False,
+                           prog=f"jitllm {command}", usage=f"jitllm {command} --model FILE [options]",
+                           help=COMMANDS[command], description=COMMANDS[command],
+                           formatter_class=HelpFormatter, allow_abbrev=False)
+    args = parser.parse_args(argv)
+    supplied = {arg.split("=", 1)[0] for arg in argv if arg.startswith("-")}
+    mode = args.command or ("serve" if args.server else "bench" if args.bench else "chat" if args.interactive else "run")
+    args.command = mode
+    args.server, args.bench, args.interactive, args.instruct = (mode == v for v in ("serve", "bench", "chat", "run"))
+    if args.max_tokens is None:
+        args.max_tokens = 0 if mode == "serve" else 512
+    if mode not in {"bench", "serve"} and args.max_tokens <= 0:
+        parser.error("--ctx-size must be positive")
+    if mode == "serve" and args.max_tokens < 0:
+        parser.error("--ctx-size must be non-negative (0 serves the model's own context)")
+    if args.fp16_kv_cache:
+        parser.error("--fp16-kv-cache was removed: FP16 is now the default key/value cache. "
+                     "Drop the flag, or pass --fp32-kv-cache to keep an FP32 cache")
+    if args.max_new_tokens is not None and args.max_new_tokens <= 0:
+        parser.error("--max-new-tokens must be positive")
+    if mode == "run" and args.prompt is None:
+        parser.error("run requires --prompt")
+    if mode == "chat" and (args.prompt is not None or args.suffix is not None):
+        parser.error("chat reads prompts from the terminal; --prompt/--suffix are run-only")
+    if mode == "serve":
+        if not 0 <= args.port <= 65535 or not args.host.strip():
+            parser.error("serve requires a nonempty --host and --port in 0..65535")
+        batching = args.continuous_batching
+        if batching is not None and batching < 2:
+            parser.error("--continuous-batching needs at least 2 request slots")
+        if not batching and supplied & {"--max-queued-requests", "--prefix-cache-entries"}:
+            parser.error("--max-queued-requests and --prefix-cache-entries belong to --continuous-batching")
+        if args.max_queued_requests < 1 or args.prefix_cache_entries < 0:
+            parser.error("--max-queued-requests must be positive; --prefix-cache-entries must be non-negative")
+        if batching and not args.use_gpu:
+            parser.error("--continuous-batching requires --gpu")
+        if batching and args.with_native_libraries:
+            parser.error("continuous batching has no native-library implementation; drop --with-native-libraries")
+        if batching and (args.with_prefill_decode or args.batch_prefill_size is not None or args.cuda_graphs):
+            parser.error("continuous batching does not support --with-prefill-decode, --batch-prefill-size, or --cuda-graphs")
+    if args.print_taskgraph_chain and not args.use_gpu:
+        parser.error("--print-taskgraph-chain describes the accelerator plan; add --gpu")
+    if mode in {"serve", "bench"} and (args.prompt is not None or args.system_prompt is not None or args.max_new_tokens is not None):
+        parser.error("prompt and generation-limit options belong to run/chat; serve receives them in HTTP requests")
+    if mode != "serve" and supplied & {"--port", "--host", "--continuous-batching", "--max-queued-requests", "--prefix-cache-entries"}:
+        parser.error("HTTP server options require serve/--server")
+    if mode != "bench" and supplied & {"--pp", "--tg", "--depth", "--repetitions", "--output", "--bench-args"}:
+        parser.error("Benchmark options require bench/--bench")
+    if mode in {"serve", "bench"} and supplied & {"--temperature", "--top-p", "--seed", "--stream", "--suffix"}:
+        parser.error("Generation options belong to run/chat; HTTP sampling is configured per request")
+    if mode == "bench" and supplied & {"--ctx-size", "-c", "--ctx", "--context-length", "--max-tokens", "-n"}:
+        parser.error("bench derives context from --pp/--tg/--depth; omit --ctx-size")
+    if mode == "bench":
+        for field in ("pp", "tg", "depth"):
+            value = getattr(args, field)
+            if value is not None:
+                try:
+                    if any(int(n) < 0 for n in value.split(",")): raise ValueError()
+                except ValueError:
+                    parser.error(f"--{field} requires comma-separated nonnegative integers")
+        if args.repetitions is not None and args.repetitions < 1:
+            parser.error("--repetitions must be positive")
+    if args.legacy_context:
+        print("--max-tokens/-n is deprecated; use --ctx-size/-c (context capacity).", file=sys.stderr)
+    return args
+
+
+def create_parser(command=None) -> argparse.ArgumentParser:
+    """Create and configure the argument parser."""
+    parser = argparse.ArgumentParser(
+        prog="jitllm" + (" " + command if command else ""),
+        # Always explicit: before Python 3.13, argparse's generated usage asserts when it wraps a
+        # metavar with brackets or "|" (N[,N...], true|false), and every error message builds it.
+        usage=f"jitllm {command} --model FILE [options]" if command else "jitllm --model FILE [options]",
+        description=COMMANDS[command] if command else "GPU-accelerated LLM runner using TornadoVM",
+        formatter_class=HelpFormatter,
+        allow_abbrev=False,
+        add_help=False,
+    )
+    parser.add_argument("-h", "--help", action="help",
+                        help="Show this command's options; jitllm --help lists every command and option"
+                        if command else "Show this help and exit")
+
+    # Groups, in the order --help shows them: what to run, the command's own options, where it
+    # runs, how to look inside it, then the knobs most people never need.
+    engine = parser.add_argument_group("Engine Configuration")
+    engine.add_argument("--model", "-m", dest="model_path", required=True, metavar="FILE",
+                        help="GGUF model file")
+    engine.add_argument("--prompt", metavar="TEXT", help="Prompt to answer (run only)")
+    engine.add_argument("-sp", "--system-prompt", metavar="TEXT", help="System prompt (run, chat)")
+    engine.add_argument("--suffix", metavar="TEXT",
+                        help="Suffix for a fill-in-the-middle request, e.g. Codestral (run only)")
+    engine.add_argument("--temperature", type=float, default=0.1, metavar="T",
+                        help="Sampling temperature, 0.0 to 2.0; 0 is greedy (run, chat)")
+    engine.add_argument("--top-p", type=float, default=0.95, metavar="P", help="Nucleus sampling threshold (run, chat)")
+    engine.add_argument("--seed", type=int, default=None, metavar="N",
+                        help="Random seed (run, chat; default: current time)")
+    # Two limits, because they bound different things: the context is the memory allocated at
+    # load (the key/value cache holds every token of the conversation), the other only stops one
+    # answer early. The same split as llama.cpp's -c and -n.
+    context_group = engine.add_mutually_exclusive_group()
+    context_group.add_argument("-c", "--ctx-size", dest="max_tokens", type=int, default=None, metavar="N",
+                               help="Context window in tokens: prompt, history and answers together. Sets the "
+                                    "key/value-cache capacity allocated at load (default: 512 for run/chat; "
+                                    "the model's own for serve, where 0 also means the model's own; bench "
+                                    "sizes it from --pp/--tg/--depth and refuses this option)")
+    # Accepted spellings of the same option, kept out of --help so it shows one name.
+    context_group.add_argument("--ctx", "--context-length", dest="max_tokens", type=int,
+                               default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    context_group.add_argument("-n", "--max-tokens", dest="max_tokens", type=int,
+                               default=argparse.SUPPRESS, action=LegacyContextAction,
+                               help=argparse.SUPPRESS)
+    engine.add_argument("--max-new-tokens", type=int, default=None, metavar="N",
+                        help="Stop an answer after N generated tokens; does not change key/value-cache "
+                             "capacity (run, chat; default: until the turn ends or the context is full)")
+    engine.add_argument("--stream", type=parse_bool, default=True, metavar="true|false",
+                        help="Print tokens as they are generated (run, chat; default: true)")
+    engine.add_argument("--with-prefill-decode", dest="with_prefill_decode", action="store_true",
+                        help="Build separate plans for reading the prompt (prefill) and generating (decode); "
+                             "alone it reads the prompt one token at a time")
+    engine.add_argument("--batch-prefill-size", dest="batch_prefill_size", type=int, default=None, metavar="N",
+                        help="Read the prompt N tokens per step (needs --with-prefill-decode; N > 1)")
+    engine.add_argument("--verbose", "-v", action="store_true",
+                        help="Show the startup configuration, initialization timings and detailed diagnostics on stderr")
+    engine.add_argument("--show-command", action="store_true",
+                        help="Print the Java command instead of running it")
+    engine.add_argument("--execute-after-show", action="store_true",
+                        help="With --show-command, print the command and then run it")
+
+    # Legacy spellings of the subcommands (jitllm --model F --server ...), accepted, not advertised.
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("-i", "--interactive", "--chat", action="store_true", help=argparse.SUPPRESS)
+    mode_group.add_argument("--instruct", action="store_true", default=False, help=argparse.SUPPRESS)
+    mode_group.add_argument("--server", "--serve", action="store_true", help=argparse.SUPPRESS)
+    mode_group.add_argument("--bench", action="store_true", help=argparse.SUPPRESS)
+
+    server_group = parser.add_argument_group("Server (serve)")
+    server_group.add_argument("--host", default="127.0.0.1", metavar="ADDR", help="HTTP bind address")
+    server_group.add_argument("--port", type=int, default=8080, metavar="N", help="HTTP port")
+
+    bench_group = parser.add_argument_group("Benchmark (bench, llama-bench style)")
+    bench_group.add_argument("--pp", metavar="N[,N...]", help="Prompt lengths to prefill")
+    bench_group.add_argument("--tg", metavar="N[,N...]", help="Token counts to generate")
+    bench_group.add_argument("--depth", metavar="N[,N...]", help="Context already filled before each test")
+    bench_group.add_argument("--repetitions", type=int, metavar="N", help="Repetitions per test")
+    bench_group.add_argument("--output", choices=["md", "csv", "json", "jsonl", "sql"], metavar="FORMAT",
+                             help="Result format: md, csv, json, jsonl or sql")
+    bench_group.add_argument("--bench-args", default="", metavar="ARGS",
+                             help='Extra JitllmBench options, e.g. --bench-args="-d 0,4096 -r 5"')
+
+    hw_group = parser.add_argument_group("Hardware Configuration")
+    hw_group.add_argument("--gpu", dest="use_gpu", action="store_true",
+                          help="Run on the accelerator (default: CPU)")
+    for flag, backend, name in (("--opencl", Backend.OPENCL, "OpenCL"), ("--cuda", Backend.CUDA, "CUDA"),
+                                ("--metal", Backend.METAL, "Metal")):
+        hw_group.add_argument(flag, dest="backend_override", action="store_const", const=backend,
+                              help=f"Use the {name} backend when the TornadoVM SDK has more than one "
+                                   "(default: auto-detected)")
+    hw_group.add_argument("--gpu-memory", default="14GB", metavar="SIZE",
+                          help="Device memory TornadoVM may allocate")
+    hw_group.add_argument("--heap-min", default="20g", metavar="SIZE", help="Minimum JVM heap")
+    hw_group.add_argument("--heap-max", default="20g", metavar="SIZE", help="Maximum JVM heap")
+
+    debug_group = parser.add_argument_group("Debug and Profiling")
+    debug_group.add_argument("--debug", action="store_true", help="Enable debug output")
+    debug_group.add_argument("--profiler", action="store_true", help="Enable the TornadoVM profiler")
+    debug_group.add_argument("--profiler-dump-file", dest="profiler_dump_dir", default=None, metavar="FILE",
+                             help="JSON file for the profiler's output "
+                                  "(default: profiler-log.json in the jitllm directory)")
+    # Old name: TornadoVM's property is called dump.dir but has always taken a file.
+    debug_group.add_argument("--profiler-dump-dir", dest="profiler_dump_dir", default=argparse.SUPPRESS,
+                             help=argparse.SUPPRESS)
+
+    verbose_group = parser.add_argument_group("TornadoVM Execution Verbose")
+    verbose_group.add_argument("--print-bytecodes", dest="print_bytecodes", action="store_true",
+                               help="Print TornadoVM bytecodes (tornado.print.bytecodes=true)")
+    verbose_group.add_argument("--print-threads", dest="threads", action="store_true",
+                               help="Print thread information (tornado.threadInfo=true)")
+    verbose_group.add_argument("--print-kernel", dest="print_kernel", action="store_true",
+                               help="Print generated kernels (tornado.printKernel=true)")
+    verbose_group.add_argument("--full-dump", dest="full_dump", action="store_true",
+                               help="Full debug dump (tornado.fullDebug=true)")
+    verbose_group.add_argument("--print-taskgraph-chain", dest="print_taskgraph_chain", action="store_true",
+                               help="Print the execution plan's TaskGraphs: when each runs, and its tasks "
+                                    "(kernel and worker grid, or libraryTask for cuBLAS/cuDNN calls), with "
+                                    "repeated layer graphs shown once (jitllm.printTaskGraphChain=true)")
+    verbose_group.add_argument("--verbose-init", dest="verbose_init", action="store_true", help=argparse.SUPPRESS)
+
+    advanced_group = parser.add_argument_group(
+        "Advanced Options",
+        "[experimental] options print a warning and refuse configurations they do not support.")
+    advanced_group.add_argument(
+        "--fp32-kv-cache", action="store_true",
+        help="Keep the key/value cache in FP32 instead of FP16: twice the key/value-cache storage. "
+             "For numerical reference, and where FP16 is unsupported (the run says so)")
+    advanced_group.add_argument("--cuda-graphs", dest="cuda_graphs", action="store_true",
+                                help="Capture and replay CUDA graphs (CUDA backend only)")
+    advanced_group.add_argument("--opencl-flags", default="-cl-denorms-are-zero -cl-no-signed-zeros -cl-finite-math-only",
+                                metavar="FLAGS", help="OpenCL compiler flags")
+    advanced_group.add_argument("--max-wait-events", type=int, default=32000, metavar="N",
+                                help="Size of the TornadoVM event pool")
+    advanced_group.add_argument(
+        "--with-native-libraries", action="store_true",
+        help="[experimental] Use cuBLAS/cuDNN instead of JIT kernels; Qwen3 F16 batched "
+             "prefill on CUDA tensor cores only, needs more device memory")
+    advanced_group.add_argument(
+        "--continuous-batching", type=int, default=None, metavar="SLOTS",
+        help="[experimental] (serve) Decode up to SLOTS (at least 2) HTTP requests in one "
+             "batch; CUDA tensor cores, FP16 Llama/Qwen3, greedy requests only")
+    advanced_group.add_argument("--max-queued-requests", type=int, default=64, metavar="N",
+                                help="[experimental] (serve) Requests that may wait for a "
+                                     "--continuous-batching slot before new ones are refused")
+    advanced_group.add_argument("--prefix-cache-entries", type=int, default=0, metavar="N",
+                                help="[experimental] (serve) Prompt prefixes cached and shared "
+                                     "between --continuous-batching requests; 0 is off")
+
+    # Removed: parsed only to refuse it with the migration.
+    parser.add_argument("--fp16-kv-cache", action="store_true", help=argparse.SUPPRESS)
+
+    parser.set_defaults(command=command, legacy_context=False)
+    if command:
+        generation = {"prompt", "system_prompt", "temperature", "top_p", "seed", "max_new_tokens", "stream", "suffix"}
+        server = {"host", "port", "continuous_batching", "max_queued_requests", "prefix_cache_entries"}
+        bench = {"bench_args", "pp", "tg", "depth", "repetitions", "output"}
+        modes = {"interactive", "instruct", "server", "bench"}
+        hidden = modes | (server if command != "serve" else set()) | (bench if command != "bench" else set())
+        if command in {"serve", "bench"}:
+            hidden |= generation
+        if command == "chat":
+            hidden |= {"prompt", "suffix"}
+        if command == "bench":
+            hidden |= {"max_tokens"}
+        for action in list(parser._actions):
+            if action.dest in hidden:
+                parser.set_defaults(**{action.dest: action.default})
+                parser._remove_action(action)
+                for group in parser._action_groups:
+                    if action in group._group_actions:
+                        group._group_actions.remove(action)
+                for group in parser._mutually_exclusive_groups:
+                    if action in group._group_actions:
+                        group._group_actions.remove(action)
+                for option in action.option_strings:
+                    parser._option_string_actions.pop(option, None)
+        parser._mutually_exclusive_groups = [g for g in parser._mutually_exclusive_groups if g._group_actions]
+    return parser
+
+
+def validate_backend_selection(args):
+    """Reject a backend flag that was given without --gpu (T12.1d).
+
+    --opencl/--cuda/--metal only rank TornadoVM's backends; they do not enable
+    acceleration. --gpu is what sets -Duse.tornadovm=true. So `--cuda` on its own used to
+    run the whole model on the CPU while printing "using cuda", which reads as a slow GPU
+    rather than as a mistake -- about 21 tok/s where the GPU gives 82, with no error and
+    nothing in the output naming the cause.
+
+    The engine cannot catch this: the JVM never sees --cuda. The flags are resolved into
+    -Dtornado.*.priority ranks and a boolean before it starts, so the combination has to be
+    refused here or not at all.
+    """
+    if args.backend_override is None or args.use_gpu:
+        return
+    flag = f"--{args.backend_override.value}"
+    print(
+        f"Error: {flag} was given without --gpu, so the model would run on the CPU.\n"
+        f"  {flag} only chooses which TornadoVM backend to prefer; --gpu is what enables "
+        f"acceleration.\n"
+        f"  Use: jitllm --gpu {flag} ...   (or drop {flag} to run on the CPU "
+        f"deliberately)"
+    )
+    sys.exit(1)
+
+
+def resolve_verbosity(args):
+    """Preserve the old initialization flag as a hidden alias for verbose output."""
+    if args.verbose_init:
+        args.verbose = True
+        return ["--verbose-init is deprecated; use --verbose (-v) instead."]
+    return []
+
+
+def main():
+    """Main entry point."""
+    load_env_from_script()
+    args = parse_cli_args(sys.argv[1:])
+    for warning in resolve_verbosity(args):
+        print(warning, file=sys.stderr)
+
+    # Set default profiler log path relative to JITLLM_ROOT
+    if args.profiler_dump_dir is None:
+        llama_root = os.environ.get("JITLLM_ROOT")
+        args.profiler_dump_dir = os.path.join(llama_root, "profiler-log.json")
+
+    # Set default seed if not provided
+    if args.seed is None:
+        args.seed = int(time.time())
+
+    # Handle mode selection logic
+    if args.interactive:
+        args.instruct = False
+
+    validate_backend_selection(args)
+
+    # Create the LLaMA runner and auto-detect the TornadoVM backend(s)
+    runner = LlamaRunner()
+    installed_backends = runner.detect_installed_backends()
+    args.installed_backends = installed_backends
+
+    overridden = False
+    if args.backend_override is not None:
+        requested = args.backend_override
+        if requested not in installed_backends:
+            installed_names = ", ".join(b.value for b in installed_backends)
+            print(f"Error: --{requested.value} requested, but the installed TornadoVM SDK only has: {installed_names}")
+            sys.exit(1)
+        args.backend = requested
+        overridden = True
+    else:
+        args.backend = runner.select_primary_backend(installed_backends)
+
+    if args.verbose:
+        # stderr, not stdout: --bench writes a machine-readable document there, and a trailing
+        # human-readable line makes the JSON unparseable.
+        if len(installed_backends) > 1:
+            names = ", ".join(b.value for b in installed_backends)
+            reason = f"requested via --{args.backend.value}" if overridden else "auto-selected"
+            print(
+                f"Detected TornadoVM backends: {names} (from {runner.tornado_sdk}/etc/tornado.backend) "
+                f"- using {args.backend.value} ({reason})",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Detected TornadoVM backend: {args.backend.value} (from {runner.tornado_sdk}/etc/tornado.backend)",
+                file=sys.stderr,
+            )
+
+    return runner.run(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

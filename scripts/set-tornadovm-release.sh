@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# set-tornadovm-release.sh X.Y.Z — record the published TornadoVM release that jllm RELEASE
+# set-tornadovm-release.sh X.Y.Z — record the published TornadoVM release that jitllm RELEASE
 # builds (-P release) depend on, in pom.xml's tornadovm.release.version.
 #
 # Development builds are untouched: they follow TornadoVM develop through

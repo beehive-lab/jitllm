@@ -38,8 +38,8 @@ golden* instead of an error.
 ## Golden logits
 
 Fixture: `Llama-3.2-1B-Instruct`, F16 and Q8_0. The file's SHA-256 is pinned in the test
-resources; the file itself is not committed — it is resolved from `$JLLM_TEST_MODELS`
-or `~/.jllm/test-models/`, and the test fails with a fetch instruction if absent.
+resources; the file itself is not committed — it is resolved from `$JITLLM_TEST_MODELS`
+or `~/.jitllm/test-models/`, and the test fails with a fetch instruction if absent.
 
 Captured: a fixed prompt, greedy sampling, 64 generated tokens. Compared: the final logits
 row at the last prompt position and at each generated position, plus the emitted token ids.
@@ -223,7 +223,7 @@ Verified on `Llama-3.2-1B-Instruct-Q4_0.gguf`, quantized locally from the F16 fi
 | Device peak and decode rate, same file, retention switched | 1570 MiB / 172.4 tok/s retained; 2060 MiB / 136.0 tok/s materialized |
 | Q8_0 and F16 paths unchanged | pass |
 
-The A/B is on **one file**, switched with `-Djllm.q4_0.retain`. Comparing a Q4_0 model against
+The A/B is on **one file**, switched with `-Djitllm.q4_0.retain`. Comparing a Q4_0 model against
 a separately quantized Q8_0 one — which is the easier measurement to take — would have measured
 the quantization as well as the residency, and the two answers differ.
 

@@ -4,11 +4,11 @@ REM Environment setup script for LLaMA3 + TornadoVM (Windows)
 REM ============================================
 
 REM Resolve the absolute path to this script's directory
-set "JLLM_ROOT=%~dp0"
-set "JLLM_ROOT=%JLLM_ROOT:~0,-1%"
+set "JITLLM_ROOT=%~dp0"
+set "JITLLM_ROOT=%JITLLM_ROOT:~0,-1%"
 
 REM Add TornadoVM SDK and LLaMA3 bin to PATH
-set "PATH=%TORNADOVM_HOME%;%JLLM_ROOT%;%PATH%"
+set "PATH=%TORNADOVM_HOME%;%JITLLM_ROOT%;%PATH%"
 
 REM Optional: Set JAVA_HOME if needed
 REM set "JAVA_HOME=C:\Path\To\GraalVM"

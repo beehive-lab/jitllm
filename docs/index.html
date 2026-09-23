@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>jllm Performance History</title>
+  <title>jitllm Performance History</title>
   <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -64,7 +64,7 @@
   </style>
 </head>
 <body>
-  <h1>jllm — Performance History</h1>
+  <h1>jitllm — Performance History</h1>
 
   <div class="controls">
     <div class="control-group">
@@ -255,7 +255,7 @@
         const [runId] = evt.points[0]?.customdata ?? [];
         if (runId) {
           window.open(
-            `https://github.com/beehive-lab/jllm/actions/runs/${runId}`,
+            `https://github.com/beehive-lab/jitllm/actions/runs/${runId}`,
             '_blank'
           );
         }

@@ -1,9 +1,9 @@
 ---
 name: update-quarkus-langchain4j-integration
-description: Update the Quarkus LangChain4j jllm extension to a new jllm release. Use when bumping io.github.beehive-lab:jllm in quarkus-langchain4j, adapting the runtime/deployment modules to API or capability changes, validating JDK/TornadoVM combinations and demos, or updating module documentation. See also the sibling skill update-langchain4j-integration, which targets the upstream dev.langchain4j integration instead of this Quarkus extension.
+description: Update the Quarkus LangChain4j jitllm extension to a new jitllm release. Use when bumping io.github.beehive-lab:jitllm in quarkus-langchain4j, adapting the runtime/deployment modules to API or capability changes, validating JDK/TornadoVM combinations and demos, or updating module documentation. See also the sibling skill update-langchain4j-integration, which targets the upstream dev.langchain4j integration instead of this Quarkus extension.
 ---
 
-# Update the Quarkus LangChain4j jllm integration
+# Update the Quarkus LangChain4j jitllm integration
 
 Treat a version bump as an integration migration. Discover current repository state and preserve
 unrelated changes.
@@ -12,8 +12,8 @@ unrelated changes.
 
 Determine or ask for:
 
-- jllm base version
-- jllm, quarkus-langchain4j, and demo checkout paths
+- jitllm base version
+- jitllm, quarkus-langchain4j, and demo checkout paths
 - exact GGUF paths for chat and capability-specific tests
 - supported JDK/TornadoVM backend combinations
 
@@ -21,15 +21,15 @@ Never guess paths, versions, models, flags, or backends.
 
 ## 1. Inspect the release
 
-Read the jllm changelog, release diff, POM, and changed public APIs. Confirm both artifacts:
+Read the jitllm changelog, release diff, POM, and changed public APIs. Confirm both artifacts:
 
-- `jllm:<version>-jdk21`
-- `jllm:<version>-jdk25`
+- `jitllm:<version>-jdk21`
+- `jitllm:<version>-jdk25`
 
 For a published release:
 
 ```bash
-/path/to/jllm/.claude/skills/update-quarkus-langchain4j-integration/scripts/inspect-release.sh <version>
+/path/to/jitllm/.claude/skills/update-quarkus-langchain4j-integration/scripts/inspect-release.sh <version>
 ```
 
 Otherwise build and inspect both JARs locally. Among others check model loading/generation, metrics,
@@ -46,7 +46,7 @@ rg -n "gpu-llama3" pom.xml model-providers/gpu-llama3
 The module lives at `model-providers/gpu-llama3/{runtime,deployment}`, and the version comes from
 the `gpu-llama3.version` property in the root `pom.xml`: the default picks `-jdk21`, and the
 `jdk25` profile overrides it to `-jdk25`. The branch this project validates against is
-`jllm/facade-1.0.0` on the maintainer's fork, which is what jllm's own CI clones (see
+`jitllm/facade-1.0.0` on the maintainer's fork, which is what jitllm's own CI clones (see
 QUARKUS_LANGCHAIN4J_REF in .github/workflows/build-and-run.yml).
 Re-read the current root `pom.xml` before editing it — do not assume this layout is unchanged.
 
@@ -84,7 +84,7 @@ sync/streaming callbacks separately.
 ## 3. Validate
 
 Use focused tests while iterating, preferably in fresh TornadoVM processes when diagnosing shared
-device state. Classify failures as adapter, model behavior, jllm, TornadoVM, or test harness.
+device state. Classify failures as adapter, model behavior, jitllm, TornadoVM, or test harness.
 
 Completion requires the entire sequence in
 [whole-chain-validation.md](references/whole-chain-validation.md) for every claimed JDK/backend:

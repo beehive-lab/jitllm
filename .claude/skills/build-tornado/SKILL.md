@@ -1,6 +1,6 @@
 ---
 name: build-tornado
-description: Build a TornadoVM SDK for jllm. Use when TORNADOVM_HOME is unset, points at the wrong JDK line or backend, or the pinned version has moved.
+description: Build a TornadoVM SDK for jitllm. Use when TORNADOVM_HOME is unset, points at the wrong JDK line or backend, or the pinned version has moved.
 license: Apache-2.0
 metadata:
   author: TornadoVM Team
@@ -8,7 +8,7 @@ metadata:
 
 # Build TornadoVM
 
-One SDK per (JDK line, backend). jllm pins the TornadoVM version in `pom.xml`
+One SDK per (JDK line, backend). jitllm pins the TornadoVM version in `pom.xml`
 as `tornadovm.base.version`; build that tag, not `develop`.
 
 ## When to use
@@ -16,9 +16,9 @@ as `tornadovm.base.version`; build that tag, not `develop`.
 | Situation | Use this skill? |
 | --- | --- |
 | `echo $TORNADOVM_HOME` is empty, or `tornado --devices` fails | yes |
-| The SDK's JDK line does not match the JDK you will build jllm with | yes |
+| The SDK's JDK line does not match the JDK you will build jitllm with | yes |
 | You need a different backend than the installed SDK has | yes |
-| The SDK is fine and you only need to rebuild jllm | no — use `build-n-run-engine` |
+| The SDK is fine and you only need to rebuild jitllm | no — use `build-n-run-engine` |
 
 ## 1. Decide the tuple
 
@@ -26,12 +26,12 @@ Ask, or read, three things. Do not guess any of them.
 
 ```bash
 # The pinned version, from the consuming project:
-sed -n 's:.*<tornadovm.base.version>\(.*\)</tornadovm.base.version>.*:\1:p' /path/to/jllm/pom.xml
+sed -n 's:.*<tornadovm.base.version>\(.*\)</tornadovm.base.version>.*:\1:p' /path/to/jitllm/pom.xml
 ```
 
 - **Backend**: `opencl`, `cuda` or `metal`. Comma-separated combinations are accepted but
   make the runtime pick between them, so prefer one.
-- **JDK line**: 21 or 25. It must be the same JDK you build and run jllm with.
+- **JDK line**: 21 or 25. It must be the same JDK you build and run jitllm with.
 - **Version**: the pinned tag above.
 
 ## 2. Check the environment
@@ -97,7 +97,7 @@ that uses them, or source a script that does.
 tornado --version
 tornado --devices              # must list the device you intend to use
 cat "$TORNADOVM_HOME/etc/tornado.backend"
-test -f "$TORNADOVM_HOME/tornado-argfile"     # what jllm's launchers read
+test -f "$TORNADOVM_HOME/tornado-argfile"     # what jitllm's launchers read
 ```
 
 `tornado --devices` also regenerates `tornado-argfile` from its template, so run it once

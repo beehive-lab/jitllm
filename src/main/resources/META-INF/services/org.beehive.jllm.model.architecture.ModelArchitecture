@@ -1,7 +1,0 @@
-org.beehive.jllm.model.architecture.LlamaArchitecture
-org.beehive.jllm.model.architecture.MistralArchitecture
-org.beehive.jllm.model.architecture.Qwen2Architecture
-org.beehive.jllm.model.architecture.DeepSeekR1DistillQwenArchitecture
-org.beehive.jllm.model.architecture.Qwen3Architecture
-org.beehive.jllm.model.architecture.GraniteArchitecture
-org.beehive.jllm.model.architecture.Phi3Architecture

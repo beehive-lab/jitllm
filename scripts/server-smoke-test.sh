@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test for the jllm OpenAI-compatible server.
+# Smoke test for the jitllm OpenAI-compatible server.
 # Usage: scripts/server-smoke-test.sh [host]   (default http://localhost:8080)
 # Exits non-zero on the first failed check.
 set -u

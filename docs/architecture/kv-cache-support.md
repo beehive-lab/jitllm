@@ -1,7 +1,7 @@
 # Key/value cache precision: support matrix
 
 The key/value cache is stored in **FP16 by default**; accumulation is FP32 in every path.
-FP32 (`--fp32-kv-cache`, `StorageOptions.fp32()`, `-Djllm.kvcache.fp32=true`) is the
+FP32 (`--fp32-kv-cache`, `StorageOptions.fp32()`, `-Djitllm.kvcache.fp32=true`) is the
 compatibility and numerical-reference choice and is supported everywhere.
 
 A configuration is **supported** for FP16 only when the same path writes and reads the FP16

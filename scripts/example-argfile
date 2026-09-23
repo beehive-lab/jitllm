@@ -25,11 +25,11 @@
 -Dtornado.device.memory=20GB
 -Dtornado.profiler=false
 -Dtornado.log.profiler=false
--Dtornado.profiler.dump.dir=/home/mikepapadim/repos/jllm/prof.json
+-Dtornado.profiler.dump.dir=/home/mikepapadim/repos/jitllm/prof.json
 -Dtornado.enable.fastMathOptimizations=true
 -Dtornado.enable.mathOptimizations=false
 -Dtornado.enable.nativeFunctions=true
-"-Dtornado.loop.interchange=true -Dtornado.dump.bytecodes.dir=/home/devoxx2025-demo/java-ai-demos/jllm"
+"-Dtornado.loop.interchange=true -Dtornado.dump.bytecodes.dir=/home/devoxx2025-demo/java-ai-demos/jitllm"
 -Dtornado.eventpool.maxwaitevents=32000
 "-Dtornado.opencl.compiler.flags=-cl-denorms-are-zero -cl-no-signed-zeros -cl-finite-math-only"
 --upgrade-module-path /home/devoxx2025-demo/java-ai-demos/TornadoVM/bin/sdk/share/java/graalJars

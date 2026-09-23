@@ -26,7 +26,7 @@ test -f "$MODEL"
 ```
 
 These are the versions recorded as working for this integration; re-check them against the
-current README/CLAUDE.md before reusing, since supported versions can change with a jllm
+current README/CLAUDE.md before reusing, since supported versions can change with a jitllm
 bump. `sdk use` is interactive-only — if driving from a non-interactive shell, export
 `JAVA_HOME`/`PATH` explicitly instead of relying on `sdk use`.
 
@@ -42,16 +42,16 @@ cd "$QUARKUS_LANGCHAIN4J_DIR"
   -am -DskipTests
 
 ./mvnw -pl model-providers/gpu-llama3/runtime dependency:tree \
-  -Dincludes=io.github.beehive-lab:jllm
+  -Dincludes=io.github.beehive-lab:jitllm
 ```
 
-Confirm the resolved jllm artifact matches the active JDK (`-jdk21` vs `-jdk25`, selected by
+Confirm the resolved jitllm artifact matches the active JDK (`-jdk21` vs `-jdk25`, selected by
 the root `jdk25` Maven profile based on the JDK running the build).
 
 ## 3. Run the module tests
 
 ```bash
-/path/to/jllm/.claude/skills/update-quarkus-langchain4j-integration/scripts/validate-quarkus-langchain4j-integration.sh \
+/path/to/jitllm/.claude/skills/update-quarkus-langchain4j-integration/scripts/validate-quarkus-langchain4j-integration.sh \
   "$QUARKUS_LANGCHAIN4J_DIR"
 ```
 

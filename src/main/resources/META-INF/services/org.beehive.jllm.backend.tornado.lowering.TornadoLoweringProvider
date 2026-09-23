@@ -1,7 +1,0 @@
-org.beehive.jllm.backend.tornado.lowering.LlamaLoweringProvider
-org.beehive.jllm.backend.tornado.lowering.MistralLoweringProvider
-org.beehive.jllm.backend.tornado.lowering.Qwen2LoweringProvider
-org.beehive.jllm.backend.tornado.lowering.DeepSeekR1DistillQwenLoweringProvider
-org.beehive.jllm.backend.tornado.lowering.Qwen3LoweringProvider
-org.beehive.jllm.backend.tornado.lowering.GraniteLoweringProvider
-org.beehive.jllm.backend.tornado.lowering.Phi3LoweringProvider

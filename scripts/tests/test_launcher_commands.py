@@ -155,7 +155,7 @@ class Commands(unittest.TestCase):
         self.assertRegex(help_text, r"-c( N)?, --ctx-size N")
         self.assertNotIn("--ctx ", help_text)
         self.assertEqual(4096, self.parse("run", "-m", "stub.gguf", "--prompt", "hi", "--ctx", "4096").max_tokens)
-        self.assertIn("usage: jllm run --model FILE [options]", help_text)
+        self.assertIn("usage: jitllm run --model FILE [options]", help_text)
         self.reject("run", "-m", "stub.gguf", "--prompt", "hi", "--echo", "true")
         # The profiler option takes a file; the old directory spelling still parses.
         self.assertIn("--profiler-dump-file FILE", help_text)
@@ -203,5 +203,5 @@ class Commands(unittest.TestCase):
             self.assertEqual(command == "serve", "--port N" in help_text)
             self.assertEqual(command == "bench", "--pp N[,N...]" in help_text)
             self.assertIn("-h, --help", help_text)
-            self.assertIn("jllm --help lists every command", " ".join(help_text.split()))
+            self.assertIn("jitllm --help lists every command", " ".join(help_text.split()))
             self.assertEqual(command == "run", "--prompt " in help_text)

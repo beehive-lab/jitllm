@@ -182,7 +182,8 @@ class PomCoordinateSelection(unittest.TestCase):
             )
         root = self.tree.getroot()
         self.assertEqual(self._prop(root, "tornadovm.dev.qualifier"), "-dev")
-        self.assertEqual(self._prop(root, "tornadovm.release.version"), "")
+        # Either unset or a published release (the bump workflow sets it): never a -dev version.
+        self.assertRegex(self._prop(root, "tornadovm.release.version"), r"^(\d+\.\d+\.\d+)?$")
 
     def test_release_profile_substitutes_the_release_and_drops_dev(self):
         rel = self._profile("release")

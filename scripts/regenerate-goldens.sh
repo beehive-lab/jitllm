@@ -6,7 +6,7 @@
 # the resulting commit must change nothing else and must say why in its message.
 #
 # Requires: TORNADOVM_HOME pointing at the pinned SDK, a working device, and the pinned model
-# fixtures under $JLLM_TEST_MODELS (or ~/.jllm/test-models).
+# fixtures under $JITLLM_TEST_MODELS (or ~/.jitllm/test-models).
 #
 set -euo pipefail
 
@@ -42,19 +42,19 @@ CLASSPATH="target/classes:target/test-classes:$(cat "$CP_FILE")"
 
 # recover.bailout=False is mandatory: with the default TRUE a failed kernel silently falls back to
 # sequential Java and would produce a wrong golden instead of an error (capability C4).
-# jllm.deviceSample=false keeps the full logits row crossing to the host, which is what is hashed.
+# jitllm.deviceSample=false keeps the full logits row crossing to the host, which is what is hashed.
 # The backend priorities pin CUDA: a multi-backend SDK defaults to OpenCL, and a golden recorded on
 # one backend is not the tuple the other one runs. They are no-ops on an OpenCL-only SDK.
 java "@$TORNADOVM_HOME/tornado-argfile" \
   --add-modules jdk.incubator.vector \
   -Dtornado.recover.bailout=False \
-  -Djllm.deviceSample=false \
+  -Djitllm.deviceSample=false \
   -Dtornado.device.memory=12GB \
   -Dtornado.cuda.priority=100 \
   -Dtornado.opencl.priority=0 \
   -Dgolden.commit="$COMMIT" \
   -cp "$CLASSPATH" \
-  org.beehive.jllm.golden.GenerateGoldens
+  org.beehive.jitllm.golden.GenerateGoldens
 
 echo
 echo "Goldens written. Review the diff, then commit them on their own:"

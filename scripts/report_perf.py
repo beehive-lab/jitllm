@@ -146,7 +146,7 @@ def main():
 
     rd = args.results_dir
     if not rd:
-        cands = sorted(glob.glob(os.path.expanduser("~/jllm/perf-results/*")), reverse=True)
+        cands = sorted(glob.glob(os.path.expanduser("~/jitllm/perf-results/*")), reverse=True)
         rd = cands[0] if cands else "."
     raw = collect(rd)
     rows = build_table(raw)

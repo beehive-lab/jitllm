@@ -14,7 +14,7 @@ module_dir="${langchain_dir}/langchain4j-gpu-llama3"
     exit 2
 }
 [[ -d "$module_dir" ]] || {
-    echo "LangChain4j jllm module not found: $module_dir" >&2
+    echo "LangChain4j jitllm module not found: $module_dir" >&2
     exit 2
 }
 [[ -n ${MODEL:-} && -f $MODEL ]] || {

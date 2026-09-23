@@ -1,4 +1,4 @@
-name: Finalize jllm Release
+name: Finalize jitllm Release
 
 on:
   pull_request:
@@ -15,7 +15,7 @@ jobs:
   create-release-tag:
     # Run when release PR merges OR manual trigger
     if: |
-      github.repository == 'beehive-lab/jllm' &&
+      github.repository == 'beehive-lab/jitllm' &&
       ((github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')) ||
       github.event_name == 'workflow_dispatch')
     runs-on: [self-hosted, Linux, x64]
@@ -99,18 +99,18 @@ jobs:
             // Add installation instructions (JDK 21 and JDK 25 artifacts are published separately)
             releaseNotes += `\n\n---\n\n### 📦 Installation\n\n`;
             releaseNotes += `**Maven**\n\n`;
-            releaseNotes += `JDK 21 (\`jdk21\` profile, auto-activates for JDK \`[21,25)\`):\n\`\`\`xml\n<dependency>\n    <groupId>io.github.beehive-lab</groupId>\n    <artifactId>jllm</artifactId>\n    <version>${version}-jdk21</version>\n</dependency>\n\`\`\`\n\n`;
-            releaseNotes += `JDK 25 (\`jdk25\` profile, auto-activates for JDK \`[25.0.2,)\`):\n\`\`\`xml\n<dependency>\n    <groupId>io.github.beehive-lab</groupId>\n    <artifactId>jllm</artifactId>\n    <version>${version}-jdk25</version>\n</dependency>\n\`\`\`\n\n`;
+            releaseNotes += `JDK 21 (\`jdk21\` profile, auto-activates for JDK \`[21,25)\`):\n\`\`\`xml\n<dependency>\n    <groupId>io.github.beehive-lab</groupId>\n    <artifactId>jitllm</artifactId>\n    <version>${version}-jdk21</version>\n</dependency>\n\`\`\`\n\n`;
+            releaseNotes += `JDK 25 (\`jdk25\` profile, auto-activates for JDK \`[25.0.2,)\`):\n\`\`\`xml\n<dependency>\n    <groupId>io.github.beehive-lab</groupId>\n    <artifactId>jitllm</artifactId>\n    <version>${version}-jdk25</version>\n</dependency>\n\`\`\`\n\n`;
             releaseNotes += `**Gradle**\n\n`;
-            releaseNotes += `JDK 21:\n\`\`\`groovy\nimplementation 'io.github.beehive-lab:jllm:${version}-jdk21'\n\`\`\`\n\n`;
-            releaseNotes += `JDK 25:\n\`\`\`groovy\nimplementation 'io.github.beehive-lab:jllm:${version}-jdk25'\n\`\`\`\n\n`;
-            releaseNotes += `---\n\n📖 [Documentation](https://github.com/beehive-lab/jllm#readme) | 🔗 Maven Central: [jdk21](https://central.sonatype.com/artifact/io.github.beehive-lab/jllm/${version}-jdk21) · [jdk25](https://central.sonatype.com/artifact/io.github.beehive-lab/jllm/${version}-jdk25)`;
+            releaseNotes += `JDK 21:\n\`\`\`groovy\nimplementation 'io.github.beehive-lab:jitllm:${version}-jdk21'\n\`\`\`\n\n`;
+            releaseNotes += `JDK 25:\n\`\`\`groovy\nimplementation 'io.github.beehive-lab:jitllm:${version}-jdk25'\n\`\`\`\n\n`;
+            releaseNotes += `---\n\n📖 [Documentation](https://github.com/beehive-lab/jitllm#readme) | 🔗 Maven Central: [jdk21](https://central.sonatype.com/artifact/io.github.beehive-lab/jitllm/${version}-jdk21) · [jdk25](https://central.sonatype.com/artifact/io.github.beehive-lab/jitllm/${version}-jdk25)`;
             
             const { data: release } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: `v${version}`,
-              name: `jllm ${version}`,
+              name: `jitllm ${version}`,
               body: releaseNotes,
               draft: false,
               prerelease: false
@@ -136,7 +136,7 @@ jobs:
     runs-on: [self-hosted, Linux, x64]
     permissions:
       contents: write
-    if: github.repository == 'beehive-lab/jllm' && github.event_name == 'pull_request'
+    if: github.repository == 'beehive-lab/jitllm' && github.event_name == 'pull_request'
 
     steps:
       - name: Delete release branch
