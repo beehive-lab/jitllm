@@ -112,6 +112,55 @@ public final class LoweredPlanSelection {
                         model.architectureId(), weightRepresentation(model), executionMode(state));
     }
 
+    /**
+     * Whether a session of this model, under this policy, can take the lowered path: {@link
+     * #handles} answered before any state exists.
+     *
+     * <p>What a model allocates up front for the lowering — the shared key/value pool, sized for
+     * several sessions — has to follow this answer and not {@link #enabled()}. {@code auto} is
+     * enabled for every model yet selects legacy for all but the qualified set, and a legacy
+     * session given the pool pays for sessions it never shares with.
+     */
+    public static boolean mayHandle(Model model, ExecutionPolicy policy) {
+        return switch (mode()) {
+            case OFF -> false;
+                // ON fails loudly in handles() for an unimplemented combination; it needs the pool.
+            case ON -> true;
+            case AUTO ->
+                    implemented(model, policy)
+                            && LoweringQualification.isQualified(
+                                    model.architectureId(),
+                                    weightRepresentation(model),
+                                    executionMode(policy));
+        };
+    }
+
+    /**
+     * {@link #mayHandle} for a model whose weights are not loaded, as a preflight has it: the
+     * architecture, and the loaded weight type when the file determines it.
+     *
+     * @param weightType the materialized weight type, or {@code null} when unknown — then any type
+     *     is assumed, so the answer can only err toward the lowered path and the shared pool that
+     *     comes with it, over-counting a reservation rather than missing one
+     */
+    public static boolean mayHandle(
+            org.beehive.jllm.runtime.model.ArchitectureId architecture,
+            DataType weightType,
+            ExecutionPolicy policy) {
+        return switch (mode()) {
+            case OFF -> false;
+            case ON -> true;
+            case AUTO ->
+                    LoweringQualification.qualified().stream()
+                            .anyMatch(
+                                    c ->
+                                            c.architecture().equals(architecture)
+                                                    && (weightType == null
+                                                            || c.dtype() == weightType)
+                                                    && c.mode() == executionMode(policy));
+        };
+    }
+
     /** The exact triple qualification is keyed on, for messages and metrics. */
     public static LoweringQualification.Combination combinationOf(Model model, State state) {
         return new LoweringQualification.Combination(
@@ -120,13 +169,17 @@ public final class LoweredPlanSelection {
 
     /** Whether a lowered implementation exists for this exact combination and could run it. */
     public static boolean implemented(Model model, State state) {
+        return implemented(model, state.executionPolicy());
+    }
+
+    private static boolean implemented(Model model, ExecutionPolicy policy) {
         // Device-resident sampling is not implemented. Its token id lives in a domain-owned array,
         // and reading it after the lock is released is exactly the escape the invocation boundary
         // exists to prevent; carrying it out properly is follow-up work.
-        if (state.executionPolicy().samplingResidency() == SamplingResidency.DEVICE) {
+        if (policy.samplingResidency() == SamplingResidency.DEVICE) {
             return false;
         }
-        if (!SELECTABLE_MODES.contains(executionMode(state))) {
+        if (!SELECTABLE_MODES.contains(executionMode(policy))) {
             // Single-token only: the prefill/decode topologies keep the legacy plan.
             return false;
         }
@@ -139,7 +192,7 @@ public final class LoweredPlanSelection {
             return false;
         }
         return TornadoBackendSupport.supports(
-                model.architectureId(), weightRepresentation(model), executionMode(state));
+                model.architectureId(), weightRepresentation(model), executionMode(policy));
     }
 
     /**
@@ -246,7 +299,10 @@ public final class LoweredPlanSelection {
 
     /** Which execution mode a state's policy asks for, in the backend's vocabulary. */
     private static ExecutionMode executionMode(State state) {
-        var policy = state.executionPolicy();
+        return executionMode(state.executionPolicy());
+    }
+
+    private static ExecutionMode executionMode(ExecutionPolicy policy) {
         if (policy.phaseStrategy() != ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
             return ExecutionMode.STANDARD;
         }

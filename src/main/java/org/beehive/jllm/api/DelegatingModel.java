@@ -72,8 +72,11 @@ final class DelegatingModel implements TextGenerationModel {
     /** Rule 16: library code routes its output through the platform logger. */
     private static final System.Logger LOGGER = System.getLogger(DelegatingModel.class.getName());
 
-    /** How many sequences the handle's pool is sized for before a lease is refused. */
-    private static final int DEFAULT_CONCURRENT_SESSIONS = 8;
+    /**
+     * How many sessions may be open at once — {@link ModelOptions#maxConcurrentSessions()}. It
+     * sizes the admission accounting and, when one is attached, the shared key/value pool.
+     */
+    private final int maxConcurrentSessions;
 
     DelegatingModel(Model delegate, Path source, boolean gpu) {
         this(
@@ -101,6 +104,22 @@ final class DelegatingModel implements TextGenerationModel {
             ExecutionPolicy executionPolicy,
             org.beehive.jllm.runtime.policy.StorageOptions storageOptions,
             ThinkingMode thinkingMode) {
+        this(delegate, source, gpu, executionPolicy, storageOptions, thinkingMode, 1);
+    }
+
+    DelegatingModel(
+            Model delegate,
+            Path source,
+            boolean gpu,
+            ExecutionPolicy executionPolicy,
+            org.beehive.jllm.runtime.policy.StorageOptions storageOptions,
+            ThinkingMode thinkingMode,
+            int maxConcurrentSessions) {
+        if (maxConcurrentSessions < 1) {
+            throw new IllegalArgumentException(
+                    "maxConcurrentSessions must be at least 1: " + maxConcurrentSessions);
+        }
+        this.maxConcurrentSessions = maxConcurrentSessions;
         this.delegate = delegate;
         this.gpu = gpu;
         this.thinkingMode = thinkingMode;
@@ -110,13 +129,13 @@ final class DelegatingModel implements TextGenerationModel {
         // One weight representation is all today's Weights can report: it carries a single
         // materialized type for the whole set. Per-tensor descriptors make a genuinely
         // mixed answer possible, and ModelInfo can already express it — see weightTypes().
-        // Sized for a handful of concurrent sequences at the model's own context length. The
+        // Sized for the caller's concurrency at the model's load-time context length. The
         // bytes-per-block figure is what a block costs across every layer, which is what
         // admission has to reason about (D5).
         int contextLength = delegate.configuration().contextLength();
         this.sessions =
                 KvCacheManager.sizedFor(
-                        DEFAULT_CONCURRENT_SESSIONS,
+                        maxConcurrentSessions,
                         contextLength,
                         BLOCK_SIZE_TOKENS,
                         bytesPerBlock(delegate, storageOptions));
@@ -145,11 +164,12 @@ final class DelegatingModel implements TextGenerationModel {
         // construction invariant of a shareable binding domain: a shared workspace and program over
         // session-private key/value arrays is the combination that silently gives one session
         // another's cache (option 1).
-        boolean requiredByLowering =
-                org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection.enabled();
-        if ((!storageOptions.sharedKeyValuePool() && !requiredByLowering)
-                || !gpu
-                || !delegate.supportsSharedKvStorage()) {
+        if (!gpu
+                || !attachesSharedPool(
+                        delegate,
+                        storageOptions,
+                        org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection.mayHandle(
+                                delegate, executionPolicy))) {
             return;
         }
         var config = delegate.configuration();
@@ -157,9 +177,9 @@ final class DelegatingModel implements TextGenerationModel {
         int blocksPerSlot = (contextLength + BLOCK_SIZE_TOKENS - 1) / BLOCK_SIZE_TOKENS;
         var request =
                 new KvStorageRequest(
-                        DEFAULT_CONCURRENT_SESSIONS * blocksPerSlot,
+                        KvCacheManager.totalBlocks(maxConcurrentSessions, blocksPerSlot),
                         blocksPerSlot,
-                        DEFAULT_CONCURRENT_SESSIONS,
+                        maxConcurrentSessions,
                         BLOCK_SIZE_TOKENS,
                         config.numberOfLayers(),
                         kvDim,
@@ -178,6 +198,21 @@ final class DelegatingModel implements TextGenerationModel {
                     System.Logger.Level.INFO,
                     "shared KV pool not attached (" + e + "); sessions keep their own cache");
         }
+    }
+
+    /**
+     * Whether a GPU load of this model attaches the shared key/value pool — the one rule, so the
+     * preflight predicts the reservation the load makes.
+     *
+     * @param lowerable whether a session of this model can take the lowered path, which requires
+     *     the pool
+     */
+    static boolean attachesSharedPool(
+            Model model,
+            org.beehive.jllm.runtime.policy.StorageOptions storageOptions,
+            boolean lowerable) {
+        return model.supportsSharedKvStorage()
+                && (storageOptions.sharedKeyValuePool() || lowerable);
     }
 
     /**
@@ -257,6 +292,18 @@ final class DelegatingModel implements TextGenerationModel {
             if (closed) {
                 throw new IllegalStateException(
                         DiagnosticCode.USED_AFTER_CLOSE.message("model is closed: " + info.name()));
+            }
+            if (openSessions.size() >= maxConcurrentSessions) {
+                throw new IllegalStateException(
+                        DiagnosticCode.KV_POOL_EXHAUSTED.message(
+                                (maxConcurrentSessions == 1
+                                                ? "the one session "
+                                                : "all " + maxConcurrentSessions + " sessions ")
+                                        + info.name()
+                                        + " was loaded for "
+                                        + (maxConcurrentSessions == 1 ? "is" : "are")
+                                        + " open; close one, or load the model with"
+                                        + " ModelOptions.builder().maxConcurrentSessions(n)"));
             }
             int contextLength = requested > 0 ? requested : modelContext;
             KvLease lease = sessions.acquire(contextLength);
@@ -350,7 +397,9 @@ final class DelegatingModel implements TextGenerationModel {
             org.beehive.jllm.model.Model delegate,
             org.beehive.jllm.runtime.kv.KvLease lease,
             ExecutionPolicy policy) {
-        if (!gpu || !org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection.enabled()) {
+        if (!gpu
+                || !org.beehive.jllm.backend.tornado.lowering.LoweredPlanSelection.mayHandle(
+                        delegate, executionPolicy)) {
             return new LegacySessionRuntime(delegate, lease, policy, storageOptions);
         }
         if (!policy.equals(executionPolicy)) {

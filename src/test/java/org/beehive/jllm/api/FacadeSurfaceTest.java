@@ -96,6 +96,7 @@ public class FacadeSurfaceTest {
                         "backend",
                         "device",
                         "thinkingMode",
+                        "maxConcurrentSessions",
                         "build"),
                 builderMethods);
 

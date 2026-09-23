@@ -68,7 +68,8 @@ public final class StartupDiagnostics {
                         return c.contextLengthModel();
                     }
                 };
-        return render(info, shape, execution, sampling, options, loadNs, startedNs);
+        // A raw model has no facade sessions: its caller drives one plan, or the batch engine.
+        return render(info, shape, execution, sampling, options, 0, loadNs, startedNs);
     }
 
     public static String render(
@@ -94,6 +95,26 @@ public final class StartupDiagnostics {
             ExecutionInfo execution,
             String sampling,
             ModelOptions modelOptions,
+            long modelLoadNs,
+            long startedNs) {
+        return render(
+                info,
+                shape,
+                execution,
+                sampling,
+                modelOptions,
+                modelOptions.maxConcurrentSessions(),
+                modelLoadNs,
+                startedNs);
+    }
+
+    private static String render(
+            ModelInfo info,
+            ModelConfiguration shape,
+            ExecutionInfo execution,
+            String sampling,
+            ModelOptions modelOptions,
+            int concurrentSessions,
             long modelLoadNs,
             long startedNs) {
         GgufModelFacts facts = null;
@@ -130,6 +151,7 @@ public final class StartupDiagnostics {
                         System.nanoTime() - startedNs,
                         initialMetrics,
                         memory,
+                        concurrentSessions,
                         true)
                 .render();
     }

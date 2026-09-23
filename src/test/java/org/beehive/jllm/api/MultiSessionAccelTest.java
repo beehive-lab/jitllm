@@ -38,7 +38,12 @@ public class MultiSessionAccelTest {
         String previous = System.getProperty(GPU_PROPERTY);
         System.setProperty(GPU_PROPERTY, Boolean.toString(gpu));
         try (LocalModel loaded =
-                LocalModels.load(model, ModelOptions.builder().contextLength(512).build())) {
+                LocalModels.load(
+                        model,
+                        ModelOptions.builder()
+                                .contextLength(512)
+                                .maxConcurrentSessions(2)
+                                .build())) {
             TextGenerationModel generator = (TextGenerationModel) loaded;
 
             try (GenerationSession alice = generator.newSession();

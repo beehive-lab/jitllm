@@ -9,6 +9,7 @@ import org.beehive.jllm.model.Configuration;
 import org.beehive.jllm.runtime.backend.BackendId;
 import org.beehive.jllm.runtime.backend.Device;
 import org.beehive.jllm.runtime.memory.BufferClass;
+import org.beehive.jllm.runtime.memory.KeyValueReservation;
 import org.beehive.jllm.runtime.memory.MemoryComponent;
 import org.beehive.jllm.runtime.memory.MemoryPlan;
 import org.beehive.jllm.runtime.memory.WeightFootprint;
@@ -110,6 +111,29 @@ public final class TornadoMemoryModel {
             ExecutionPolicy policy,
             Device device,
             long configuredBudgetBytes) {
+        return predict(
+                weights,
+                config,
+                policy,
+                device,
+                configuredBudgetBytes,
+                KeyValueReservation.singlePrivate());
+    }
+
+    /**
+     * {@link #predict(WeightFootprint, Configuration, ExecutionPolicy, Device, long)} for a stated
+     * key/value provisioning: a pool reserved at load for several sessions costs what it reserves,
+     * not what one session would.
+     *
+     * @param keyValue how the key/value storage is provisioned
+     */
+    public static MemoryPlan predict(
+            WeightFootprint weights,
+            Configuration config,
+            ExecutionPolicy policy,
+            Device device,
+            long configuredBudgetBytes,
+            KeyValueReservation keyValue) {
         long header = device.nativeArrayHeaderBytes();
         int layoutFamilies = layerGraphFamilies(policy, config.numberOfLayers());
         // How many of those families upload the weights, which is what costs memory. A family
@@ -142,14 +166,17 @@ public final class TornadoMemoryModel {
         // The layers that actually hold key/value entries, which is every layer for every family
         // but qwen35 — where it is one in four, and the layer count would predict four times the
         // store that is allocated.
+        // Block-rounded, and for a shared pool sized for every session plus its scratch block:
+        // the pool is what the device holds, and it is reserved whether or not the sessions open.
         long kvElements =
-                (long) config.contextLength() * config.keyValueLayerCount() * config.kvDim();
+                keyValue.elementsPerArray(
+                        config.contextLength(), config.keyValueLayerCount(), config.kvDim());
         // FP16 KV is a storage choice, so it must be read rather than assumed FP32 — assuming
         // FP32 would over-predict a configured FP16 cache by exactly its own size.
         int kvElementBytes = kvBytesPerElement();
         components.add(
                 new MemoryComponent(
-                        "key/value cache",
+                        keyValueComponentName(keyValue),
                         BufferClass.KV_CACHE,
                         kvElements * 2L * kvElementBytes,
                         1,
@@ -277,10 +304,32 @@ public final class TornadoMemoryModel {
                         + config.contextLength()
                         + "; kv "
                         + (kvBytesPerElement() == 2 ? "FP16" : "FP32")
+                        + keyValueAssumption(keyValue)
                         + (nativePrefill && stackedPerLayer > 0 ? "; native prefill" : "")
                         + "; native-array header "
                         + header
                         + " B");
+    }
+
+    private static String keyValueComponentName(KeyValueReservation keyValue) {
+        if (keyValue.pooled()) {
+            return "key/value pool ("
+                    + keyValue.sessions()
+                    + (keyValue.sessions() == 1 ? " session" : " sessions")
+                    + ", reserved at load)";
+        }
+        return keyValue.sessions() == 1 ? "key/value cache" : "key/value cache (per session)";
+    }
+
+    private static String keyValueAssumption(KeyValueReservation keyValue) {
+        if (keyValue.pooled()) {
+            return " pool for " + keyValue.sessions() + " session(s)";
+        }
+        return keyValue.sessions() == 1
+                ? ""
+                : " per session; each of up to "
+                        + keyValue.sessions()
+                        + " open sessions allocates its own session state";
     }
 
     /**

@@ -57,6 +57,15 @@ embeddings is a `LocalModel` and nothing else.
 | `executionPolicy` | phase strategy, prefill batch size, sampling residency, attention options |
 | `storageOptions` | KV dtype and paging |
 | `thinkingMode` | default for sessions of this model |
+| `maxConcurrentSessions` | how many sessions may be open at once (default 1) |
+
+`maxConcurrentSessions` is a memory decision, like `contextLength`. On the GPU, a model whose
+sessions share one key/value pool reserves it at load for that many sessions at the full load-time
+context, plus one scratch block; a session that asks for a shorter `contextLength` does not shrink
+the reservation. Otherwise each open session allocates its own cache. Opening one session more than
+the limit throws `IllegalStateException` carrying `GPUL-MEM-003`; closing a session frees its place.
+Callers that hold several sessions of one model at once must set it. `LocalModels.preflight` and
+the CLI's `-v` report size the key/value cache accordingly.
 
 | `SessionOptions` | |
 | --- | --- |
@@ -129,6 +138,7 @@ re-entering the session from the callback would deadlock.
 | Idempotence | a successful `close()` on either is a no-op the second time |
 | Use after close | throws `IllegalStateException` carrying `GPUL-LIFE-001`; a session also refuses once its *model* is closed |
 | After model close | no new session may be opened |
+| Session limit | at most `maxConcurrentSessions` open at once; the next `newSession()` throws `GPUL-MEM-003` until one closes |
 | Reuse | a session is reusable across generations; its position advances and `reset()` rewinds it |
 | Concurrency | a session is **not** thread-safe. A loaded model is |
 

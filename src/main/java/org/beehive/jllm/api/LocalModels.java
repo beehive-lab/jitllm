@@ -69,7 +69,8 @@ public final class LocalModels {
                 gpu,
                 options.executionPolicy(),
                 options.storageOptions(),
-                options.thinkingMode());
+                options.thinkingMode(),
+                options.maxConcurrentSessions());
     }
 
     /**

@@ -82,11 +82,35 @@ public final class KvCacheManager implements CapacityQuery, AutoCloseable {
         // slots * blocksPerSlot, and nothing above this method assumes otherwise.
         return new KvCacheManager(
                 new BlockPool(
-                        slots * blocksPerSequence,
+                        totalBlocks(slots, blocksPerSequence),
                         blocksPerSequence,
                         slots,
                         blockSizeTokens,
                         bytesPerBlock));
+    }
+
+    /**
+     * Blocks for {@code sessions} sequences of {@code blocksPerSequence} each, refused rather than
+     * wrapped when the product does not fit: once the session count is the caller's, an overflow
+     * would silently size the pool, and every array built from it, for a nonsense capacity.
+     *
+     * @throws IllegalArgumentException if the block count exceeds {@link Integer#MAX_VALUE}
+     */
+    public static int totalBlocks(int sessions, int blocksPerSequence) {
+        try {
+            // The scratch block the storage adds beyond the leasable range must fit as well.
+            Math.addExact(Math.multiplyExact(sessions, blocksPerSequence), 1);
+            return sessions * blocksPerSequence;
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException(
+                    "a key/value pool for "
+                            + sessions
+                            + " sessions of "
+                            + blocksPerSequence
+                            + " blocks exceeds the addressable block count; reduce"
+                            + " maxConcurrentSessions or the context length",
+                    overflow);
+        }
     }
 
     /**

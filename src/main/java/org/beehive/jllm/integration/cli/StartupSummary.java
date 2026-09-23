@@ -23,6 +23,7 @@ record StartupSummary(
         long readyNs,
         RunMetricsSnapshot timings,
         MemoryPlan memory,
+        int concurrentSessions,
         boolean verbose) {
 
     String render() {
@@ -51,7 +52,8 @@ record StartupSummary(
                             + " attention heads / "
                             + shape.keyValueHeads()
                             + " KV heads");
-            row(out, "Training context", shape.maxContextLength() + " tokens");
+            trainingContext(shape)
+                    .ifPresent(tokens -> row(out, "Training context", tokens + " tokens"));
             if (gpu && timings.executionPath() != null) {
                 row(out, "Execution path", timings.executionPath());
             }
@@ -90,6 +92,9 @@ record StartupSummary(
                                 .collect(Collectors.joining(", ")));
         row(out, "Execution", execution.mode());
         row(out, "Context", model.contextLength() + " tokens");
+        if (concurrentSessions > 0) {
+            row(out, "Concurrent sessions", concurrentSessions);
+        }
         if (execution.prefillBatchSize() > 1) {
             row(out, "Prefill chunk", execution.prefillBatchSize() + " tokens");
         }
@@ -185,6 +190,18 @@ record StartupSummary(
 
     private static String milliseconds(long ns) {
         return String.format(Locale.ROOT, "%.2f ms", ns / 1e6);
+    }
+
+    /**
+     * The model's own maximum sequence length, when its family records one. Llama, Mistral and
+     * Devstral configurations do not, and throw; a diagnostic report must not fail the run for it.
+     */
+    private static java.util.OptionalInt trainingContext(ModelConfiguration shape) {
+        try {
+            return java.util.OptionalInt.of(shape.maxContextLength());
+        } catch (UnsupportedOperationException notRecorded) {
+            return java.util.OptionalInt.empty();
+        }
     }
 
     private static void row(StringBuilder out, String label, Object value) {

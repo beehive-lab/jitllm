@@ -72,8 +72,8 @@ public final class TornadoKvStore implements KvStorage {
             throw new IllegalArgumentException(
                     "KV pool of "
                             + elements
-                            + " elements exceeds what a single TornadoVM array can address; reduce the"
-                            + " concurrent-session count or the context length");
+                            + " elements exceeds what a single TornadoVM array can address; reduce"
+                            + " maxConcurrentSessions or the context length");
         }
         this.blockSizeTokens = blockSizeTokens;
         this.blocksPerSlot = blocksPerSlot;

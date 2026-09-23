@@ -224,7 +224,12 @@ public class LoweredSharedWorkspaceAccelTest {
         System.setProperty(GPU_PROPERTY, "true");
         System.setProperty(LoweredPlanSelection.ENABLE_PROPERTY, "true");
         try (LocalModel loaded =
-                LocalModels.load(model, ModelOptions.builder().contextLength(256).build())) {
+                LocalModels.load(
+                        model,
+                        ModelOptions.builder()
+                                .contextLength(256)
+                                .maxConcurrentSessions(2)
+                                .build())) {
             TextGenerationModel generator = (TextGenerationModel) loaded;
             DelegatingModel handle = (DelegatingModel) loaded;
             long before = LoweredPlanSelection.loweredPlanCount();
@@ -302,6 +307,46 @@ public class LoweredSharedWorkspaceAccelTest {
         }
     }
 
+    /**
+     * The default single session is enough for the lowered path: its pool has one slot and the
+     * scratch block, and the slot is reusable once the session closes. Under {@code auto}, which is
+     * what every caller that sets nothing gets.
+     */
+    @Test
+    public void theDefaultSingleSessionLowersAndReopens() throws Exception {
+        Path model = GoldenFixture.locate(Fixture.LLAMA_3_2_1B_F16);
+        if (model == null) {
+            assumeTrue(
+                    "environment absent: " + GoldenFixture.absentMessage(Fixture.LLAMA_3_2_1B_F16),
+                    false);
+        }
+        String previousGpu = System.getProperty(GPU_PROPERTY);
+        String previousLowering = System.getProperty(LoweredPlanSelection.ENABLE_PROPERTY);
+        System.setProperty(GPU_PROPERTY, "true");
+        System.clearProperty(LoweredPlanSelection.ENABLE_PROPERTY);
+        try (LocalModel loaded =
+                LocalModels.load(model, ModelOptions.builder().contextLength(8192).build())) {
+            TextGenerationModel generator = (TextGenerationModel) loaded;
+            long before = LoweredPlanSelection.loweredPlanCount();
+            String first;
+            try (GenerationSession session = generator.newSession()) {
+                first = generate(session);
+            }
+            assertTrue(
+                    "auto did not lower the qualified tuple",
+                    LoweredPlanSelection.loweredPlanCount() > before);
+            try (GenerationSession reopened = generator.newSession()) {
+                assertEquals(
+                        "the reopened session must reuse the slot and reproduce the output",
+                        first,
+                        generate(reopened));
+            }
+        } finally {
+            restore(GPU_PROPERTY, previousGpu);
+            restore(LoweredPlanSelection.ENABLE_PROPERTY, previousLowering);
+        }
+    }
+
     // harness
 
     private interface Body {
@@ -320,7 +365,12 @@ public class LoweredSharedWorkspaceAccelTest {
         System.setProperty(GPU_PROPERTY, "true");
         System.setProperty(LoweredPlanSelection.ENABLE_PROPERTY, "true");
         try (LocalModel loaded =
-                LocalModels.load(model, ModelOptions.builder().contextLength(256).build())) {
+                LocalModels.load(
+                        model,
+                        ModelOptions.builder()
+                                .contextLength(256)
+                                .maxConcurrentSessions(2)
+                                .build())) {
             long before = LoweredPlanSelection.loweredPlanCount();
             body.run((TextGenerationModel) loaded, (DelegatingModel) loaded);
             assertTrue(

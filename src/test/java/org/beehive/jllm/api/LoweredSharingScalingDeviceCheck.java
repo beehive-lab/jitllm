@@ -58,7 +58,12 @@ public class LoweredSharingScalingDeviceCheck {
         System.setProperty(GPU_PROPERTY, "true");
         System.clearProperty(LoweredPlanSelection.ENABLE_PROPERTY);
         try (LocalModel loaded =
-                LocalModels.load(model, ModelOptions.builder().contextLength(256).build())) {
+                LocalModels.load(
+                        model,
+                        ModelOptions.builder()
+                                .contextLength(256)
+                                .maxConcurrentSessions(2)
+                                .build())) {
             TextGenerationModel generator = (TextGenerationModel) loaded;
             long before = LoweredPlanSelection.loweredPlanCount();
             try (GenerationSession first = generator.newSession();
@@ -125,7 +130,12 @@ public class LoweredSharingScalingDeviceCheck {
             System.setProperty(LoweredPlanSelection.ENABLE_PROPERTY, "off");
         }
         try (LocalModel loaded =
-                LocalModels.load(model, ModelOptions.builder().contextLength(256).build())) {
+                LocalModels.load(
+                        model,
+                        ModelOptions.builder()
+                                .contextLength(256)
+                                .maxConcurrentSessions(count)
+                                .build())) {
             TextGenerationModel generator = (TextGenerationModel) loaded;
             long before = LoweredPlanSelection.loweredPlanCount();
             GenerationSession[] sessions = new GenerationSession[count];

@@ -33,6 +33,8 @@ public record ModelRunConfig(Path model, int contextLength, boolean gpu) {
         }
         return ModelOptions.builder()
                 .contextLength(contextLength)
+                // run, chat and the serial server each hold exactly one session per model.
+                .maxConcurrentSessions(1)
                 .backend(backend)
                 .executionPolicy(ExecutionPolicy.fromSystemProperties())
                 .build();
