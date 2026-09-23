@@ -34,9 +34,11 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  */
 public interface TornadoVMMasterPlan {
 
-    boolean ENABLE_TORNADOVM_INIT_TIME =
-            Boolean.getBoolean("jllm.verbose")
-                    || Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit");
+    /**
+     * The deprecated per-stage initialization log lines. {@code --verbose} reports the same facts
+     * once, in the startup report, so it no longer enables these; only the legacy property does.
+     */
+    boolean ENABLE_TORNADOVM_INIT_TIME = Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit");
 
     /** When {@code true}, {@code withCUDAGraph()} is called — CUDA backend only. */
     boolean CUDA_GRAPHS = Boolean.parseBoolean(System.getProperty("jllm.cudaGraphs", "false"));

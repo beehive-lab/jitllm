@@ -152,7 +152,6 @@ class LlamaRunner:
 
         if args.verbose:
             cmd.append("-Djllm.verbose=true")
-            cmd.append("-Djllm.EnableTimingForTornadoVMInit=true")
 
         if args.with_prefill_decode or args.batch_prefill_size is not None:
             cmd.append("-Djllm.withPrefillDecode=true")
@@ -377,12 +376,6 @@ class LlamaRunner:
                     "Use --execute-after-show to run the command after displaying it."
                 )
                 return 0
-
-        if args.verbose:
-            print("Executing command:", file=sys.stderr)
-            for arg in cmd:
-                print(f"  {arg}", file=sys.stderr)
-            print(file=sys.stderr)
 
         # Execute the command
         try:

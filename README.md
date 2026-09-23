@@ -342,8 +342,10 @@ execution path, and memory-estimate assumptions. Startup timings are printed onc
 the ending performance block contains only request metrics.
 
 `--verbose-init` remains a hidden deprecated alias for `--verbose`.
-For direct Java launches, use `-Djllm.verbose=true`; the legacy
-`-Djllm.EnableTimingForTornadoVMInit=true` setting remains supported.
+For direct Java launches, use `-Djllm.verbose=true`. The legacy
+`-Djllm.EnableTimingForTornadoVMInit=true` setting still enables the report and, in
+addition, the older per-stage initialization log lines; `--verbose` no longer sets it.
+The full Java command is printed by `--show-command`, not by `--verbose`.
 The summary is CLI-only; library callers can explicitly use `GenerationSession.prepare()`
 to prepare a session and obtain its execution settings without advancing its position.
 

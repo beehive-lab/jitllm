@@ -9,7 +9,9 @@ Run with: python3 -m unittest discover -s scripts/tests
 
 import importlib.util
 import io
+import os
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -153,6 +155,20 @@ class VerbosityOptions(unittest.TestCase):
         self.assertEqual(1, len(warnings))
         self.assertIn("deprecated", warnings[0])
         self.assertIn("--verbose", warnings[0])
+
+    def test_verbose_forwards_only_the_report_property(self):
+        args = launcher.create_parser().parse_args(["--model", "stub.gguf", "-v"])
+        with tempfile.TemporaryDirectory() as sdk:
+            open(os.path.join(sdk, "tornado-argfile"), "w").close()
+            os.makedirs(os.path.join(sdk, "target"))
+            open(os.path.join(sdk, "target", "jllm-1.0.0-jdk21.jar"), "w").close()
+            runner = launcher.LlamaRunner.__new__(launcher.LlamaRunner)
+            runner.tornado_sdk = sdk
+            runner.java_home, runner.llama_root = "/stub/java", sdk
+            args.installed_backends, args.backend = [launcher.Backend.CUDA], launcher.Backend.CUDA
+            cmd = runner._build_base_command(args)
+        self.assertIn("-Djllm.verbose=true", cmd)
+        self.assertNotIn("-Djllm.EnableTimingForTornadoVMInit=true", cmd)
 
     def test_help_exposes_only_the_new_verbosity_interface(self):
         text = launcher.create_parser().format_help()

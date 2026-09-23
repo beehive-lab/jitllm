@@ -56,9 +56,9 @@ import uk.ac.manchester.tornado.cudnn.CuDnn;
  */
 public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLayerTaskGraphs {
 
+    /** Legacy detail; the startup report's native-library and MMA lines cover it under -v. */
     private static void logInitialization(String format, Object... args) {
-        if (Boolean.getBoolean("jllm.verbose")
-                || Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit")) {
+        if (Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit")) {
             System.err.printf(java.util.Locale.ROOT, format, args);
         }
     }
