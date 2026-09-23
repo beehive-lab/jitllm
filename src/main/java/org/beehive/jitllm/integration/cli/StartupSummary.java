@@ -122,12 +122,12 @@ record StartupSummary(
                     (vectorBits == 0 ? "tensor SIMD off" : "tensor SIMD " + vectorBits + "-bit")
                             + (model.weightTypes()
                                                     .contains(
-                                                            org.beehive.jitllm.runtime.tensor.DataType
-                                                                    .Q4_0)
+                                                            org.beehive.jitllm.runtime.tensor
+                                                                    .DataType.Q4_0)
                                             || model.weightTypes()
                                                     .contains(
-                                                            org.beehive.jitllm.runtime.tensor.DataType
-                                                                    .Q4_1)
+                                                            org.beehive.jitllm.runtime.tensor
+                                                                    .DataType.Q4_1)
                                     ? "; Q4 SIMD "
                                             + (Boolean.parseBoolean(
                                                             System.getProperty(

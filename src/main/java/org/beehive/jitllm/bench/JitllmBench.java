@@ -295,7 +295,8 @@ public class JitllmBench {
                             path,
                             execution,
                             "synthetic token workloads (no text sampling)",
-                            new org.beehive.jitllm.integration.cli.ModelRunConfig(path, maxCtx, !cpu)
+                            new org.beehive.jitllm.integration.cli.ModelRunConfig(
+                                            path, maxCtx, !cpu)
                                     .modelOptions(),
                             loadNs,
                             startedNs));

@@ -59,8 +59,8 @@ public interface TornadoVMMasterPlan {
     /**
      * Factory: creates, JIT-compiles, and warms up the appropriate TornadoVMMasterPlan.
      *
-     * <p>When {@code jitllm.withPrefillDecode=true} and {@code jitllm.prefillBatchSize > 1}, a {@link
-     * TornadoVMMasterPlanBatchPrefillDecode} is returned. Otherwise a {@link
+     * <p>When {@code jitllm.withPrefillDecode=true} and {@code jitllm.prefillBatchSize > 1}, a
+     * {@link TornadoVMMasterPlanBatchPrefillDecode} is returned. Otherwise a {@link
      * TornadoVMMasterPlanSingleToken} is returned (used for the baseline path and the sequential
      * prefill/decode path when batch size is 1).
      *
@@ -109,7 +109,8 @@ public interface TornadoVMMasterPlan {
         // ran the legacy path however the flag was set: a paired A/B taken through the script was
         // measuring legacy against legacy. `handles` answers false unless the opt-in is set and the
         // tuple is the one the slice implements, so this costs a boolean read otherwise.
-        if (org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.handles(model, state)) {
+        if (org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.handles(
+                model, state)) {
             reportPath(org.beehive.jitllm.runtime.backend.ExecutionPath.LOWERED, model, state);
             return org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.lower(
                     model, state, sink);

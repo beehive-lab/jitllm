@@ -150,7 +150,9 @@ public final class ExecutionPolicy {
                 .build();
     }
 
-    /** The property that asks for vendor native libraries: {@code -Djitllm.nativeLibraries=true}. */
+    /**
+     * The property that asks for vendor native libraries: {@code -Djitllm.nativeLibraries=true}.
+     */
     public static final String NATIVE_LIBRARIES_PROPERTY = "jitllm.nativeLibraries";
 
     /**

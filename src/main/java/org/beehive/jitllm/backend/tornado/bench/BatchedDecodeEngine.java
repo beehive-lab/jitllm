@@ -45,8 +45,8 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * the single-stream greedy reference — a bit-exact end-to-end correctness check — while the
  * aggregate B×tok/s is the batching win.
  *
- * <p>Configured with a {@link BatchDecodeOptions}. {@code -Djitllm.prefillBatchSize} must still equal
- * the batch size, because the prefill plan is sized for it:
+ * <p>Configured with a {@link BatchDecodeOptions}. {@code -Djitllm.prefillBatchSize} must still
+ * equal the batch size, because the prefill plan is sized for it:
  *
  * <pre>
  *   var options = BatchDecodeOptions.of(32);          // batch 32, 512 context, 64 tokens
@@ -261,7 +261,8 @@ public class BatchedDecodeEngine {
         java.util.function.Consumer<GridScheduler> updateLayerSched;
         if (isQwen3) {
             var qState = (org.beehive.jitllm.inference.state.Qwen3State) state;
-            var qWeights = (org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights) weights;
+            var qWeights =
+                    (org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights) weights;
             Qwen3FP16LayersBatchDecodeMMA q =
                     paged
                             ? new Qwen3FP16LayersBatchDecodeMMA(

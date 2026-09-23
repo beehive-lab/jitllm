@@ -35,11 +35,11 @@ import org.junit.Test;
  * can be compared position by position.
  *
  * <p>Properties: {@code jitllm.heldout.batch} (prefill width, required), {@code jitllm.heldout.out}
- * (directory for the reports and the logits rows, required), {@code jitllm.kvcache.fp16} is set here.
- * The prefix is {@value #PREFIX} tokens: at width 512 that is two full chunks and a 128-token tail,
- * at width 1024 one full chunk and the same tail. The first passage is scored twice with a reset
- * between, and the two runs must be raw-bit identical (replay determinism of the build under test,
- * not of one build against another).
+ * (directory for the reports and the logits rows, required), {@code jitllm.kvcache.fp16} is set
+ * here. The prefix is {@value #PREFIX} tokens: at width 512 that is two full chunks and a 128-token
+ * tail, at width 1024 one full chunk and the same tail. The first passage is scored twice with a
+ * reset between, and the two runs must be raw-bit identical (replay determinism of the build under
+ * test, not of one build against another).
  */
 // @formatter:on
 public class Qwen35HeldOutNllAccelTest {

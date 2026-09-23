@@ -67,7 +67,8 @@ public class Gemma4 extends AbstractModel {
      * as part of layer 0's per-layer-embedding setup.
      */
     @Override
-    public void stagePerTokenDeviceInputs(org.beehive.jitllm.inference.state.State state, int token) {
+    public void stagePerTokenDeviceInputs(
+            org.beehive.jitllm.inference.state.State state, int token) {
         gatherPerLayerTokenEmbeddingRow((Gemma4State) state, token);
     }
 

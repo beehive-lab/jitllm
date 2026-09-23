@@ -35,8 +35,8 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * compile-time constants -- see {@link Gemma4Configuration#headDim}), some layers reuse an earlier
  * layer's KV cache instead of computing their own, the FFN uses GeGLU, and every layer mixes in a
  * per-layer embedding (PLE) contribution. See {@link
- * org.beehive.jitllm.backend.cpu.InferenceCore#forwardJavaGemma4} for the reference computation each
- * task mirrors.
+ * org.beehive.jitllm.backend.cpu.InferenceCore#forwardJavaGemma4} for the reference computation
+ * each task mirrors.
  *
  * <p>Layer 0's task graph additionally carries one-time-per-token setup that the reference
  * implementation performs before the layer loop: scaling the token embedding by {@code sqrt(dim)},
@@ -154,7 +154,8 @@ public class Gemma4Q8_0FFNLayers
         // An escape hatch for exact comparison, matching the one qwen35 keeps: the packed path
         // quantizes the activation to eight bits, so a build that needs to be compared against one
         // that does not needs to be able to turn it off. Not a tuning knob.
-        if (!"true".equalsIgnoreCase(System.getProperty("jitllm.gemma4.packedIntegerDot", "true"))) {
+        if (!"true"
+                .equalsIgnoreCase(System.getProperty("jitllm.gemma4.packedIntegerDot", "true"))) {
             return false;
         }
         return weights.wqLayered[layerIndex].dataType() == DataType.Q4_0

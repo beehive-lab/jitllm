@@ -102,7 +102,8 @@ public final class Qwen3Lowering implements FamilyLowering {
         // The per-head norms, which is what makes this Qwen3 rather than Qwen2 without biases.
         for (int i : new int[] {4, 5}) {
             org.beehive.jitllm.program.op.RmsNorm norm =
-                    (org.beehive.jitllm.program.op.RmsNorm) ProgramShape.leafOperation(inner.get(i));
+                    (org.beehive.jitllm.program.op.RmsNorm)
+                            ProgramShape.leafOperation(inner.get(i));
             if (!norm.isGrouped()) {
                 throw new UnsupportedProgramException(
                         FAMILY,

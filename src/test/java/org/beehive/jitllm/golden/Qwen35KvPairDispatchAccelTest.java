@@ -14,9 +14,9 @@ import org.junit.Test;
 
 /**
  * The production plan's key/value projection dispatch at a width and context given by {@code
- * jitllm.kvDispatch.width} / {@code jitllm.kvDispatch.context} (the benchmark builds contexts of prompt
- * + 8: 520 and 2056): the pair from width 512 up, the direct kernel below. One plan per JVM, as the
- * fixture demands.
+ * jitllm.kvDispatch.width} / {@code jitllm.kvDispatch.context} (the benchmark builds contexts of
+ * prompt + 8: 520 and 2056): the pair from width 512 up, the direct kernel below. One plan per JVM,
+ * as the fixture demands.
  */
 public class Qwen35KvPairDispatchAccelTest {
 

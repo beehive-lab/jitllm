@@ -8,8 +8,8 @@ import java.io.IOException;
  * <p>A diagnostic ({@code [GPUL-…]} message) already says what was refused and what to do instead —
  * {@code --fp32-kv-cache}, a larger {@code --gpu-memory}, a supported mode. Printed as a stack
  * trace, that one actionable line is buried under frames the user cannot act on, so it is printed
- * alone and the process exits 1. {@code -Djitllm.stacktrace=true} keeps the trace; any other failure
- * propagates unchanged.
+ * alone and the process exits 1. {@code -Djitllm.stacktrace=true} keeps the trace; any other
+ * failure propagates unchanged.
  */
 public final class CliErrors {
 

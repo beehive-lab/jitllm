@@ -24,8 +24,8 @@ import org.beehive.jitllm.runtime.tensor.DataType;
  *
  * <h2>The legacy path is the default</h2>
  *
- * <p>Off unless {@code jitllm.lowering} is set, and applicable to exactly one tuple: <b>Llama, FP16,
- * single-token</b>. Everything else — other families, {@code Q8_0}, the prefill/decode and
+ * <p>Off unless {@code jitllm.lowering} is set, and applicable to exactly one tuple: <b>Llama,
+ * FP16, single-token</b>. Everything else — other families, {@code Q8_0}, the prefill/decode and
  * batch-prefill/decode modes — takes the path it took before, unchanged. Those modes stay green as
  * non-regression checks rather than being claimed by this slice (acceptance, corrected).
  *

@@ -37,7 +37,8 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * slot, and rows that start mid-page, reach the last position of a 2048 context, and fill only part
  * of the chunk.
  *
- * <p>The timing screen at the end is opt-in ({@code JITLLM_KERNEL_SCREEN=true}) and asserts nothing.
+ * <p>The timing screen at the end is opt-in ({@code JITLLM_KERNEL_SCREEN=true}) and asserts
+ * nothing.
  */
 // @formatter:on
 public class Qwen35AttentionScoredParityAccelTest {

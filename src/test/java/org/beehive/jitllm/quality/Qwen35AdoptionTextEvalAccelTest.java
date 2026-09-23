@@ -35,12 +35,12 @@ import org.junit.Test;
  * then 128 scored decode steps whose full logits rows are written out so two builds can be compared
  * position by position.
  *
- * <p>Properties: {@code jitllm.eval.manifest} (required), {@code jitllm.eval.out} (directory for the
- * per-position reports and the full logits rows, required), {@code jitllm.eval.batch} (prefill width,
- * default 512); {@code jitllm.kvcache.fp16} is set here. Each passage names its own prefix and scored
- * lengths; at width 512 every prefix in the frozen manifest is several full chunks plus a 128-token
- * partial tail. The first passage is scored twice with a reset between, and the two runs must be
- * raw-bit identical (replay determinism of the build under test).
+ * <p>Properties: {@code jitllm.eval.manifest} (required), {@code jitllm.eval.out} (directory for
+ * the per-position reports and the full logits rows, required), {@code jitllm.eval.batch} (prefill
+ * width, default 512); {@code jitllm.kvcache.fp16} is set here. Each passage names its own prefix
+ * and scored lengths; at width 512 every prefix in the frozen manifest is several full chunks plus
+ * a 128-token partial tail. The first passage is scored twice with a reset between, and the two
+ * runs must be raw-bit identical (replay determinism of the build under test).
  */
 // @formatter:on
 public class Qwen35AdoptionTextEvalAccelTest {

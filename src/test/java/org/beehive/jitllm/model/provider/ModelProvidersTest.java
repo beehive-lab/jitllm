@@ -130,7 +130,8 @@ public class ModelProvidersTest {
                         .orElseThrow();
 
         assertEquals(3, load.getParameterCount());
-        assertEquals(org.beehive.jitllm.runtime.backend.BackendId.class, load.getParameterTypes()[1]);
+        assertEquals(
+                org.beehive.jitllm.runtime.backend.BackendId.class, load.getParameterTypes()[1]);
         assertEquals(
                 "a negative context length still means the model's own",
                 int.class,

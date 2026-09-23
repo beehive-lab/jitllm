@@ -25,8 +25,8 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
     /**
      * On-device greedy sampling: append a GPU argmax over the logits and transfer only the sampled
      * token id (1 int) to the host instead of the full vocab logits row. Only valid for greedy
-     * decoding — {@code JitllmApp} refuses it for temperature &gt; 0 and non-FP16 models, which still
-     * need the full logits host-side.
+     * decoding — {@code JitllmApp} refuses it for temperature &gt; 0 and non-FP16 models, which
+     * still need the full logits host-side.
      *
      * <p><b>Resolved from the session's policy on every read, deliberately not cached in a
      * field</b> (then Metal parity task 8). It was originally a {@code public static final boolean}

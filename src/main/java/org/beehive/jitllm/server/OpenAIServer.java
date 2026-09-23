@@ -169,11 +169,12 @@ public final class OpenAIServer implements AutoCloseable {
      * Characters per token assumed when checking a prompt against the window.
      *
      * <p>An exact count needs the tokenizer, and this package cannot reach one: the facade path
-     * holds a {@link org.beehive.jitllm.api.LocalModel}, whose surface is identity and configuration
-     * only. Four is deliberately generous — real text, and code especially, tokenizes to *more*
-     * tokens than this predicts — so the estimate errs toward accepting. It therefore catches a
-     * prompt that is grossly over the window and lets a marginal one through to the engine, which
-     * is the right way round for a guard that must never refuse a request that would have worked.
+     * holds a {@link org.beehive.jitllm.api.LocalModel}, whose surface is identity and
+     * configuration only. Four is deliberately generous — real text, and code especially, tokenizes
+     * to *more* tokens than this predicts — so the estimate errs toward accepting. It therefore
+     * catches a prompt that is grossly over the window and lets a marginal one through to the
+     * engine, which is the right way round for a guard that must never refuse a request that would
+     * have worked.
      */
     static final int ESTIMATED_CHARS_PER_TOKEN = 4;
 

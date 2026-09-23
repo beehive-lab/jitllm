@@ -111,8 +111,11 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
      */
     // @formatter:on
     protected boolean packedVocabulary(TornadoWeights weights) {
-        return !"false".equalsIgnoreCase(System.getProperty("jitllm.qwen35.packedIntegerDot", "true"))
-                && weights.wclsByteArray.dataType() == org.beehive.jitllm.runtime.tensor.DataType.Q6_K
+        return !"false"
+                        .equalsIgnoreCase(
+                                System.getProperty("jitllm.qwen35.packedIntegerDot", "true"))
+                && weights.wclsByteArray.dataType()
+                        == org.beehive.jitllm.runtime.tensor.DataType.Q6_K
                 && state.workspace.wrapXbQuants != null
                 && org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
                         .capabilities()

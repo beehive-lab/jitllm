@@ -35,8 +35,8 @@ final class MemoryPreflight {
         var weights =
                 ModelLoader.weightFootprint(
                         modelFile,
-                        org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry.nativeDeviceTypes(
-                                model.architectureId()));
+                        org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry
+                                .nativeDeviceTypes(model.architectureId()));
         return TornadoMemoryModel.predict(
                 weights,
                 config,

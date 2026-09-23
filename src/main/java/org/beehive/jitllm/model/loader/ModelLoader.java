@@ -118,8 +118,8 @@ public abstract class ModelLoader {
     }
 
     /**
-     * Whether discovered providers do the loading. Defaults to true; {@code -Djitllm.providers=false}
-     * selects the {@code ModelType} dispatch this replaced.
+     * Whether discovered providers do the loading. Defaults to true; {@code
+     * -Djitllm.providers=false} selects the {@code ModelType} dispatch this replaced.
      *
      * <p>The fallback exists for one release, so that a model which loads differently through a
      * provider has a way to be compared rather than a way to be stuck.

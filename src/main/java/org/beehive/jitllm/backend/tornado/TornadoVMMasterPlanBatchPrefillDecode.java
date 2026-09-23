@@ -95,7 +95,8 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
                     device.capabilities());
             var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
             if (layers
-                    instanceof org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers q) {
+                    instanceof
+                    org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers q) {
                 LOGGER.log(
                         System.Logger.Level.INFO,
                         "qwen35 batched prefill: {0}",

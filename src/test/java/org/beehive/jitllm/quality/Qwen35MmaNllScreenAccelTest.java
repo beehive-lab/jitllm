@@ -16,9 +16,9 @@ import uk.ac.manchester.tornado.api.GridScheduler;
  * checks that against the scheduler of the plan this screen scored with, not against the property.
  *
  * <p>Drive it with {@code -Djitllm.nllScreen.batch=32} for the batched prefix, and with {@code
- * -Djitllm.nllScreen.out=<file>} to write the per-passage report. Without the batch width the plan is
- * the single-token one, which has no batched projection to check, and this class skips rather than
- * scoring a path its name does not describe.
+ * -Djitllm.nllScreen.out=<file>} to write the per-passage report. Without the batch width the plan
+ * is the single-token one, which has no batched projection to check, and this class skips rather
+ * than scoring a path its name does not describe.
  *
  * <p><b>This is the repository's reused development screen, not independent quality validation.</b>
  * Five passages from this repository's own files, one register, one domain, and it has driven

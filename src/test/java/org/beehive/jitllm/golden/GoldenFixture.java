@@ -12,8 +12,8 @@ import java.util.HexFormat;
  * Locates and verifies the pinned model fixtures for the golden and parity gates.
  *
  * <p>The GGUF files are far too large to commit, so only their SHA-256 is pinned here. The file
- * itself is resolved from {@code $JITLLM_TEST_MODELS} or {@code ~/.jitllm/test-models/} (falling back
- * to the pre-rename cache, see {@link #modelsRoot()}), and an absent fixture produces a fetch
+ * itself is resolved from {@code $JITLLM_TEST_MODELS} or {@code ~/.jitllm/test-models/} (falling
+ * back to the pre-rename cache, see {@link #modelsRoot()}), and an absent fixture produces a fetch
  * instruction rather than a mysterious failure.
  *
  * <p>Per {@code verification-gates.md}, a missing fixture or absent accelerator causes the Class B
@@ -180,11 +180,11 @@ public final class GoldenFixture {
      * Root of the local fixture cache.
      *
      * <p>The rename from GPULlama3.java moved this from {@code $GPULLAMA_TEST_MODELS} / {@code
-     * ~/.gpullama3/test-models} to {@code $JITLLM_TEST_MODELS} / {@code ~/.jitllm/test-models}. Falling
-     * back to the old location matters more than it looks: an unresolved fixture makes the Class B
-     * gates <b>skip</b>, not fail, so a developer or runner that still has the old cache would
-     * silently stop running every golden and accelerator correctness check while the build stayed
-     * green. The fallback closes that window; it can go once no machine has the old cache.
+     * ~/.gpullama3/test-models} to {@code $JITLLM_TEST_MODELS} / {@code ~/.jitllm/test-models}.
+     * Falling back to the old location matters more than it looks: an unresolved fixture makes the
+     * Class B gates <b>skip</b>, not fail, so a developer or runner that still has the old cache
+     * would silently stop running every golden and accelerator correctness check while the build
+     * stayed green. The fallback closes that window; it can go once no machine has the old cache.
      */
     public static Path modelsRoot() {
         String env = System.getenv("JITLLM_TEST_MODELS");

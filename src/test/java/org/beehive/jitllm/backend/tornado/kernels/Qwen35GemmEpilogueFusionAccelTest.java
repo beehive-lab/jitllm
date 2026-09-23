@@ -295,7 +295,9 @@ public class Qwen35GemmEpilogueFusionAccelTest {
         assertEquals("host residual", 0, mismatches(straight, x2));
     }
 
-    /** Opt in with JITLLM_KERNEL_SCREEN=true: fused vs two-kernel forms at the production shapes. */
+    /**
+     * Opt in with JITLLM_KERNEL_SCREEN=true: fused vs two-kernel forms at the production shapes.
+     */
     @Test
     public void screen() throws Exception {
         assumeTrue(

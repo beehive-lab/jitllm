@@ -466,7 +466,8 @@ public class LlamaLoweringTest {
     }
 
     /** A stand-in for a compiled plan, so the cache's behaviour can be tested without a device. */
-    private static class StubPlan implements org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan {
+    private static class StubPlan
+            implements org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan {
         @Override
         public uk.ac.manchester.tornado.api.TornadoExecutionPlan createExecutionPlan() {
             throw new UnsupportedOperationException();

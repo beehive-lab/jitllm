@@ -4,9 +4,9 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 /**
- * Deliberate violator, used only by {@link org.beehive.jitllm.arch.DependencyRulesSelfTest} to prove
- * the rules actually fail on bad code. Never imported by production code and never part of {@link
- * org.beehive.jitllm.arch.ProductionClasses}.
+ * Deliberate violator, used only by {@link org.beehive.jitllm.arch.DependencyRulesSelfTest} to
+ * prove the rules actually fail on bad code. Never imported by production code and never part of
+ * {@link org.beehive.jitllm.arch.ProductionClasses}.
  *
  * <p>Breaks Rule 1 and Rule 2 (imports TornadoVM outside the backend, from a model package), Rule 5
  * (non-final field) and Rule 11 (references TaskGraph).

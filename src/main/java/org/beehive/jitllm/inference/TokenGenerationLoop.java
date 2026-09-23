@@ -641,7 +641,8 @@ public final class TokenGenerationLoop {
         final org.beehive.jitllm.model.qwen35.Qwen35Configuration config =
                 (org.beehive.jitllm.model.qwen35.Qwen35Configuration) model.configuration();
         final org.beehive.jitllm.inference.weights.standard.Qwen35StandardWeights weights =
-                (org.beehive.jitllm.inference.weights.standard.Qwen35StandardWeights) model.weights();
+                (org.beehive.jitllm.inference.weights.standard.Qwen35StandardWeights)
+                        model.weights();
         final org.beehive.jitllm.inference.state.Qwen35State qwenState =
                 (org.beehive.jitllm.inference.state.Qwen35State) state;
         final ForwardPass forward = hostForward(model);
@@ -989,7 +990,8 @@ public final class TokenGenerationLoop {
             // Qwen2-MoE already had the right shape for its own reason — its seed repeats the
             // prompt's first token — so the two cases are one case, and `seedIsPromptHead` is the
             // condition both were expressing.
-            boolean qwen2MoE = model.getModelType() == org.beehive.jitllm.model.ModelType.QWEN_2_MOE;
+            boolean qwen2MoE =
+                    model.getModelType() == org.beehive.jitllm.model.ModelType.QWEN_2_MOE;
             boolean seedIsPromptHead = qwen2MoE || ingestion.firstIndex() == 1;
             int prefillTokenCount = seedIsPromptHead ? Math.max(0, promptSize - 1) : promptSize;
             int[] prefillSeq = new int[prefillTokenCount];
@@ -1064,7 +1066,8 @@ public final class TokenGenerationLoop {
         // ── Decode: one loop, whichever prefill ran ───────────────────────────
         boolean deviceSample =
                 state.executionPolicy().samplingResidency()
-                        == org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency.DEVICE;
+                        == org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency
+                                .DEVICE;
         while (pos < actualMaxTokens && generatedTokens.size() < generatedTokenBudget) {
             Logits logits =
                     batched
@@ -1167,7 +1170,8 @@ public final class TokenGenerationLoop {
         // the CLI clear the property before the layer class could load.
         boolean deviceSample =
                 state.executionPolicy().samplingResidency()
-                        == org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency.DEVICE;
+                        == org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency
+                                .DEVICE;
 
         // Main generation loop
         while (pos < actualMaxTokens) {
@@ -1305,7 +1309,8 @@ public final class TokenGenerationLoop {
         // Resolved once for the whole generation, never per token.
         boolean deviceSample =
                 state.executionPolicy().samplingResidency()
-                        == org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency.DEVICE;
+                        == org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency
+                                .DEVICE;
 
         for (int position = startPosition; position < maxTokens; ++position) {
 

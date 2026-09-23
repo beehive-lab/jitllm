@@ -196,7 +196,8 @@ public class MemoryPreflightAccelTest {
                                         org.beehive.jitllm.runtime.memory.BufferClass.KV_CACHE)
                                 - logicalBytesOf(
                                         batched,
-                                        org.beehive.jitllm.runtime.memory.BufferClass.BATCH_STAGING))
+                                        org.beehive.jitllm.runtime.memory.BufferClass
+                                                .BATCH_STAGING))
                         / 1048576);
     }
 

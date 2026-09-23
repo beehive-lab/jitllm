@@ -19,7 +19,8 @@ public class MistralFP16FFNLayers
         extends AbstractTransformerLayerTaskGraphs<LlamaTornadoWeights, MistralConfiguration> {
 
     /**
-     * @see org.beehive.jitllm.backend.tornado.layers.type.fp16.LlamaFP16FFNLayers#useSimd32Reduction
+     * @see
+     *     org.beehive.jitllm.backend.tornado.layers.type.fp16.LlamaFP16FFNLayers#useSimd32Reduction
      */
     private final boolean useSimd32Reduction =
             SchedulerDetectionService.isSubgroupShuffle32Supported();

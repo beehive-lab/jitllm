@@ -151,8 +151,8 @@ public class Qwen35NllScreenAccelTest {
             report.append("plan=").append(plan.getClass().getSimpleName()).append('\n');
             // From this plan's own scheduler: the conversion tasks exist only on the MMA branch.
             var grids =
-                    org.beehive.jitllm.backend.tornado.PlanDispatchEvidence.gridSchedulerIfAvailable(
-                            plan);
+                    org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
+                            .gridSchedulerIfAvailable(plan);
             report.append("mmaBatchedProjections=")
                     .append(
                             org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
@@ -185,13 +185,16 @@ public class Qwen35NllScreenAccelTest {
                                     : java.util.Set.of("none"))
                     .append('\n');
             report.append("executionCombination=")
-                    .append(org.beehive.jitllm.auxiliary.RunMetrics.snapshot().executionCombination())
+                    .append(
+                            org.beehive.jitllm.auxiliary.RunMetrics.snapshot()
+                                    .executionCombination())
                     .append('\n');
             verifyDispatch(grids, batch, model.configuration().dim());
             if (batch > 1) {
                 verifyBatchedScan(
                         batchedDeltaRuleKernel(plan),
-                        ((org.beehive.jitllm.model.qwen35.Qwen35Configuration) model.configuration())
+                        ((org.beehive.jitllm.model.qwen35.Qwen35Configuration)
+                                        model.configuration())
                                 .headValueDim());
             }
 

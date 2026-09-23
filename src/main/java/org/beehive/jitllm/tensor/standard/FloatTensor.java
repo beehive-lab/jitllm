@@ -20,7 +20,8 @@ import sun.misc.Unsafe;
  */
 public abstract class FloatTensor {
     static final int VECTOR_BIT_SIZE =
-            Integer.getInteger("jitllm.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
+            Integer.getInteger(
+                    "jitllm.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
     static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
 
     /** Configured SIMD width for tensor kernels; zero selects scalar execution. */

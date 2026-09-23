@@ -272,8 +272,8 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
                                 new org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.Phase(
                                         "engine step",
                                         "per engine step, all slots together",
-                                        org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.span(
-                                                0, logitsGraphIndex))),
+                                        org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter
+                                                .span(0, logitsGraphIndex))),
                         roles),
                 model);
 

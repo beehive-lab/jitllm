@@ -20,7 +20,8 @@ public class GraniteFP16FFNLayers
         extends AbstractTransformerLayerTaskGraphs<GraniteTornadoWeights, GraniteConfiguration> {
 
     /**
-     * @see org.beehive.jitllm.backend.tornado.layers.type.fp16.LlamaFP16FFNLayers#useSimd32QkvFusion
+     * @see
+     *     org.beehive.jitllm.backend.tornado.layers.type.fp16.LlamaFP16FFNLayers#useSimd32QkvFusion
      */
     private final boolean useSimd32QkvFusion =
             SchedulerDetectionService.isSubgroupShuffle32Supported();

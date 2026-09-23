@@ -803,7 +803,8 @@ public class Qwen35FFNLayers
         boolean eligible =
                 fp16Kv()
                         && config.headSize() == SPLIT_KV_MAX_HEAD
-                        && org.beehive.jitllm.runtime.backend.BackendId.CUDA.equals(device.backend())
+                        && org.beehive.jitllm.runtime.backend.BackendId.CUDA.equals(
+                                device.backend())
                         && device.capabilities()
                                 .supports(
                                         org.beehive.jitllm.runtime.backend.DeviceCapability

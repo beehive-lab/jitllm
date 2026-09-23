@@ -169,7 +169,8 @@ abstract class Qwen35SequenceReset {
                 };
 
         int skippedSeed =
-                org.beehive.jitllm.inference.PromptIngestion.of(state, promptTokens, 0).firstIndex();
+                org.beehive.jitllm.inference.PromptIngestion.of(state, promptTokens, 0)
+                        .firstIndex();
         int budget = promptTokens.size() + tokens - skippedSeed;
         model.generateTokensGPU(
                 state, 0, promptTokens, Set.of(), budget, capturing, false, null, plan);

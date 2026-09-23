@@ -51,8 +51,8 @@ import uk.ac.manchester.tornado.runtime.library.spi.TornadoLibraryProvider;
 public final class NativePrefillSupport {
 
     /**
-     * The opt-in, {@code -Djitllm.nativeLibraries=true} ({@code --with-native-libraries}); the legacy
-     * {@code -Djitllm.prefill.native} is honoured when set. Resolved into {@link
+     * The opt-in, {@code -Djitllm.nativeLibraries=true} ({@code --with-native-libraries}); the
+     * legacy {@code -Djitllm.prefill.native} is honoured when set. Resolved into {@link
      * ExecutionPolicy#nativeLibraries()}, which is what the plan reads.
      */
     public static final String PROPERTY =

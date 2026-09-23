@@ -455,7 +455,8 @@ public abstract class State {
         // The caller says whether this family has FP16 kernels at all; the storage options say
         // whether they were asked for. Both must hold.
         useFp16 = useFp16 && storageOptions.usesFp16KeyValueCache();
-        org.beehive.jitllm.runtime.kv.KvStorage storage = kvLease != null ? kvLease.storage() : null;
+        org.beehive.jitllm.runtime.kv.KvStorage storage =
+                kvLease != null ? kvLease.storage() : null;
         if (storage != null) {
             // Leased: the backend writes its own arrays in, and this state never learns what they
             // are. Nothing KV-shaped is allocated here — that is the whole point.

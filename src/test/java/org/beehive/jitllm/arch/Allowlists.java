@@ -89,10 +89,11 @@ public final class Allowlists {
     /**
      * Rule 15 — classes outside the provider package that still dispatch on {@code ModelType}.
      *
-     * <p>What remains is the legacy load path, kept selectable with {@code -Djitllm.providers=false}
-     * for one release. Adding a <i>new</i> family no longer lands here: it is a new provider file
-     * plus one service line. The CLI left this list when it moved onto the public facade — it now
-     * reads {@code ModelInfo.architecture()} rather than naming a {@code ModelType}.
+     * <p>What remains is the legacy load path, kept selectable with {@code
+     * -Djitllm.providers=false} for one release. Adding a <i>new</i> family no longer lands here:
+     * it is a new provider file plus one service line. The CLI left this list when it moved onto
+     * the public facade — it now reads {@code ModelInfo.architecture()} rather than naming a {@code
+     * ModelType}.
      */
     public static final Set<String> RULE_15 = frozen("org.beehive.jitllm.model.loader.ModelLoader");
 

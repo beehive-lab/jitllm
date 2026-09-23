@@ -162,7 +162,9 @@ public final class TornadoKvStore implements KvStorage {
             int entry = table[i];
             blockTable.set(
                     i,
-                    entry == org.beehive.jitllm.runtime.kv.BlockPool.UNMAPPED ? scratchBlock : entry);
+                    entry == org.beehive.jitllm.runtime.kv.BlockPool.UNMAPPED
+                            ? scratchBlock
+                            : entry);
         }
     }
 

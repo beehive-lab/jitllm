@@ -37,11 +37,11 @@ public class JitllmApp {
                             "true")); // Show performance metrics in interactive mode
 
     /**
-     * On-device greedy sampling ({@code -Djitllm.deviceSample=true}) keeps the logits on the GPU and
-     * returns only the argmax token id. It is only valid on the GPU FP16 greedy path for the models
-     * whose decode loop reads {@code state.workspace.sampledToken} (Llama / Mistral / Qwen3). For
-     * any other configuration the host still needs the full logits row, so the flag is cleared
-     * here.
+     * On-device greedy sampling ({@code -Djitllm.deviceSample=true}) keeps the logits on the GPU
+     * and returns only the argmax token id. It is only valid on the GPU FP16 greedy path for the
+     * models whose decode loop reads {@code state.workspace.sampledToken} (Llama / Mistral /
+     * Qwen3). For any other configuration the host still needs the full logits row, so the flag is
+     * cleared here.
      *
      * <p>Must run after the model is loaded and before a session is opened: the property is read
      * when the session builds its execution plan.

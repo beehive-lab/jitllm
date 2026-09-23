@@ -17,9 +17,9 @@ import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
  *
  * <p>Before this, four call sites asked independently — {@code LoweredPlanSelection}'s device label
  * for the cache key, {@code SchedulerDetectionService} for the scheduler type and two backend
- * predicates, {@code TensorCoreSupport} for MMA, and {@code JitllmBench} inline for a report heading
- * — and all four pinned {@code getBackend(0).getDefaultDevice()}. Four answers that must agree,
- * derived four times, is a disagreement waiting for a machine with two backends installed.
+ * predicates, {@code TensorCoreSupport} for MMA, and {@code JitllmBench} inline for a report
+ * heading — and all four pinned {@code getBackend(0).getDefaultDevice()}. Four answers that must
+ * agree, derived four times, is a disagreement waiting for a machine with two backends installed.
  *
  * <p><b>Resolved once, lazily, and cached.</b> That is not an optimization: a cache-key component
  * must not change underneath the cache. {@code LoweredPlanSelection} learned this the expensive way
