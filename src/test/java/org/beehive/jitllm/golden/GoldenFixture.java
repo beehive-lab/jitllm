@@ -179,9 +179,10 @@ public final class GoldenFixture {
     /**
      * Root of the local fixture cache.
      *
-     * <p>The rename from GPULlama3.java moved this from {@code $GPULLAMA_TEST_MODELS} / {@code
-     * ~/.gpullama3/test-models} to {@code $JITLLM_TEST_MODELS} / {@code ~/.jitllm/test-models}.
-     * Falling back to the old location matters more than it looks: an unresolved fixture makes the
+     * <p>The renames from GPULlama3.java to jllm to jitllm moved this from {@code
+     * $GPULLAMA_TEST_MODELS} / {@code ~/.gpullama3/test-models}, then {@code $JLLM_TEST_MODELS} /
+     * {@code ~/.jllm/test-models}, to {@code $JITLLM_TEST_MODELS} / {@code ~/.jitllm/test-models}.
+     * Falling back to the old locations matters more than it looks: an unresolved fixture makes the
      * Class B gates <b>skip</b>, not fail, so a developer or runner that still has the old cache
      * would silently stop running every golden and accelerator correctness check while the build
      * stayed green. The fallback closes that window; it can go once no machine has the old cache.
@@ -191,17 +192,24 @@ public final class GoldenFixture {
         if (env != null && !env.isBlank()) {
             return Paths.get(env);
         }
-        String legacyEnv = System.getenv("GPULLAMA_TEST_MODELS");
-        if (legacyEnv != null && !legacyEnv.isBlank()) {
-            return Paths.get(legacyEnv);
+        for (String legacyVar : new String[] {"JLLM_TEST_MODELS", "GPULLAMA_TEST_MODELS"}) {
+            String legacyEnv = System.getenv(legacyVar);
+            if (legacyEnv != null && !legacyEnv.isBlank()) {
+                return Paths.get(legacyEnv);
+            }
         }
         Path home = Paths.get(System.getProperty("user.home"));
         Path current = home.resolve(".jitllm").resolve("test-models");
         if (Files.isDirectory(current)) {
             return current;
         }
-        Path legacy = home.resolve(".gpullama3").resolve("test-models");
-        return Files.isDirectory(legacy) ? legacy : current;
+        for (String legacyDir : new String[] {".jllm", ".gpullama3"}) {
+            Path legacy = home.resolve(legacyDir).resolve("test-models");
+            if (Files.isDirectory(legacy)) {
+                return legacy;
+            }
+        }
+        return current;
     }
 
     /**
