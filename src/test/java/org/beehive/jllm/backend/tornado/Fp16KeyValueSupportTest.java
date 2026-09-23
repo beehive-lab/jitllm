@@ -105,7 +105,7 @@ public class Fp16KeyValueSupportTest {
                 check("qwen3", DataType.Q4_0, ExecutionMode.STANDARD, BackendId.CUDA, true, true)
                         .isPresent());
         assertTrue(
-                check("mistral", DataType.F16, ExecutionMode.STANDARD, BackendId.CUDA, false, true)
+                check("gemma4", DataType.F16, ExecutionMode.STANDARD, BackendId.CUDA, true, true)
                         .isPresent());
         assertTrue(
                 check("llama", DataType.F16, ExecutionMode.STANDARD, BackendId.OPENCL, true, false)
@@ -119,5 +119,52 @@ public class Fp16KeyValueSupportTest {
                                 false,
                                 false)
                         .isPresent());
+    }
+
+    @Test
+    public void theRefusalNamesTheCombinationTheReasonAndTheWayOut() {
+        var combination =
+                new Combination(
+                        "gemma4",
+                        DataType.Q8_0,
+                        ExecutionMode.STANDARD,
+                        BackendId.CUDA,
+                        true,
+                        true);
+        String message = Fp16KeyValueSupport.refusal(combination, "the gemma4 layers keep FP32");
+        assertTrue(message, message.startsWith("[GPUL-CFG-002]"));
+        assertTrue(message, message.contains("gemma4 / Q8_0 / STANDARD on cuda"));
+        assertTrue(message, message.contains("the gemma4 layers keep FP32"));
+        assertTrue(message, message.contains("--fp32-kv-cache"));
+        assertTrue(message, message.contains("StorageOptions.fp32()"));
+    }
+
+    @Test
+    public void mistralAndTheSingleTokenFamiliesAreSupported() {
+        for (String arch :
+                new String[] {"mistral", "qwen2", "deepseek-r1-distill-qwen", "phi3", "granite"}) {
+            for (DataType weights : new DataType[] {DataType.F16, DataType.Q8_0}) {
+                assertEquals(
+                        arch,
+                        Optional.empty(),
+                        check(
+                                arch,
+                                weights,
+                                ExecutionMode.STANDARD,
+                                BackendId.CUDA,
+                                !arch.equals("mistral"),
+                                true));
+            }
+            assertTrue(
+                    arch,
+                    check(
+                                    arch,
+                                    DataType.F16,
+                                    ExecutionMode.PREFILL_DECODE,
+                                    BackendId.CUDA,
+                                    true,
+                                    true)
+                            .isPresent());
+        }
     }
 }

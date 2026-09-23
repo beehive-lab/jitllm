@@ -94,6 +94,28 @@ public final class Fp16KeyValueSupport {
                                                             + " writes an FP32 cache");
                 };
             }
+            case "mistral" -> {
+                // Mistral keeps the non-NVIDIA scheduler for its FP32 attention; its FP16 cache
+                // takes the flash kernels, which need CUDA (checked above), not that scheduler.
+                if (c.weights() != DataType.F16 && c.weights() != DataType.Q8_0) {
+                    return Optional.of("the " + c.weights() + " layers keep an FP32 cache");
+                }
+                return c.mode() == ExecutionMode.STANDARD
+                        ? Optional.empty()
+                        : Optional.of("mistral has single-token plans only");
+            }
+            case "qwen2", "deepseek-r1-distill-qwen", "phi3", "granite" -> {
+                // Single-token only: these families have no prefill/decode plans.
+                if (!c.nvidiaScheduler()) {
+                    return Optional.of("the non-NVIDIA decode layers keep an FP32 cache");
+                }
+                if (c.weights() != DataType.F16 && c.weights() != DataType.Q8_0) {
+                    return Optional.of("the " + c.weights() + " layers keep an FP32 cache");
+                }
+                return c.mode() == ExecutionMode.STANDARD
+                        ? Optional.empty()
+                        : Optional.of(c.architecture() + " has single-token plans only");
+            }
             default -> {
                 return Optional.of("the " + c.architecture() + " layers keep an FP32 cache");
             }
@@ -118,17 +140,19 @@ public final class Fp16KeyValueSupport {
         unsupported(combination)
                 .ifPresent(
                         reason -> {
-                            throw new IllegalArgumentException(
-                                    DiagnosticCode.COMBINATION_UNSUPPORTED.message(
-                                            "an FP16 key/value cache (the default) is not supported"
-                                                    + " for "
-                                                    + combination
-                                                    + ": "
-                                                    + reason
-                                                    + ". Run with --fp32-kv-cache, or load with"
-                                                    + " ModelOptions.builder().storageOptions("
-                                                    + "StorageOptions.fp32()) from Java"));
+                            throw new IllegalArgumentException(refusal(combination, reason));
                         });
+    }
+
+    /** The refusal: the combination, why, and how to ask for the FP32 cache instead. */
+    static String refusal(Combination combination, String reason) {
+        return DiagnosticCode.COMBINATION_UNSUPPORTED.message(
+                "an FP16 key/value cache (the default) is not supported for "
+                        + combination
+                        + ": "
+                        + reason
+                        + ". Run with --fp32-kv-cache, or load with"
+                        + " ModelOptions.builder().storageOptions(StorageOptions.fp32()) from Java");
     }
 
     /** The combination this model and policy resolve to on the current device. */

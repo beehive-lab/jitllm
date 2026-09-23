@@ -40,7 +40,9 @@ materialized as Q8_0 runs, and is decided as, Q8_0.
 | CUDA | Llama, Qwen3 | F16 | sequential prefill/decode | supported | tested: Llama 1B F16 cos ≥ 0.9999997, rel L2 ≤ 7.6e-4; Qwen3 0.6B F16 cos ≥ 0.9999977, rel L2 ≤ 0.0023; top-1 100% (the layers used to force the FP32 cache) |
 | CUDA | Llama, Qwen3 | F16, Q8_0 | batched prefill without tensor cores | refused | scalar batched-prefill kernels write FP32 only |
 | CUDA | Llama, Qwen3 | any | non-NVIDIA scheduler | refused | non-NVIDIA decode layers keep an FP32 cache |
-| CUDA | Mistral, Devstral, Qwen2 / DeepSeek-R1-Distill, Phi-3, Granite, Qwen2-MoE, Gemma 4 | any | any | refused | layers keep an FP32 cache |
+| CUDA | Mistral | F16, Q8_0 | single-token | supported | tested: Mistral-7B Q8_0 cos ≥ 0.9999999, rel L2 ≤ 4.4e-4, top-1 100% — `GpuFp16KvMistralQ8AccelTest`. F16 structural (same cache kernels; projections do not touch the cache) and end-to-end identical text to FP32; its FP32/FP16 comparison needs two 14.5 GB plans in one JVM, which this 24 GB device cannot hold |
+| CUDA | Qwen2 / DeepSeek-R1-Distill, Phi-3, Granite (3.2 and 4.0) | F16, Q8_0 | single-token | supported | tested: Qwen2.5 0.5B F16/Q8_0 cos ≥ 0.9999963, rel L2 ≤ 0.0029; DeepSeek-R1-Distill-Qwen 1.5B Q8_0 cos ≥ 0.9999971; Phi-3 mini F16/Q8_0 cos ≥ 0.9999994, rel L2 ≤ 0.0012; Granite 3.2 2B F16/Q8_0 cos ≥ 0.9999993, rel L2 ≤ 0.0013; Granite 4.0 1B F16/Q8_0 cos ≥ 0.9999997; top-1 100% — `GpuFp16Kv{Qwen2,DeepSeekQwen2,Phi3,Granite,Granite4}*AccelTest` |
+| CUDA | Devstral, Qwen2-MoE, Gemma 4 | any | any | refused (blocked) | layers keep an FP32 cache; no model files here to implement and test against |
 | OpenCL | any | any | any | refused | no verified FP16 cache path |
 | Metal | any | any | any | refused (blocked) | no verified FP16 cache path; no Metal device here |
 | CUDA | continuous batching (`serve --continuous-batching`, experimental) | F16 | batched decode | refused | engine kernels read an FP32 pool; `--fp32-kv-cache` required |

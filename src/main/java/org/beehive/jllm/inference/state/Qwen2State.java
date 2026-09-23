@@ -77,7 +77,7 @@ public class Qwen2State extends State {
 
         // KV cache: leased from the manager's pool when this state holds a lease, otherwise
         // allocated here, block-major when paged and contiguous when not.
-        fillKvFields(fields, config, nEmbdGqa, false);
+        fillKvFields(fields, config, nEmbdGqa, true);
         workspace.wrapAtt =
                 TornadoWorkspaces.floats(config.numberOfHeads() * config.contextLength());
         // [0] = position, [1] = table-local KV slot.

@@ -17,9 +17,9 @@ import org.junit.Test;
  * FP16 is the default key/value cache through the library, explicitly — a configuration whose
  * kernels do not implement it is refused before anything is allocated, and FP32 stays available.
  *
- * <p>Uses Phi-3 as a refused family while it has no FP16 cache path on the GPU, Llama F16
- * single-token as the supported neighbour, and Llama Q4_0 — single-token only — for a session
- * override into a mode it does not have.
+ * <p>Uses Llama F16 single-token as a supported configuration, Phi-3 for an explicit FP32 choice,
+ * and Llama Q4_0 — single-token only — for a session override into a mode it does not have. The
+ * refusal message itself is covered by {@code Fp16KeyValueSupportTest}.
  */
 public class Fp16KeyValueDefaultAccelTest {
 
@@ -43,25 +43,10 @@ public class Fp16KeyValueDefaultAccelTest {
     }
 
     @Test
-    public void anUnsupportedConfigurationIsRefusedAtLoadAndFp32IsTheWayOut() throws Exception {
+    public void anExplicitFp32ChoiceIsKept() throws Exception {
         Path file = fixtureOrSkip(Fixture.PHI3_MINI_4K_Q8_0);
         onGpu(
                 () -> {
-                    IllegalArgumentException refused =
-                            assertThrows(
-                                    IllegalArgumentException.class,
-                                    () ->
-                                            LocalModels.load(
-                                                    file,
-                                                    ModelOptions.builder()
-                                                            .contextLength(256)
-                                                            .build()));
-                    String message = refused.getMessage();
-                    assertTrue(message, message.contains("GPUL-CFG-002"));
-                    assertTrue(message, message.contains("phi3"));
-                    assertTrue(message, message.contains("--fp32-kv-cache"));
-                    assertTrue(message, message.contains("StorageOptions.fp32()"));
-
                     try (LocalModel model =
                                     LocalModels.load(
                                             file,
