@@ -153,6 +153,14 @@ public final class OpenAIServer implements AutoCloseable {
      * @param requested the {@code --ctx} value, or 0 when the flag was not given
      * @param modelContextLength the context length the model declares
      */
+    /**
+     * The loaders' spelling of a requested window: they take {@code -1} for "the model's own", and
+     * serve's {@code 0} means the same. Passing 0 through sized a zero-block key/value pool.
+     */
+    static int loaderContextLength(int requested) {
+        return requested > 0 ? requested : -1;
+    }
+
     static int resolveContextLength(int requested, int modelContextLength) {
         return requested > 0 ? Math.min(requested, modelContextLength) : modelContextLength;
     }
@@ -320,7 +328,9 @@ public final class OpenAIServer implements AutoCloseable {
         OpenAIServer server;
         if (options.continuousBatching()) {
             System.err.println(ServerOptions.CONTINUOUS_BATCHING_WARNING);
-            Model model = loadModel(path, config.contextLength(), true, config.gpu());
+            Model model =
+                    loadModel(
+                            path, loaderContextLength(config.contextLength()), true, config.gpu());
             long loadNs = System.nanoTime() - startedNs;
             // The engine needs a concrete window; the facade path reads its own back after load.
             int contextLength =
