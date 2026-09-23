@@ -159,6 +159,9 @@ class LlamaRunner:
         if args.batch_prefill_size is not None:
             cmd.append(f"-Djllm.prefillBatchSize={args.batch_prefill_size}")
 
+        if args.with_native_libraries:
+            cmd.append("-Djllm.nativeLibraries=true")
+
         if args.cuda_graphs:
             cmd.append("-Djllm.cudaGraphs=true")
 
@@ -494,6 +497,8 @@ def parse_cli_args(argv):
             parser.error("--max-queued-requests must be positive; --prefix-cache-entries must be non-negative")
         if batching and not args.use_gpu:
             parser.error("--continuous-batching requires --gpu")
+        if batching and args.with_native_libraries:
+            parser.error("continuous batching has no native-library implementation; drop --with-native-libraries")
         if batching and (args.with_prefill_decode or args.batch_prefill_size is not None or args.cuda_graphs):
             parser.error("continuous batching does not support --with-prefill-decode, --batch-prefill-size, or --cuda-graphs")
     if mode in {"serve", "bench"} and (args.prompt is not None or args.system_prompt is not None or args.max_new_tokens is not None):
@@ -594,6 +599,14 @@ def create_parser(command=None) -> argparse.ArgumentParser:
     server_group.add_argument("--port", type=int, default=8080, help="Server port (default 8080)")
 
     server_group.add_argument("--host", default="127.0.0.1", help="HTTP bind address")
+    native_group = parser.add_argument_group(
+        "Experimental: native libraries",
+        "Replace JIT kernels with vendor libraries where an implementation exists. Currently: "
+        "Qwen3 F16 batched prefill on CUDA tensor-core devices (cuBLAS projections, cuDNN "
+        "attention), which also needs more device memory. Anything else is refused. Prints a "
+        "warning when enabled.")
+    native_group.add_argument("--with-native-libraries", action="store_true",
+                              help="Use native libraries (cuBLAS/cuDNN) instead of JIT kernels where implemented")
     experimental_group = parser.add_argument_group(
         "Experimental: continuous batching (serve)",
         "Decodes several HTTP requests in one batch. Currently: CUDA tensor-core devices, FP16 "

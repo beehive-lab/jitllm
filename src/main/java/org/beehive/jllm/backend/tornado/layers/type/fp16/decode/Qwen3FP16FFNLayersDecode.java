@@ -161,7 +161,7 @@ public class Qwen3FP16FFNLayersDecode extends Qwen3FP16FFNLayers {
      */
     @Override
     protected Object[] weightsNotProvidedBySource(int layerIndex) {
-        if (!Qwen3FP16LayersBatchPrefillMMA.nativeProjections()) {
+        if (!Qwen3FP16LayersBatchPrefillMMA.nativeProjections(state.executionPolicy())) {
             return super.weightsNotProvidedBySource(layerIndex);
         }
         List<Object> notProvided = new ArrayList<>(5);

@@ -199,6 +199,9 @@ public class NativePrefillMemoryPlanAccelTest {
                 ExecutionPolicy.builder()
                         .phaseStrategy(ExecutionPolicy.PhaseStrategy.PREFILL_DECODE)
                         .prefillBatchSize(batch)
+                        // The plan follows the policy, not the property; the tests toggle the
+                        // property, so carry it across.
+                        .nativeLibraries(Boolean.getBoolean(NativePrefillSupport.PROPERTY))
                         .build();
         return TornadoMemoryModel.predict(
                 weights, loaded.configuration(), policy, TornadoDevices.current(), budgetBytes);

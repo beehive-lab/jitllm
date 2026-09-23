@@ -50,8 +50,13 @@ import uk.ac.manchester.tornado.runtime.library.spi.TornadoLibraryProvider;
  */
 public final class NativePrefillSupport {
 
-    /** The supported off-switch, {@code -Djllm.prefill.native=false}. */
-    public static final String PROPERTY = "jllm.prefill.native";
+    /**
+     * The opt-in, {@code -Djllm.nativeLibraries=true} ({@code --with-native-libraries}); the legacy
+     * {@code -Djllm.prefill.native} is honoured when set. Resolved into {@link
+     * ExecutionPolicy#nativeLibraries()}, which is what the plan reads.
+     */
+    public static final String PROPERTY =
+            org.beehive.jllm.runtime.policy.ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY;
 
     /**
      * The execution-plan id the capability probe borrows.
@@ -101,22 +106,31 @@ public final class NativePrefillSupport {
     }
 
     /**
-     * Read live rather than cached in a constant, so that a test can compare the native and JIT
-     * paths in one process by setting it around two model loads.
+     * Whether the four batch-prefill projections run as cuBLAS GEMMs over stacked weights, for a
+     * session running {@code policy}.
      *
-     * <p><b>It must be set before a plan is built and left alone until that plan is discarded.</b>
-     * The batch-prefill graphs and the decode graphs that consume their weights are built in one
-     * pass and both ask this; an answer that changed between them would leave the decode side
-     * binding buffers the prefill side never uploaded — the silent-zeros defect the weight-handoff
-     * regression tests exist to catch. Nothing in jllm writes this property.
+     * <p><b>Both sides of the weight hand-off ask this with the same policy.</b> The batch-prefill
+     * graphs and the decode graphs that consume their weights are built in one pass; an answer that
+     * differed between them would leave the decode side binding buffers the prefill side never
+     * uploaded — the silent-zeros defect the weight-handoff regression tests exist to catch. The
+     * policy is fixed for a plan's life, which is what makes the two answers agree.
      */
-    private static boolean enabled() {
-        return !"false".equalsIgnoreCase(System.getProperty(PROPERTY, "true"));
+    public static boolean nativeProjections(
+            org.beehive.jllm.runtime.policy.ExecutionPolicy policy) {
+        return policy.nativeLibraries()
+                && TensorCoreSupport.isTensorCoreCapableBackend()
+                && Probe.CUBLAS;
     }
 
-    /** Whether the four batch-prefill projections run as cuBLAS GEMMs over stacked weights. */
+    /** {@link #nativeProjections(ExecutionPolicy)} for the policy the properties resolve to. */
     public static boolean nativeProjections() {
-        return enabled() && TensorCoreSupport.isTensorCoreCapableBackend() && Probe.CUBLAS;
+        return nativeProjections(
+                org.beehive.jllm.runtime.policy.ExecutionPolicy.fromSystemProperties());
+    }
+
+    /** Whether cuBLAS can be reached from this process at all. */
+    public static boolean cublasAvailable() {
+        return Probe.CUBLAS;
     }
 
     // @formatter:off
@@ -137,8 +151,9 @@ public final class NativePrefillSupport {
      * null plan, and a real implementation that declines this device or this tuple.
      */
     // @formatter:on
-    public static boolean nativeAttention(SdpaShape shape) {
-        if (!nativeProjections() || !Probe.CUDNN) {
+    public static boolean nativeAttention(
+            org.beehive.jllm.runtime.policy.ExecutionPolicy policy, SdpaShape shape) {
+        if (!nativeProjections(policy) || !Probe.CUDNN) {
             return false;
         }
         return SDPA_CACHE.computeIfAbsent(shape, s -> sdpaProbe.usable(s));
@@ -228,9 +243,12 @@ public final class NativePrefillSupport {
      *     which the fused attention's adapters require
      * @param shape the attention shape this session would ask for
      */
-    public static String describe(boolean fp16KeyValueCache, SdpaShape shape) {
-        if (!enabled()) {
-            return "off (-Djllm.prefill.native=false)";
+    public static String describe(
+            org.beehive.jllm.runtime.policy.ExecutionPolicy policy,
+            boolean fp16KeyValueCache,
+            SdpaShape shape) {
+        if (!policy.nativeLibraries()) {
+            return "off (JIT kernels; --with-native-libraries to try cuBLAS/cuDNN)";
         }
         if (!TensorCoreSupport.isTensorCoreCapableBackend()) {
             return "off (no tensor-core backend)";
@@ -244,7 +262,7 @@ public final class NativePrefillSupport {
         if (!Probe.CUDNN) {
             return "cuBLAS projections; JIT attention (cuDNN not reachable)";
         }
-        return nativeAttention(shape)
+        return nativeAttention(policy, shape)
                 ? "cuBLAS projections + cuDNN first-chunk attention"
                 : "cuBLAS projections; JIT attention (cuDNN fused SDPA unusable at "
                         + shape.heads()

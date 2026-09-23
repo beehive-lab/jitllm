@@ -130,6 +130,8 @@ final class DelegatingModel implements TextGenerationModel {
         // and family are known, and the storage and policy are the model's defaults.
         org.beehive.jllm.backend.tornado.Fp16KeyValueSupport.require(
                 delegate, executionPolicy, storageOptions, gpu);
+        org.beehive.jllm.backend.tornado.NativeLibrarySupport.require(
+                delegate, executionPolicy, gpu);
         // One weight representation is all today's Weights can report: it carries a single
         // materialized type for the whole set. Per-tensor descriptors make a genuinely
         // mixed answer possible, and ModelInfo can already express it — see weightTypes().
@@ -318,6 +320,8 @@ final class DelegatingModel implements TextGenerationModel {
                 // policy did not, so the cache it would share is checked again before the lease.
                 org.beehive.jllm.backend.tornado.Fp16KeyValueSupport.require(
                         delegate, policy, storageOptions, gpu);
+                org.beehive.jllm.backend.tornado.NativeLibrarySupport.require(
+                        delegate, policy, gpu);
             }
             KvLease lease = sessions.acquire(contextLength);
             session =

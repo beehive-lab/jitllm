@@ -31,12 +31,14 @@ public record ModelRunConfig(Path model, int contextLength, boolean gpu) {
                 throw new IllegalArgumentException(
                         "--gpu requested but no accelerator device is available");
         }
+        ExecutionPolicy policy = ExecutionPolicy.fromSystemProperties();
+        ExperimentalWarnings.nativeLibraries(policy);
         return ModelOptions.builder()
                 .contextLength(contextLength)
                 // run, chat and the serial server each hold exactly one session per model.
                 .maxConcurrentSessions(1)
                 .backend(backend)
-                .executionPolicy(ExecutionPolicy.fromSystemProperties())
+                .executionPolicy(policy)
                 .build();
     }
 }

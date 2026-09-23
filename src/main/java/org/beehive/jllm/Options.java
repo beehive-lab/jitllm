@@ -196,6 +196,11 @@ public record Options(
                     interactive = mode.equals("chat");
                 }
                 case "--gpu" -> useTornadovm = true;
+                case "--with-native-libraries" ->
+                        System.setProperty(
+                                org.beehive.jllm.runtime.policy.ExecutionPolicy
+                                        .NATIVE_LIBRARIES_PROPERTY,
+                                "true");
                 case "--verbose", "-v" -> System.setProperty("jllm.verbose", "true");
                 case "--with-prefill-decode" -> withPrefillDecode = true;
                 case "--help", "-h" -> {

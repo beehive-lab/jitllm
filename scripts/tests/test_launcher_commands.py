@@ -76,6 +76,18 @@ class Commands(unittest.TestCase):
         self.reject("run", "-m", "stub.gguf", "--prompt", "hi", "--continuous-batching", "2")
         self.parse("serve", "-m", "stub.gguf", "--gpu", "--continuous-batching", "2", "--fp32-kv-cache")
 
+    def test_native_libraries_are_opt_in_and_experimental(self):
+        for command in ("run", "chat", "serve", "bench"):
+            help_text = launcher.create_parser(command).format_help()
+            self.assertIn("Experimental: native libraries", help_text)
+            self.assertIn("--with-native-libraries", help_text)
+        self.assertFalse(self.parse("run", "-m", "stub.gguf", "--prompt", "hi").with_native_libraries)
+        self.assertTrue(self.parse("run", "-m", "stub.gguf", "--prompt", "hi",
+                                   "--with-native-libraries").with_native_libraries)
+        # No native implementation in the continuous-batch engine.
+        self.reject("serve", "-m", "stub.gguf", "--gpu", "--continuous-batching", "2",
+                    "--with-native-libraries")
+
     def test_continuous_batching_is_listed_as_experimental(self):
         serve_help = launcher.create_parser("serve").format_help()
         self.assertIn("Experimental: continuous batching", serve_help)

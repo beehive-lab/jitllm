@@ -95,7 +95,7 @@ public final class TornadoMemoryModel {
     // @formatter:on
     private static boolean nativePrefillSelected(ExecutionPolicy policy) {
         return executionMode(policy) == ExecutionMode.BATCH_PREFILL_DECODE
-                && NativePrefillSupport.nativeProjections();
+                && NativePrefillSupport.nativeProjections(policy);
     }
 
     /**

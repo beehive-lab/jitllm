@@ -189,6 +189,10 @@ class VerbosityOptions(unittest.TestCase):
         self.assertNotIn("--fp16-kv-cache", launcher.create_parser().format_help())
         self.assertIn("--fp32-kv-cache", launcher.create_parser().format_help())
 
+    def test_native_libraries_forward_the_property_only_when_asked(self):
+        self.assertFalse([a for a in self.base_command() if "nativeLibraries" in a])
+        self.assertIn("-Djllm.nativeLibraries=true", self.base_command("--with-native-libraries"))
+
     def test_help_exposes_only_the_new_verbosity_interface(self):
         text = launcher.create_parser().format_help()
         self.assertIn("--verbose", text)

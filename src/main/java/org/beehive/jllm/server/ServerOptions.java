@@ -31,6 +31,14 @@ record ServerOptions(
             throw new IllegalArgumentException(
                     "Continuous batching does not support prefill chunking or CUDA graphs");
         }
+        if (batchSlots > 1
+                && Boolean.getBoolean(
+                        org.beehive.jllm.runtime.policy.ExecutionPolicy
+                                .NATIVE_LIBRARIES_PROPERTY)) {
+            throw new IllegalArgumentException(
+                    "Continuous batching has no native-library implementation; drop"
+                            + " --with-native-libraries");
+        }
     }
 
     /** Whether requests are decoded together by the experimental continuous-batch engine. */
@@ -72,6 +80,13 @@ record ServerOptions(
                 case "--fp32-kv-cache" -> {
                     System.setProperty(
                             org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY, "true");
+                    continue;
+                }
+                case "--with-native-libraries" -> {
+                    System.setProperty(
+                            org.beehive.jllm.runtime.policy.ExecutionPolicy
+                                    .NATIVE_LIBRARIES_PROPERTY,
+                            "true");
                     continue;
                 }
                 case "--fp16-kv-cache" ->

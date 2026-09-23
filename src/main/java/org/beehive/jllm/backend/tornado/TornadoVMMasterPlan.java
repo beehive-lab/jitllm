@@ -101,6 +101,7 @@ public interface TornadoVMMasterPlan {
         // selected layers do not implement is refused before any device buffer exists. The facade
         // has already asked at load; this covers the callers that build a state themselves.
         Fp16KeyValueSupport.require(model, state.executionPolicy(), state.storageOptions(), true);
+        NativeLibrarySupport.require(model, state.executionPolicy(), true);
 
         // The lowering's opt-in is consulted here, in the one factory every caller reaches, rather
         // than at each construction site. It was branched at two sites before — the API session and
