@@ -38,6 +38,8 @@ public final class Fp16KeyValueSupport {
      * @param backend the backend the plan runs on; {@link BackendId#CPU} for the host path
      * @param nvidiaScheduler whether the NVIDIA-class decode layers are selected
      * @param tensorCores whether batched prefill takes the tensor-core MMA layers
+     * @param nvidiaDevice whether the device is NVIDIA-class — a device fact, unlike the scheduler,
+     *     which also depends on the model (Mistral keeps the non-NVIDIA scheduler)
      */
     public record Combination(
             String architecture,
@@ -45,7 +47,8 @@ public final class Fp16KeyValueSupport {
             ExecutionMode mode,
             BackendId backend,
             boolean nvidiaScheduler,
-            boolean tensorCores) {
+            boolean tensorCores,
+            boolean nvidiaDevice) {
 
         @Override
         public String toString() {
@@ -59,14 +62,26 @@ public final class Fp16KeyValueSupport {
             // Every family reaches the host cache through FloatTensor, in every mode.
             return Optional.empty();
         }
-        if (!BackendId.CUDA.equals(c.backend())) {
+        // CUDA, and OpenCL on an NVIDIA-class device, where the FP16 kernels were measured.
+        boolean verifiedBackend =
+                BackendId.CUDA.equals(c.backend())
+                        || (BackendId.OPENCL.equals(c.backend()) && c.nvidiaDevice());
+        if (!verifiedBackend) {
             return Optional.of(
-                    "the " + c.backend() + " kernels have no verified FP16 key/value path");
+                    "the "
+                            + c.backend()
+                            + " kernels have no verified FP16 key/value path"
+                            + (BackendId.OPENCL.equals(c.backend())
+                                    ? " on this (non-NVIDIA) device"
+                                    : ""));
         }
         switch (c.architecture()) {
             case "qwen35" -> {
-                // FP16 writers and readers in every mode, including batched prefill.
-                return Optional.empty();
+                // FP16 writers and readers in every mode, including batched prefill; measured
+                // on CUDA only (its split-KV and tensor-core attention are CUDA kernels).
+                return BackendId.CUDA.equals(c.backend())
+                        ? Optional.empty()
+                        : Optional.of("the qwen35 FP16 cache is verified on CUDA only");
             }
             case "llama", "qwen3" -> {
                 if (!c.nvidiaScheduler()) {
@@ -85,18 +100,15 @@ public final class Fp16KeyValueSupport {
                                     ? Optional.of("Q4_0 has no sequential prefill/decode plan")
                                     : Optional.empty();
                     case BATCH_PREFILL_DECODE ->
-                            q4Llama
-                                    ? Optional.of("Q4_0 has no batched prefill")
-                                    : c.tensorCores()
-                                            ? Optional.empty()
-                                            : Optional.of(
-                                                    "batched prefill without tensor-core MMA"
-                                                            + " writes an FP32 cache");
+                            q4Llama ? Optional.of("Q4_0 has no batched prefill") : Optional.empty();
                 };
             }
             case "mistral" -> {
                 // Mistral keeps the non-NVIDIA scheduler for its FP32 attention; its FP16 cache
-                // takes the flash kernels, which need CUDA (checked above), not that scheduler.
+                // takes the flash kernels, which need an NVIDIA-class device, not that scheduler.
+                if (!c.nvidiaDevice()) {
+                    return Optional.of("the FP16 flash kernels need an NVIDIA-class device");
+                }
                 if (c.weights() != DataType.F16 && c.weights() != DataType.Q8_0) {
                     return Optional.of("the " + c.weights() + " layers keep an FP32 cache");
                 }
@@ -165,6 +177,7 @@ public final class Fp16KeyValueSupport {
                     mode,
                     BackendId.CPU,
                     false,
+                    false,
                     false);
         }
         return new Combination(
@@ -173,7 +186,15 @@ public final class Fp16KeyValueSupport {
                 mode,
                 TornadoDevices.current().backend(),
                 SchedulerDetectionService.determineSchedulerType(model) == SchedulerType.NVIDIA,
-                TensorCoreSupport.isTensorCoreCapableBackend());
+                TensorCoreSupport.isTensorCoreCapableBackend(),
+                nvidiaDevice());
+    }
+
+    /** Whether the current device is NVIDIA-class, whatever the model. */
+    public static boolean nvidiaDevice() {
+        return TornadoDevices.current()
+                .capabilities()
+                .supports(org.beehive.jllm.runtime.backend.DeviceCapability.SINGLE_PASS_RMS);
     }
 
     private static ExecutionMode executionMode(ExecutionPolicy policy) {

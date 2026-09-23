@@ -86,8 +86,8 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.workspace.wrapKBatch,
                     state.workspace.wrapVBatch,
                     state.workspace.wrapHbBatch,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache);
+                    keyCache(),
+                    valueCache());
             layer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
         } else {
             String pred = "batchPrefillLayer_" + (layerIndex - 1);
@@ -100,8 +100,8 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.workspace.wrapKBatch,
                     state.workspace.wrapVBatch,
                     state.workspace.wrapHbBatch,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.batchStartPosHolder,
                     state.workspace.attnScaleBatch,
                     state.workspace.ffnScaleBatch);
@@ -173,45 +173,88 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                 kvDim,
                 LOCAL_WORK_GROUP_SIZE);
 
-        layer.task(
-                "batch_rope_kv",
-                TransformerPagedKvBatchPrefillKernels::batchedRopeWithKVCachePaged,
-                context,
-                state.workspace.batchStartPosHolder,
-                state.workspace.wrapQBatch,
-                state.workspace.wrapKBatch,
-                state.workspace.wrapVBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                weights.freq_cis_realFlat.asFloatArray(),
-                weights.freq_cis_imagFlat.asFloatArray(),
-                kvDim,
-                config.headSize(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride,
-                dim);
+        if (useFp16KVCache()) {
+            layer.task(
+                    "batch_rope_kv",
+                    TransformerPagedKvBatchPrefillKernels::batchedRopeWithKVCacheFP16Paged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKBatch,
+                    state.workspace.wrapVBatch,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    weights.freq_cis_realFlat.asFloatArray(),
+                    weights.freq_cis_imagFlat.asFloatArray(),
+                    kvDim,
+                    config.headSize(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        } else {
+            layer.task(
+                    "batch_rope_kv",
+                    TransformerPagedKvBatchPrefillKernels::batchedRopeWithKVCachePaged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKBatch,
+                    state.workspace.wrapVBatch,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    weights.freq_cis_realFlat.asFloatArray(),
+                    weights.freq_cis_imagFlat.asFloatArray(),
+                    kvDim,
+                    config.headSize(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        }
 
         // Overwrites wrapXbBatch with attention output
-        layer.task(
-                "batch_attention",
-                TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionPaged,
-                context,
-                state.workspace.batchStartPosHolder,
-                state.workspace.wrapQBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                state.workspace.wrapXbBatch,
-                config.numberOfHeads(),
-                config.headSize(),
-                kvDim,
-                config.kvMul(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride,
-                dim);
+        if (useFp16KVCache()) {
+            layer.task(
+                    "batch_attention",
+                    TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionKVFP16Paged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    state.workspace.wrapXbBatch,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    kvDim,
+                    config.kvMul(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        } else {
+            layer.task(
+                    "batch_attention",
+                    TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionPaged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    state.workspace.wrapXbBatch,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    kvDim,
+                    config.kvMul(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        }
 
         layer.task(
                 "batch_attn_out",
@@ -259,10 +302,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                 dim,
                 LOCAL_WORK_GROUP_SIZE);
 
-        layer.persistOnDevice(
-                state.workspace.wrapXBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache);
+        layer.persistOnDevice(state.workspace.wrapXBatch, keyCache(), valueCache());
 
         return layer;
     }
@@ -335,5 +375,25 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
     public KernelContext getContext() {
         return context;
+    }
+
+    /**
+     * Whether the cache is half precision: the representation the state holds, which the decode
+     * layers after this prefill bind as well.
+     */
+    private boolean useFp16KVCache() {
+        return state.usesFp16KeyValueCache();
+    }
+
+    /** The key cache every graph of this family binds: FP16 when the state holds one. */
+    private Object keyCache() {
+        return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    /** The value cache, following {@link #keyCache()}. */
+    private Object valueCache() {
+        return useFp16KVCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
     }
 }

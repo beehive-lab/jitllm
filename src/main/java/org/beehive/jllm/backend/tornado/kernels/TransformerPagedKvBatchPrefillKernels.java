@@ -100,6 +100,78 @@ public class TransformerPagedKvBatchPrefillKernels {
         }
     }
 
+    // FP16-cache twin of batchedRopeWithKVCachePaged: identical arithmetic, the cache stored in
+    // binary16.
+    public static void batchedRopeWithKVCacheFP16Paged(
+            KernelContext context,
+            IntArray batchStartPosHolder,
+            FloatArray wrapQBatch,
+            FloatArray wrapKBatch,
+            FloatArray wrapVBatch,
+            HalfFloatArray wrapKeyCache,
+            HalfFloatArray wrapValueCache,
+            FloatArray freqCisReal,
+            FloatArray freqCisImag,
+            int kvDim,
+            int headSize,
+            int layerIndex,
+            IntArray blockTable,
+            int blockCfg,
+            int blockStride,
+            int dim) {
+        int globalIdx = context.globalIdx;
+        int halfDim = dim / 2;
+        int batchIdx = globalIdx / halfDim;
+        int pairIdx = globalIdx % halfDim;
+        int i = pairIdx * 2;
+
+        if (batchIdx >= batchStartPosHolder.get(1)) {
+            return; // padding row: see batchedRopeWithKVCachePacked
+        }
+        int pos = batchStartPosHolder.get(0) + batchIdx;
+        int qOffset = batchIdx * dim;
+        int kOffset = batchIdx * kvDim;
+
+        if (i + 1 < dim) {
+            int head_dim = i % headSize;
+            // See batchedRopeWithKVCachePacked: frequencies belong to the model, not the kernel.
+            int freqIdx = pos * (headSize / 2) + (head_dim / 2);
+            float fcr = freqCisReal.get(freqIdx);
+            float fci = freqCisImag.get(freqIdx);
+
+            // Rotate Q
+            float v0q = wrapQBatch.get(qOffset + i);
+            float v1q = wrapQBatch.get(qOffset + i + 1);
+            wrapQBatch.set(qOffset + i, v0q * fcr - v1q * fci);
+            wrapQBatch.set(qOffset + i + 1, v0q * fci + v1q * fcr);
+
+            // Rotate K and write K,V to cache
+            if (i + 1 < kvDim) {
+                float v0k = wrapKBatch.get(kOffset + i);
+                float v1k = wrapKBatch.get(kOffset + i + 1);
+                float rotK0 = v0k * fcr - v1k * fci;
+                float rotK1 = v0k * fci + v1k * fcr;
+                wrapKBatch.set(kOffset + i, rotK0);
+                wrapKBatch.set(kOffset + i + 1, rotK1);
+
+                int cacheOff =
+                        KvBlockAddress.offset(
+                                blockTable,
+                                batchStartPosHolder.get(2),
+                                pos,
+                                KvBlockAddress.layerOffset(layerIndex, kvDim, blockCfg),
+                                kvDim,
+                                blockCfg,
+                                blockStride);
+                wrapKeyCache.set(cacheOff + i, new HalfFloat(rotK0));
+                wrapKeyCache.set(cacheOff + i + 1, new HalfFloat(rotK1));
+                wrapValueCache.set(cacheOff + i, new HalfFloat(wrapVBatch.get(kOffset + i)));
+                wrapValueCache.set(
+                        cacheOff + i + 1, new HalfFloat(wrapVBatch.get(kOffset + i + 1)));
+            }
+        }
+    }
+
     public static void batchedRopeWithKVCachePackedPaged(
             KernelContext context,
             IntArray batchStartPosHolder,
@@ -313,6 +385,132 @@ public class TransformerPagedKvBatchPrefillKernels {
                 for (int d = 0; d < headSize; d++) {
                     kTile[tileMOff + d] = wrapKeyCache.get(kvBase + d);
                     vTile[tileMOff + d] = wrapValueCache.get(kvBase + d);
+                }
+            }
+            context.localBarrier();
+
+            // Compute attention scores
+            for (int t = tileC + tid; t <= tileEnd; t += localSz) {
+                int tInTile = t - tileC;
+                float score = 0.0f;
+                for (int d = 0; d < headSize; d++) {
+                    score += qShared[d] * kTile[tInTile * headSize + d];
+                }
+                sTile[tInTile] = score / TornadoMath.sqrt(headSize);
+            }
+            context.localBarrier();
+
+            // Tile max
+            float tileMax = Float.NEGATIVE_INFINITY;
+            for (int t = 0; t <= tileEnd - tileC; t++) {
+                if (sTile[t] > tileMax) {
+                    tileMax = sTile[t];
+                }
+            }
+            if (tid == 0) {
+                maxHolder[0] = tileMax;
+            }
+            context.localBarrier();
+            float curTileMax = maxHolder[0];
+
+            float newMax = Math.max(maxScore, curTileMax);
+            if (newMax != maxScore && maxScore != Float.NEGATIVE_INFINITY) {
+                float scale = TornadoMath.exp(maxScore - newMax);
+                sumExp *= scale;
+                for (int d = 0; d < headSize; d++) {
+                    output[d] *= scale;
+                }
+            }
+            maxScore = newMax;
+
+            for (int t = 0; t <= tileEnd - tileC; t++) {
+                float expScore = TornadoMath.exp(sTile[t] - maxScore);
+                sumExp += expScore;
+                for (int d = 0; d < headSize; d++) {
+                    output[d] += expScore * vTile[t * headSize + d];
+                }
+            }
+            context.localBarrier();
+        }
+
+        float norm = (sumExp > 0.0f) ? (1.0f / sumExp) : 0.0f;
+        int xbOffset = batchIdx * dim + h * headSize;
+        for (int d = tid; d < headSize; d += localSz) {
+            wrapXbBatch.set(xbOffset + d, output[d] * norm);
+        }
+    }
+
+    // FP16-cache twin of batchedFlashAttentionPaged: identical arithmetic, the cache stored in
+    // binary16.
+    public static void batchedFlashAttentionKVFP16Paged(
+            KernelContext context,
+            IntArray batchStartPosHolder,
+            FloatArray wrapQBatch,
+            HalfFloatArray wrapKeyCache,
+            HalfFloatArray wrapValueCache,
+            FloatArray wrapXbBatch,
+            int nHeads,
+            int headSize,
+            int kvDim,
+            int kvMul,
+            int layerIndex,
+            IntArray blockTable,
+            int blockCfg,
+            int blockStride,
+            int dim) {
+        int tid = context.localIdx;
+        int groupId = context.groupIdx;
+        int localSz = context.localGroupSizeX;
+
+        int batchIdx = groupId / nHeads;
+        int h = groupId % nHeads;
+        if (batchIdx >= batchStartPosHolder.get(1)) {
+            return; // padding row: no real query, and its KV range is not valid
+        }
+        int pos = batchStartPosHolder.get(0) + batchIdx;
+        int slot = batchStartPosHolder.get(2);
+        int layerOff = KvBlockAddress.layerOffset(layerIndex, kvDim, blockCfg);
+        int kvHeadIdx = h / kvMul;
+        int BLOCK_C = 16;
+
+        float[] qShared = context.allocateFloatLocalArray(headSize);
+        float[] kTile = context.allocateFloatLocalArray(BLOCK_C * headSize);
+        float[] vTile = context.allocateFloatLocalArray(BLOCK_C * headSize);
+        float[] sTile = context.allocateFloatLocalArray(BLOCK_C);
+        float[] maxHolder = context.allocateFloatLocalArray(1);
+
+        // Load Q into shared memory
+        int qOffset = batchIdx * dim + h * headSize;
+        for (int i = tid; i < headSize; i += localSz) {
+            qShared[i] = wrapQBatch.get(qOffset + i);
+        }
+        context.localBarrier();
+
+        float maxScore = Float.NEGATIVE_INFINITY;
+        float sumExp = 0.0f;
+        float[] output = new float[headSize];
+        for (int i = 0; i < headSize; i++) {
+            output[i] = 0.0f;
+        }
+
+        for (int tileC = 0; tileC <= pos; tileC += BLOCK_C) {
+            int tileEnd = Math.min(tileC + BLOCK_C - 1, pos);
+
+            // Load K/V tile
+            for (int t = tileC + tid; t <= tileEnd; t += localSz) {
+                int tInTile = t - tileC;
+                int tileMOff = tInTile * headSize;
+                // The block walk depends on the position, not on d, so it is computed once
+                // per position. Keeping it inside the loop — where the legacy line that
+                // computed loff + pos*kvDim + d sat — costs a table load and an integer
+                // divide per element, which measured -7.3% on Qwen2 Q8_0.
+                int kvBase =
+                        KvBlockAddress.offset(
+                                        blockTable, slot, t, layerOff, kvDim, blockCfg, blockStride)
+                                + kvHeadIdx * headSize;
+                for (int d = 0; d < headSize; d++) {
+                    kTile[tileMOff + d] = wrapKeyCache.get(kvBase + d).getFloat32();
+                    vTile[tileMOff + d] = wrapValueCache.get(kvBase + d).getFloat32();
                 }
             }
             context.localBarrier();

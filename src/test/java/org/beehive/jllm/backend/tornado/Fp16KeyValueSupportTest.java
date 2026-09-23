@@ -21,7 +21,7 @@ public class Fp16KeyValueSupportTest {
             boolean nvidia,
             boolean tensorCores) {
         return Fp16KeyValueSupport.unsupported(
-                new Combination(arch, weights, mode, backend, nvidia, tensorCores));
+                new Combination(arch, weights, mode, backend, nvidia, tensorCores, true));
     }
 
     @Test
@@ -90,15 +90,6 @@ public class Fp16KeyValueSupportTest {
                                 true)
                         .isPresent());
         assertTrue(
-                check(
-                                "llama",
-                                DataType.F16,
-                                ExecutionMode.BATCH_PREFILL_DECODE,
-                                BackendId.CUDA,
-                                true,
-                                false)
-                        .isPresent());
-        assertTrue(
                 check("qwen3", DataType.F16, ExecutionMode.STANDARD, BackendId.CUDA, false, false)
                         .isPresent());
         assertTrue(
@@ -107,8 +98,28 @@ public class Fp16KeyValueSupportTest {
         assertTrue(
                 check("gemma4", DataType.F16, ExecutionMode.STANDARD, BackendId.CUDA, true, true)
                         .isPresent());
+        // OpenCL is verified on NVIDIA-class devices only.
         assertTrue(
-                check("llama", DataType.F16, ExecutionMode.STANDARD, BackendId.OPENCL, true, false)
+                Fp16KeyValueSupport.unsupported(
+                                new Combination(
+                                        "llama",
+                                        DataType.F16,
+                                        ExecutionMode.STANDARD,
+                                        BackendId.OPENCL,
+                                        false,
+                                        false,
+                                        false))
+                        .isPresent());
+        assertTrue(
+                Fp16KeyValueSupport.unsupported(
+                                new Combination(
+                                        "mistral",
+                                        DataType.Q8_0,
+                                        ExecutionMode.STANDARD,
+                                        BackendId.CUDA,
+                                        false,
+                                        true,
+                                        false))
                         .isPresent());
         assertTrue(
                 check(
@@ -129,6 +140,7 @@ public class Fp16KeyValueSupportTest {
                         DataType.Q8_0,
                         ExecutionMode.STANDARD,
                         BackendId.CUDA,
+                        true,
                         true,
                         true);
         String message = Fp16KeyValueSupport.refusal(combination, "the gemma4 layers keep FP32");
@@ -166,5 +178,39 @@ public class Fp16KeyValueSupportTest {
                                     true)
                             .isPresent());
         }
+    }
+
+    /** Without tensor cores batched prefill takes the scalar kernels, which have FP16 twins. */
+    @Test
+    public void scalarBatchedPrefillAndOpenClOnNvidiaAreSupported() {
+        for (BackendId backend : new BackendId[] {BackendId.CUDA, BackendId.OPENCL}) {
+            for (DataType weights : new DataType[] {DataType.F16, DataType.Q8_0}) {
+                assertEquals(
+                        Optional.empty(),
+                        check(
+                                "llama",
+                                weights,
+                                ExecutionMode.BATCH_PREFILL_DECODE,
+                                backend,
+                                true,
+                                false));
+                assertEquals(
+                        Optional.empty(),
+                        check("qwen3", weights, ExecutionMode.STANDARD, backend, true, false));
+            }
+        }
+    }
+
+    @Test
+    public void qwen35StaysCudaOnly() {
+        assertTrue(
+                check(
+                                "qwen35",
+                                DataType.Q4_0,
+                                ExecutionMode.STANDARD,
+                                BackendId.OPENCL,
+                                true,
+                                false)
+                        .isPresent());
     }
 }

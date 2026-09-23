@@ -447,8 +447,6 @@ public class MistralFP16FFNLayers
     @Override
     protected boolean useFp16KVCache() {
         return state.usesFp16KeyValueCache()
-                && org.beehive.jllm.backend.tornado.device.TornadoDevices.current()
-                        .backend()
-                        .equals(org.beehive.jllm.runtime.backend.BackendId.CUDA);
+                && org.beehive.jllm.backend.tornado.Fp16KeyValueSupport.nvidiaDevice();
     }
 }
