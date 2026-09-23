@@ -1,4 +1,6 @@
-# jitllm — LLM inference & serving for the JVM, on any GPU
+# jitllm — Java Inference Tornado toolkit for LLMs
+
+**LLM inference & serving for the JVM, on any GPU.**
 
 [![build JDK21](https://github.com/beehive-lab/jitllm/actions/workflows/build-and-run.yml/badge.svg)](https://github.com/beehive-lab/jitllm/actions/workflows/build-and-run.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.beehive-lab/jitllm?&logo=apache-maven&color=blue)](https://central.sonatype.com/artifact/io.github.beehive-lab/jitllm)
@@ -23,7 +25,7 @@
 
 ### Think vLLM — but pure Java, and it runs on **any** GPU.
 
-**jitllm** is a JVM-native LLM inference and serving engine. You write and ship plain Java; [**TornadoVM**](https://github.com/beehive-lab/TornadoVM) JIT-compiles the hot transformer kernels to **CUDA, OpenCL, or Apple Metal** at runtime — no JNI glue, no second toolchain, no native rebuild per GPU.
+**jitllm** — the **J**ava **I**nference **T**ornado toolkit for **LLM**s — is a JVM-native LLM inference and serving engine. You write and ship plain Java; [**TornadoVM**](https://github.com/beehive-lab/TornadoVM) JIT-compiles the hot transformer kernels to **CUDA, OpenCL, or Apple Metal** at runtime — no JNI glue, no second toolchain, no native rebuild per GPU.
 
 One `.jar` runs the same model on **NVIDIA, Intel, AMD, and Apple Silicon**, from a laptop to an RTX 5090.
 
