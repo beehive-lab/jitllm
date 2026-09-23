@@ -377,12 +377,19 @@ Each command has focused help:
 | `serve` | OpenAI-compatible HTTP API | `--host`, `--port`; experimental `--continuous-batching` |
 | `bench` | Repeated prefill/decode workloads | `--pp`, `--tg`, `--depth`, `--repetitions`, `--output` |
 
-Model, GPU/backend selection, KV precision, execution policy, and `-v`/`--verbose`
-are shared. `--ctx-size` (`-c`, also `--ctx`/`--context-length`) sets context capacity
-for run/chat/serve; `--max-new-tokens` separately limits generated tokens in run/chat.
-The default context is 512 tokens for run/chat and the model's own for serve (a larger
-request is clamped to it); the default generation limit is the context capacity.
-Benchmark context is derived from its workload sizes and depths.
+`./jllm --help` lists every command and option; `./jllm COMMAND --help` shows one command's.
+Options are grouped as Engine Configuration (model, prompt, sampling, context, prefill mode,
+`-v`/`--verbose`), the command's own group (Server, Benchmark), Hardware Configuration, Debug
+and Profiling, TornadoVM Execution Verbose, and Advanced Options, where experimental options
+are tagged `[experimental]`.
+
+Two limits, because they bound different things. `-c`/`--ctx-size` is the context window:
+prompt, conversation history and answers together. It sizes the key/value cache allocated at
+load, so it drives memory use (`--ctx` and `--context-length` are accepted spellings).
+`--max-new-tokens` only stops one answer early and allocates nothing. They mirror llama.cpp's
+`-c` and `-n`. The default context is 512 tokens for run/chat and the model's own for serve
+(a larger request is clamped to it); by default an answer runs until the model ends its turn
+or the context is full. Benchmark context is derived from its workload sizes and depths.
 
 ```bash
 ./jllm run -m model.gguf --gpu -c 4096 --max-new-tokens 128 --prompt "Explain SIMD."

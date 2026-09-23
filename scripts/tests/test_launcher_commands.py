@@ -79,8 +79,9 @@ class Commands(unittest.TestCase):
     def test_native_libraries_are_opt_in_and_experimental(self):
         for command in ("run", "chat", "serve", "bench"):
             help_text = launcher.create_parser(command).format_help()
-            self.assertIn("Experimental: native libraries", help_text)
-            self.assertIn("--with-native-libraries", help_text)
+            advanced = help_text[help_text.index("Advanced Options"):]
+            self.assertIn("--with-native-libraries", advanced)
+            self.assertIn("[experimental] Use cuBLAS/cuDNN", advanced)
         self.assertFalse(self.parse("run", "-m", "stub.gguf", "--prompt", "hi").with_native_libraries)
         self.assertTrue(self.parse("run", "-m", "stub.gguf", "--prompt", "hi",
                                    "--with-native-libraries").with_native_libraries)
@@ -90,15 +91,44 @@ class Commands(unittest.TestCase):
 
     def test_continuous_batching_is_listed_as_experimental(self):
         serve_help = launcher.create_parser("serve").format_help()
-        self.assertIn("Experimental: continuous batching", serve_help)
-        self.assertIn("--continuous-batching", serve_help)
+        advanced = serve_help[serve_help.index("Advanced Options"):]
+        self.assertIn("--continuous-batching", advanced)
+        self.assertIn("[experimental] (serve) Decode", advanced)
         self.assertNotIn("--parallel", serve_help)
         self.assertNotIn("--continuous-batching", launcher.create_parser("run").format_help())
         stdout = io.StringIO()
         with redirect_stdout(stdout), self.assertRaises(SystemExit):
             launcher.parse_cli_args(["--help"])
-        self.assertIn("Experimental", stdout.getvalue())
+        self.assertIn("[experimental]", stdout.getvalue())
         self.assertIn("--continuous-batching", stdout.getvalue())
+
+    def test_global_help_lists_every_command_and_option_in_order(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout), self.assertRaises(SystemExit):
+            launcher.parse_cli_args(["--help"])
+        text = stdout.getvalue()
+        for command in ("run", "chat", "serve", "bench"):
+            self.assertIn(f"  {command} ", text)
+        for option in ("--prompt", "--ctx-size", "--max-new-tokens", "--port", "--pp", "--gpu",
+                       "--profiler", "--print-kernel", "--cuda-graphs", "--with-native-libraries"):
+            self.assertIn(option, text)
+        titles = ["commands:", "Engine Configuration", "Server (serve)", "Benchmark (bench",
+                  "Hardware Configuration", "Debug and Profiling", "TornadoVM Execution Verbose",
+                  "Advanced Options"]
+        positions = [text.index(t) for t in titles]
+        self.assertEqual(sorted(positions), positions)
+        for gone in ("--echo", "LLaMA Configuration", "Command Display", "Advanced CUDA",
+                     "Prefill-Decode Optimizations", "Experimental:", "--context-length",
+                     "--server", "--interactive"):
+            self.assertNotIn(gone, text)
+
+    def test_one_spelling_per_option_in_help_but_old_spellings_still_parse(self):
+        help_text = launcher.create_parser("run").format_help()
+        self.assertIn("-c, --ctx-size N", help_text)
+        self.assertNotIn("--ctx ", help_text)
+        self.assertEqual(4096, self.parse("run", "-m", "stub.gguf", "--prompt", "hi", "--ctx", "4096").max_tokens)
+        self.assertIn("usage: jllm run --model FILE [options]", help_text)
+        self.reject("run", "-m", "stub.gguf", "--prompt", "hi", "--echo", "true")
 
     def test_removed_fp16_flag_is_refused_with_the_migration(self):
         for prefix in (["run", "--prompt", "hi"], ["chat"], ["serve"], ["bench"], ["--prompt", "hi"]):

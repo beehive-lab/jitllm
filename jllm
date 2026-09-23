@@ -326,8 +326,6 @@ class LlamaRunner:
             str(args.max_tokens),
             "--stream",
             str(args.stream).lower(),
-            "--echo",
-            str(args.echo).lower(),
         ]
 
         if args.max_new_tokens is not None:
@@ -438,10 +436,56 @@ def load_env_from_script():
         sys.exit(1)
 
 
+class OverviewHelpAction(argparse.Action):
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS, help="Show this help and exit")
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.print_usage()
+        print()
+        print(parser.description)
+        print()
+        print(overview_help())
+        parser.exit()
+
+
 class LegacyContextAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, values)
         namespace.legacy_context = True
+
+
+class HelpFormatter(argparse.HelpFormatter):
+    """Shows a default only where it tells the reader something (not None, False or empty)."""
+
+    def _get_help_string(self, action):
+        help_text = action.help or ""
+        if ("default" in help_text or action.default in (None, False, "", argparse.SUPPRESS)
+                or not action.option_strings):
+            return help_text
+        return help_text + " (default: %(default)s)"
+
+
+COMMANDS = {"run": "Generate one response to --prompt", "chat": "Chat in the terminal",
+            "serve": "Start the OpenAI-compatible HTTP API", "bench": "Measure inference performance"}
+
+
+def overview_help():
+    """Every command and every option, for jllm --help."""
+    full = create_parser()
+    formatter = full._get_formatter()
+    for group in full._action_groups:
+        visible = [a for a in group._group_actions if a.help is not argparse.SUPPRESS]
+        if not visible or group.title in ("positional arguments", "options", "optional arguments"):
+            continue
+        formatter.start_section(group.title)
+        formatter.add_text(group.description)
+        formatter.add_arguments(visible)
+        formatter.end_section()
+    formatter.add_text("Options marked with commands in parentheses apply to those commands only. "
+                       "jllm COMMAND --help shows the options of one command.")
+    commands = "commands:\n" + "".join(f"  {name:<8}{text}\n" for name, text in COMMANDS.items())
+    return commands + "\n" + formatter.format_help()
 
 
 def parse_bool(value):
@@ -456,15 +500,16 @@ def parse_cli_args(argv):
         parser = create_parser()
     else:
         parser = argparse.ArgumentParser(
-            prog="jllm", description="Run, chat with, serve, or benchmark a local model.",
-            epilog="Experimental: serve --continuous-batching SLOTS decodes several HTTP requests in one "
-                   "batch (see jllm serve --help for what it currently supports).")
-        sub = parser.add_subparsers(dest="command", required=True)
-        descriptions = {"run": "Generate one response", "chat": "Chat in the terminal",
-                        "serve": "Start the OpenAI-compatible HTTP API", "bench": "Measure inference performance"}
+            prog="jllm", usage="jllm {run,chat,serve,bench} --model FILE [options]",
+            description="Run, chat with, serve, or benchmark a local GGUF model on TornadoVM.",
+            formatter_class=argparse.RawDescriptionHelpFormatter, add_help=False)
+        parser.add_argument("-h", "--help", action=OverviewHelpAction)
+        sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
         for command in commands:
             sub.add_parser(command, parents=[create_parser(command)], add_help=False,
-                           help=descriptions[command], allow_abbrev=False)
+                           prog=f"jllm {command}", usage=f"jllm {command} --model FILE [options]",
+                           help=COMMANDS[command], description=COMMANDS[command],
+                           formatter_class=HelpFormatter, allow_abbrev=False)
     args = parser.parse_args(argv)
     supplied = {arg.split("=", 1)[0] for arg in argv if arg.startswith("-")}
     mode = args.command or ("serve" if args.server else "bench" if args.bench else "chat" if args.interactive else "run")
@@ -507,7 +552,7 @@ def parse_cli_args(argv):
         parser.error("HTTP server options require serve/--server")
     if mode != "bench" and supplied & {"--pp", "--tg", "--depth", "--repetitions", "--output", "--bench-args"}:
         parser.error("Benchmark options require bench/--bench")
-    if mode in {"serve", "bench"} and supplied & {"--temperature", "--top-p", "--seed", "--stream", "--echo", "--suffix"}:
+    if mode in {"serve", "bench"} and supplied & {"--temperature", "--top-p", "--seed", "--stream", "--suffix"}:
         parser.error("Generation options belong to run/chat; HTTP sampling is configured per request")
     if mode == "bench" and supplied & {"--ctx-size", "-c", "--ctx", "--context-length", "--max-tokens", "-n"}:
         parser.error("bench derives context from --pp/--tg/--depth; omit --ctx-size")
@@ -530,265 +575,153 @@ def create_parser(command=None) -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
         prog="jllm" + (" " + command if command else ""),
-        description="GPU-accelerated LLM runner using TornadoVM",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        usage=f"jllm {command} --model FILE [options]" if command else None,
+        description=COMMANDS[command] if command else "GPU-accelerated LLM runner using TornadoVM",
+        formatter_class=HelpFormatter,
         allow_abbrev=False,
     )
 
-    # Required arguments
-    parser.add_argument(
-        "--model", "-m",
-        dest="model_path",
-        required=True,
-        help="Path to the LLM gguf file (e.g., Llama-3.2-1B-Instruct-Q8_0.gguf)",
-    )
-
-    # LLM arguments
-    llm_group = parser.add_argument_group("LLaMA Configuration")
-    llm_group.add_argument("--prompt", help="Input prompt for the model")
-    llm_group.add_argument("-sp", "--system-prompt", help="System prompt for the model")
-    llm_group.add_argument(
-        "--temperature",
-        type=float,
-        default=0.1,
-        help="Sampling temperature (0.0 to 2.0)",
-    )
-    llm_group.add_argument(
-        "--top-p", type=float, default=0.95, help="Top-p sampling parameter"
-    )
-    llm_group.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Random seed (default: current timestamp)",
-    )
-    context_group = llm_group.add_mutually_exclusive_group()
-    context_group.add_argument("-c", "--ctx-size", "--ctx", "--context-length", dest="max_tokens", type=int, default=None,
-                               help="Context capacity in tokens, including prompt and generated text "
+    # Groups, in the order --help shows them: what to run, the command's own options, where it
+    # runs, how to look inside it, then the knobs most people never need.
+    engine = parser.add_argument_group("Engine Configuration")
+    engine.add_argument("--model", "-m", dest="model_path", required=True, metavar="FILE",
+                        help="GGUF model file (e.g., Llama-3.2-1B-Instruct-Q8_0.gguf)")
+    engine.add_argument("--prompt", metavar="TEXT", help="Prompt to answer (run only)")
+    engine.add_argument("-sp", "--system-prompt", metavar="TEXT", help="System prompt (run, chat)")
+    engine.add_argument("--suffix", metavar="TEXT",
+                        help="Suffix for a fill-in-the-middle request, e.g. Codestral (run only)")
+    engine.add_argument("--temperature", type=float, default=0.1, metavar="T",
+                        help="Sampling temperature, 0.0 to 2.0; 0 is greedy (run, chat)")
+    engine.add_argument("--top-p", type=float, default=0.95, metavar="P", help="Nucleus sampling threshold (run, chat)")
+    engine.add_argument("--seed", type=int, default=None, metavar="N",
+                        help="Random seed (run, chat; default: current time)")
+    # Two limits, because they bound different things: the context is the memory allocated at
+    # load (the key/value cache holds every token of the conversation), the other only stops one
+    # answer early. The same split as llama.cpp's -c and -n.
+    context_group = engine.add_mutually_exclusive_group()
+    context_group.add_argument("-c", "--ctx-size", dest="max_tokens", type=int, default=None, metavar="N",
+                               help="Context window in tokens: prompt, conversation history and answers together. "
+                                    "Sets the key/value cache allocated at load, so it drives memory use "
                                     "(default: 512 for run/chat; the model's own for serve, where 0 also means the model's own)")
+    # Accepted spellings of the same option, kept out of --help so it shows one name.
+    context_group.add_argument("--ctx", "--context-length", dest="max_tokens", type=int,
+                               default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     context_group.add_argument("-n", "--max-tokens", dest="max_tokens", type=int,
                                default=argparse.SUPPRESS, action=LegacyContextAction,
                                help=argparse.SUPPRESS)
-    llm_group.add_argument("--max-new-tokens", type=int, default=None,
-                           help="Maximum generated tokens per request/turn (default: context capacity)")
-    llm_group.add_argument(
-        "--stream", type=parse_bool, default=True, help="Enable streaming output"
-    )
-    llm_group.add_argument(
-        "--echo", type=parse_bool, default=False, help="Echo the input prompt"
-    )
-    llm_group.add_argument(
-        "--suffix", help="Suffix for fill-in-the-middle request (Codestral)"
-    )
+    engine.add_argument("--max-new-tokens", type=int, default=None, metavar="N",
+                        help="Stop an answer after N generated tokens; allocates nothing (run, chat; "
+                             "default: until the model ends its turn or the context is full)")
+    engine.add_argument("--stream", type=parse_bool, default=True, metavar="true|false",
+                        help="Print tokens as they are generated (run, chat; default: true)")
+    engine.add_argument("--with-prefill-decode", dest="with_prefill_decode", action="store_true",
+                        help="Build separate plans for reading the prompt (prefill) and generating (decode); "
+                             "alone it reads the prompt one token at a time")
+    engine.add_argument("--batch-prefill-size", dest="batch_prefill_size", type=int, default=None, metavar="N",
+                        help="Read the prompt N tokens per step (needs --with-prefill-decode; N > 1)")
+    engine.add_argument("--verbose", "-v", action="store_true",
+                        help="Show the startup configuration, initialization timings and detailed diagnostics on stderr")
+    engine.add_argument("--show-command", action="store_true",
+                        help="Print the Java command instead of running it")
+    engine.add_argument("--execute-after-show", action="store_true",
+                        help="With --show-command, print the command and then run it")
 
-    # Mode selection
+    # Legacy spellings of the subcommands (jllm --model F --server ...), accepted, not advertised.
     mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument(
-        "-i", "--interactive", "--chat", action="store_true", help="Run in interactive/chat mode"
-    )
-    mode_group.add_argument(
-        "--instruct",
-        action="store_true",
-        default=False,
-        help="Run in instruction mode (default)",
-    )
+    mode_group.add_argument("-i", "--interactive", "--chat", action="store_true", help=argparse.SUPPRESS)
+    mode_group.add_argument("--instruct", action="store_true", default=False, help=argparse.SUPPRESS)
+    mode_group.add_argument("--server", "--serve", action="store_true", help=argparse.SUPPRESS)
+    mode_group.add_argument("--bench", action="store_true", help=argparse.SUPPRESS)
 
-    # OpenAI-compatible server
-    server_group = parser.add_argument_group("OpenAI-compatible server")
-    mode_group.add_argument("--server", "--serve", action="store_true", help="Run the OpenAI-compatible HTTP server instead of inference")
-    server_group.add_argument("--port", type=int, default=8080, help="Server port (default 8080)")
+    server_group = parser.add_argument_group("Server (serve)")
+    server_group.add_argument("--host", default="127.0.0.1", metavar="ADDR", help="HTTP bind address")
+    server_group.add_argument("--port", type=int, default=8080, metavar="N", help="HTTP port")
 
-    server_group.add_argument("--host", default="127.0.0.1", help="HTTP bind address")
-    native_group = parser.add_argument_group(
-        "Experimental: native libraries",
-        "Replace JIT kernels with vendor libraries where an implementation exists. Currently: "
-        "Qwen3 F16 batched prefill on CUDA tensor-core devices (cuBLAS projections, cuDNN "
-        "attention), which also needs more device memory. Anything else is refused. Prints a "
-        "warning when enabled.")
-    native_group.add_argument("--with-native-libraries", action="store_true",
-                              help="Use native libraries (cuBLAS/cuDNN) instead of JIT kernels where implemented")
-    experimental_group = parser.add_argument_group(
-        "Experimental: continuous batching (serve)",
-        "Decodes several HTTP requests in one batch. Currently: CUDA tensor-core devices, FP16 "
-        "Llama/Qwen3 weights, greedy requests (temperature 0); no prefill chunking or CUDA "
-        "graphs. Prints a warning when enabled.")
-    experimental_group.add_argument("--continuous-batching", type=int, default=None, metavar="SLOTS",
-                                    help="Enable continuous batching with this many request slots (at least 2)")
-    experimental_group.add_argument("--max-queued-requests", type=int, default=64,
-                                    help="Requests waiting for a free slot before new ones are refused")
-    experimental_group.add_argument("--prefix-cache-entries", type=int, default=0,
-                                    help="Cached prompt prefixes shared between requests (default: off)")
+    bench_group = parser.add_argument_group("Benchmark (bench, llama-bench style)")
+    bench_group.add_argument("--pp", metavar="N[,N...]", help="Prompt lengths to prefill")
+    bench_group.add_argument("--tg", metavar="N[,N...]", help="Token counts to generate")
+    bench_group.add_argument("--depth", metavar="N[,N...]", help="Context already filled before each test")
+    bench_group.add_argument("--repetitions", type=int, metavar="N", help="Repetitions per test")
+    bench_group.add_argument("--output", choices=["md", "csv", "json", "jsonl", "sql"], help="Result format")
+    bench_group.add_argument("--bench-args", default="", metavar="ARGS",
+                             help='Extra JllmBench options, e.g. --bench-args="-d 0,4096 -r 5"')
 
-    # Benchmark (llama-bench style)
-    parser.add_argument(
-        "--fp32-kv-cache",
-        action="store_true",
-        help="Hold the key/value cache in FP32 instead of the FP16 default (compatibility and numerical reference; "
-             "required where the FP16 cache is not supported, which the run reports)",
-    )
-    # Removed: FP16 became the default. Parsed only to refuse it with the migration.
-    parser.add_argument("--fp16-kv-cache", action="store_true", help=argparse.SUPPRESS)
-    # Kernel selection is automatic and lives in Java (device capability plus the workload's
-    # shape decide between the int8 tensor-core pair, the FP16 tensor-core kernels and the
-    # scalar kernels). The two spellings below survive for compatibility only and are kept
-    # out of --help: --tensor-cores is a no-op, --no-tensor-cores is the old name of the
-    # diagnostic override under "Debug and Profiling".
-    parser.add_argument("--tensor-cores", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--no-tensor-cores", dest="no_tensor_cores", action="store_true", help=argparse.SUPPRESS
-    )
-    bench_group = parser.add_argument_group("Benchmark (llama-bench style)")
-    mode_group.add_argument(
-        "--bench",
-        action="store_true",
-        help="Run the llama-bench-style benchmark (bench.JllmBench) instead of inference",
-    )
-    bench_group.add_argument(
-        "--bench-args",
-        default="",
-        help='Extra benchmark options (use --bench-args="..."), e.g. "-p 512 -n 128 -d 0,4096 -r 5 -o md" (see JllmBench)',
-    )
-
-    bench_group.add_argument("--pp", help="Comma-separated prompt prefill token counts")
-    bench_group.add_argument("--tg", help="Comma-separated decode token counts")
-    bench_group.add_argument("--depth", help="Comma-separated existing context depths")
-    bench_group.add_argument("--repetitions", type=int, help="Benchmark repetitions")
-    bench_group.add_argument("--output", choices=["md", "csv", "json", "jsonl", "sql"], help="Benchmark result format")
-
-    # Hardware configuration
     hw_group = parser.add_argument_group("Hardware Configuration")
-    hw_group.add_argument(
-        "--gpu", dest="use_gpu", action="store_true", help="Enable GPU acceleration"
-    )
-    hw_group.add_argument(
-        "--opencl", dest="backend_override", action="store_const", const=Backend.OPENCL,
-        help="Force the OpenCL backend when the installed TornadoVM SDK has more than one (default: auto-detected)",
-    )
-    hw_group.add_argument(
-        "--cuda", dest="backend_override", action="store_const", const=Backend.CUDA,
-        help="Force the CUDA backend when the installed TornadoVM SDK has more than one (default: auto-detected)",
-    )
-    hw_group.add_argument(
-        "--metal", dest="backend_override", action="store_const", const=Backend.METAL,
-        help="Force the Metal backend when the installed TornadoVM SDK has more than one (default: auto-detected)",
-    )
-    hw_group.add_argument("--gpu-memory", default="14GB", help="GPU memory allocation")
-    hw_group.add_argument("--heap-min", default="20g", help="Minimum JVM heap size")
-    hw_group.add_argument("--heap-max", default="20g", help="Maximum JVM heap size")
+    hw_group.add_argument("--gpu", dest="use_gpu", action="store_true",
+                          help="Run on the accelerator (default: CPU)")
+    for flag, backend, name in (("--opencl", Backend.OPENCL, "OpenCL"), ("--cuda", Backend.CUDA, "CUDA"),
+                                ("--metal", Backend.METAL, "Metal")):
+        hw_group.add_argument(flag, dest="backend_override", action="store_const", const=backend,
+                              help=f"Use the {name} backend when the TornadoVM SDK has more than one "
+                                   "(default: auto-detected)")
+    hw_group.add_argument("--gpu-memory", default="14GB", metavar="SIZE",
+                          help="Device memory TornadoVM may allocate")
+    hw_group.add_argument("--heap-min", default="20g", metavar="SIZE", help="Minimum JVM heap")
+    hw_group.add_argument("--heap-max", default="20g", metavar="SIZE", help="Maximum JVM heap")
 
-    # Debug and profiling
     debug_group = parser.add_argument_group("Debug and Profiling")
     debug_group.add_argument("--debug", action="store_true", help="Enable debug output")
     debug_group.add_argument(
-        "--diagnostic-scalar-batched-prefill",
-        dest="diagnostic_scalar_batched_prefill",
-        action="store_true",
-        help="Diagnostic only: run the qwen35 batched prefill on the scalar (FP32) kernels instead of the automatically selected tensor-core path (int8 for eligible Q4_0 projections, FP16 otherwise). Slower; for comparing numerics",
-    )
-    debug_group.add_argument(
-        "--profiler", action="store_true", help="Enable TornadoVM profiler"
-    )
-    debug_group.add_argument(
-        "--profiler-dump-dir",
-        default=None,
-        help="Directory for profiler output",
-    )
+        "--diagnostic-scalar-batched-prefill", dest="diagnostic_scalar_batched_prefill", action="store_true",
+        help="Run the qwen35 batched prefill on the scalar (FP32) kernels instead of the automatically "
+             "selected tensor-core path (int8 for eligible Q4_0 projections, FP16 otherwise); slower, "
+             "for comparing numerics")
+    debug_group.add_argument("--profiler", action="store_true", help="Enable the TornadoVM profiler")
+    debug_group.add_argument("--profiler-dump-dir", default=None, metavar="FILE",
+                             help="File for the profiler's JSON output")
 
-    # TornadoVM Execution Verbose options
     verbose_group = parser.add_argument_group("TornadoVM Execution Verbose")
-    verbose_group.add_argument(
-        "--print-bytecodes",
-        dest="print_bytecodes",
-        action="store_true",
-        help="Print bytecodes (tornado.print.bytecodes=true)",
-    )
-    verbose_group.add_argument(
-        "--print-threads",
-        dest="threads",
-        action="store_true",
-        help="Print thread information (tornado.threadInfo=true)",
-    )
-    verbose_group.add_argument(
-        "--print-kernel",
-        dest="print_kernel",
-        action="store_true",
-        help="Print kernel information (tornado.printKernel=true)",
-    )
-    verbose_group.add_argument(
-        "--full-dump",
-        dest="full_dump",
-        action="store_true",
-        help="Enable full debug dump (tornado.fullDebug=true)",
-    )
-    verbose_group.add_argument(
-        "--verbose-init",
-        dest="verbose_init",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
+    verbose_group.add_argument("--print-bytecodes", dest="print_bytecodes", action="store_true",
+                               help="Print TornadoVM bytecodes (tornado.print.bytecodes=true)")
+    verbose_group.add_argument("--print-threads", dest="threads", action="store_true",
+                               help="Print thread information (tornado.threadInfo=true)")
+    verbose_group.add_argument("--print-kernel", dest="print_kernel", action="store_true",
+                               help="Print generated kernels (tornado.printKernel=true)")
+    verbose_group.add_argument("--full-dump", dest="full_dump", action="store_true",
+                               help="Full debug dump (tornado.fullDebug=true)")
+    verbose_group.add_argument("--verbose-init", dest="verbose_init", action="store_true", help=argparse.SUPPRESS)
 
-    # Command display options
-    command_group = parser.add_argument_group("Command Display Options")
-    command_group.add_argument(
-        "--show-command",
-        action="store_true",
-        help="Display the full Java command that will be executed",
-    )
-    command_group.add_argument(
-        "--execute-after-show",
-        action="store_true",
-        help="Execute the command after showing it (use with --show-command)",
-    )
-
-    # Prefill-Decode optimizations
-    prefill_group = parser.add_argument_group("Prefill-Decode Optimizations")
-    prefill_group.add_argument(
-        "--with-prefill-decode",
-        dest="with_prefill_decode",
-        action="store_true",
-        help="Enable single-token prefill decode",
-    )
-    prefill_group.add_argument(
-        "--batch-prefill-size",
-        dest="batch_prefill_size",
-        type=int,
-        default=None,
-        metavar="N",
-        help=(
-            "Enable batching in prefill when --with-prefill-decode is active and N>1. "
-        ),
-    )
-
-    # Advanced CUDA features
-    advanced_cuda_features_group = parser.add_argument_group("Advanced CUDA Features")
-    advanced_cuda_features_group.add_argument(
-        "--cuda-graphs",
-        dest="cuda_graphs",
-        action="store_true",
-        help="Enable CUDA graph capture/replay (jllm.cudaGraphs=true); CUDA backend only.",
-    )
-
-    # Advanced options
-    advanced_group = parser.add_argument_group("Advanced Options")
+    advanced_group = parser.add_argument_group(
+        "Advanced Options",
+        "[experimental] options print a warning when used and refuse configurations they do not support.")
     advanced_group.add_argument(
-        "--opencl-flags",
-        default="-cl-denorms-are-zero -cl-no-signed-zeros -cl-finite-math-only",
-        help="OpenCL compiler flags",
-    )
+        "--fp32-kv-cache", action="store_true",
+        help="Keep the key/value cache in FP32 instead of FP16: twice the memory, for numerical reference "
+             "and for configurations without an FP16 cache (the run says when one is needed)")
+    advanced_group.add_argument("--cuda-graphs", dest="cuda_graphs", action="store_true",
+                                help="Capture and replay CUDA graphs (CUDA backend only)")
+    advanced_group.add_argument("--opencl-flags", default="-cl-denorms-are-zero -cl-no-signed-zeros -cl-finite-math-only",
+                                metavar="FLAGS", help="OpenCL compiler flags")
+    advanced_group.add_argument("--max-wait-events", type=int, default=32000, metavar="N",
+                                help="Size of the TornadoVM event pool")
     advanced_group.add_argument(
-        "--max-wait-events",
-        type=int,
-        default=32000,
-        help="Maximum wait events for TornadoVM event pool",
-    )
+        "--with-native-libraries", action="store_true",
+        help="[experimental] Use cuBLAS/cuDNN instead of the JIT kernels. Implemented for Qwen3 F16 with "
+             "--batch-prefill-size on CUDA tensor-core devices only; needs more device memory")
     advanced_group.add_argument(
-        "--verbose", "-v", action="store_true",
-        help="Show startup configuration, initialization timings, and detailed diagnostics on stderr"
-    )
+        "--continuous-batching", type=int, default=None, metavar="SLOTS",
+        help="[experimental] (serve) Decode up to SLOTS HTTP requests in one batch (at least 2). CUDA "
+             "tensor-core devices, FP16 Llama/Qwen3 weights, greedy requests only; no prefill chunking "
+             "or CUDA graphs")
+    advanced_group.add_argument("--max-queued-requests", type=int, default=64, metavar="N",
+                                help="[experimental] (serve, with --continuous-batching) Requests that may "
+                                     "wait for a slot before new ones are refused")
+    advanced_group.add_argument("--prefix-cache-entries", type=int, default=0, metavar="N",
+                                help="[experimental] (serve, with --continuous-batching) Prompt prefixes "
+                                     "cached and shared between requests; 0 is off")
+
+    # Removed or superseded spellings: parsed only to refuse them with the migration, or as no-ops.
+    parser.add_argument("--fp16-kv-cache", action="store_true", help=argparse.SUPPRESS)
+    # Kernel selection is automatic and lives in Java (device capability plus the workload's
+    # shape decide between the int8 tensor-core pair, the FP16 tensor-core kernels and the
+    # scalar kernels). The two spellings below survive for compatibility only: --tensor-cores
+    # is a no-op, --no-tensor-cores is the old name of the diagnostic override.
+    parser.add_argument("--tensor-cores", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--no-tensor-cores", dest="no_tensor_cores", action="store_true", help=argparse.SUPPRESS)
 
     parser.set_defaults(command=command, legacy_context=False)
     if command:
-        generation = {"prompt", "system_prompt", "temperature", "top_p", "seed", "max_new_tokens", "stream", "echo", "suffix"}
+        generation = {"prompt", "system_prompt", "temperature", "top_p", "seed", "max_new_tokens", "stream", "suffix"}
         server = {"host", "port", "continuous_batching", "max_queued_requests", "prefix_cache_entries"}
         bench = {"bench_args", "pp", "tg", "depth", "repetitions", "output"}
         modes = {"interactive", "instruct", "server", "bench"}
