@@ -141,6 +141,13 @@ class VerbosityOptions(unittest.TestCase):
         self.assertNotIn("--fp16-kv-cache", launcher.create_parser().format_help())
         self.assertIn("--fp32-kv-cache", launcher.create_parser().format_help())
 
+    def test_taskgraph_chain_forwards_the_property_only_when_asked(self):
+        self.assertFalse([a for a in self.base_command() if "printTaskGraphChain" in a])
+        self.assertIn("-Djllm.printTaskGraphChain=true", self.base_command("--print-taskgraph-chain"))
+        text = launcher.create_parser().format_help()
+        verbose = text[text.index("TornadoVM Execution Verbose"):text.index("Advanced Options")]
+        self.assertIn("--print-taskgraph-chain", verbose)
+
     def test_native_libraries_forward_the_property_only_when_asked(self):
         self.assertFalse([a for a in self.base_command() if "nativeLibraries" in a])
         self.assertIn("-Djllm.nativeLibraries=true", self.base_command("--with-native-libraries"))

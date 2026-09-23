@@ -78,6 +78,8 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
 
         long startTime = System.nanoTime();
         this.executionPlan = createExecutionPlan();
+        // Before compilation and the weight upload, so a plan that fails either still prints.
+        TaskGraphChainPrinter.printIfRequested(taskGraphChain(), model);
         metrics.enableOn(executionPlan);
         long planCreationTime = System.nanoTime();
         if (ENABLE_TORNADOVM_INIT_TIME) {
@@ -121,6 +123,72 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
     }
 
     // ── Plan construction ─────────────────────────────────────────────────────
+
+    /** The graphs, when they run, and what each is, for {@code --print-taskgraph-chain}. */
+    TaskGraphChainPrinter.Chain taskGraphChain() {
+        var layout = taskGraphLayout;
+        int batch = state.executionPolicy().prefillBatchSize();
+        var roles = new java.util.HashMap<Integer, String>();
+        roles.put(layout.batchActivationIdx(), "prefill activation");
+        TaskGraphChainPrinter.label(
+                roles, layout.batchLayerIdx(0), layout.batchLayerGraphs(), "prefill layers");
+        if (layout.fallbackLayerGraphs() > 0) {
+            TaskGraphChainPrinter.label(
+                    roles,
+                    layout.fallbackLayerIdx(0),
+                    layout.fallbackLayerGraphs(),
+                    "prefill fallback layers");
+        }
+        roles.put(layout.decodeActivationIdx(), "decode activation");
+        TaskGraphChainPrinter.label(
+                roles, layout.decodeLayerGraphIdx(0), layout.decodeLayerGraphs(), "decode layers");
+        roles.put(layout.logitsIdx(), "logits");
+        var activation = java.util.List.of(layout.batchActivationIdx());
+        var primary =
+                TaskGraphChainPrinter.concat(
+                        activation,
+                        TaskGraphChainPrinter.span(
+                                layout.batchLayerIdx(0),
+                                layout.batchLayerIdx(layout.batchLayerGraphs() - 1)));
+        var decode =
+                TaskGraphChainPrinter.concat(
+                        java.util.List.of(layout.decodeActivationIdx()),
+                        TaskGraphChainPrinter.span(
+                                layout.decodeLayerGraphIdx(0),
+                                layout.decodeLayerGraphIdx(layout.decodeLayerGraphs() - 1)),
+                        java.util.List.of(layout.logitsIdx()));
+        var phases = new java.util.ArrayList<TaskGraphChainPrinter.Phase>();
+        phases.add(
+                new TaskGraphChainPrinter.Phase(
+                        "warm-up",
+                        "once, at plan build",
+                        TaskGraphChainPrinter.span(0, layout.logitsIdx())));
+        String chunk = "per chunk of up to " + batch + " prompt tokens";
+        if (layout.fallbackLayerGraphs() > 0) {
+            phases.add(
+                    new TaskGraphChainPrinter.Phase(
+                            "prefill chunk", chunk + " starting at position 0", primary));
+            phases.add(
+                    new TaskGraphChainPrinter.Phase(
+                            "prefill chunk",
+                            "per later chunk",
+                            TaskGraphChainPrinter.concat(
+                                    activation,
+                                    TaskGraphChainPrinter.span(
+                                            layout.fallbackLayerIdx(0),
+                                            layout.fallbackLayerIdx(
+                                                    layout.fallbackLayerGraphs() - 1)))));
+        } else {
+            phases.add(new TaskGraphChainPrinter.Phase("prefill chunk", chunk, primary));
+        }
+        phases.add(new TaskGraphChainPrinter.Phase("decode token", "per generated token", decode));
+        return new TaskGraphChainPrinter.Chain(
+                "batch-prefill-decode (batch " + batch + ")",
+                batchPrefillDecodeForwardPlan.getImmutableTaskGraphs(),
+                batchPrefillDecodeForwardPlan.getGridScheduler(),
+                phases,
+                roles);
+    }
 
     @Override
     public TornadoExecutionPlan createExecutionPlan() {

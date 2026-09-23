@@ -82,6 +82,12 @@ record ServerOptions(
                             org.beehive.jllm.runtime.policy.StorageOptions.FP32_PROPERTY, "true");
                     continue;
                 }
+                case "--print-taskgraph-chain" -> {
+                    System.setProperty(
+                            org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.PROPERTY,
+                            "true");
+                    continue;
+                }
                 case "--with-native-libraries" -> {
                     System.setProperty(
                             org.beehive.jllm.runtime.policy.ExecutionPolicy

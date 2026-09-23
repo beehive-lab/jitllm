@@ -258,6 +258,24 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         this.layerCount = layerGraphs.size();
         this.logitsGraphIndex = 1 + layerCount;
         this.plan = new TornadoExecutionPlan(all.toArray(new ImmutableTaskGraph[0]));
+        var roles = new java.util.HashMap<Integer, String>();
+        roles.put(0, "batch activation");
+        org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.label(
+                roles, 1, layerCount, "layers");
+        roles.put(logitsGraphIndex, "logits and sampling");
+        org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.printIfRequested(
+                new org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.Chain(
+                        "continuous batching (" + batchSize + " slots)",
+                        all,
+                        schedule,
+                        List.of(
+                                new org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.Phase(
+                                        "engine step",
+                                        "per engine step, all slots together",
+                                        org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.span(
+                                                0, logitsGraphIndex))),
+                        roles),
+                model);
 
         this.embeddingTable = weights.getTokenEmbeddingTable().asHalfFloatArray().getSegment();
         this.embeddingBatch = state.workspace.embeddingXBatch.getSegment();

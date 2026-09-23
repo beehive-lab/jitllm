@@ -161,6 +161,11 @@ class LlamaRunner:
         if args.batch_prefill_size is not None:
             cmd.append(f"-Djllm.prefillBatchSize={args.batch_prefill_size}")
 
+        if args.print_taskgraph_chain:
+            cmd.append("-Djllm.printTaskGraphChain=true")
+            # The shell's COLUMNS is rarely exported; the printer wraps to it.
+            os.environ.setdefault("COLUMNS", str(shutil.get_terminal_size().columns))
+
         if args.with_native_libraries:
             cmd.append("-Djllm.nativeLibraries=true")
 
@@ -564,6 +569,8 @@ def parse_cli_args(argv):
             parser.error("continuous batching has no native-library implementation; drop --with-native-libraries")
         if batching and (args.with_prefill_decode or args.batch_prefill_size is not None or args.cuda_graphs):
             parser.error("continuous batching does not support --with-prefill-decode, --batch-prefill-size, or --cuda-graphs")
+    if args.print_taskgraph_chain and not args.use_gpu:
+        parser.error("--print-taskgraph-chain describes the accelerator plan; add --gpu")
     if mode in {"serve", "bench"} and (args.prompt is not None or args.system_prompt is not None or args.max_new_tokens is not None):
         parser.error("prompt and generation-limit options belong to run/chat; serve receives them in HTTP requests")
     if mode != "serve" and supplied & {"--port", "--host", "--continuous-batching", "--max-queued-requests", "--prefix-cache-entries"}:
@@ -702,6 +709,10 @@ def create_parser(command=None) -> argparse.ArgumentParser:
                                help="Print generated kernels (tornado.printKernel=true)")
     verbose_group.add_argument("--full-dump", dest="full_dump", action="store_true",
                                help="Full debug dump (tornado.fullDebug=true)")
+    verbose_group.add_argument("--print-taskgraph-chain", dest="print_taskgraph_chain", action="store_true",
+                               help="Print every TaskGraph of the execution plan, and when it runs: transfers "
+                                    "(to device, persist, consume, to host), tasks and library calls with "
+                                    "arguments and worker grids, and layer grouping (jllm.printTaskGraphChain=true)")
     verbose_group.add_argument("--verbose-init", dest="verbose_init", action="store_true", help=argparse.SUPPRESS)
 
     advanced_group = parser.add_argument_group(

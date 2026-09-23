@@ -263,6 +263,7 @@ public class JllmBench {
         // request here rather than benchmark the JIT kernels under that name.
         var benchPolicy = org.beehive.jllm.runtime.policy.ExecutionPolicy.fromSystemProperties();
         org.beehive.jllm.integration.cli.ExperimentalWarnings.nativeLibraries(benchPolicy);
+        org.beehive.jllm.integration.cli.StartupDiagnostics.installTaskGraphChainOutput();
         org.beehive.jllm.backend.tornado.NativeLibrarySupport.require(model, benchPolicy, !cpu);
         long loadNs = System.nanoTime() - startedNs;
         State state = model.createNewState();

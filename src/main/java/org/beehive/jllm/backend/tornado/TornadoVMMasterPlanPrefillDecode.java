@@ -81,6 +81,8 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
 
         long startTime = System.nanoTime();
         this.executionPlan = createExecutionPlan();
+        // Before compilation and the weight upload, so a plan that fails either still prints.
+        TaskGraphChainPrinter.printIfRequested(taskGraphChain(), model);
         metrics.enableOn(executionPlan);
         long planCreationTime = System.nanoTime();
 
@@ -104,6 +106,34 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
     }
 
     // ── Plan construction ─────────────────────────────────────────────────────
+
+    /** The graphs, when they run, and what each is, for {@code --print-taskgraph-chain}. */
+    TaskGraphChainPrinter.Chain taskGraphChain() {
+        var layout = taskGraphLayout;
+        var roles = new java.util.HashMap<Integer, String>();
+        roles.put(layout.activationIdx(), "activation");
+        TaskGraphChainPrinter.label(roles, layout.layerIdx(0), layout.N(), "layers");
+        roles.put(layout.logitsIdx(), "logits");
+        var layers =
+                TaskGraphChainPrinter.span(layout.layerIdx(0), layout.layerIdx(layout.N() - 1));
+        var prefill =
+                TaskGraphChainPrinter.concat(java.util.List.of(layout.activationIdx()), layers);
+        var decode = TaskGraphChainPrinter.concat(prefill, java.util.List.of(layout.logitsIdx()));
+        return new TaskGraphChainPrinter.Chain(
+                "prefill-decode",
+                prefillDecodeForwardPlan.getImmutableTaskGraphs(),
+                prefillDecodeForwardPlan.getGridScheduler(),
+                java.util.List.of(
+                        new TaskGraphChainPrinter.Phase(
+                                "warm-up",
+                                "once, at plan build",
+                                TaskGraphChainPrinter.span(0, layout.logitsIdx())),
+                        new TaskGraphChainPrinter.Phase(
+                                "prefill token", "per prompt token", prefill),
+                        new TaskGraphChainPrinter.Phase(
+                                "decode token", "per generated token", decode)),
+                roles);
+    }
 
     @Override
     public TornadoExecutionPlan createExecutionPlan() {

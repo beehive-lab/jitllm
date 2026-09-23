@@ -59,6 +59,8 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
 
         long startTime = System.nanoTime();
         this.executionPlan = createExecutionPlan();
+        // Before compilation and the weight upload, so a plan that fails either still prints.
+        TaskGraphChainPrinter.printIfRequested(taskGraphChain(), model);
         metrics.enableOn(executionPlan);
         long planCreationTime = System.nanoTime();
 
@@ -79,6 +81,30 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
                 planCreationTime - startTime, warmupTime - planCreationTime, copyTime - warmupTime);
         metrics.reportSetUp(
                 planCreationTime - startTime, warmupTime - planCreationTime, copyTime - warmupTime);
+    }
+
+    /** The graphs, when they run, and what each is, for {@code --print-taskgraph-chain}. */
+    TaskGraphChainPrinter.Chain taskGraphChain() {
+        var layout = taskGraphLayout;
+        var roles = new java.util.HashMap<Integer, String>();
+        roles.put(layout.activationIdx(), "activation");
+        TaskGraphChainPrinter.label(roles, layout.layerIdx(0), layout.N(), "layers");
+        roles.put(layout.logitsIdx(), "logits");
+        var token =
+                TaskGraphChainPrinter.concat(
+                        java.util.List.of(layout.activationIdx()),
+                        TaskGraphChainPrinter.span(
+                                layout.layerIdx(0), layout.layerIdx(layout.N() - 1)),
+                        java.util.List.of(layout.logitsIdx()));
+        return new TaskGraphChainPrinter.Chain(
+                "single-token",
+                tornadoVMForwardPlan.getImmutableTaskGraphs(),
+                tornadoVMForwardPlan.getGridScheduler(),
+                java.util.List.of(
+                        new TaskGraphChainPrinter.Phase("warm-up", "once, at plan build", token),
+                        new TaskGraphChainPrinter.Phase(
+                                "token", "per prompt token and per generated token", token)),
+                roles);
     }
 
     @Override

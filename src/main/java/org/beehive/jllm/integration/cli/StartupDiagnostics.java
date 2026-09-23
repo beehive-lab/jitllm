@@ -16,6 +16,18 @@ import org.beehive.jllm.runtime.memory.MemoryPlan;
 public final class StartupDiagnostics {
     private StartupDiagnostics() {}
 
+    /**
+     * Prints {@code --print-taskgraph-chain} output as plain text on stderr. The backend only
+     * renders it; where it goes is the integration's choice.
+     */
+    public static void installTaskGraphChainOutput() {
+        org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.output(
+                text -> {
+                    System.err.print(text);
+                    System.err.flush();
+                });
+    }
+
     public static boolean verbose() {
         return Boolean.getBoolean("jllm.verbose")
                 || Boolean.getBoolean("jllm.EnableTimingForTornadoVMInit");

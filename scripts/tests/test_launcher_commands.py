@@ -144,6 +144,11 @@ class Commands(unittest.TestCase):
                     self.assertRegex(line, r"^  \S.*?\S {2,}\S", "description pushed to the next line: " + line)
                 self.assertFalse(line.endswith("-"), "broken at a hyphen: " + line)
 
+    def test_taskgraph_chain_needs_the_accelerator(self):
+        self.reject("run", "-m", "stub.gguf", "--prompt", "hi", "--print-taskgraph-chain")
+        self.assertTrue(self.parse("run", "-m", "stub.gguf", "--prompt", "hi", "--gpu",
+                                   "--print-taskgraph-chain").print_taskgraph_chain)
+
     def test_one_spelling_per_option_in_help_but_old_spellings_still_parse(self):
         help_text = launcher.create_parser("run").format_help()
         self.assertIn("-c, --ctx-size N", help_text)

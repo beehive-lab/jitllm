@@ -33,6 +33,7 @@ public record ModelRunConfig(Path model, int contextLength, boolean gpu) {
         }
         ExecutionPolicy policy = ExecutionPolicy.fromSystemProperties();
         ExperimentalWarnings.nativeLibraries(policy);
+        StartupDiagnostics.installTaskGraphChainOutput();
         return ModelOptions.builder()
                 .contextLength(contextLength)
                 // run, chat and the serial server each hold exactly one session per model.

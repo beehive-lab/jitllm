@@ -126,6 +126,8 @@ public record Options(
                 "  --with-prefill-decode         enable prefill/decode separation (skip logits during prefill)");
         out.println(
                 "  --batch-prefill-size <int>    batched prefill chunk size; requires --with-prefill-decode, must be > 1, enables batched CPU/GPU prefill");
+        out.println(
+                "  --print-taskgraph-chain       print every TaskGraph of the GPU plan and when it runs (stderr)");
         out.println();
     }
 
@@ -196,6 +198,10 @@ public record Options(
                     interactive = mode.equals("chat");
                 }
                 case "--gpu" -> useTornadovm = true;
+                case "--print-taskgraph-chain" ->
+                        System.setProperty(
+                                org.beehive.jllm.backend.tornado.TaskGraphChainPrinter.PROPERTY,
+                                "true");
                 case "--with-native-libraries" ->
                         System.setProperty(
                                 org.beehive.jllm.runtime.policy.ExecutionPolicy
