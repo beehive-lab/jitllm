@@ -151,7 +151,8 @@ class Commands(unittest.TestCase):
 
     def test_one_spelling_per_option_in_help_but_old_spellings_still_parse(self):
         help_text = launcher.create_parser("run").format_help()
-        self.assertIn("-c, --ctx-size N", help_text)
+        # "-c, --ctx-size N" on Python 3.13+, "-c N, --ctx-size N" before it.
+        self.assertRegex(help_text, r"-c( N)?, --ctx-size N")
         self.assertNotIn("--ctx ", help_text)
         self.assertEqual(4096, self.parse("run", "-m", "stub.gguf", "--prompt", "hi", "--ctx", "4096").max_tokens)
         self.assertIn("usage: jllm run --model FILE [options]", help_text)

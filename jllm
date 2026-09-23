@@ -600,7 +600,9 @@ def create_parser(command=None) -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
         prog="jllm" + (" " + command if command else ""),
-        usage=f"jllm {command} --model FILE [options]" if command else None,
+        # Always explicit: before Python 3.13, argparse's generated usage asserts when it wraps a
+        # metavar with brackets or "|" (N[,N...], true|false), and every error message builds it.
+        usage=f"jllm {command} --model FILE [options]" if command else "jllm --model FILE [options]",
         description=COMMANDS[command] if command else "GPU-accelerated LLM runner using TornadoVM",
         formatter_class=HelpFormatter,
         allow_abbrev=False,
@@ -710,9 +712,9 @@ def create_parser(command=None) -> argparse.ArgumentParser:
     verbose_group.add_argument("--full-dump", dest="full_dump", action="store_true",
                                help="Full debug dump (tornado.fullDebug=true)")
     verbose_group.add_argument("--print-taskgraph-chain", dest="print_taskgraph_chain", action="store_true",
-                               help="Print every TaskGraph of the execution plan, and when it runs: transfers "
-                                    "(to device, persist, consume, to host), tasks and library calls with "
-                                    "arguments and worker grids, and layer grouping (jllm.printTaskGraphChain=true)")
+                               help="Print the execution plan's TaskGraphs: when each runs, and its tasks "
+                                    "(kernel and worker grid, or libraryTask for cuBLAS/cuDNN calls), with "
+                                    "repeated layer graphs shown once (jllm.printTaskGraphChain=true)")
     verbose_group.add_argument("--verbose-init", dest="verbose_init", action="store_true", help=argparse.SUPPRESS)
 
     advanced_group = parser.add_argument_group(
