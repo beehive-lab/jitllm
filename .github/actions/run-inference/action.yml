@@ -83,9 +83,14 @@ runs:
         # cancelled at its wall clock every time, so that backend produced no results table
         # at all even though the rows before the hang had passed. 124 is the conventional
         # exit code for a timeout.
+        # FP16 is the default key/value cache. Metal has no verified FP16 cache path yet (see
+        # docs/architecture/kv-cache-support.md), so jllm refuses the default there; its rows
+        # ask for the FP32 cache explicitly rather than failing on the refusal.
+        KV_FLAGS=""
+        if [ "${{ inputs.backend }}" = "metal" ]; then KV_FLAGS="--fp32-kv-cache"; fi
         set +e
         python3 - "$RUN_LOG" ${{ inputs.timeout_minutes }} \
-          ./jllm --gpu -v \
+          ./jllm --gpu -v $KV_FLAGS \
           --model $MODELS_DIR/${{ inputs.model_file }} \
           --prompt "${{ inputs.prompt }}" \
           -c ${{ inputs.max_tokens }} \
