@@ -307,6 +307,19 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         }
     }
 
+    // @formatter:off
+    /**
+     * Whether a layer's prefill attention runs on the tensor cores: over the FP16 cache, on a
+     * tensor-core device, for heads a whole number of 256-wide halves wide.
+     */
+    // @formatter:on
+    private boolean tensorCoreAttention(int layerIndex) {
+        return fp16KeyValue
+                && config.headDim(layerIndex) % Gemma4AttentionKernels.TC_HEAD == 0
+                && org.beehive.jitllm.backend.tornado.TensorCoreSupport
+                        .isTensorCoreCapableBackend();
+    }
+
     /** The key cache in the representation the state allocated. */
     private Object keyCache() {
         return fp16KeyValue ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
@@ -413,6 +426,12 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     state.workspace.wrapPerLayerGateBatch,
                     state.workspace.wrapPerLayerGateFP16Batch,
                     state.workspace.wrapPerLayerOutBatch);
+            if (fp16KeyValue) {
+                layer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION,
+                        state.workspace.attnOutF32Batch,
+                        state.workspace.attnProbStageBatch);
+            }
             layer.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION,
                     pleModelProjF16,
@@ -449,6 +468,14 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     state.workspace.wrapPerLayerGateBatch,
                     state.workspace.wrapPerLayerGateFP16Batch,
                     state.workspace.wrapPerLayerOutBatch);
+            if (fp16KeyValue) {
+                // From the graph that allocated them, not the previous one: the full-attention
+                // layers never hand them to a task.
+                layer.consumeFromDevice(
+                        "batchPrefillLayer_0",
+                        state.workspace.attnOutF32Batch,
+                        state.workspace.attnProbStageBatch);
+            }
         }
 
         layer.transferToDevice(
@@ -642,7 +669,29 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     stride);
         }
 
-        if (fp16KeyValue) {
+        if (tensorCoreAttention(layerIndex)) {
+            layer.task(
+                    "batch_attention",
+                    Gemma4AttentionKernels::attentionPrefillTensorCoreFP16,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.qkvResultBatch,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    state.workspace.attnOutF32Batch,
+                    state.workspace.attnOutFP16,
+                    state.workspace.attnScoresBatch,
+                    state.workspace.attnProbStageBatch,
+                    nHead,
+                    headDim,
+                    kvDim,
+                    kvMul,
+                    stride,
+                    cacheBaseOffset,
+                    windowSize,
+                    config.contextLength(),
+                    Gemma4AttentionKernels.tcScoreKeys(windowSize, config.contextLength()));
+        } else if (fp16KeyValue) {
             layer.task(
                     "batch_attention",
                     Gemma4AttentionKernels::batchedSlidingWindowAttentionStagedFP16,
@@ -1092,8 +1141,15 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             // width is not a multiple of 128, which nothing rounds it to.
             scheduler.addWorkerGrid(
                     p + "batch_attention",
-                    WorkerGridFactory.genericWorker(
-                            paddedBatch * nHead * HEAD_LOCAL_SIZE, HEAD_LOCAL_SIZE));
+                    tensorCoreAttention(l)
+                            ? WorkerGridFactory.genericWorker(
+                                    paddedBatch
+                                            / Gemma4AttentionKernels.TC_QUERIES
+                                            * nHead
+                                            * Gemma4AttentionKernels.TC_LANES,
+                                    Gemma4AttentionKernels.TC_LANES)
+                            : WorkerGridFactory.genericWorker(
+                                    paddedBatch * nHead * HEAD_LOCAL_SIZE, HEAD_LOCAL_SIZE));
             if (SPLIT_K) {
                 scheduler.addWorkerGrid(p + "woProj", mmaSplitKGrid(paddedBatch, dim));
                 scheduler.addWorkerGrid(p + "woReduce", reduceWorker);

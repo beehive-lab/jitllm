@@ -161,6 +161,10 @@ public final class TornadoWorkspace {
     public FloatArray attnScoresBatch;
     public FloatArray splitKPartialBatch;
     public HalfFloatArray weightsF16Scratch;
+    // Gemma 4 tensor-core prefill attention: the unnormalized FP32 output before it is narrowed,
+    // and each workgroup's FP16 probability tile.
+    public FloatArray attnOutF32Batch;
+    public HalfFloatArray attnProbStageBatch;
 
     /** The query half of an attention layer's fused query/gate projection, de-interleaved. */
     public FloatArray wrapAttnQ;

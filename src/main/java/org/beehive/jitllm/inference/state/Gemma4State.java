@@ -121,8 +121,15 @@ public final class Gemma4State extends State {
                 TornadoWorkspaces.floats(padded * perLayerTotal);
         this.workspace.wrapXFP16Batch = TornadoWorkspaces.halfFloats(padded * config.dim());
         this.workspace.branchScaleBatch = TornadoWorkspaces.floats(padded);
+        // The tensor-core attention's score regions are whole 32-key tiles, so a context that is
+        // not a multiple of 32 rounds up.
+        int scoreKeys =
+                usesFp16KeyValue()
+                        ? org.beehive.jitllm.backend.tornado.kernels.Gemma4AttentionKernels
+                                .tcScoreKeys(config.contextLength(), config.contextLength())
+                        : config.contextLength();
         this.workspace.attnScoresBatch =
-                TornadoWorkspaces.floats(padded * config.numberOfHeads() * config.contextLength());
+                TornadoWorkspaces.floats(padded * config.numberOfHeads() * scoreKeys);
         // The depth slices of the two narrow projections, before they are summed. One buffer for
         // both: they are sequential in a layer's graph, so the second overwrites what the first has
         // already been reduced out of.
@@ -130,6 +137,21 @@ public final class Gemma4State extends State {
         // convert. One buffer for every projection of every layer: the widest is what it has to
         // hold -- the gate/up pair -- and everything else uses a prefix. They are sequential within
         // a layer's graph and across layers, so nothing needs its own.
+        if (usesFp16KeyValue()) {
+            // The tensor-core attention's output before normalization, and its probability tiles:
+            // one tile per (32-row query tile, head).
+            int heads = config.numberOfHeads();
+            this.workspace.attnOutF32Batch =
+                    TornadoWorkspaces.floats(padded * heads * config.maxHeadDim());
+            this.workspace.attnProbStageBatch =
+                    TornadoWorkspaces.halfFloats(
+                            padded
+                                    / org.beehive.jitllm.backend.tornado.kernels
+                                            .Gemma4AttentionKernels.TC_QUERIES
+                                    * heads
+                                    * org.beehive.jitllm.backend.tornado.kernels
+                                            .Gemma4AttentionKernels.TC_STAGE_HALVES);
+        }
         this.workspace.weightsF16Scratch =
                 TornadoWorkspaces.halfFloats(2 * config.maxFeedForwardLength() * config.dim());
         this.workspace.splitKPartialBatch =
