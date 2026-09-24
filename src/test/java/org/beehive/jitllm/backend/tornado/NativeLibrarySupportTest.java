@@ -34,6 +34,31 @@ public class NativeLibrarySupportTest {
     }
 
     @Test
+    public void gemma4QuantizedBatchedPrefillOnTensorCoresIsImplemented() {
+        for (DataType weights : new DataType[] {DataType.Q8_0, DataType.Q4_0}) {
+            assertEquals(
+                    Optional.empty(),
+                    check(
+                            "gemma4",
+                            weights,
+                            ExecutionMode.BATCH_PREFILL_DECODE,
+                            BackendId.CUDA,
+                            true));
+        }
+        assertTrue(
+                check(
+                                "gemma4",
+                                DataType.F16,
+                                ExecutionMode.BATCH_PREFILL_DECODE,
+                                BackendId.CUDA,
+                                true)
+                        .isPresent());
+        assertTrue(
+                check("gemma4", DataType.Q8_0, ExecutionMode.STANDARD, BackendId.CUDA, true)
+                        .isPresent());
+    }
+
+    @Test
     public void everythingElseIsRefused() {
         assertTrue(
                 check(

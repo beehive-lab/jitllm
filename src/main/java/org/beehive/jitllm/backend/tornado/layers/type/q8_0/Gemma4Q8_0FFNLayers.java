@@ -766,34 +766,45 @@ public class Gemma4Q8_0FFNLayers
     // @formatter:on
     private void bindLayerWeights(TaskGraph unifiedLayer, int layerIndex) {
         java.util.List<Object> shared = new java.util.ArrayList<>();
+        java.util.List<Object> own = new java.util.ArrayList<>();
         shared.add(weights.rms_att_weightLayered[layerIndex].asFloatArray());
-        shared.add(weightArray(weights.wqLayered[layerIndex]));
-        shared.add(weightArray(weights.woLayered[layerIndex]));
         shared.add(weights.attnQNorm[layerIndex].asFloatArray());
         shared.add(weights.attnPostNorm[layerIndex].asFloatArray());
         shared.add(weights.rms_ffn_weightLayered[layerIndex].asFloatArray());
-        shared.add(weightArray(weights.w1Layered[layerIndex]));
-        shared.add(weightArray(weights.w3Layered[layerIndex]));
-        shared.add(weightArray(weights.w2Layered[layerIndex]));
         shared.add(weights.ffnPostNorm[layerIndex].asFloatArray());
         shared.add(weights.perLayerPostNorm[layerIndex].asFloatArray());
         if (config.hasOwnKv(layerIndex)) {
-            shared.add(weightArray(weights.wkLayered[layerIndex]));
-            shared.add(weightArray(weights.wvLayered[layerIndex]));
             shared.add(weights.attnKNorm[layerIndex].asFloatArray());
         }
         if (weights.layerOutputScale[layerIndex] != null) {
             shared.add(weights.layerOutputScale[layerIndex].asFloatArray());
         }
+        // The projections the batch-prefill graph reads itself; with native libraries it reads
+        // FP16 copies instead, so the file's tensors exist only here.
+        boolean[] prefillReads =
+                batchedPlan
+                        ? org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers
+                                .prefillReadsProjections(gemma4State, weights, config, layerIndex)
+                        : new boolean[] {false, false, false, false};
+        java.util.List<Object> qkv = new java.util.ArrayList<>();
+        qkv.add(weightArray(weights.wqLayered[layerIndex]));
+        if (config.hasOwnKv(layerIndex)) {
+            qkv.add(weightArray(weights.wkLayered[layerIndex]));
+            qkv.add(weightArray(weights.wvLayered[layerIndex]));
+        }
+        (prefillReads[0] ? shared : own).addAll(qkv);
+        (prefillReads[1] ? shared : own).add(weightArray(weights.woLayered[layerIndex]));
+        (prefillReads[2] ? shared : own).add(weightArray(weights.w1Layered[layerIndex]));
+        (prefillReads[2] ? shared : own).add(weightArray(weights.w3Layered[layerIndex]));
+        (prefillReads[3] ? shared : own).add(weightArray(weights.w2Layered[layerIndex]));
         if (batchedPlan) {
             unifiedLayer.consumeFromDevice("batchPrefillLayer_" + layerIndex, shared.toArray());
         } else {
-            unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, shared.toArray());
+            own.addAll(shared);
         }
-        unifiedLayer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
-                weightArray(weights.perLayerInpGate[layerIndex]),
-                weightArray(weights.perLayerProj[layerIndex]));
+        own.add(weightArray(weights.perLayerInpGate[layerIndex]));
+        own.add(weightArray(weights.perLayerProj[layerIndex]));
+        unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, own.toArray());
     }
 
     /** Which RoPE pairs the graph being built has bound already: sliding, full. */

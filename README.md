@@ -431,13 +431,16 @@ Prefix caching requires continuous batching and is disabled by default. Not to b
 **Experimental: native libraries.** By default every configuration runs TornadoVM's JIT
 kernels. `--with-native-libraries` (run, chat, serve, bench; `ExecutionPolicy.builder()
 .nativeLibraries(true)` in the library) replaces Qwen3 FP16 batched-prefill projections with
-cuBLAS GEMMs and the first chunk's attention with cuDNN where usable. It prints a warning, and
+cuBLAS GEMMs and the first chunk's attention with cuDNN where usable, and Gemma 4 Q8_0/Q4_0
+batched-prefill projections with cuBLAS FP16 GEMMs over weights decoded once to FP16. It prints a warning, and
 any configuration without a native path — another family or quantization, single-token or
 chunked-prefill mode, a non-CUDA backend, continuous batching — is refused with
 `GPUL-CFG-002` rather than silently running the JIT kernels. It keeps stacked copies of the
 projection weights beside the originals: Qwen3-8B F16 needs about 24.4 GB with it versus about
 17 GB without, so it does not fit a 24 GB device. Measured on an RTX 5090 Laptop GPU, Qwen3-0.6B
-F16, batch 128: pp512 5056 → 9125 t/s, pp2048 2406 → 2951 t/s, tg64 unchanged.
+F16, batch 128: pp512 5056 → 9125 t/s, pp2048 2406 → 2951 t/s, tg64 unchanged. Gemma 4 E2B
+Q4_0, batch 2048: pp2048 9090 → 11380 t/s (batch 512, pp512 7240 → 10620), at about 3.7 GB more
+device memory and 2.7 GB more host memory for the FP16 copies; decode unchanged.
 
 `serve -v` and `bench -v` use the same startup report as terminal generation. Server
 request sampling and benchmark token workloads are labeled appropriately; reports stay
@@ -460,7 +463,7 @@ on stderr so HTTP responses and benchmark JSON/CSV stay separate.
 - ✅ **Automatic backend detection** — `jitllm`/`jitllm4j` detect and use whichever backend (OpenCL, CUDA, or Metal) your installed TornadoVM SDK was built with; override with `--opencl`/`--cuda`/`--metal`.
 - ✅ **Cross-platform**: NVIDIA (OpenCL · CUDA), Intel (OpenCL), Apple (OpenCL · Metal).
 - ✅ **Serving** — OpenAI-compatible API, llama-bench-style benchmarking, tensor-core (MMA) batch prefill.
-- 🧪 **Native libraries** (experimental, `--with-native-libraries`) — cuBLAS projections and a fused cuDNN first-chunk attention for Qwen3 FP16 batched prefill on CUDA tensor-core devices; off by default (JIT kernels), refused for every other configuration.
+- 🧪 **Native libraries** (experimental, `--with-native-libraries`) — cuBLAS projections and a fused cuDNN first-chunk attention for Qwen3 FP16 batched prefill, and cuBLAS projections for Gemma 4 Q8_0/Q4_0 batched prefill, on CUDA tensor-core devices; off by default (JIT kernels), refused for every other configuration.
 - ✅ **Faster CUDA decode** (Qwen3 FP16) — grouped decode graphs, warp-butterfly matrix-vector reductions and a lane-cooperative attention kernel, all selected by device capability with no flag.
 - 🧩 **Coming next** — static batched decode, on-device sampling (preview; see [Serving](#-serving-openai-compatible-preview)).
 
