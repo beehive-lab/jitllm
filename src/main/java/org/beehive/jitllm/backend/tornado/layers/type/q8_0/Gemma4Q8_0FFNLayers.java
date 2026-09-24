@@ -1261,12 +1261,6 @@ public class Gemma4Q8_0FFNLayers
                             nHeadKv * HEAD_NORM_LOCAL_SIZE, HEAD_NORM_LOCAL_SIZE);
             WorkerGrid ropeWorker = WorkerGridFactory.createRoPEWorker(nHead, headDim);
             WorkerGrid attentionWorker = WorkerGridFactory.createAttentionWorker(nHead, headDim);
-            WorkerGrid qProjWorker =
-                    WorkerGridFactory.genericWorker(
-                            qDim * projectionLocalSize(qDim), projectionLocalSize(qDim));
-            WorkerGrid kvProjWorker =
-                    WorkerGridFactory.genericWorker(
-                            kvDim * projectionLocalSize(kvDim), projectionLocalSize(kvDim));
             WorkerGrid ffnGateUpWorker =
                     WorkerGridFactory.genericWorker(
                             ffnLen * LOCAL_WORK_GROUP_SIZE_ALLOC, LOCAL_WORK_GROUP_SIZE_ALLOC);
