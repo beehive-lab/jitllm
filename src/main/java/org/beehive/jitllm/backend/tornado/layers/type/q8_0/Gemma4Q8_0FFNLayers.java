@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 
+import org.beehive.jitllm.backend.tornado.kernels.Gemma4AttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
@@ -89,6 +90,9 @@ public class Gemma4Q8_0FFNLayers
     // @formatter:on
     private final boolean batchedPlan;
 
+    /** Whether the state holds its key/value cache in half precision; decided at allocation. */
+    private final boolean fp16KeyValue;
+
     public Gemma4Q8_0FFNLayers(
             String taskGraphName,
             Gemma4State state,
@@ -108,6 +112,22 @@ public class Gemma4Q8_0FFNLayers
         super(taskGraphName, state, weights, config, schedulerType);
         this.batchedPlan = batchedPlan;
         this.gemma4State = state;
+        this.fp16KeyValue = state.usesFp16KeyValueCache();
+        if (fp16KeyValue
+                && !Gemma4AttentionKernels.decodeGroupFits(
+                        config.kvMul(), config.headDimSwa(), config.headDimFull())) {
+            throw new UnsupportedOperationException(
+                    "gemma4 FP16 key/value decode attention needs "
+                            + Gemma4AttentionKernels.DECODE_GROUP
+                            + " query heads per key/value head and heads of at most "
+                            + Gemma4AttentionKernels.DECODE_MAX_HEAD
+                            + " in multiples of 32; this model has "
+                            + config.kvMul()
+                            + " and "
+                            + config.headDimSwa()
+                            + "/"
+                            + config.headDimFull());
+        }
         this.nHead = config.numberOfHeads();
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.kvMul = config.kvMul();
@@ -205,6 +225,21 @@ public class Gemma4Q8_0FFNLayers
         return layerTaskPrefix(layerIndex) + task;
     }
 
+    // @formatter:off
+    /**
+     * The layer graph before the one holding {@code layerIndex}, or {@code null} for the first.
+     *
+     * <p>Every import names its producer. TornadoVM resolves a graph's unnamed imports against the
+     * graph that ran before it only when the graph has no named import at all, so one named import
+     * — a RoPE table from the first layer of its kind, a weight from a batch-prefill graph — would
+     * silently leave the activation and the scratch buffers unlinked.
+     */
+    // @formatter:on
+    private String previousGraphName(int layerIndex) {
+        int first = layerIndex - layerIndex % LAYERS_PER_GRAPH;
+        return first == 0 ? null : layerGraphName(first - LAYERS_PER_GRAPH);
+    }
+
     private boolean firstLayerOfGraph(int layerIndex) {
         return layerIndex % LAYERS_PER_GRAPH == 0;
     }
@@ -227,6 +262,7 @@ public class Gemma4Q8_0FFNLayers
                 new java.util.ArrayList<>();
         for (int first = 0; first < layers; first += LAYERS_PER_GRAPH) {
             TaskGraph graph = new TaskGraph(layerGraphName(first));
+            java.util.Arrays.fill(ropeBound, false);
             int last = Math.min(first + LAYERS_PER_GRAPH, layers) - 1;
             for (int layer = first; layer <= last; layer++) {
                 appendLayer(graph, layer);
@@ -263,34 +299,16 @@ public class Gemma4Q8_0FFNLayers
         if (firstLayerOfGraph(layerIndex)) {
             String producer = layerIndex == 0 ? activationGraphName() : null;
             if (producer == null) {
+                producer = previousGraphName(layerIndex);
+            }
+            if (producer == null) {
                 unifiedLayer.consumeFromDevice(gemma4State.workspace.wrapX);
             } else {
                 unifiedLayer.consumeFromDevice(producer, gemma4State.workspace.wrapX);
             }
         }
-        unifiedLayer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weightArray(weights.wqLayered[layerIndex]),
-                weightArray(weights.wkLayered[layerIndex]),
-                weightArray(weights.wvLayered[layerIndex]),
-                weightArray(weights.woLayered[layerIndex]),
-                weights.attnQNorm[layerIndex].asFloatArray(),
-                weights.attnKNorm[layerIndex].asFloatArray(),
-                weights.attnPostNorm[layerIndex].asFloatArray(),
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weightArray(weights.w1Layered[layerIndex]),
-                weightArray(weights.w3Layered[layerIndex]),
-                weightArray(weights.w2Layered[layerIndex]),
-                weights.ffnPostNorm[layerIndex].asFloatArray(),
-                weightArray(weights.perLayerInpGate[layerIndex]),
-                weightArray(weights.perLayerProj[layerIndex]),
-                weights.perLayerPostNorm[layerIndex].asFloatArray());
-        if (weights.layerOutputScale[layerIndex] != null) {
-            unifiedLayer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION,
-                    weights.layerOutputScale[layerIndex].asFloatArray());
-        }
+        bindLayerWeights(unifiedLayer, layerIndex);
+        bindRopeTables(unifiedLayer, layerIndex);
         unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
 
         if (layerIndex == 0) {
@@ -298,33 +316,15 @@ public class Gemma4Q8_0FFNLayers
         }
 
         // ═══════════════════════════════════ ATTENTION ═══════════════════════════════════
-        unifiedLayer.task(
-                tn(layerIndex, "attn_norm_reduce"),
-                rmsReduceKernel(),
-                context,
+        addRmsNorm(
+                unifiedLayer,
+                layerIndex,
+                "attn_norm",
                 gemma4State.workspace.temp,
                 gemma4State.workspace.wrapX,
-                dim,
-                config.rmsNormEps(),
-                gemma4State.localSize);
-        if (shouldUseFinalNormalization()) {
-            unifiedLayer.task(
-                    tn(layerIndex, "attn_norm_finalize"),
-                    TransformerComputeKernelsLayered::reductionFinalNormalization,
-                    context,
-                    gemma4State.workspace.temp,
-                    dim,
-                    config.rmsNormEps());
-        }
-        unifiedLayer.task(
-                tn(layerIndex, "attn_norm_apply"),
-                Gemma4Kernels::applyRmsNorm,
-                context,
                 gemma4State.workspace.wrapXb,
-                gemma4State.workspace.wrapX,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                gemma4State.workspace.temp,
-                dim);
+                false);
 
         boolean packed = packedFor(layerIndex);
         if (packed) {
@@ -396,22 +396,41 @@ public class Gemma4Q8_0FFNLayers
                     headDim,
                     HEAD_NORM_LOCAL_SIZE,
                     config.rmsNormEps());
-            unifiedLayer.task(
-                    tn(layerIndex, "rope_and_cache"),
-                    Gemma4Kernels::ropeNeoxRotateAndCacheCopy,
-                    context,
-                    gemma4State.workspace.positionHolder,
-                    gemma4State.workspace.wrapQ,
-                    gemma4State.workspace.wrapK,
-                    gemma4State.workspace.wrapV,
-                    gemma4State.workspace.wrapKeyCache,
-                    gemma4State.workspace.wrapValueCache,
-                    freqCisReal,
-                    freqCisImag,
-                    nHeadKv,
-                    headDim,
-                    kvDim,
-                    cacheBaseOffset);
+            if (fp16KeyValue) {
+                unifiedLayer.task(
+                        tn(layerIndex, "rope_and_cache"),
+                        Gemma4AttentionKernels::ropeNeoxRotateAndCacheCopyFP16,
+                        context,
+                        gemma4State.workspace.positionHolder,
+                        gemma4State.workspace.wrapQ,
+                        gemma4State.workspace.wrapK,
+                        gemma4State.workspace.wrapV,
+                        gemma4State.workspace.wrapKeyCacheFP16,
+                        gemma4State.workspace.wrapValueCacheFP16,
+                        freqCisReal,
+                        freqCisImag,
+                        nHeadKv,
+                        headDim,
+                        kvDim,
+                        cacheBaseOffset);
+            } else {
+                unifiedLayer.task(
+                        tn(layerIndex, "rope_and_cache"),
+                        Gemma4Kernels::ropeNeoxRotateAndCacheCopy,
+                        context,
+                        gemma4State.workspace.positionHolder,
+                        gemma4State.workspace.wrapQ,
+                        gemma4State.workspace.wrapK,
+                        gemma4State.workspace.wrapV,
+                        gemma4State.workspace.wrapKeyCache,
+                        gemma4State.workspace.wrapValueCache,
+                        freqCisReal,
+                        freqCisImag,
+                        nHeadKv,
+                        headDim,
+                        kvDim,
+                        cacheBaseOffset);
+            }
         } else {
             unifiedLayer.task(
                     tn(layerIndex, "rope_q_only"),
@@ -425,7 +444,34 @@ public class Gemma4Q8_0FFNLayers
         }
 
         int splits = attentionSplits();
-        if (splits > 1) {
+        if (fp16KeyValue) {
+            int slices = decodeSlices(isSwa);
+            unifiedLayer.task(
+                    tn(layerIndex, "attention_group"),
+                    Gemma4AttentionKernels::attentionDecodeGroupFP16,
+                    context,
+                    gemma4State.workspace.wrapQ,
+                    gemma4State.workspace.wrapKeyCacheFP16,
+                    gemma4State.workspace.wrapValueCacheFP16,
+                    gemma4State.workspace.wrapAttSplit,
+                    gemma4State.workspace.positionHolder,
+                    headDim,
+                    kvDim,
+                    cacheBaseOffset,
+                    windowSize,
+                    slices);
+            unifiedLayer.task(
+                    tn(layerIndex, "attention_combine"),
+                    Gemma4AttentionKernels::combineDecodeGroup,
+                    context,
+                    gemma4State.workspace.wrapAttSplit,
+                    gemma4State.workspace.wrapXb,
+                    gemma4State.workspace.positionHolder,
+                    nHead,
+                    headDim,
+                    windowSize,
+                    slices);
+        } else if (splits > 1) {
             unifiedLayer.task(
                     tn(layerIndex, "attention_split"),
                     Gemma4Kernels::attentionWithSlidingWindowSplit,
@@ -498,62 +544,26 @@ public class Gemma4Q8_0FFNLayers
                 dim,
                 packed);
 
-        unifiedLayer.task(
-                tn(layerIndex, "post_attn_reduce"),
-                rmsReduceKernel(),
-                context,
+        addRmsNorm(
+                unifiedLayer,
+                layerIndex,
+                "post_attn",
                 gemma4State.workspace.tempPostAttn,
                 gemma4State.workspace.wrapXb2,
-                dim,
-                config.rmsNormEps(),
-                gemma4State.localSize);
-        if (shouldUseFinalNormalization()) {
-            unifiedLayer.task(
-                    tn(layerIndex, "post_attn_finalize"),
-                    TransformerComputeKernelsLayered::reductionFinalNormalization,
-                    context,
-                    gemma4State.workspace.tempPostAttn,
-                    dim,
-                    config.rmsNormEps());
-        }
-        unifiedLayer.task(
-                tn(layerIndex, "post_attn_apply"),
-                Gemma4Kernels::rmsNormApplyWithResidual,
-                context,
                 gemma4State.workspace.wrapX,
-                gemma4State.workspace.wrapXb2,
                 weights.attnPostNorm[layerIndex].asFloatArray(),
-                gemma4State.workspace.tempPostAttn,
-                dim);
+                true);
 
         // ═══════════════════════════════════════ FFN ═════════════════════════════════════
-        unifiedLayer.task(
-                tn(layerIndex, "ffn_norm_reduce"),
-                rmsReduceKernel(),
-                context,
+        addRmsNorm(
+                unifiedLayer,
+                layerIndex,
+                "ffn_norm",
                 gemma4State.workspace.tempFFN,
                 gemma4State.workspace.wrapX,
-                dim,
-                config.rmsNormEps(),
-                gemma4State.localSize);
-        if (shouldUseFinalNormalization()) {
-            unifiedLayer.task(
-                    tn(layerIndex, "ffn_norm_finalize"),
-                    TransformerComputeKernelsLayered::reductionFinalNormalization,
-                    context,
-                    gemma4State.workspace.tempFFN,
-                    dim,
-                    config.rmsNormEps());
-        }
-        unifiedLayer.task(
-                tn(layerIndex, "ffn_norm_apply"),
-                Gemma4Kernels::applyRmsNorm,
-                context,
                 gemma4State.workspace.wrapXb,
-                gemma4State.workspace.wrapX,
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                gemma4State.workspace.tempFFN,
-                dim);
+                false);
 
         // The feed-forward's activation is a different vector from the attention branch's, so it
         // needs its own quantization: the triple holds one activation at a time.
@@ -635,33 +645,15 @@ public class Gemma4Q8_0FFNLayers
                 dim,
                 packed);
 
-        unifiedLayer.task(
-                tn(layerIndex, "post_ffn_reduce"),
-                rmsReduceKernel(),
-                context,
+        addRmsNorm(
+                unifiedLayer,
+                layerIndex,
+                "post_ffn",
                 gemma4State.workspace.tempPostFfn,
                 gemma4State.workspace.wrapXb2,
-                dim,
-                config.rmsNormEps(),
-                gemma4State.localSize);
-        if (shouldUseFinalNormalization()) {
-            unifiedLayer.task(
-                    tn(layerIndex, "post_ffn_finalize"),
-                    TransformerComputeKernelsLayered::reductionFinalNormalization,
-                    context,
-                    gemma4State.workspace.tempPostFfn,
-                    dim,
-                    config.rmsNormEps());
-        }
-        unifiedLayer.task(
-                tn(layerIndex, "post_ffn_apply"),
-                Gemma4Kernels::rmsNormApplyWithResidual,
-                context,
                 gemma4State.workspace.wrapX,
-                gemma4State.workspace.wrapXb2,
                 weights.ffnPostNorm[layerIndex].asFloatArray(),
-                gemma4State.workspace.tempPostFfn,
-                dim);
+                true);
 
         // ═══════════════════════════ PER-LAYER EMBEDDING (PLE) ═══════════════════════════
         addProjection(
@@ -689,33 +681,15 @@ public class Gemma4Q8_0FFNLayers
                 nEmbdPerLayer,
                 dim);
 
-        unifiedLayer.task(
-                tn(layerIndex, "ple_post_reduce"),
-                rmsReduceKernel(),
-                context,
+        addRmsNorm(
+                unifiedLayer,
+                layerIndex,
+                "ple_post",
                 gemma4State.workspace.tempPostPle,
                 gemma4State.workspace.wrapPerLayerOut,
-                dim,
-                config.rmsNormEps(),
-                gemma4State.localSize);
-        if (shouldUseFinalNormalization()) {
-            unifiedLayer.task(
-                    tn(layerIndex, "ple_post_finalize"),
-                    TransformerComputeKernelsLayered::reductionFinalNormalization,
-                    context,
-                    gemma4State.workspace.tempPostPle,
-                    dim,
-                    config.rmsNormEps());
-        }
-        unifiedLayer.task(
-                tn(layerIndex, "ple_post_apply"),
-                Gemma4Kernels::rmsNormApplyWithResidual,
-                context,
                 gemma4State.workspace.wrapX,
-                gemma4State.workspace.wrapPerLayerOut,
                 weights.perLayerPostNorm[layerIndex].asFloatArray(),
-                gemma4State.workspace.tempPostPle,
-                dim);
+                true);
 
         if (weights.layerOutputScale[layerIndex] != null) {
             unifiedLayer.task(
@@ -778,6 +752,171 @@ public class Gemma4Q8_0FFNLayers
                 perLayerTotal);
     }
 
+    // @formatter:off
+    /**
+     * This layer's weights: uploaded here in the single-token plan, and in the batched plan bound
+     * from the batch-prefill graph of the same layer, which uploaded them already.
+     *
+     * <p>A weight bound with {@code transferToDevice} in two graphs of one execution plan gets a
+     * device buffer in each, so the batched plan used to hold every projection twice. Only what
+     * that prefill graph hands to one of its own tasks can be bound from it — a weight it declares
+     * and no task reads is never allocated, and a consumer of it reads zeros — so the two
+     * per-layer-embedding projections, which the prefill reads as FP16 copies, stay uploaded here.
+     */
+    // @formatter:on
+    private void bindLayerWeights(TaskGraph unifiedLayer, int layerIndex) {
+        java.util.List<Object> shared = new java.util.ArrayList<>();
+        java.util.List<Object> own = new java.util.ArrayList<>();
+        shared.add(weights.rms_att_weightLayered[layerIndex].asFloatArray());
+        shared.add(weights.attnQNorm[layerIndex].asFloatArray());
+        shared.add(weights.attnPostNorm[layerIndex].asFloatArray());
+        shared.add(weights.rms_ffn_weightLayered[layerIndex].asFloatArray());
+        shared.add(weights.ffnPostNorm[layerIndex].asFloatArray());
+        shared.add(weights.perLayerPostNorm[layerIndex].asFloatArray());
+        if (config.hasOwnKv(layerIndex)) {
+            shared.add(weights.attnKNorm[layerIndex].asFloatArray());
+        }
+        if (weights.layerOutputScale[layerIndex] != null) {
+            shared.add(weights.layerOutputScale[layerIndex].asFloatArray());
+        }
+        // The projections the batch-prefill graph reads itself; with native libraries it reads
+        // FP16 copies instead, so the file's tensors exist only here.
+        boolean[] prefillReads =
+                batchedPlan
+                        ? org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers
+                                .prefillReadsProjections(gemma4State, weights, config, layerIndex)
+                        : new boolean[] {false, false, false, false};
+        java.util.List<Object> qkv = new java.util.ArrayList<>();
+        qkv.add(weightArray(weights.wqLayered[layerIndex]));
+        if (config.hasOwnKv(layerIndex)) {
+            qkv.add(weightArray(weights.wkLayered[layerIndex]));
+            qkv.add(weightArray(weights.wvLayered[layerIndex]));
+        }
+        (prefillReads[0] ? shared : own).addAll(qkv);
+        (prefillReads[1] ? shared : own).add(weightArray(weights.woLayered[layerIndex]));
+        (prefillReads[2] ? shared : own).add(weightArray(weights.w1Layered[layerIndex]));
+        (prefillReads[2] ? shared : own).add(weightArray(weights.w3Layered[layerIndex]));
+        (prefillReads[3] ? shared : own).add(weightArray(weights.w2Layered[layerIndex]));
+        if (batchedPlan) {
+            unifiedLayer.consumeFromDevice("batchPrefillLayer_" + layerIndex, shared.toArray());
+        } else {
+            own.addAll(shared);
+        }
+        own.add(weightArray(weights.perLayerInpGate[layerIndex]));
+        own.add(weightArray(weights.perLayerProj[layerIndex]));
+        unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, own.toArray());
+    }
+
+    /** Which RoPE pairs the graph being built has bound already: sliding, full. */
+    private final boolean[] ropeBound = new boolean[2];
+
+    // @formatter:off
+    /**
+     * This layer's RoPE pair, bound once per graph and uploaded once per plan.
+     *
+     * <p>The tables are the same arrays for every layer of a kind, and a graph that binds an array
+     * without declaring where it comes from gets its own device copy. The first layer of a kind
+     * uploads its pair — or, in the batched plan, the first batch-prefill layer of that kind
+     * already did — and every other graph binds it from there. From that graph and not another: a
+     * graph that declares an array none of its tasks reads never allocates it.
+     */
+    // @formatter:on
+    private void bindRopeTables(TaskGraph unifiedLayer, int layerIndex) {
+        boolean isSwa = config.isSwa(layerIndex);
+        int kind = isSwa ? 0 : 1;
+        if (ropeBound[kind]) {
+            return;
+        }
+        ropeBound[kind] = true;
+        Object[] pair =
+                isSwa
+                        ? new Object[] {
+                            weights.freqCisRealSwa.asFloatArray(),
+                            weights.freqCisImagSwa.asFloatArray()
+                        }
+                        : new Object[] {
+                            weights.freqCisRealFull.asFloatArray(),
+                            weights.freqCisImagFull.asFloatArray()
+                        };
+        int firstUser = firstLayerOfKind(isSwa);
+        if (batchedPlan) {
+            unifiedLayer.consumeFromDevice("batchPrefillLayer_" + firstUser, pair);
+        } else if (layerGraphName(firstUser).equals(layerGraphName(layerIndex))) {
+            unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, pair);
+        } else {
+            unifiedLayer.consumeFromDevice(layerGraphName(firstUser), pair);
+        }
+    }
+
+    /** The first layer that attends with a sliding window, or the first that attends fully. */
+    private int firstLayerOfKind(boolean isSwa) {
+        for (int l = 0; l < config.numberOfLayers(); l++) {
+            if (config.isSwa(l) == isSwa) {
+                return l;
+            }
+        }
+        throw new IllegalStateException("no layer attends with isSwa=" + isSwa);
+    }
+
+    // @formatter:off
+    /**
+     * One RMSNorm of {@code input}: into {@code target} ({@code residual == false}), or added into
+     * it ({@code residual == true}).
+     *
+     * <p>The reduction into {@code temp}, the finalizing step where the scheduler needs one, then
+     * the apply.
+     */
+    // @formatter:on
+    private void addRmsNorm(
+            TaskGraph graph,
+            int layerIndex,
+            String name,
+            FloatArray temp,
+            FloatArray input,
+            FloatArray target,
+            FloatArray weight,
+            boolean residual) {
+        graph.task(
+                tn(layerIndex, name + "_reduce"),
+                rmsReduceKernel(),
+                context,
+                temp,
+                input,
+                dim,
+                config.rmsNormEps(),
+                gemma4State.localSize);
+        if (shouldUseFinalNormalization()) {
+            graph.task(
+                    tn(layerIndex, name + "_finalize"),
+                    TransformerComputeKernelsLayered::reductionFinalNormalization,
+                    context,
+                    temp,
+                    dim,
+                    config.rmsNormEps());
+        }
+        if (residual) {
+            graph.task(
+                    tn(layerIndex, name + "_apply"),
+                    Gemma4Kernels::rmsNormApplyWithResidual,
+                    context,
+                    target,
+                    input,
+                    weight,
+                    temp,
+                    dim);
+        } else {
+            graph.task(
+                    tn(layerIndex, name + "_apply"),
+                    Gemma4Kernels::applyRmsNorm,
+                    context,
+                    target,
+                    input,
+                    weight,
+                    temp,
+                    dim);
+        }
+    }
+
     /** Configure data transfers for first and subsequent layers. */
     protected TaskGraph configureLayerDataTransfers(TaskGraph unifiedLayer, int layerIndex) {
         // Per graph, not per layer. A graph that both transfers a buffer in and consumes it from
@@ -798,13 +937,15 @@ public class Gemma4Q8_0FFNLayers
                     gemma4State.workspace.tempPostFfn,
                     gemma4State.workspace.tempPostPle);
             unifiedLayer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION,
-                    weightArray(weights.perLayerModelProj),
-                    weights.perLayerProjNorm.asFloatArray(),
-                    weights.freqCisRealSwa.asFloatArray(),
-                    weights.freqCisImagSwa.asFloatArray(),
-                    weights.freqCisRealFull.asFloatArray(),
-                    weights.freqCisImagFull.asFloatArray());
+                    DataTransferMode.FIRST_EXECUTION, weightArray(weights.perLayerModelProj));
+            if (batchedPlan) {
+                // Read by the first batch-prefill graph's own setup, which uploaded it.
+                unifiedLayer.consumeFromDevice(
+                        "batchPrefillLayer_0", weights.perLayerProjNorm.asFloatArray());
+            } else {
+                unifiedLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, weights.perLayerProjNorm.asFloatArray());
+            }
             unifiedLayer.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION,
                     context,
@@ -822,14 +963,15 @@ public class Gemma4Q8_0FFNLayers
             bindKeyValueCache(unifiedLayer);
         } else {
             unifiedLayer.consumeFromDevice(
+                    previousGraphName(layerIndex),
                     context,
                     gemma4State.workspace.wrapXb,
                     gemma4State.workspace.wrapXb2,
                     gemma4State.workspace.wrapQ,
                     gemma4State.workspace.wrapK,
                     gemma4State.workspace.wrapV,
-                    gemma4State.workspace.wrapKeyCache,
-                    gemma4State.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     gemma4State.workspace.wrapAtt,
                     gemma4State.workspace.wrapHb,
                     gemma4State.workspace.wrapPerLayerInputs,
@@ -868,16 +1010,36 @@ public class Gemma4Q8_0FFNLayers
     // @formatter:on
     private void bindKeyValueCache(TaskGraph unifiedLayer) {
         if (batchedPlan) {
-            unifiedLayer.consumeFromDevice(
-                    "decodeActivation",
-                    gemma4State.workspace.wrapKeyCache,
-                    gemma4State.workspace.wrapValueCache);
+            unifiedLayer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
             return;
         }
-        unifiedLayer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
-                gemma4State.workspace.wrapKeyCache,
-                gemma4State.workspace.wrapValueCache);
+        unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, keyCache(), valueCache());
+    }
+
+    /** The key cache in the representation the state allocated. */
+    private Object keyCache() {
+        return fp16KeyValue
+                ? gemma4State.workspace.wrapKeyCacheFP16
+                : gemma4State.workspace.wrapKeyCache;
+    }
+
+    /** The value cache in the representation the state allocated. */
+    private Object valueCache() {
+        return fp16KeyValue
+                ? gemma4State.workspace.wrapValueCacheFP16
+                : gemma4State.workspace.wrapValueCache;
+    }
+
+    /**
+     * Slices the grouped decode attention is launched with for a layer: the whole window for a
+     * sliding layer, the whole context for a full one. Idle slices return at once.
+     */
+    private int decodeSlices(boolean isSwa) {
+        int span =
+                isSwa
+                        ? Math.min(config.slidingWindowSize(), config.contextLength())
+                        : config.contextLength();
+        return Gemma4AttentionKernels.decodeSlices(span);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
@@ -933,6 +1095,18 @@ public class Gemma4Q8_0FFNLayers
                     n,
                     d,
                     projectionLocalSize(d));
+            return;
+        }
+        if (warpProjection(w)) {
+            tg.task(
+                    taskName,
+                    Gemma4Kernels::matrixVectorQ8_0Warp,
+                    context,
+                    in,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d);
             return;
         }
         switch (w.dataType()) {
@@ -1001,6 +1175,23 @@ public class Gemma4Q8_0FFNLayers
         }
     }
 
+    /** Whether a projection takes the warp-per-row Q8_0 kernel: Q8_0, on the NVIDIA path. */
+    private boolean warpProjection(TornadoTensor w) {
+        return w.dataType() == DataType.Q8_0 && !shouldUseFinalNormalization();
+    }
+
+    /** The worker grid of a projection of {@code rows} outputs, matching its kernel. */
+    private WorkerGrid projectionGrid(TornadoTensor w, int rows) {
+        if (warpProjection(w)) {
+            int groups =
+                    (rows + Gemma4Kernels.WARP_ROWS_PER_GROUP - 1)
+                            / Gemma4Kernels.WARP_ROWS_PER_GROUP;
+            return WorkerGridFactory.genericWorker(groups * 256, 256);
+        }
+        return WorkerGridFactory.genericWorker(
+                rows * projectionLocalSize(rows), projectionLocalSize(rows));
+    }
+
     /**
      * Returns the device-resident native array backing a weight tensor (for {@code
      * transferToDevice}), matching {@link #addProjection}'s dispatch.
@@ -1028,6 +1219,7 @@ public class Gemma4Q8_0FFNLayers
         WorkerGrid rmsReduceWorker = rmsReduceWorker(rmsNormWorker);
         WorkerGrid dimElementWiseWorker =
                 WorkerGridFactory.genericWorker(dim, LOCAL_WORK_GROUP_SIZE_ALLOC);
+        WorkerGrid normApplyWorker = dimElementWiseWorker;
         WorkerGrid woProjWorker =
                 WorkerGridFactory.genericWorker(
                         dim * projectionLocalSize(dim), projectionLocalSize(dim));
@@ -1069,18 +1261,12 @@ public class Gemma4Q8_0FFNLayers
                             nHeadKv * HEAD_NORM_LOCAL_SIZE, HEAD_NORM_LOCAL_SIZE);
             WorkerGrid ropeWorker = WorkerGridFactory.createRoPEWorker(nHead, headDim);
             WorkerGrid attentionWorker = WorkerGridFactory.createAttentionWorker(nHead, headDim);
-            WorkerGrid qProjWorker =
-                    WorkerGridFactory.genericWorker(
-                            qDim * projectionLocalSize(qDim), projectionLocalSize(qDim));
-            WorkerGrid kvProjWorker =
-                    WorkerGridFactory.genericWorker(
-                            kvDim * projectionLocalSize(kvDim), projectionLocalSize(kvDim));
             WorkerGrid ffnGateUpWorker =
                     WorkerGridFactory.genericWorker(
                             ffnLen * LOCAL_WORK_GROUP_SIZE_ALLOC, LOCAL_WORK_GROUP_SIZE_ALLOC);
 
             gridScheduler.addWorkerGrid(prefix + "attn_norm_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid(prefix + "attn_norm_apply", dimElementWiseWorker);
+            gridScheduler.addWorkerGrid(prefix + "attn_norm_apply", normApplyWorker);
             if (packedFor(i)) {
                 WorkerGrid quantizeWorker = WorkerGridFactory.genericWorker(dim, 32);
                 gridScheduler.addWorkerGrid(prefix + "attn_quantize", quantizeWorker);
@@ -1091,18 +1277,32 @@ public class Gemma4Q8_0FFNLayers
                         prefix + "ffn_hidden_quantize",
                         WorkerGridFactory.genericWorker(ffnLen, 32));
             }
-            gridScheduler.addWorkerGrid(prefix + "q_proj", qProjWorker);
+            gridScheduler.addWorkerGrid(
+                    prefix + "q_proj", projectionGrid(weights.wqLayered[i], qDim));
             gridScheduler.addWorkerGrid(prefix + "q_norm", headNormWorker);
             if (hasOwnKv) {
-                gridScheduler.addWorkerGrid(prefix + "k_proj", kvProjWorker);
+                gridScheduler.addWorkerGrid(
+                        prefix + "k_proj", projectionGrid(weights.wkLayered[i], kvDim));
                 gridScheduler.addWorkerGrid(prefix + "k_norm", kvHeadNormWorker);
-                gridScheduler.addWorkerGrid(prefix + "v_proj", kvProjWorker);
+                gridScheduler.addWorkerGrid(
+                        prefix + "v_proj", projectionGrid(weights.wvLayered[i], kvDim));
                 gridScheduler.addWorkerGrid(prefix + "v_norm", kvHeadNormWorker);
                 gridScheduler.addWorkerGrid(prefix + "rope_and_cache", ropeWorker);
             } else {
                 gridScheduler.addWorkerGrid(prefix + "rope_q_only", ropeWorker);
             }
-            if (attentionSplits() > 1) {
+            if (fp16KeyValue) {
+                gridScheduler.addWorkerGrid(
+                        prefix + "attention_group",
+                        WorkerGridFactory.genericWorker(
+                                nHeadKv
+                                        * decodeSlices(config.isSwa(i))
+                                        * Gemma4AttentionKernels.DECODE_LANES,
+                                Gemma4AttentionKernels.DECODE_LANES));
+                gridScheduler.addWorkerGrid(
+                        prefix + "attention_combine",
+                        WorkerGridFactory.genericWorker(nHead * headDim, 128));
+            } else if (attentionSplits() > 1) {
                 gridScheduler.addWorkerGrid(
                         prefix + "attention_split",
                         WorkerGridFactory.genericWorker(
@@ -1114,22 +1314,24 @@ public class Gemma4Q8_0FFNLayers
             } else {
                 gridScheduler.addWorkerGrid(prefix + "attention", attentionWorker);
             }
-            gridScheduler.addWorkerGrid(prefix + "wo_proj", woProjWorker);
+            gridScheduler.addWorkerGrid(
+                    prefix + "wo_proj", projectionGrid(weights.woLayered[i], dim));
             gridScheduler.addWorkerGrid(prefix + "post_attn_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid(prefix + "post_attn_apply", dimElementWiseWorker);
+            gridScheduler.addWorkerGrid(prefix + "post_attn_apply", normApplyWorker);
 
             gridScheduler.addWorkerGrid(prefix + "ffn_norm_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid(prefix + "ffn_norm_apply", dimElementWiseWorker);
+            gridScheduler.addWorkerGrid(prefix + "ffn_norm_apply", normApplyWorker);
             gridScheduler.addWorkerGrid(prefix + "ffn_gate_up", ffnGateUpWorker);
-            gridScheduler.addWorkerGrid(prefix + "ffn_down_proj", woProjWorker);
+            gridScheduler.addWorkerGrid(
+                    prefix + "ffn_down_proj", projectionGrid(weights.w2Layered[i], dim));
             gridScheduler.addWorkerGrid(prefix + "post_ffn_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid(prefix + "post_ffn_apply", dimElementWiseWorker);
+            gridScheduler.addWorkerGrid(prefix + "post_ffn_apply", normApplyWorker);
 
             gridScheduler.addWorkerGrid(prefix + "ple_gate_proj", pleGateProjWorker);
             gridScheduler.addWorkerGrid(prefix + "ple_gate_gelu_mul", pleGateGeluWorker);
             gridScheduler.addWorkerGrid(prefix + "ple_proj", woProjWorker);
             gridScheduler.addWorkerGrid(prefix + "ple_post_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid(prefix + "ple_post_apply", dimElementWiseWorker);
+            gridScheduler.addWorkerGrid(prefix + "ple_post_apply", normApplyWorker);
 
             if (shouldUseFinalNormalization()) {
                 gridScheduler.addWorkerGrid(prefix + "attn_norm_finalize", rmsNormWorker);

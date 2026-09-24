@@ -33,13 +33,17 @@ public final class NativeLibrarySupport {
         if (!BackendId.CUDA.equals(c.backend())) {
             return Optional.of("native libraries are implemented on CUDA only");
         }
-        if (!c.architecture().equals("qwen3") || c.weights() != DataType.F16) {
+        boolean qwen3 = c.architecture().equals("qwen3") && c.weights() == DataType.F16;
+        boolean gemma4 =
+                c.architecture().equals("gemma4")
+                        && (c.weights() == DataType.Q8_0 || c.weights() == DataType.Q4_0);
+        if (!qwen3 && !gemma4) {
             return Optional.of(
                     "no native-library path is implemented for "
                             + c.architecture()
                             + " / "
                             + c.weights()
-                            + " yet (Qwen3 F16 only)");
+                            + " yet (Qwen3 F16 and Gemma 4 Q8_0/Q4_0 only)");
         }
         if (c.mode() != ExecutionMode.BATCH_PREFILL_DECODE) {
             return Optional.of(

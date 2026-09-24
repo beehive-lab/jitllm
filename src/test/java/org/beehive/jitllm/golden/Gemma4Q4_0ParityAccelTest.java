@@ -11,10 +11,10 @@ import org.junit.Test;
  * returns to TornadoVM's buffer provider rather than to the driver, so the third load exhausts a 24
  * GB card and the failure lands on whichever fixture ran last rather than on whichever is wrong.
  *
- * <p>The device runs this file <b>materialized as Q8_0</b>: {@code Gemma4PlanProvider} admits F16
- * and Q8_0, so the loader decodes its Q4_0 and Q4_1 blocks at load time. The host reference decodes
- * the same file natively, so this scores the materialization as well as the kernels — which is what
- * the device actually executes until a retained Q4_0 path exists.
+ * <p>The device runs this file's projections <b>as Q4_0</b>, retained from the file, with the
+ * packed-integer kernels that quantize their activation to eight bits; the host reference decodes
+ * the same blocks in FP32. Hence {@link CpuGpuParity#Q4_0_PACKED_ACTIVATION} rather than the Q8_0
+ * bounds.
  */
 public class Gemma4Q4_0ParityAccelTest extends CpuGpuParity {
 

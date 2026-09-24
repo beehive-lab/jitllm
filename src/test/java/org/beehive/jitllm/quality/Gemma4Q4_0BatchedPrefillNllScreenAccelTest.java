@@ -22,6 +22,7 @@ public class Gemma4Q4_0BatchedPrefillNllScreenAccelTest {
 
     @Test
     public void theBatchedPrefillDoesNotMakeHeldOutTextLessLikely() throws Exception {
-        Gemma4BatchedPrefillNllScreenAccelTest.screen(Fixture.GEMMA_4_E2B_Q4_0);
+        Gemma4BatchedPrefillNllScreenAccelTest.screen(
+                Fixture.GEMMA_4_E2B_Q4_0, Gemma4BatchedPrefillNllScreenAccelTest.SHORT);
     }
 }

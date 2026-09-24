@@ -41,9 +41,18 @@ public class Qwen35AdoptionTaskGenAccelTest {
 
     private static final int CONTEXT = 2048;
 
+    /**
+     * The model under evaluation: {@code jitllm.eval.fixture} names a {@link Fixture}, the Qwen3.8
+     * file by default. The harness is the frozen protocol's, so another family runs the same
+     * prompts, lengths and scoring.
+     */
+    static Fixture evalFixture() {
+        return Fixture.valueOf(System.getProperty("jitllm.eval.fixture", "QWEN3_8_27B_Q4_0"));
+    }
+
     @Test
     public void theTasksAreGenerated() throws Exception {
-        Path modelPath = GoldenFixture.locate(Fixture.QWEN3_8_27B_Q4_0);
+        Path modelPath = GoldenFixture.locate(evalFixture());
         assumeTrue("environment absent", modelPath != null);
         assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
         String tasksFile = System.getProperty("jitllm.eval.tasks");

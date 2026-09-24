@@ -340,15 +340,16 @@ public class Gemma4ModelLoader extends AbstractModelLoader<Gemma4, Gemma4Configu
      * {@code rope_freqs} tensor -- this is how the GGUF encodes "partial RoPE" (entries are 1.0 for
      * the active low-frequency dimensions and effectively infinite for the inactive ones, which
      * zeroes out their rotation).
+     *
+     * <p>Sized to the configured context rather than the model's: no position reaches past the
+     * key/value capacity, and at the model's 131072 positions the four tables are 400 MB of host
+     * memory and as much again on the device per graph that binds them.
      */
     private RopeTables computeRopeTables(
             Map<String, GGMLTensorEntry> tensorEntries, Gemma4Configuration config) {
         Pair<float[], float[]> swa =
                 precomputeFreqsCisWithFactors(
-                        config.contextLengthModel(),
-                        config.headDimSwa(),
-                        config.ropeThetaSwa(),
-                        null);
+                        config.contextLength(), config.headDimSwa(), config.ropeThetaSwa(), null);
 
         // rope_freqs.weight is intentionally excluded from tensorEntries by
         // GGUF.loadTensorsStandard/
@@ -356,7 +357,7 @@ public class Gemma4ModelLoader extends AbstractModelLoader<Gemma4, Gemma4Configu
         float[] freqFactors = readFloat32TensorDirect("rope_freqs.weight");
         Pair<float[], float[]> full =
                 precomputeFreqsCisWithFactors(
-                        config.contextLengthModel(),
+                        config.contextLength(),
                         config.headDimFull(),
                         config.ropeTheta(),
                         freqFactors);

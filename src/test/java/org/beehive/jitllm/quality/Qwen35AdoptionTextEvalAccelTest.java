@@ -64,7 +64,10 @@ public class Qwen35AdoptionTextEvalAccelTest {
         String text = Files.readString(Paths.get(manifest));
         java.util.regex.Matcher m =
                 java.util.regex.Pattern.compile(
-                                "\\{[^}]*\"id\": \"([^\"]+)\"[^}]*\"path\": \"([^\"]+)\"[^}]*\"byteOffset\": (\\d+)[^}]*\"byteLength\": (\\d+)[^}]*\"prefixTokens\": (\\d+)[^}]*\"scoredTokens\": (\\d+)[^}]*\"sha256\": \"([0-9a-f]+)\"")
+                                "\\{[^}]*\"id\": \"([^\"]+)\"[^}]*\"path\":"
+                                        + " \"([^\"]+)\"[^}]*\"byteOffset\": (\\d+)[^}]*\"byteLength\":"
+                                        + " (\\d+)[^}]*\"prefixTokens\": (\\d+)[^}]*\"scoredTokens\":"
+                                        + " (\\d+)[^}]*\"sha256\": \"([0-9a-f]+)\"")
                         .matcher(text);
         while (m.find()) {
             Passage p =
@@ -83,9 +86,18 @@ public class Qwen35AdoptionTextEvalAccelTest {
         return out;
     }
 
+    /**
+     * The model under evaluation: {@code jitllm.eval.fixture} names a {@link Fixture}, the Qwen3.8
+     * file by default. The harness is the frozen protocol's, so another family runs the same
+     * prompts, lengths and scoring.
+     */
+    static Fixture evalFixture() {
+        return Fixture.valueOf(System.getProperty("jitllm.eval.fixture", "QWEN3_8_27B_Q4_0"));
+    }
+
     @Test
     public void theManifestPassagesAreScored() throws Exception {
-        Path modelPath = GoldenFixture.locate(Fixture.QWEN3_8_27B_Q4_0);
+        Path modelPath = GoldenFixture.locate(evalFixture());
         assumeTrue("environment absent", modelPath != null);
         assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
         int batch = Integer.getInteger("jitllm.eval.batch", 512);
@@ -202,7 +214,8 @@ public class Qwen35AdoptionTextEvalAccelTest {
                 String line =
                         String.format(
                                 java.util.Locale.ROOT,
-                                "passage=%s path=%s bytes=%d..%d sha256=%s scored=%d nll=%.6f ppl=%.4f%n",
+                                "passage=%s path=%s bytes=%d..%d sha256=%s scored=%d nll=%.6f"
+                                        + " ppl=%.4f%n",
                                 passage.name(),
                                 passage.path(),
                                 passage.byteOffset(),

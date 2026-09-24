@@ -121,8 +121,15 @@ public final class Gemma4State extends State {
                 TornadoWorkspaces.floats(padded * perLayerTotal);
         this.workspace.wrapXFP16Batch = TornadoWorkspaces.halfFloats(padded * config.dim());
         this.workspace.branchScaleBatch = TornadoWorkspaces.floats(padded);
+        // The tensor-core attention's score regions are whole 32-key tiles, so a context that is
+        // not a multiple of 32 rounds up.
+        int scoreKeys =
+                usesFp16KeyValue()
+                        ? org.beehive.jitllm.backend.tornado.kernels.Gemma4AttentionKernels
+                                .tcScoreKeys(config.contextLength(), config.contextLength())
+                        : config.contextLength();
         this.workspace.attnScoresBatch =
-                TornadoWorkspaces.floats(padded * config.numberOfHeads() * config.contextLength());
+                TornadoWorkspaces.floats(padded * config.numberOfHeads() * scoreKeys);
         // The depth slices of the two narrow projections, before they are summed. One buffer for
         // both: they are sequential in a layer's graph, so the second overwrites what the first has
         // already been reduced out of.
@@ -130,6 +137,21 @@ public final class Gemma4State extends State {
         // convert. One buffer for every projection of every layer: the widest is what it has to
         // hold -- the gate/up pair -- and everything else uses a prefix. They are sequential within
         // a layer's graph and across layers, so nothing needs its own.
+        if (usesFp16KeyValue()) {
+            // The tensor-core attention's output before normalization, and its probability tiles:
+            // one tile per (32-row query tile, head).
+            int heads = config.numberOfHeads();
+            this.workspace.attnOutF32Batch =
+                    TornadoWorkspaces.floats(padded * heads * config.maxHeadDim());
+            this.workspace.attnProbStageBatch =
+                    TornadoWorkspaces.halfFloats(
+                            padded
+                                    / org.beehive.jitllm.backend.tornado.kernels
+                                            .Gemma4AttentionKernels.TC_QUERIES
+                                    * heads
+                                    * org.beehive.jitllm.backend.tornado.kernels
+                                            .Gemma4AttentionKernels.TC_STAGE_HALVES);
+        }
         this.workspace.weightsF16Scratch =
                 TornadoWorkspaces.halfFloats(2 * config.maxFeedForwardLength() * config.dim());
         this.workspace.splitKPartialBatch =
@@ -186,6 +208,11 @@ public final class Gemma4State extends State {
             }
         }
         return offsets;
+    }
+
+    /** Whether this state's storage asks for an FP16 cache; read while the fields are built. */
+    private boolean usesFp16KeyValue() {
+        return storageOptions().usesFp16KeyValueCache();
     }
 
     /** Total number of elements needed for the (deduplicated) flat KV cache buffer. */
@@ -271,9 +298,17 @@ public final class Gemma4State extends State {
         // cacheLayerBaseOffset).
         int[] gpuCacheLayerBaseOffset = computeCacheLayerBaseOffsets(config);
         int totalCacheElements = Math.max(1, totalCacheElements(config, gpuCacheLayerBaseOffset));
-        workspace.wrapKeyCache = TornadoWorkspaces.floats(totalCacheElements);
-        workspace.wrapValueCache = TornadoWorkspaces.floats(totalCacheElements);
-        TornadoWorkspaces.zeroKeyValue(workspace);
+        if (usesFp16KeyValue()) {
+            // One representation only: every Gemma 4 graph that reaches an FP16 state binds the
+            // FP16 pair, so an FP32 pair beside it would be device memory nothing reads. Left
+            // null, a graph that forgot the representation fails when it is built.
+            workspace.wrapKeyCacheFP16 = TornadoWorkspaces.zeroedHalfFloats(totalCacheElements);
+            workspace.wrapValueCacheFP16 = TornadoWorkspaces.zeroedHalfFloats(totalCacheElements);
+        } else {
+            workspace.wrapKeyCache = TornadoWorkspaces.floats(totalCacheElements);
+            workspace.wrapValueCache = TornadoWorkspaces.floats(totalCacheElements);
+            TornadoWorkspaces.zeroKeyValue(workspace);
+        }
         // An activation in Q8 blocks, for the packed-integer projections: four quants per int, one
         // scale and one sum of quants per block of 32. Sized for the widest activation any of them
         // reads and used as a prefix by the narrower ones. This family's feed-forward width differs
@@ -289,8 +324,17 @@ public final class Gemma4State extends State {
         // layer -- 256 on the sliding-window layers, 512 on the full ones -- while the buffer is
         // one allocation shared by every layer's graph.
         workspace.wrapAttSplit =
-                TornadoWorkspaces.floats(
-                        nHead * config.attentionSplits() * (config.maxHeadDim() + 2));
+                usesFp16KeyValue()
+                        ? TornadoWorkspaces.floats(
+                                nHeadKv
+                                        * org.beehive.jitllm.backend.tornado.kernels
+                                                .Gemma4AttentionKernels.decodeSlices(
+                                                config.contextLength())
+                                        * org.beehive.jitllm.backend.tornado.kernels
+                                                .Gemma4AttentionKernels.decodePartialStride(
+                                                config.maxHeadDim()))
+                        : TornadoWorkspaces.floats(
+                                nHead * config.attentionSplits() * (config.maxHeadDim() + 2));
         workspace.positionHolder = TornadoWorkspaces.ints(1);
 
         workspace.temp = TornadoWorkspaces.floats(1 + ((dim + localSize - 1) / localSize));

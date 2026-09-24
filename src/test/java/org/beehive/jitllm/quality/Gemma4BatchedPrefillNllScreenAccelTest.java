@@ -55,14 +55,20 @@ public class Gemma4BatchedPrefillNllScreenAccelTest {
     public static final org.beehive.jitllm.golden.Fp32KeyValueCache FP32_KEY_VALUE_CACHE =
             new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
-    /** Chunk width the batched graphs are built for. */
-    private static final int BATCH = 256;
+    // @formatter:off
+    /**
+     * What one screen pushes through the batched graphs and then scores.
+     *
+     * @param batch the chunk width the batched graphs are built for
+     * @param prefix the positions ingested through them before scoring starts
+     * @param scored the positions decoded and scored after the prefix
+     * @param passageBytes how much of each passage is tokenized; it has to cover the prefix
+     */
+    // @formatter:on
+    record Schedule(int batch, int prefix, int scored, int passageBytes) {}
 
-    /** Prefix pushed through the batched graphs — one full chunk and part of a second. */
-    private static final int PREFIX = 320;
-
-    /** Positions scored after the prefix. */
-    private static final int SCORED = 48;
+    /** One full chunk of 256 and part of a second, inside the 512-position sliding window. */
+    static final Schedule SHORT = new Schedule(256, 320, 48, 6000);
 
     /**
      * How much worse the batched path's pooled NLL may be than the host's, in nats per token.
@@ -74,19 +80,19 @@ public class Gemma4BatchedPrefillNllScreenAccelTest {
      */
     private static final double MAX_POOLED_NLL_INCREASE = 0.02;
 
-    private record Passage(String name, String path, int byteOffset, int byteLength) {}
+    private record Passage(String name, String path, int byteOffset) {}
 
     private static final List<Passage> PASSAGES =
             List.of(
-                    new Passage("prose", "README.md", 0, 6000),
-                    new Passage("architecture", "docs/architecture/architecture.md", 0, 6000));
+                    new Passage("prose", "README.md", 0),
+                    new Passage("architecture", "docs/architecture/architecture.md", 0));
 
     @Test
     public void theBatchedPrefillDoesNotMakeHeldOutTextLessLikely() throws Exception {
-        screen(Fixture.GEMMA_4_E2B_Q8_0);
+        screen(Fixture.GEMMA_4_E2B_Q8_0, SHORT);
     }
 
-    static void screen(Fixture fixture) throws Exception {
+    static void screen(Fixture fixture, Schedule schedule) throws Exception {
         Path modelPath = GoldenFixture.locate(fixture);
         if (modelPath == null) {
             System.out.println(
@@ -103,7 +109,7 @@ public class Gemma4BatchedPrefillNllScreenAccelTest {
         String prevBatch = System.getProperty("jitllm.prefillBatchSize");
         System.setProperty("use.tornadovm", "true");
         System.setProperty("jitllm.withPrefillDecode", "true");
-        System.setProperty("jitllm.prefillBatchSize", Integer.toString(BATCH));
+        System.setProperty("jitllm.prefillBatchSize", Integer.toString(schedule.batch()));
 
         double batchedTotal = 0;
         double hostTotal = 0;
@@ -122,29 +128,35 @@ public class Gemma4BatchedPrefillNllScreenAccelTest {
 
             System.out.printf(
                     "[NLL] model=%s device=%s batch=%d prefix=%d scored=%d%n",
-                    modelPath.getFileName(), TupleInfo.deviceName(), BATCH, PREFIX, SCORED);
+                    modelPath.getFileName(),
+                    TupleInfo.deviceName(),
+                    schedule.batch(),
+                    schedule.prefix(),
+                    schedule.scored());
             try {
                 for (Passage passage : PASSAGES) {
-                    int[] tokens = tokenize(gpuModel, passage);
+                    int[] tokens = tokenize(gpuModel, passage, schedule);
                     State cpuState = cpuModel.createNewState();
 
                     // The prefix through the batched graphs, in chunks, exactly as a prompt goes.
                     batched.resetSequenceState();
-                    for (int start = 0; start < PREFIX; start += BATCH) {
-                        int size = Math.min(BATCH, PREFIX - start);
+                    for (int start = 0; start < schedule.prefix(); start += schedule.batch()) {
+                        int size = Math.min(schedule.batch(), schedule.prefix() - start);
                         int[] chunk = new int[size];
                         System.arraycopy(tokens, start, chunk, 0, size);
                         TornadoBatchPrefillPass.batchPrefill(
                                 gpuModel, gpuState, chunk, start, size, batched);
                     }
                     // The host sees the same prefix one token at a time.
-                    for (int i = 0; i < PREFIX; i++) {
+                    for (int i = 0; i < schedule.prefix(); i++) {
                         InferenceCore.forwardJavaGemma4(cpuModel, cpuState, tokens[i], i);
                     }
 
                     double batchedSum = 0;
                     double hostSum = 0;
-                    for (int p = PREFIX; p < PREFIX + SCORED; p++) {
+                    for (int p = schedule.prefix();
+                            p < schedule.prefix() + schedule.scored();
+                            p++) {
                         Logits deviceLogits =
                                 TornadoBatchPrefillPass.decode(
                                         gpuModel, gpuState, tokens[p], p, batched);
@@ -159,15 +171,15 @@ public class Gemma4BatchedPrefillNllScreenAccelTest {
                     }
                     batchedTotal += batchedSum;
                     hostTotal += hostSum;
-                    counted += SCORED;
+                    counted += schedule.scored();
                     System.out.printf(
                             "[NLL] %-14s scored=%d  host=%.5f  batched=%.5f  delta=%+.5f"
                                     + " nats/token%n",
                             passage.name(),
-                            SCORED,
-                            hostSum / SCORED,
-                            batchedSum / SCORED,
-                            (batchedSum - hostSum) / SCORED);
+                            schedule.scored(),
+                            hostSum / schedule.scored(),
+                            batchedSum / schedule.scored(),
+                            (batchedSum - hostSum) / schedule.scored());
                 }
             } finally {
                 plan.freeTornadoExecutionPlan();
@@ -201,15 +213,16 @@ public class Gemma4BatchedPrefillNllScreenAccelTest {
         }
     }
 
-    private static int[] tokenize(Model model, Passage passage) throws Exception {
+    private static int[] tokenize(Model model, Passage passage, Schedule schedule)
+            throws Exception {
         byte[] raw = Files.readAllBytes(Paths.get(passage.path()));
+        int length = schedule.passageBytes();
         assertTrue(
                 passage.path() + " is shorter than the recorded range",
-                raw.length >= passage.byteOffset() + passage.byteLength());
-        String text =
-                new String(raw, passage.byteOffset(), passage.byteLength(), StandardCharsets.UTF_8);
+                raw.length >= passage.byteOffset() + length);
+        String text = new String(raw, passage.byteOffset(), length, StandardCharsets.UTF_8);
         List<Integer> encoded = model.tokenizer().encodeAsList(text);
-        int needed = PREFIX + SCORED + 1;
+        int needed = schedule.prefix() + schedule.scored() + 1;
         assertTrue(
                 passage.name() + " tokenizes to " + encoded.size() + ", fewer than " + needed,
                 encoded.size() >= needed);
