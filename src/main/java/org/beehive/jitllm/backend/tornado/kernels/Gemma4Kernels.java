@@ -829,4 +829,46 @@ public class Gemma4Kernels {
             logits.set(gid, TornadoMath.tanh(v / softcap) * softcap);
         }
     }
+
+    /** Rows a warp-per-row matrix-vector workgroup computes: one per warp. */
+    public static final int WARP_ROWS_PER_GROUP = 8;
+
+    // @formatter:off
+    /**
+     * A matrix-vector product over Q8_0 weights, one warp per output row and {@value
+     * #WARP_ROWS_PER_GROUP} rows per workgroup: the decode projections and the vocabulary.
+     *
+     * <p>Lane {@code l} takes element {@code l} of every 32-weight block of its row, so a block's
+     * quants are one coalesced 32-byte read and its scale one broadcast; the lane accumulates
+     * {@code scale * quant * x} in FP32 over the blocks in order, and a shuffle tree sums the
+     * lanes. The generic Q8_0 projection gives every row a workgroup and a shared-memory tree, one
+     * barrier per tree level for every row — 262,144 of them for the vocabulary. Same products; the
+     * sum is reassociated across lanes. Worker: {@code ceil(rows / 8) * 256} lanes, local 256.
+     */
+    // @formatter:on
+    public static void matrixVectorQ8_0Warp(
+            KernelContext context, FloatArray x, FloatArray out, ByteArray w, int n, int rows) {
+        int warp = context.localIdx >> 5;
+        int lane = context.localIdx & 31;
+        int row = context.groupIdx * WARP_ROWS_PER_GROUP + warp;
+        if (row >= rows) {
+            return;
+        }
+        int blocks = n / 32;
+        int rowBase = row * blocks * 34;
+        float sum = 0.0f;
+        for (int b = 0; b < blocks; b++) {
+            int off = rowBase + b * 34;
+            float scale = w.getHalfFloat(off).getFloat32();
+            sum += scale * w.get(off + 2 + lane) * x.get(b * 32 + lane);
+        }
+        sum += context.simdShuffleDown(sum, 16);
+        sum += context.simdShuffleDown(sum, 8);
+        sum += context.simdShuffleDown(sum, 4);
+        sum += context.simdShuffleDown(sum, 2);
+        sum += context.simdShuffleDown(sum, 1);
+        if (lane == 0) {
+            out.set(row, sum);
+        }
+    }
 }

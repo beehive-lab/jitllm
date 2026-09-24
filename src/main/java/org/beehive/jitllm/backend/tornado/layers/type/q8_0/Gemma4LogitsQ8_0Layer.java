@@ -109,9 +109,56 @@ public class Gemma4LogitsQ8_0Layer extends LogitsQ8_0Layer {
 
     // @formatter:on
 
+    // @formatter:off
+    /**
+     * A Q8_0 vocabulary projection takes the warp-per-row kernel; everything else the inherited
+     * dispatch.
+     */
+    // @formatter:on
+    @Override
+    protected void addVocabularyProjection(
+            TaskGraph logits, TornadoWeights weights, Configuration config) {
+        if (!warpVocabulary(weights)) {
+            super.addVocabularyProjection(logits, weights, config);
+            return;
+        }
+        logits.task(
+                "vocab_proj",
+                Gemma4Kernels::matrixVectorQ8_0Warp,
+                context,
+                state.workspace.wrapX,
+                state.workspace.wrapLogits,
+                weights.wclsByteArray.asByteArray(),
+                config.dim(),
+                config.vocabularySize());
+    }
+
+    // @formatter:off
+    /**
+     * A Q8_0 output projection of a model whose own projections are Q8_0. The Q4_0 file's Q4_K
+     * {@code token_embd} is materialized as Q8_0 on the device as well, but this kernel was
+     * evaluated on the Q8_0 file only; that one keeps the shared-memory kernel.
+     */
+    // @formatter:on
+    private boolean warpVocabulary(TornadoWeights weights) {
+        return weights.dataType() == org.beehive.jitllm.runtime.tensor.DataType.Q8_0
+                && weights.wclsByteArray.dataType()
+                        == org.beehive.jitllm.runtime.tensor.DataType.Q8_0
+                && config.dim() % 32 == 0
+                && schedulerType != SchedulerType.NON_NVIDIA;
+    }
+
     @Override
     public GridScheduler updateGridScheduler(GridScheduler tornadoForwardScheduler) {
         var scheduler = super.updateGridScheduler(tornadoForwardScheduler);
+        if (weights instanceof TornadoWeights tw && warpVocabulary(tw)) {
+            int groups =
+                    (config.vocabularySize() + Gemma4Kernels.WARP_ROWS_PER_GROUP - 1)
+                            / Gemma4Kernels.WARP_ROWS_PER_GROUP;
+            var worker = new uk.ac.manchester.tornado.api.WorkerGrid1D(groups * 256);
+            worker.setLocalWork(256, 1, 1);
+            scheduler.addWorkerGrid("logits.vocab_proj", worker);
+        }
         if (softcap() != 0.0f) {
             scheduler.addWorkerGrid(
                     "logits." + SOFTCAP_TASK,

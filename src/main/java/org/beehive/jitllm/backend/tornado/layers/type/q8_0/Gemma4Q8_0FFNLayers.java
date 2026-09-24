@@ -316,33 +316,15 @@ public class Gemma4Q8_0FFNLayers
         }
 
         // ═══════════════════════════════════ ATTENTION ═══════════════════════════════════
-        unifiedLayer.task(
-                tn(layerIndex, "attn_norm_reduce"),
-                rmsReduceKernel(),
-                context,
+        addRmsNorm(
+                unifiedLayer,
+                layerIndex,
+                "attn_norm",
                 gemma4State.workspace.temp,
                 gemma4State.workspace.wrapX,
-                dim,
-                config.rmsNormEps(),
-                gemma4State.localSize);
-        if (shouldUseFinalNormalization()) {
-            unifiedLayer.task(
-                    tn(layerIndex, "attn_norm_finalize"),
-                    TransformerComputeKernelsLayered::reductionFinalNormalization,
-                    context,
-                    gemma4State.workspace.temp,
-                    dim,
-                    config.rmsNormEps());
-        }
-        unifiedLayer.task(
-                tn(layerIndex, "attn_norm_apply"),
-                Gemma4Kernels::applyRmsNorm,
-                context,
                 gemma4State.workspace.wrapXb,
-                gemma4State.workspace.wrapX,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                gemma4State.workspace.temp,
-                dim);
+                false);
 
         boolean packed = packedFor(layerIndex);
         if (packed) {
@@ -562,62 +544,26 @@ public class Gemma4Q8_0FFNLayers
                 dim,
                 packed);
 
-        unifiedLayer.task(
-                tn(layerIndex, "post_attn_reduce"),
-                rmsReduceKernel(),
-                context,
+        addRmsNorm(
+                unifiedLayer,
+                layerIndex,
+                "post_attn",
                 gemma4State.workspace.tempPostAttn,
                 gemma4State.workspace.wrapXb2,
-                dim,
-                config.rmsNormEps(),
-                gemma4State.localSize);
-        if (shouldUseFinalNormalization()) {
-            unifiedLayer.task(
-                    tn(layerIndex, "post_attn_finalize"),
-                    TransformerComputeKernelsLayered::reductionFinalNormalization,
-                    context,
-                    gemma4State.workspace.tempPostAttn,
-                    dim,
-                    config.rmsNormEps());
-        }
-        unifiedLayer.task(
-                tn(layerIndex, "post_attn_apply"),
-                Gemma4Kernels::rmsNormApplyWithResidual,
-                context,
                 gemma4State.workspace.wrapX,
-                gemma4State.workspace.wrapXb2,
                 weights.attnPostNorm[layerIndex].asFloatArray(),
-                gemma4State.workspace.tempPostAttn,
-                dim);
+                true);
 
         // ═══════════════════════════════════════ FFN ═════════════════════════════════════
-        unifiedLayer.task(
-                tn(layerIndex, "ffn_norm_reduce"),
-                rmsReduceKernel(),
-                context,
+        addRmsNorm(
+                unifiedLayer,
+                layerIndex,
+                "ffn_norm",
                 gemma4State.workspace.tempFFN,
                 gemma4State.workspace.wrapX,
-                dim,
-                config.rmsNormEps(),
-                gemma4State.localSize);
-        if (shouldUseFinalNormalization()) {
-            unifiedLayer.task(
-                    tn(layerIndex, "ffn_norm_finalize"),
-                    TransformerComputeKernelsLayered::reductionFinalNormalization,
-                    context,
-                    gemma4State.workspace.tempFFN,
-                    dim,
-                    config.rmsNormEps());
-        }
-        unifiedLayer.task(
-                tn(layerIndex, "ffn_norm_apply"),
-                Gemma4Kernels::applyRmsNorm,
-                context,
                 gemma4State.workspace.wrapXb,
-                gemma4State.workspace.wrapX,
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                gemma4State.workspace.tempFFN,
-                dim);
+                false);
 
         // The feed-forward's activation is a different vector from the attention branch's, so it
         // needs its own quantization: the triple holds one activation at a time.
@@ -699,33 +645,15 @@ public class Gemma4Q8_0FFNLayers
                 dim,
                 packed);
 
-        unifiedLayer.task(
-                tn(layerIndex, "post_ffn_reduce"),
-                rmsReduceKernel(),
-                context,
+        addRmsNorm(
+                unifiedLayer,
+                layerIndex,
+                "post_ffn",
                 gemma4State.workspace.tempPostFfn,
                 gemma4State.workspace.wrapXb2,
-                dim,
-                config.rmsNormEps(),
-                gemma4State.localSize);
-        if (shouldUseFinalNormalization()) {
-            unifiedLayer.task(
-                    tn(layerIndex, "post_ffn_finalize"),
-                    TransformerComputeKernelsLayered::reductionFinalNormalization,
-                    context,
-                    gemma4State.workspace.tempPostFfn,
-                    dim,
-                    config.rmsNormEps());
-        }
-        unifiedLayer.task(
-                tn(layerIndex, "post_ffn_apply"),
-                Gemma4Kernels::rmsNormApplyWithResidual,
-                context,
                 gemma4State.workspace.wrapX,
-                gemma4State.workspace.wrapXb2,
                 weights.ffnPostNorm[layerIndex].asFloatArray(),
-                gemma4State.workspace.tempPostFfn,
-                dim);
+                true);
 
         // ═══════════════════════════ PER-LAYER EMBEDDING (PLE) ═══════════════════════════
         addProjection(
@@ -753,33 +681,15 @@ public class Gemma4Q8_0FFNLayers
                 nEmbdPerLayer,
                 dim);
 
-        unifiedLayer.task(
-                tn(layerIndex, "ple_post_reduce"),
-                rmsReduceKernel(),
-                context,
+        addRmsNorm(
+                unifiedLayer,
+                layerIndex,
+                "ple_post",
                 gemma4State.workspace.tempPostPle,
                 gemma4State.workspace.wrapPerLayerOut,
-                dim,
-                config.rmsNormEps(),
-                gemma4State.localSize);
-        if (shouldUseFinalNormalization()) {
-            unifiedLayer.task(
-                    tn(layerIndex, "ple_post_finalize"),
-                    TransformerComputeKernelsLayered::reductionFinalNormalization,
-                    context,
-                    gemma4State.workspace.tempPostPle,
-                    dim,
-                    config.rmsNormEps());
-        }
-        unifiedLayer.task(
-                tn(layerIndex, "ple_post_apply"),
-                Gemma4Kernels::rmsNormApplyWithResidual,
-                context,
                 gemma4State.workspace.wrapX,
-                gemma4State.workspace.wrapPerLayerOut,
                 weights.perLayerPostNorm[layerIndex].asFloatArray(),
-                gemma4State.workspace.tempPostPle,
-                dim);
+                true);
 
         if (weights.layerOutputScale[layerIndex] != null) {
             unifiedLayer.task(
@@ -935,6 +845,65 @@ public class Gemma4Q8_0FFNLayers
             }
         }
         throw new IllegalStateException("no layer attends with isSwa=" + isSwa);
+    }
+
+    // @formatter:off
+    /**
+     * One RMSNorm of {@code input}: into {@code target} ({@code residual == false}), or added into
+     * it ({@code residual == true}).
+     *
+     * <p>The reduction into {@code temp}, the finalizing step where the scheduler needs one, then
+     * the apply.
+     */
+    // @formatter:on
+    private void addRmsNorm(
+            TaskGraph graph,
+            int layerIndex,
+            String name,
+            FloatArray temp,
+            FloatArray input,
+            FloatArray target,
+            FloatArray weight,
+            boolean residual) {
+        graph.task(
+                tn(layerIndex, name + "_reduce"),
+                rmsReduceKernel(),
+                context,
+                temp,
+                input,
+                dim,
+                config.rmsNormEps(),
+                gemma4State.localSize);
+        if (shouldUseFinalNormalization()) {
+            graph.task(
+                    tn(layerIndex, name + "_finalize"),
+                    TransformerComputeKernelsLayered::reductionFinalNormalization,
+                    context,
+                    temp,
+                    dim,
+                    config.rmsNormEps());
+        }
+        if (residual) {
+            graph.task(
+                    tn(layerIndex, name + "_apply"),
+                    Gemma4Kernels::rmsNormApplyWithResidual,
+                    context,
+                    target,
+                    input,
+                    weight,
+                    temp,
+                    dim);
+        } else {
+            graph.task(
+                    tn(layerIndex, name + "_apply"),
+                    Gemma4Kernels::applyRmsNorm,
+                    context,
+                    target,
+                    input,
+                    weight,
+                    temp,
+                    dim);
+        }
     }
 
     /** Configure data transfers for first and subsequent layers. */
@@ -1117,6 +1086,18 @@ public class Gemma4Q8_0FFNLayers
                     projectionLocalSize(d));
             return;
         }
+        if (warpProjection(w)) {
+            tg.task(
+                    taskName,
+                    Gemma4Kernels::matrixVectorQ8_0Warp,
+                    context,
+                    in,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d);
+            return;
+        }
         switch (w.dataType()) {
             case Q8_0 ->
                     tg.task(
@@ -1183,6 +1164,23 @@ public class Gemma4Q8_0FFNLayers
         }
     }
 
+    /** Whether a projection takes the warp-per-row Q8_0 kernel: Q8_0, on the NVIDIA path. */
+    private boolean warpProjection(TornadoTensor w) {
+        return w.dataType() == DataType.Q8_0 && !shouldUseFinalNormalization();
+    }
+
+    /** The worker grid of a projection of {@code rows} outputs, matching its kernel. */
+    private WorkerGrid projectionGrid(TornadoTensor w, int rows) {
+        if (warpProjection(w)) {
+            int groups =
+                    (rows + Gemma4Kernels.WARP_ROWS_PER_GROUP - 1)
+                            / Gemma4Kernels.WARP_ROWS_PER_GROUP;
+            return WorkerGridFactory.genericWorker(groups * 256, 256);
+        }
+        return WorkerGridFactory.genericWorker(
+                rows * projectionLocalSize(rows), projectionLocalSize(rows));
+    }
+
     /**
      * Returns the device-resident native array backing a weight tensor (for {@code
      * transferToDevice}), matching {@link #addProjection}'s dispatch.
@@ -1210,6 +1208,7 @@ public class Gemma4Q8_0FFNLayers
         WorkerGrid rmsReduceWorker = rmsReduceWorker(rmsNormWorker);
         WorkerGrid dimElementWiseWorker =
                 WorkerGridFactory.genericWorker(dim, LOCAL_WORK_GROUP_SIZE_ALLOC);
+        WorkerGrid normApplyWorker = dimElementWiseWorker;
         WorkerGrid woProjWorker =
                 WorkerGridFactory.genericWorker(
                         dim * projectionLocalSize(dim), projectionLocalSize(dim));
@@ -1262,7 +1261,7 @@ public class Gemma4Q8_0FFNLayers
                             ffnLen * LOCAL_WORK_GROUP_SIZE_ALLOC, LOCAL_WORK_GROUP_SIZE_ALLOC);
 
             gridScheduler.addWorkerGrid(prefix + "attn_norm_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid(prefix + "attn_norm_apply", dimElementWiseWorker);
+            gridScheduler.addWorkerGrid(prefix + "attn_norm_apply", normApplyWorker);
             if (packedFor(i)) {
                 WorkerGrid quantizeWorker = WorkerGridFactory.genericWorker(dim, 32);
                 gridScheduler.addWorkerGrid(prefix + "attn_quantize", quantizeWorker);
@@ -1273,12 +1272,15 @@ public class Gemma4Q8_0FFNLayers
                         prefix + "ffn_hidden_quantize",
                         WorkerGridFactory.genericWorker(ffnLen, 32));
             }
-            gridScheduler.addWorkerGrid(prefix + "q_proj", qProjWorker);
+            gridScheduler.addWorkerGrid(
+                    prefix + "q_proj", projectionGrid(weights.wqLayered[i], qDim));
             gridScheduler.addWorkerGrid(prefix + "q_norm", headNormWorker);
             if (hasOwnKv) {
-                gridScheduler.addWorkerGrid(prefix + "k_proj", kvProjWorker);
+                gridScheduler.addWorkerGrid(
+                        prefix + "k_proj", projectionGrid(weights.wkLayered[i], kvDim));
                 gridScheduler.addWorkerGrid(prefix + "k_norm", kvHeadNormWorker);
-                gridScheduler.addWorkerGrid(prefix + "v_proj", kvProjWorker);
+                gridScheduler.addWorkerGrid(
+                        prefix + "v_proj", projectionGrid(weights.wvLayered[i], kvDim));
                 gridScheduler.addWorkerGrid(prefix + "v_norm", kvHeadNormWorker);
                 gridScheduler.addWorkerGrid(prefix + "rope_and_cache", ropeWorker);
             } else {
@@ -1307,22 +1309,24 @@ public class Gemma4Q8_0FFNLayers
             } else {
                 gridScheduler.addWorkerGrid(prefix + "attention", attentionWorker);
             }
-            gridScheduler.addWorkerGrid(prefix + "wo_proj", woProjWorker);
+            gridScheduler.addWorkerGrid(
+                    prefix + "wo_proj", projectionGrid(weights.woLayered[i], dim));
             gridScheduler.addWorkerGrid(prefix + "post_attn_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid(prefix + "post_attn_apply", dimElementWiseWorker);
+            gridScheduler.addWorkerGrid(prefix + "post_attn_apply", normApplyWorker);
 
             gridScheduler.addWorkerGrid(prefix + "ffn_norm_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid(prefix + "ffn_norm_apply", dimElementWiseWorker);
+            gridScheduler.addWorkerGrid(prefix + "ffn_norm_apply", normApplyWorker);
             gridScheduler.addWorkerGrid(prefix + "ffn_gate_up", ffnGateUpWorker);
-            gridScheduler.addWorkerGrid(prefix + "ffn_down_proj", woProjWorker);
+            gridScheduler.addWorkerGrid(
+                    prefix + "ffn_down_proj", projectionGrid(weights.w2Layered[i], dim));
             gridScheduler.addWorkerGrid(prefix + "post_ffn_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid(prefix + "post_ffn_apply", dimElementWiseWorker);
+            gridScheduler.addWorkerGrid(prefix + "post_ffn_apply", normApplyWorker);
 
             gridScheduler.addWorkerGrid(prefix + "ple_gate_proj", pleGateProjWorker);
             gridScheduler.addWorkerGrid(prefix + "ple_gate_gelu_mul", pleGateGeluWorker);
             gridScheduler.addWorkerGrid(prefix + "ple_proj", woProjWorker);
             gridScheduler.addWorkerGrid(prefix + "ple_post_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid(prefix + "ple_post_apply", dimElementWiseWorker);
+            gridScheduler.addWorkerGrid(prefix + "ple_post_apply", normApplyWorker);
 
             if (shouldUseFinalNormalization()) {
                 gridScheduler.addWorkerGrid(prefix + "attn_norm_finalize", rmsNormWorker);
