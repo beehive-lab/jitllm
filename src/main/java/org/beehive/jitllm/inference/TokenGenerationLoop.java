@@ -82,6 +82,16 @@ public final class TokenGenerationLoop {
      */
     private static final boolean IGNORE_EOS = Boolean.getBoolean("jitllm.bench.ignoreEos");
 
+    /**
+     * Whether the caller asked generation to stop, checked after each generated token has been
+     * delivered. The token consumer carries the request's {@link
+     * org.beehive.jitllm.api.CancellationToken}; a plain consumer is never cancelled.
+     */
+    static boolean cancellationRequested(IntConsumer onTokenGenerated) {
+        return onTokenGenerated instanceof CancellableTokenConsumer consumer
+                && consumer.cancellationRequested();
+    }
+
     private TokenGenerationLoop() {
         // prevent instantiation
     }
@@ -295,6 +305,9 @@ public final class TokenGenerationLoop {
             if (!IGNORE_EOS && stopTokens.contains(nextToken)) {
                 break;
             }
+            if (cancellationRequested(onTokenGenerated)) {
+                break;
+            }
 
             currentToken = nextToken;
             state.latestToken = currentToken;
@@ -376,6 +389,9 @@ public final class TokenGenerationLoop {
             }
 
             if (!IGNORE_EOS && stopTokens.contains(nextToken)) {
+                break;
+            }
+            if (cancellationRequested(onTokenGenerated)) {
                 break;
             }
 
@@ -473,6 +489,9 @@ public final class TokenGenerationLoop {
 
                 // Check for stop condition
                 if (stopTokens.contains(nextToken)) {
+                    break;
+                }
+                if (cancellationRequested(onTokenGenerated)) {
                     break;
                 }
             }
@@ -577,6 +596,9 @@ public final class TokenGenerationLoop {
 
             // Check for stop condition
             if (generatedTokens.size() >= generatedTokenBudget || stopTokens.contains(nextToken)) {
+                break;
+            }
+            if (cancellationRequested(onTokenGenerated)) {
                 break;
             }
 
@@ -695,6 +717,9 @@ public final class TokenGenerationLoop {
             if (generatedTokens.size() >= generatedTokenBudget || stopTokens.contains(token)) {
                 break;
             }
+            if (cancellationRequested(onTokenGenerated)) {
+                break;
+            }
 
             // Draft the token after this one, from the hidden state that produced this one. It has
             // to happen before the trunk moves on: that hidden state is what the head is defined
@@ -784,6 +809,9 @@ public final class TokenGenerationLoop {
                     onTokenGenerated.accept(nextToken);
                 }
                 if (stopTokens.contains(nextToken)) {
+                    break;
+                }
+                if (cancellationRequested(onTokenGenerated)) {
                     break;
                 }
             }
@@ -1095,6 +1123,9 @@ public final class TokenGenerationLoop {
             if (!IGNORE_EOS && stopTokens.contains(nextToken)) {
                 break;
             }
+            if (cancellationRequested(onTokenGenerated)) {
+                break;
+            }
             currentToken = nextToken;
             cursor.advance(currentToken);
             pos++;
@@ -1221,6 +1252,9 @@ public final class TokenGenerationLoop {
 
                 // Check stop condition
                 if (!IGNORE_EOS && stopTokens.contains(nextToken)) {
+                    break;
+                }
+                if (cancellationRequested(onTokenGenerated)) {
                     break;
                 }
             }
@@ -1383,6 +1417,9 @@ public final class TokenGenerationLoop {
                     || (!IGNORE_EOS && stopTokens.contains(nextToken))) {
                 break;
             }
+            if (cancellationRequested(onTokenGenerated)) {
+                break;
+            }
 
             // Update for next iteration
             state.latestToken = currentToken = nextToken;
@@ -1474,6 +1511,9 @@ public final class TokenGenerationLoop {
                 if (stopTokens.contains(nextToken)) {
                     break;
                 }
+                if (cancellationRequested(onTokenGenerated)) {
+                    break;
+                }
             }
 
             // Update for next iteration
@@ -1556,6 +1596,9 @@ public final class TokenGenerationLoop {
                 }
 
                 if (stopTokens.contains(nextToken)) {
+                    break;
+                }
+                if (cancellationRequested(onTokenGenerated)) {
                     break;
                 }
             }
@@ -1641,6 +1684,9 @@ public final class TokenGenerationLoop {
                 }
 
                 if (stopTokens.contains(nextToken)) {
+                    break;
+                }
+                if (cancellationRequested(onTokenGenerated)) {
                     break;
                 }
             }

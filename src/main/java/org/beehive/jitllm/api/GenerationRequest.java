@@ -34,6 +34,7 @@ public final class GenerationRequest {
     private final List<ChatMessage> messages;
     private final List<ToolSpec> tools;
     private final java.util.function.Consumer<GenerationEvent> onEvent;
+    private final CancellationToken cancellation;
 
     private GenerationRequest(Builder builder) {
         this.messages = builder.messages == null ? null : List.copyOf(builder.messages);
@@ -47,6 +48,7 @@ public final class GenerationRequest {
         this.seed = builder.seed;
         this.stopSequences = List.copyOf(builder.stopSequences);
         this.onToken = builder.onToken;
+        this.cancellation = builder.cancellation;
     }
 
     public static Builder builder() {
@@ -126,6 +128,15 @@ public final class GenerationRequest {
         return onToken;
     }
 
+    /**
+     * The token that can stop this request's generation early, or {@code null} when the request
+     * cannot be cancelled.
+     */
+    @Experimental
+    public CancellationToken cancellation() {
+        return cancellation;
+    }
+
     /** Not thread-safe; build one request per call. */
     /**
      * Exactly one of the two request forms, and a conversation that says something.
@@ -173,6 +184,7 @@ public final class GenerationRequest {
         private List<ChatMessage> messages;
         private List<ToolSpec> tools = List.of();
         private java.util.function.Consumer<GenerationEvent> onEvent;
+        private CancellationToken cancellation;
 
         private Builder() {}
 
@@ -262,6 +274,16 @@ public final class GenerationRequest {
          */
         public Builder tools(List<ToolSpec> tools) {
             this.tools = tools == null ? List.of() : List.copyOf(tools);
+            return this;
+        }
+
+        /**
+         * Lets another thread stop this request's generation early; see {@link CancellationToken}.
+         * {@code null} (the default) means the request runs to one of its other finish reasons.
+         */
+        @Experimental
+        public Builder cancellation(CancellationToken cancellation) {
+            this.cancellation = cancellation;
             return this;
         }
 

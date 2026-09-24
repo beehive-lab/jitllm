@@ -65,6 +65,7 @@ public class StableSurfaceTest {
     private static final Set<String> EXPERIMENTAL_API =
             new TreeSet<>(
                     List.of(
+                            "CancellationToken",
                             "ChatMessage",
                             "FinishReason",
                             "GenerationTimings",

@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.function.IntConsumer;
+import org.beehive.jitllm.inference.CancellableTokenConsumer;
 import org.beehive.jitllm.inference.sampler.Sampler;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.format.ChatFormat;
@@ -148,6 +149,17 @@ final class DelegatingSession implements GenerationSession {
     public GenerationResult generate(GenerationRequest request) {
         ensureUsable();
 
+        // Cancelled before it started: return without touching the session's state.
+        CancellationToken cancellation = request.cancellation();
+        if (cancellation != null && cancellation.isCancelled()) {
+            return new GenerationResult(
+                    "",
+                    0,
+                    0,
+                    FinishReason.CANCELLED,
+                    new GenerationTimings(Duration.ZERO, Duration.ZERO, 0, 0));
+        }
+
         boolean promptForm = request.messages() == null;
         List<Integer> promptTokens =
                 promptForm ? encodePrompt(request) : encodeConversation(request);
@@ -177,7 +189,22 @@ final class DelegatingSession implements GenerationSession {
         TokenEventStream events =
                 new TokenEventStream(
                         model.tokenizer(), stopTokens, request.onEvent(), request.onToken());
-        IntConsumer onToken = events::accept;
+        // With a cancellation token, the loops can see it through the consumer they already take,
+        // and stop after the token being delivered (TokenGenerationLoop.cancellationRequested).
+        IntConsumer onToken =
+                cancellation == null
+                        ? events::accept
+                        : new CancellableTokenConsumer() {
+                            @Override
+                            public void accept(int token) {
+                                events.accept(token);
+                            }
+
+                            @Override
+                            public boolean cancellationRequested() {
+                                return cancellation.isCancelled();
+                            }
+                        };
 
         // The session's logical values become current in whatever state it executes with. For a
         // borrowed workspace that is what keeps two sessions' conversations apart.
@@ -245,6 +272,11 @@ final class DelegatingSession implements GenerationSession {
                         : position >= contextLength
                                 ? FinishReason.CONTEXT_FULL
                                 : FinishReason.MAX_TOKENS;
+        // A stop token still wins: the model had finished. A stop sequence found below wins too,
+        // since the answer had already ended there.
+        if (!hitStopToken && cancellation != null && cancellation.isCancelled()) {
+            reason = FinishReason.CANCELLED;
+        }
 
         String truncated = applyStopSequences(completion, request.stopSequences());
         if (truncated.length() < completion.length()) {
@@ -271,10 +303,10 @@ final class DelegatingSession implements GenerationSession {
     }
 
     /**
-     * Stop sequences are applied to the produced text rather than used to halt generation: the
-     * underlying loop has no cancellation hook in v1. The result is the same text a caller would
-     * have got, at the cost of tokens that were generated and then discarded. The engine tier is
-     * where cancellation becomes real.
+     * Stop sequences are applied to the produced text rather than used to halt generation. The
+     * result is the same text a caller would have got, at the cost of tokens that were generated
+     * and then discarded. (The loops can now stop early, through {@link CancellationToken};
+     * stopping on a sequence would additionally need the decoded text inside the loop.)
      */
     private static String applyStopSequences(String text, List<String> stopSequences) {
         int cut = -1;
