@@ -82,7 +82,7 @@
                  first release that carries them, so it is the minimum a jitllm release can use. -->
         <tornadovm.base.version>6.1.1</tornadovm.base.version>
         <!-- The published TornadoVM release that -P release builds against (see prepare-release.yml). -->
-        <tornadovm.release.version>7.0.0</tornadovm.release.version>
+        <tornadovm.release.version>7.0.1</tornadovm.release.version>
         <!-- The qualifier TornadoVM's own develop builds carry; emptied by the release profile. -->
         <tornadovm.dev.qualifier>-dev</tornadovm.dev.qualifier>
         <archunit.version>1.4.2</archunit.version>
