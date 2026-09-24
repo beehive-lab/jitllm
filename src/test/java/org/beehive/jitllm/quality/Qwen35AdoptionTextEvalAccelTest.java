@@ -215,7 +215,7 @@ public class Qwen35AdoptionTextEvalAccelTest {
                         String.format(
                                 java.util.Locale.ROOT,
                                 "passage=%s path=%s bytes=%d..%d sha256=%s scored=%d nll=%.6f"
-                                    + " ppl=%.4f%n",
+                                        + " ppl=%.4f%n",
                                 passage.name(),
                                 passage.path(),
                                 passage.byteOffset(),
