@@ -1114,16 +1114,27 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 context,
                 state.workspace.wrapXBatch,
                 state.workspace.wrapXFP16Batch);
-        layer.task(
-                "pleGateProj",
-                TransformerBatchPrefillKernels::gemmMMA,
-                context,
-                state.workspace.wrapXFP16Batch,
-                pleGateF16[layerIndex],
-                state.workspace.wrapPerLayerGateBatch,
-                paddedBatch,
-                nEmbdPerLayer,
-                dim);
+        if (nativeProjections) {
+            nativeGemm(
+                    layer,
+                    "pleGateProj",
+                    pleGateF16[layerIndex],
+                    state.workspace.wrapXFP16Batch,
+                    state.workspace.wrapPerLayerGateBatch,
+                    nEmbdPerLayer,
+                    dim);
+        } else {
+            layer.task(
+                    "pleGateProj",
+                    TransformerBatchPrefillKernels::gemmMMA,
+                    context,
+                    state.workspace.wrapXFP16Batch,
+                    pleGateF16[layerIndex],
+                    state.workspace.wrapPerLayerGateBatch,
+                    paddedBatch,
+                    nEmbdPerLayer,
+                    dim);
+        }
         layer.task(
                 "batch_ple_gate_gelu",
                 Gemma4BatchPrefillKernels::batchedPleGateGeluMul,
@@ -1134,16 +1145,27 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 peOffset,
                 nEmbdPerLayer,
                 perLayerTotal);
-        layer.task(
-                "pleProj",
-                TransformerBatchPrefillKernels::gemmMMA,
-                context,
-                state.workspace.wrapPerLayerGateFP16Batch,
-                pleProjF16[layerIndex],
-                state.workspace.wrapPerLayerOutBatch,
-                paddedBatch,
-                dim,
-                nEmbdPerLayer);
+        if (nativeProjections) {
+            nativeGemm(
+                    layer,
+                    "pleProj",
+                    pleProjF16[layerIndex],
+                    state.workspace.wrapPerLayerGateFP16Batch,
+                    state.workspace.wrapPerLayerOutBatch,
+                    dim,
+                    nEmbdPerLayer);
+        } else {
+            layer.task(
+                    "pleProj",
+                    TransformerBatchPrefillKernels::gemmMMA,
+                    context,
+                    state.workspace.wrapPerLayerGateFP16Batch,
+                    pleProjF16[layerIndex],
+                    state.workspace.wrapPerLayerOutBatch,
+                    paddedBatch,
+                    dim,
+                    nEmbdPerLayer);
+        }
         layer.task(
                 "batch_ple_post_rms",
                 TransformerBatchPrefillKernels::batchedRmsReduceParallel,
@@ -1197,16 +1219,27 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 context,
                 state.workspace.wrapXBatch,
                 state.workspace.wrapXFP16Batch);
-        layer.task(
-                "pleModelProj",
-                TransformerBatchPrefillKernels::gemmMMA,
-                context,
-                state.workspace.wrapXFP16Batch,
-                pleModelProjF16,
-                state.workspace.wrapPerLayerProjScratchBatch,
-                paddedBatch,
-                perLayerTotal,
-                dim);
+        if (nativeProjections) {
+            nativeGemm(
+                    layer,
+                    "pleModelProj",
+                    pleModelProjF16,
+                    state.workspace.wrapXFP16Batch,
+                    state.workspace.wrapPerLayerProjScratchBatch,
+                    perLayerTotal,
+                    dim);
+        } else {
+            layer.task(
+                    "pleModelProj",
+                    TransformerBatchPrefillKernels::gemmMMA,
+                    context,
+                    state.workspace.wrapXFP16Batch,
+                    pleModelProjF16,
+                    state.workspace.wrapPerLayerProjScratchBatch,
+                    paddedBatch,
+                    perLayerTotal,
+                    dim);
+        }
         layer.task(
                 "batch_ple_proj_scale_norm",
                 Gemma4BatchPrefillKernels::batchedPleProjScaleAndNormalize,
@@ -1366,9 +1399,13 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             scheduler.addWorkerGrid(p + "batch_post_ffn_apply", dimApplyWorker);
 
             scheduler.addWorkerGrid(p + "batch_x_cast", dimApplyWorker);
-            scheduler.addWorkerGrid(p + "pleGateProj", pleGateWorker);
+            if (!nativeProjections) {
+                scheduler.addWorkerGrid(p + "pleGateProj", pleGateWorker);
+            }
             scheduler.addWorkerGrid(p + "batch_ple_gate_gelu", pleGateGeluWorker);
-            scheduler.addWorkerGrid(p + "pleProj", mmaDimWorker);
+            if (!nativeProjections) {
+                scheduler.addWorkerGrid(p + "pleProj", mmaDimWorker);
+            }
             scheduler.addWorkerGrid(p + "batch_ple_post_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_ple_post_apply", dimApplyWorker);
             if (weights.layerOutputScale[l] != null) {
@@ -1379,7 +1416,9 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         String p0 = "batchPrefillLayer_0.";
         scheduler.addWorkerGrid(p0 + "batch_scale_embedding", dimApplyWorker);
         scheduler.addWorkerGrid(p0 + "batch_embed_cast", dimApplyWorker);
-        scheduler.addWorkerGrid(p0 + "pleModelProj", mmaGrid(paddedBatch, perLayerTotal));
+        if (!nativeProjections) {
+            scheduler.addWorkerGrid(p0 + "pleModelProj", mmaGrid(paddedBatch, perLayerTotal));
+        }
         scheduler.addWorkerGrid(
                 p0 + "batch_ple_proj_scale_norm",
                 WorkerGridFactory.genericWorker(
