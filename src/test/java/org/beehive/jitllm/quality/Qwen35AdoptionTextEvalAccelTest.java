@@ -65,9 +65,9 @@ public class Qwen35AdoptionTextEvalAccelTest {
         java.util.regex.Matcher m =
                 java.util.regex.Pattern.compile(
                                 "\\{[^}]*\"id\": \"([^\"]+)\"[^}]*\"path\":"
-                                    + " \"([^\"]+)\"[^}]*\"byteOffset\": (\\d+)[^}]*\"byteLength\":"
-                                    + " (\\d+)[^}]*\"prefixTokens\": (\\d+)[^}]*\"scoredTokens\":"
-                                    + " (\\d+)[^}]*\"sha256\": \"([0-9a-f]+)\"")
+                                        + " \"([^\"]+)\"[^}]*\"byteOffset\": (\\d+)[^}]*\"byteLength\":"
+                                        + " (\\d+)[^}]*\"prefixTokens\": (\\d+)[^}]*\"scoredTokens\":"
+                                        + " (\\d+)[^}]*\"sha256\": \"([0-9a-f]+)\"")
                         .matcher(text);
         while (m.find()) {
             Passage p =
