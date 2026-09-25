@@ -93,7 +93,8 @@ jobs:
       # code uses fails here at compile time, before any branch or PR exists.
       - name: Verify the release resolves and compiles against that TornadoVM release
         run: |
-          set -euo pipefail
+          # No -u: sdkman-init.sh and the sdk function read unset variables (SDKMAN_CANDIDATES_API, ...).
+          set -eo pipefail
           source "$HOME/.sdkman/bin/sdkman-init.sh"
           for JV in "${{ env.JAVA_VERSION }}" "${{ env.JAVA_VERSION_25 }}"; do
             sdk list java | grep -q "$JV" || sdk install java "$JV"
