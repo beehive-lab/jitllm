@@ -159,6 +159,9 @@ jobs:
             "$JAVA_HOME/bin/jar" tf "$JAR" | grep '^META-INF/services/' || true
             exit 1
           fi
+          # The jar is a library: TornadoVM and its dependencies come from the SDK's modules,
+          # and a bundled copy breaks containers such as Quarkus (issue #176).
+          python3 scripts/check_library_jar.py "$JAR"
           echo "$JAR: version $JITLLM_VERSION, class major $MAJOR, $SERVICES service files"
 
       - name: Launcher smoke test

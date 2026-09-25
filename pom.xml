@@ -109,22 +109,31 @@
             <scope>test</scope>
         </dependency>
         <!-- Architecture rules (M1 guardrails). Test scope only: must never
-                 reach the shaded jar. See docs/architecture/architecture.md -->
+                 reach the published jar. See docs/architecture/architecture.md -->
         <dependency>
             <groupId>com.tngtech.archunit</groupId>
             <artifactId>archunit-junit4</artifactId>
             <version>${archunit.version}</version>
             <scope>test</scope>
         </dependency>
+        <!-- Every TornadoVM artifact is provided: the TornadoVM SDK supplies it at runtime as a
+             named module, through the module path in $TORNADOVM_HOME/tornado-argfile, together
+             with everything it depends on (Graal collections, log4j, JMH, jopt-simple,
+             commons-math3, snmp4j, ASM). A second copy on the class path is not harmless: a
+             container with its own class loader (Quarkus's RunnerClassLoader) loads the copy
+             while tornado.graal still comes from the SDK, and the first request fails with a
+             loader constraint violation on org.graalvm.collections.UnmodifiableEconomicMap
+             (issue #176). So the published jar carries this project's classes only, and the
+             enforcer rule ban-runtime-dependencies below keeps the dependency graph that way. -->
         <dependency>
             <groupId>io.github.beehive-lab</groupId>
             <artifactId>tornado-api</artifactId>
             <version>${tornadovm.version}</version>
+            <scope>provided</scope>
         </dependency>
         <!-- The vendor-library bindings the batched prefill path compiles against: cuBLAS for
              the four projections, cuDNN for the first chunk's fused attention. Both use the same
-             prepared SDK version and Maven repository as the API. The SDK supplies them at
-             runtime, so they are provided rather than shaded. -->
+             prepared SDK version and Maven repository as the API. -->
         <dependency>
             <groupId>io.github.beehive-lab</groupId>
             <artifactId>tornado-cublas</artifactId>
@@ -141,6 +150,7 @@
             <groupId>io.github.beehive-lab</groupId>
             <artifactId>tornado-runtime</artifactId>
             <version>${tornadovm.version}</version>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
 
@@ -207,6 +217,30 @@
                             <fail>true</fail>
                         </configuration>
                     </execution>
+                    <!-- The library has no dependency a consumer inherits at runtime: TornadoVM and
+                             everything it needs come from the SDK (provided), the rest is test
+                             scope. A compile- or runtime-scope dependency, direct or transitive,
+                             would reach consumers' class paths next to the SDK's modules, which is
+                             issue #176 again. -->
+                    <execution>
+                        <id>ban-runtime-dependencies</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <phase>validate</phase>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <excludes>
+                                        <exclude>*:*:*:*:compile</exclude>
+                                        <exclude>*:*:*:*:runtime</exclude>
+                                    </excludes>
+                                    <message>jitllm must not have compile- or runtime-scope dependencies: the TornadoVM SDK supplies TornadoVM and its dependencies at runtime (declare them provided), and a bundled or inherited copy collides with the SDK's modules (issue #176).</message>
+                                </bannedDependencies>
+                            </rules>
+                            <fail>true</fail>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
 
@@ -237,29 +271,25 @@
                 </executions>
             </plugin>
 
-            <!-- Shade (fat jar) -->
+            <!-- The published jar is a plain library jar: this project's classes and service files,
+                     nothing bundled (see the TornadoVM dependencies above). It is also what the
+                     jitllm/jitllm4j launchers run, because they start the JVM from the SDK's argfile,
+                     which already puts TornadoVM and its dependencies on the module path; so the
+                     manifest still names the CLI entry point. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <version>3.5.0</version>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                        <phase>package</phase>
-                        <configuration>
-                            <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>org.beehive.jitllm.JitllmApp</mainClass>
-                                    <manifestEntries>
-                                        <Automatic-Module-Name>org.beehive.jitllm</Automatic-Module-Name>
-                                    </manifestEntries>
-                                </transformer>
-                            </transformers>
-                        </configuration>
-                    </execution>
-                </executions>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>org.beehive.jitllm.JitllmApp</mainClass>
+                        </manifest>
+                        <manifestEntries>
+                            <Automatic-Module-Name>org.beehive.jitllm</Automatic-Module-Name>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
             </plugin>
         </plugins>
     </build>

@@ -216,7 +216,7 @@ A family may reuse another's computation. It may not borrow its identity.
   [`docs/architecture/models-and-backends.md`](../../../docs/architecture/models-and-backends.md),
   and the known limitations in
   [`docs/architecture/verification.md`](../../../docs/architecture/verification.md).
-- Register every provider in `META-INF/services/`, and check the shaded jar carries them:
+- Register every provider in `META-INF/services/`, and check the built jar carries them:
   `jar tf target/jitllm-*.jar | grep META-INF/services/org.beehive.` — CI asserts the
   count, because a missing entry loses the family silently at runtime.
 - Run the architecture rules and the addition-workflow tests: `./mvnw test`.
@@ -239,7 +239,7 @@ A family may reuse another's computation. It may not borrow its identity.
 [ ] Program description composed from existing operations
 [ ] Provider declares only the dtypes and modes that execute
 [ ] KV storage, state and workspace requirements met at allocation time
-[ ] Services registered and present in the shaded jar
+[ ] Services registered and present in the built jar
 [ ] Architecture rules pass
 [ ] Real fixture registered with its hash
 [ ] CPU/accelerator parity passes for every declared dtype

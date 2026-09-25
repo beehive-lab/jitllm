@@ -124,6 +124,11 @@ implementation 'io.github.beehive-lab:jitllm:1.0.0-jdk22plus'
 ```
 <!-- DEPENDENCY-SNIPPETS:END -->
 
+The artifact is a library jar: it carries jitllm's own classes and nothing else. TornadoVM and
+its dependencies come from the TornadoVM SDK at runtime, so start the JVM with
+`@$TORNADOVM_HOME/tornado-argfile --add-modules jdk.incubator.vector`. Code that uses TornadoVM
+types directly declares `tornado-api` itself, with `provided` scope.
+
 -----------
 
 #### **[Interactive mode]** — RTX 5090, with `nvtop` tracking GPU utilization and memory

@@ -113,7 +113,7 @@ forced to acquire a sampler, a KV cache or a token loop.
 
 Every extension point is a `ServiceLoader` SPI, declared in `META-INF/services`. Adding a
 model family or a backend capability means adding a provider and its service entry; no
-central registry or dispatch table is edited. The shaded artifact carries seven service
+central registry or dispatch table is edited. The published jar carries seven service
 files, and CI checks that count, because a missing one silently removes a model family.
 
 | SPI | Answers |

@@ -105,6 +105,16 @@ jobs:
             -Dmaven.repo.local="$(mktemp -d)" dependency:resolve
           echo "tornado-api $(./mvnw -q -P release help:evaluate -Dexpression=tornadovm.version -DforceStdout) resolved from Maven Central"
 
+      # Central publishes automatically and a version cannot be replaced, so the jar is checked
+      # before the deploy: it must be a library jar, with TornadoVM and its dependencies left
+      # to the SDK (issue #176).
+      - name: Check the artifact is a library jar
+        run: |
+          set -euo pipefail
+          ./mvnw -B -q -P release -Dgpg.skip=true -Dmaven.javadoc.skip=true -DskipTests clean package
+          VERSION=$(./mvnw -q -P release help:evaluate -Dexpression=project.version -DforceStdout)
+          python3 scripts/check_library_jar.py "target/jitllm-${VERSION}.jar"
+
       - name: Deploy to Maven Central
         if: ${{ !inputs.dry_run }}
         run: |
