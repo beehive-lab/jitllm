@@ -191,10 +191,12 @@ final class DelegatingSession implements GenerationSession {
                         model.tokenizer(), stopTokens, request.onEvent(), request.onToken());
         // With a cancellation token, the loops can see it through the consumer they already take,
         // and stop after the token being delivered (TokenGenerationLoop.cancellationRequested).
-        IntConsumer onToken =
+        var cancellable =
                 cancellation == null
-                        ? events::accept
+                        ? null
                         : new CancellableTokenConsumer() {
+                            private boolean cancelled;
+
                             @Override
                             public void accept(int token) {
                                 events.accept(token);
@@ -202,9 +204,15 @@ final class DelegatingSession implements GenerationSession {
 
                             @Override
                             public boolean cancellationRequested() {
-                                return cancellation.isCancelled();
+                                cancelled = cancellation.isCancelled();
+                                return cancelled;
+                            }
+
+                            boolean wasCancelled() {
+                                return cancelled;
                             }
                         };
+        IntConsumer onToken = cancellable == null ? events::accept : cancellable;
 
         // The session's logical values become current in whatever state it executes with. For a
         // borrowed workspace that is what keeps two sessions' conversations apart.
@@ -273,8 +281,9 @@ final class DelegatingSession implements GenerationSession {
                                 ? FinishReason.CONTEXT_FULL
                                 : FinishReason.MAX_TOKENS;
         // A stop token still wins: the model had finished. A stop sequence found below wins too,
-        // since the answer had already ended there.
-        if (!hitStopToken && cancellation != null && cancellation.isCancelled()) {
+        // since the answer had already ended there. Use the loop's observation, not the live
+        // flag: events.finish() can cancel from its final callback after decoding has ended.
+        if (!hitStopToken && cancellable != null && cancellable.wasCancelled()) {
             reason = FinishReason.CANCELLED;
         }
 

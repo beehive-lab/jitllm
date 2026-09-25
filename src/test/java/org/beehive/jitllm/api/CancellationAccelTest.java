@@ -79,6 +79,40 @@ public class CancellationAccelTest {
                 });
     }
 
+    @Test
+    public void cancellationInTheFinalBufferedEventKeepsTheBudgetReasonOnTheCpu() throws Exception {
+        finalBufferedEventKeepsTheBudgetReason(false);
+    }
+
+    @Test
+    public void cancellationInTheFinalBufferedEventKeepsTheBudgetReasonOnTheGpu() throws Exception {
+        finalBufferedEventKeepsTheBudgetReason(true);
+    }
+
+    private static void finalBufferedEventKeepsTheBudgetReason(boolean gpu) throws Exception {
+        withSession(
+                gpu,
+                session -> {
+                    CancellationToken token = new CancellationToken();
+                    AtomicInteger delivered = new AtomicInteger();
+                    GenerationResult result =
+                            session.generate(
+                                    request(1)
+                                            .cancellation(token)
+                                            .onEvent(
+                                                    event -> {
+                                                        delivered.incrementAndGet();
+                                                        token.cancel();
+                                                    })
+                                            .build());
+                    assertEquals(1, delivered.get());
+                    assertEquals(1, result.generatedTokens());
+                    assertTrue(token.isCancelled());
+                    // The only event is flushed after the loop exhausts its one-token budget.
+                    assertEquals(FinishReason.MAX_TOKENS, result.finishReason());
+                });
+    }
+
     private static void stopsRightAfterTheCancellationAndTheSessionGoesOn(boolean gpu)
             throws Exception {
         withSession(
