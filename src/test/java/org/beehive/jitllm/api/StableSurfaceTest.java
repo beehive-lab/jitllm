@@ -83,7 +83,7 @@ public class StableSurfaceTest {
                 String body = Files.readString(p);
                 if (Pattern.compile(
                                         "^public (final |abstract |sealed"
-                                            + " )?(interface|class|enum|record) "
+                                                + " )?(interface|class|enum|record) "
                                                 + name,
                                         Pattern.MULTILINE)
                                 .matcher(body)
@@ -100,7 +100,7 @@ public class StableSurfaceTest {
         undeclared.removeAll(declared);
         assertTrue(
                 "these public api/** types are in neither the stable nor the experimental set. A"
-                    + " new public type is an API decision and must be declared in one of them: "
+                        + " new public type is an API decision and must be declared in one of them: "
                         + undeclared,
                 undeclared.isEmpty());
         Set<String> vanished = new TreeSet<>(declared);
