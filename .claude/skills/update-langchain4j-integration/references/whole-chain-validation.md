@@ -6,7 +6,7 @@ The verification source of truth. Run all five stages for every JDK/backend you 
 
 ```bash
 export LANGCHAIN4J_DIR=/path/to/langchain4j
-export DEMO_DIR=/path/to/gpullama3-langchain4j-demo
+export DEMO_DIR=/path/to/gpullama3-langchain4j-demo   # a copy switched to langchain4j-jitllm
 export MODEL=/exact/path/to/model.gguf
 ```
 
@@ -15,7 +15,7 @@ Never commit a model path.
 ## 1. Java and TornadoVM
 
 ```bash
-export JAVA_HOME=/path/to/jdk-21          # or a JDK 25
+export JAVA_HOME=/path/to/jdk-21          # or a JDK 22+ (CI uses 25)
 export TORNADOVM_HOME=/path/to/tornadovm-<version>-<backend>
 export PATH="$JAVA_HOME/bin:$TORNADOVM_HOME/bin:$PATH"
 
@@ -35,16 +35,16 @@ a fresh shell. `sdk use` is interactive-only; set `JAVA_HOME`/`PATH` explicitly 
 ```bash
 cd "$LANGCHAIN4J_DIR"
 ./mvnw \
-  -pl langchain4j-bom,langchain4j-agentic,langchain4j-gpu-llama3 \
+  -pl langchain4j-bom,langchain4j-agentic,langchain4j-jitllm \
   -am clean install \
   -DskipTests -DskipITs -Drevapi.skip=true
 
-./mvnw -pl langchain4j-gpu-llama3 dependency:tree \
+./mvnw -pl langchain4j-jitllm dependency:tree \
   -Dincludes=io.github.beehive-lab:jitllm
 ```
 
 Confirm the resolved artifact ends in the suffix the active JDK implies — `-jdk21` on JDK 21,
-`-jdk22plus` on JDK 25. The module's own `jdk21`/`jdk25` profiles do that; there is no flag.
+`-jdk22plus` on JDK 22+. The module's own `jdk21`/`jdk22plus` profiles do that; there is no flag.
 
 `attach-javadocs` runs with doclint on and warnings fatal. Every public and protected member
 needs a comment, and a method with a return value needs `@return`. A missing one fails
@@ -74,16 +74,15 @@ adapter defects:
 Several of LangChain4j's shared contract tests assert model behaviour. Which of them pass
 depends on the fixture, and no single small fixture passes all of them:
 
+Measured on jitllm 1.0.0 / TornadoVM 7.0.1, unit tests included (the script's selection):
+
 | Fixture | Result |
 | --- | --- |
-| `Qwen3-0.6B-f16` | 15/19 — the tool tests pass; `should_respect_multiple_messages` fails |
-| `Llama-3.2-3B-Instruct-Q8_0` | 11/19 — `should_respect_multiple_messages` passes; the six tool tests fail |
+| `Qwen3-0.6B-F16` | 42/42 on JDK 25 CUDA, JDK 21 CUDA and JDK 25 OpenCL |
+| `Llama-3.2-3B-Instruct-Q8_0` | 36/42 — the six tool tests call the tool correctly, but the final answer lacks the expected text |
 
-Before recording either as an adapter defect, establish which it is. The multi-message
-failure is not one: the engine receives and encodes the whole conversation, which the 0.6B
-model's own reasoning trace confirms by repeating the earlier turn before declining to
-answer. Tool transport is covered deterministically by `GPULlama3ConversionsTest`, whatever
-a given fixture emits.
+Before recording a failure as an adapter defect, establish which it is. Tool transport is
+covered deterministically by `JitLLMConversionsTest`, whatever a given fixture emits.
 
 **Report the fixture with the counts, and never call the inherited suite green.**
 
@@ -93,7 +92,7 @@ a given fixture emits.
 cd "$DEMO_DIR"
 mvn clean package dependency:build-classpath -Dmdep.outputFile=cp.txt -DskipTests
 mvn dependency:tree \
-  -Dincludes=dev.langchain4j:langchain4j-gpu-llama3,io.github.beehive-lab:jitllm
+  -Dincludes=dev.langchain4j:langchain4j-jitllm,io.github.beehive-lab:jitllm
 ```
 
 Confirm the local artifacts resolved rather than a stale release. Do not commit `cp.txt`.
@@ -110,6 +109,12 @@ rg -n "tornado|--params|public static void main" README.md src/main/java
 Run basic chat, streaming chat, the capability this release changed, and any long-running
 demo through to its end. Startup is not a pass: each demo must perform inference and reach
 its expected end.
+
+The demo repository still targets `langchain4j-gpu-llama3` 1.7.x. Validate on a copy: switch
+the dependency to `langchain4j-jitllm`, the imports to `dev.langchain4j.model.jitllm.JitLLM*`,
+`agentBuilder(...).outputName(...)` to `outputKey(...)`, and model paths to `MODEL`. Launch with
+`tornado --jvm="-Duse.tornadovm=true --add-modules jdk.incubator.vector ..."`.
+`printLastMetrics()` logs through SLF4J, so it prints nothing without an SLF4J provider.
 
 ## Record
 

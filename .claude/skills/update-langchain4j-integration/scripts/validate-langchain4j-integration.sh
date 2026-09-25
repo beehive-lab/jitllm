@@ -7,7 +7,7 @@ if [[ $# -ne 1 ]]; then
 fi
 
 langchain_dir=$(realpath "$1")
-module_dir="${langchain_dir}/langchain4j-gpu-llama3"
+module_dir="${langchain_dir}/langchain4j-jitllm"
 
 [[ -x "${langchain_dir}/mvnw" ]] || {
     echo "LangChain4j Maven wrapper not found: ${langchain_dir}/mvnw" >&2
@@ -35,7 +35,8 @@ trap 'rm -f "$log_file"' EXIT
 set +e
 (
     cd "$module_dir"
-    ../mvnw -P run-tests
+    # Unit tests and ITs together, in the TornadoVM JVM.
+    ../mvnw -P run-tests "-Dit.selection=--scan-classpath --include-classname=.*Test --include-classname=.*IT"
 ) 2>&1 | tee "$log_file"
 maven_status=${PIPESTATUS[0]}
 set -e
