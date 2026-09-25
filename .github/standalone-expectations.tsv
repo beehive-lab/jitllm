@@ -16,19 +16,6 @@
 # Phi-3 FP16 is numerically correct on an M4 Pro: CPU/Metal parity has zero violations across
 # 2,052,096 logits (max absolute difference 0.0029875), and legacy/lowered parity passes.
 #
-# Mistral-7B-Instruct-v0.3 F16 no longer fits the free memory on the Linux runner. Its working
-# set measures 14980 MiB peak (nvidia-smi sampled through a full run, -n 160, --gpu-memory 14GB)
-# against an RTX 5070 Ti holding 15.5 GB with the driver already in it -- under 7% headroom.
-#
-# It used to fit, and no commit changed that. Run 34582487450 on main passed this row on
-# 2026-09-11; re-running that same job from that same commit on that same runner on 2026-09-16
-# failed it, at the same 112 MiB allocation, with 21 of the 22 rows otherwise identical. The
-# runner lost roughly a gigabyte of free memory between those dates. CUDA fails the allocation
-# outright, OpenCL fails it asynchronously once per queued command.
-#
-# The fix belongs on the runner, not here. These lines keep the job reporting the one row that
-# is broken, and a NEW PASS turns it red the day the memory comes back, which is the signal to
-# delete them. Every other Mistral row, Q8_0 included, still has to pass.
 # Phi-3-mini-4k-instruct F16 does not finish on the Metal runner. It took 2m44s there on
 # 2026-08-28 (run 33194156877) and now runs past the 15-minute row budget having emitted one
 # token, on main as much as on any branch: runs 34484047558 (2026-09-10) and 34582487450
@@ -37,5 +24,3 @@
 # slowdown itself is still open, as is the Mistral-7B-on-Metal row already held out of the
 # matrix for a timeout of its own.
 metal	Phi-3-mini-4k-instruct	F16	standard	timed out after 15 minutes
-cuda	Mistral-7B-Instruct-v0.3	F16	standard	DeviceMemoryExhaustedException
-opencl	Mistral-7B-Instruct-v0.3	F16	standard	CL_MEM_OBJECT_ALLOCATION_FAILURE
