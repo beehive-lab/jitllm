@@ -97,10 +97,10 @@ class ArtifactVersionDerivation(unittest.TestCase):
             self.assertNotEqual(r.returncode, 0)
             self.assertIn("but the jar is", r.stderr)
 
-    def test_jdk25_line_expects_the_jdk22plus_suffix(self):
+    def test_jdk22plus_line_expects_the_jdk22plus_suffix(self):
         src = DEV.read_text()
         self.assertIn('if [ "$JDK" = 21 ]; then echo "-jdk21-dev"; else echo "-jdk22plus-dev"; fi', src)
-        # And the build itself takes TornadoVM's jdk22plus make target for JDK 25.
+        # And the build itself takes TornadoVM's jdk22plus make target for JDK 22+.
         self.assertIn('if [ "$JDK" = 21 ]; then make BACKEND=$BACKEND; else make jdk22plus BACKEND=$BACKEND; fi', src)
         # No bare mvn install repair path: a damaged repository is rebuilt through make.
         self.assertNotRegex(src, r"mvn -q .*install")
@@ -173,9 +173,9 @@ class PomCoordinateSelection(unittest.TestCase):
     def test_development_coordinates_per_jdk(self):
         self.assertEqual(self._prop(self._profile("jdk21"), "jdk.version.suffix"), "-jdk21")
         self.assertEqual(self._prop(self._profile("jdk21"), "tornadovm.jdk.suffix"), "-jdk21")
-        self.assertEqual(self._prop(self._profile("jdk25"), "jdk.version.suffix"), "-jdk25")
-        self.assertEqual(self._prop(self._profile("jdk25"), "tornadovm.jdk.suffix"), "-jdk22plus")
-        for pid in ("jdk21", "jdk25"):
+        self.assertEqual(self._prop(self._profile("jdk22plus"), "jdk.version.suffix"), "-jdk22plus")
+        self.assertEqual(self._prop(self._profile("jdk22plus"), "tornadovm.jdk.suffix"), "-jdk22plus")
+        for pid in ("jdk21", "jdk22plus"):
             self.assertEqual(
                 self._prop(self._profile(pid), "tornadovm.version"),
                 "${tornadovm.base.version}${tornadovm.jdk.suffix}${tornadovm.dev.qualifier}",

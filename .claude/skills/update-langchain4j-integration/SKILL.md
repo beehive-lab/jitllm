@@ -24,7 +24,7 @@ Never guess paths, versions, models, flags, or backends.
 Read the jitllm changelog, release diff, POM, and changed public APIs. Confirm both artifacts:
 
 - `jitllm:<version>-jdk21`
-- `jitllm:<version>-jdk25`
+- `jitllm:<version>-jdk22plus`
 
 For a published release:
 
@@ -52,7 +52,7 @@ BOM entry.
 Keep changes minimal and backend agnostic:
 
 - use `TORNADOVM_HOME`; leave backend configuration to the selected SDK
-- the JDK profiles select `-jdk21`/`-jdk25`; never hardcode either
+- the JDK profiles select `-jdk21`/`-jdk22plus`; never hardcode either
 - use `MODEL` for tests; never hardcode a GGUF path
 - preserve inherited ITs and enable only implemented capabilities
 - keep unsupported feature combinations disabled with accurate reasons

@@ -45,8 +45,8 @@ cd "$QUARKUS_LANGCHAIN4J_DIR"
   -Dincludes=io.github.beehive-lab:jitllm
 ```
 
-Confirm the resolved jitllm artifact matches the active JDK (`-jdk21` vs `-jdk25`, selected by
-the root `jdk25` Maven profile based on the JDK running the build).
+Confirm the resolved jitllm artifact matches the active JDK (`-jdk21` vs `-jdk22plus`, selected by
+the root `jdk22plus` Maven profile based on the JDK running the build).
 
 ## 3. Run the module tests
 

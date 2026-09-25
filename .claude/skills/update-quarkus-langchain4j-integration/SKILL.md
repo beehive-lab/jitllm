@@ -24,7 +24,7 @@ Never guess paths, versions, models, flags, or backends.
 Read the jitllm changelog, release diff, POM, and changed public APIs. Confirm both artifacts:
 
 - `jitllm:<version>-jdk21`
-- `jitllm:<version>-jdk25`
+- `jitllm:<version>-jdk22plus`
 
 For a published release:
 
@@ -57,7 +57,7 @@ Read the module POMs, `GPULlama3BaseModel`/`GPULlama3ChatModel`/`GPULlama3Stream
 Keep changes minimal and backend agnostic:
 
 - use `TORNADOVM_HOME`; leave backend configuration to the selected SDK
-- keep the `-jdk21`/`-jdk25` split driven by the root `jdk25` Maven profile, not hardcoded
+- keep the `-jdk21`/`-jdk22plus` split driven by the root `jdk22plus` Maven profile, not hardcoded
 - never hardcode a GGUF path in tests; use an environment variable
 - preserve existing unit tests and add new ones for changed capabilities
 - keep unsupported feature combinations disabled with accurate reasons

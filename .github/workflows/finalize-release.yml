@@ -105,15 +105,15 @@ jobs:
               releaseNotes = `Release ${version}`;
             }
             
-            // Add installation instructions (JDK 21 and JDK 25 artifacts are published separately)
+            // Add installation instructions (JDK 21 and JDK 22+ artifacts are published separately)
             releaseNotes += `\n\n---\n\n### 📦 Installation\n\n`;
             releaseNotes += `**Maven**\n\n`;
             releaseNotes += `JDK 21 (\`jdk21\` profile, auto-activates for JDK \`[21,25)\`):\n\`\`\`xml\n<dependency>\n    <groupId>io.github.beehive-lab</groupId>\n    <artifactId>jitllm</artifactId>\n    <version>${version}-jdk21</version>\n</dependency>\n\`\`\`\n\n`;
-            releaseNotes += `JDK 25 (\`jdk25\` profile, auto-activates for JDK \`[25.0.2,)\`):\n\`\`\`xml\n<dependency>\n    <groupId>io.github.beehive-lab</groupId>\n    <artifactId>jitllm</artifactId>\n    <version>${version}-jdk25</version>\n</dependency>\n\`\`\`\n\n`;
+            releaseNotes += `JDK 22+ (\`jdk22plus\` profile, auto-activates for JDK \`[22,)\`):\n\`\`\`xml\n<dependency>\n    <groupId>io.github.beehive-lab</groupId>\n    <artifactId>jitllm</artifactId>\n    <version>${version}-jdk22plus</version>\n</dependency>\n\`\`\`\n\n`;
             releaseNotes += `**Gradle**\n\n`;
             releaseNotes += `JDK 21:\n\`\`\`groovy\nimplementation 'io.github.beehive-lab:jitllm:${version}-jdk21'\n\`\`\`\n\n`;
-            releaseNotes += `JDK 25:\n\`\`\`groovy\nimplementation 'io.github.beehive-lab:jitllm:${version}-jdk25'\n\`\`\`\n\n`;
-            releaseNotes += `---\n\n📖 [Documentation](https://github.com/beehive-lab/jitllm#readme) | 🔗 Maven Central: [jdk21](https://central.sonatype.com/artifact/io.github.beehive-lab/jitllm/${version}-jdk21) · [jdk25](https://central.sonatype.com/artifact/io.github.beehive-lab/jitllm/${version}-jdk25)`;
+            releaseNotes += `JDK 22+:\n\`\`\`groovy\nimplementation 'io.github.beehive-lab:jitllm:${version}-jdk22plus'\n\`\`\`\n\n`;
+            releaseNotes += `---\n\n📖 [Documentation](https://github.com/beehive-lab/jitllm#readme) | 🔗 Maven Central: [jdk21](https://central.sonatype.com/artifact/io.github.beehive-lab/jitllm/${version}-jdk21) · [jdk22plus](https://central.sonatype.com/artifact/io.github.beehive-lab/jitllm/${version}-jdk22plus)`;
             
             const { data: release } = await github.rest.repos.createRelease({
               owner: context.repo.owner,

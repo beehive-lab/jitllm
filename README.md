@@ -102,12 +102,12 @@ JitLLMChatModel model = JitLLMChatModel.builder()
 </dependency>
 ```
 
-**JDK 25** (`jdk25` profile, auto-activates for JDK `[25.0.2,)`):
+**JDK 22+** (`jdk22plus` profile, auto-activates for JDK `[22,)`):
 ```xml
 <dependency>
     <groupId>io.github.beehive-lab</groupId>
     <artifactId>jitllm</artifactId>
-    <version>1.0.0-jdk25</version>
+    <version>1.0.0-jdk22plus</version>
 </dependency>
 ```
 
@@ -118,9 +118,9 @@ JitLLMChatModel model = JitLLMChatModel.builder()
 implementation 'io.github.beehive-lab:jitllm:1.0.0-jdk21'
 ```
 
-**JDK 25**:
+**JDK 22+**:
 ```groovy
-implementation 'io.github.beehive-lab:jitllm:1.0.0-jdk25'
+implementation 'io.github.beehive-lab:jitllm:1.0.0-jdk22plus'
 ```
 <!-- DEPENDENCY-SNIPPETS:END -->
 
@@ -136,7 +136,7 @@ implementation 'io.github.beehive-lab:jitllm:1.0.0-jdk25'
 
 ### Prerequisites
 
-- **Java 21 or 25** — required for the Vector API & TornadoVM. Each line has its own artifact (`-jdk21` / `-jdk25`); both launchers work on either, while `jitllm4j` itself needs Java 25 to run.
+- **Java 21 or 22+** — required for the Vector API & TornadoVM. Each line has its own artifact (`-jdk21` / `-jdk22plus`), matching TornadoVM's; both launchers work on either, while `jitllm4j` itself needs Java 25 to run.
 - **[TornadoVM](https://github.com/beehive-lab/TornadoVM)** with an OpenCL, CUDA, or Metal backend. `jitllm`/`jitllm4j` auto-detect whichever backend your installed SDK was built with.
 - **GCC/G++ 13+** — to build TornadoVM's native components.
 

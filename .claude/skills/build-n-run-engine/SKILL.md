@@ -25,7 +25,7 @@ else at `validate`, naming both.
 | Build JDK | Artifact | TornadoVM SDK it must run against |
 | --- | --- | --- |
 | 21 | `jitllm:<version>-jdk21` | a TornadoVM SDK built with `make BACKEND=...` (the jdk21 target) |
-| 25 | `jitllm:<version>-jdk25` | a TornadoVM SDK built with `make jdk22plus BACKEND=...` |
+| 22+ (CI: 25) | `jitllm:<version>-jdk22plus` | a TornadoVM SDK built with `make jdk22plus BACKEND=...` |
 
 There is no flag: the JDK on `JAVA_HOME` selects the profile.
 
@@ -64,7 +64,7 @@ Accelerator gates are opt-in and need a device, an SDK and the pinned fixtures u
 ## Verify the build
 
 ```bash
-./mvnw help:evaluate -Dexpression=project.version -q -DforceStdout   # must end -jdk21 or -jdk25
+./mvnw help:evaluate -Dexpression=project.version -q -DforceStdout   # must end -jdk21 or -jdk22plus
 ./jitllm --help
 ```
 

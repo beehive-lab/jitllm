@@ -15,6 +15,12 @@ on:
         required: false
         default: false
         type: boolean
+      jdk:
+        description: 'JDK line(s) to deploy - pick one to retry a single line (a version already on Maven Central cannot be re-uploaded)'
+        required: false
+        default: all
+        type: choice
+        options: [all, jdk21, jdk22plus]
   workflow_call:
     inputs:
       tag:
@@ -36,11 +42,11 @@ jobs:
     strategy:
       fail-fast: false  # if one JDK fails, still attempt the other
       matrix:
-        jdk:
-          - name: jdk21
-            java_version: 21.0.2-open
-          - name: jdk25
-            java_version: 25.0.2-open
+        # jdk22plus is built on JDK 25 with release 22 (see pom.xml).
+        jdk: ${{ fromJSON(
+          (inputs.jdk == 'jdk21' && '[{"name":"jdk21","java_version":"21.0.2-open"}]') ||
+          (inputs.jdk == 'jdk22plus' && '[{"name":"jdk22plus","java_version":"25.0.2-open"}]') ||
+          '[{"name":"jdk21","java_version":"21.0.2-open"},{"name":"jdk22plus","java_version":"25.0.2-open"}]') }}
 
     steps:
       - name: Checkout code

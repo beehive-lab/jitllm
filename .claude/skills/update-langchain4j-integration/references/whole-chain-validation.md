@@ -44,7 +44,7 @@ cd "$LANGCHAIN4J_DIR"
 ```
 
 Confirm the resolved artifact ends in the suffix the active JDK implies — `-jdk21` on JDK 21,
-`-jdk25` on JDK 25. The module's own `jdk21`/`jdk25` profiles do that; there is no flag.
+`-jdk22plus` on JDK 25. The module's own `jdk21`/`jdk25` profiles do that; there is no flag.
 
 `attach-javadocs` runs with doclint on and warnings fatal. Every public and protected member
 needs a comment, and a method with a return value needs `@return`. A missing one fails

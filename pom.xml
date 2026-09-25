@@ -87,18 +87,15 @@
         <tornadovm.dev.qualifier>-dev</tornadovm.dev.qualifier>
         <archunit.version>1.4.2</archunit.version>
         <jdk.version.suffix>-jdk21</jdk.version.suffix>
-        <!-- TornadoVM's own JDK suffix, deliberately a SEPARATE property from
-                 jdk.version.suffix above: that one names *this* project's published artifact
-                 (see <version> at the top of this POM) and must keep saying -jdk25, while
-                 TornadoVM 6.0.0 collapsed its jdk25/jdk26/jdk27 lines into a single jdk22plus
-                 profile and publishes only 6.0.0-jdk21 and 6.0.0-jdk22plus to Maven Central.
-                 Tying the two together would silently rename jitllm's own coordinates. -->
+        <!-- TornadoVM's own JDK suffix, a separate property from jdk.version.suffix above
+                 (which names *this* project's published artifact). Both lines currently match
+                 TornadoVM's: -jdk21 and -jdk22plus. -->
         <tornadovm.jdk.suffix>-jdk21</tornadovm.jdk.suffix>
         <!-- CUDA backend is only available after 5.0.0 TornadoVM version -->
         <tornadovm.version>${tornadovm.base.version}${tornadovm.jdk.suffix}${tornadovm.dev.qualifier}</tornadovm.version>
         <!-- Compiler defaults (overridden by JDK profiles below) -->
-        <maven.compiler.source>25</maven.compiler.source>
-        <maven.compiler.target>25</maven.compiler.target>
+        <maven.compiler.source>22</maven.compiler.source>
+        <maven.compiler.target>22</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.javadoc.skip>true</maven.javadoc.skip>
         <gpg.skip>true</gpg.skip>
@@ -152,7 +149,7 @@
             <!-- The Vector API is an incubator module on both supported JDKs (JEP 508 in
                      JDK 25), so add-modules is required to compile against it. enable-preview is
                      added by the JDK 21 profile only: java.lang.foreign was a preview API in 21
-                     and final from 22, so the JDK 25 artifact carries no preview class file and
+                     and final from 22, so the JDK 22+ artifact carries no preview class file and
                      is therefore not pinned to one JDK version. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -185,10 +182,10 @@
                 </configuration>
             </plugin>
 
-            <!-- Only JDK 21 and JDK 25 are supported, and each one publishes its own
-                     artifact. Without this, an in-between JDK activates neither profile (or the
-                     wrong one) and the build silently produces a -jdk21 artifact compiled by, and
-                     linked against, something else. Fail at validate instead. -->
+            <!-- JDK 21 and JDK 22+ each publish their own artifact. Without this, a JDK
+                     older than 21 activates neither profile and the build silently produces a
+                     -jdk21 artifact compiled by, and linked against, something else. Fail at
+                     validate instead. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>
@@ -203,8 +200,8 @@
                         <configuration>
                             <rules>
                                 <requireJavaVersion>
-                                    <version>[21,22),[25,26)</version>
-                                    <message>jitllm builds on JDK 21 or JDK 25 only. JDK 21 produces jitllm:*-jdk21 against tornado *-jdk21; JDK 25 produces jitllm:*-jdk25 against tornado *-jdk22plus. Any other JDK would activate neither profile and publish a mislabelled artifact.</message>
+                                    <version>[21,)</version>
+                                    <message>jitllm builds on JDK 21 or newer. JDK 21 produces jitllm:*-jdk21 against tornado *-jdk21; JDK 22+ produces jitllm:*-jdk22plus (Java 22 bytecode) against tornado *-jdk22plus.</message>
                                 </requireJavaVersion>
                             </rules>
                             <fail>true</fail>
@@ -393,23 +390,22 @@
             </build>
         </profile>
 
-        <!-- ─── JDK 25 ───────────────────────────────────────────────────────────
-                 Auto-activates on JDK 25.
-                 Publishes: jitllm:${revision}-jdk25
-                 TornadoVM: ${tornadovm.base.version}-jdk22plus${tornadovm.dev.qualifier} (see tornadovm.jdk.suffix)
+        <!-- ─── JDK 22+ ──────────────────────────────────────────────────────────
+                 Auto-activates on JDK 22 and newer (CI builds it on JDK 25).
+                 Publishes: jitllm:${revision}-jdk22plus, compiled with release 22
+                 TornadoVM: ${tornadovm.base.version}-jdk22plus${tornadovm.dev.qualifier}
+                 Mirrors TornadoVM, which since 6.0.0 ships one jdk22plus line for JDK 22 and up.
             ─────────────────────────────────────────────────────────────────────── -->
         <profile>
-            <id>jdk25</id>
+            <id>jdk22plus</id>
             <activation>
-                <jdk>[25,26)</jdk>
+                <jdk>[22,)</jdk>
             </activation>
             <properties>
-                <maven.compiler.source>25</maven.compiler.source>
-                <maven.compiler.target>25</maven.compiler.target>
-                <jdk.version.suffix>-jdk25</jdk.version.suffix>
-                <!-- -jdk22plus, not -jdk25: TornadoVM 6.0.0 replaced its per-version jdk25 /
-                         jdk26 / jdk27 profiles with one jdk22plus profile, so 6.0.0-jdk25 does not
-                         exist on Maven Central. This project's own artifact stays -jdk25. -->
+                <maven.compiler.source>22</maven.compiler.source>
+                <maven.compiler.target>22</maven.compiler.target>
+                <maven.compiler.release>22</maven.compiler.release>
+                <jdk.version.suffix>-jdk22plus</jdk.version.suffix>
                 <tornadovm.jdk.suffix>-jdk22plus</tornadovm.jdk.suffix>
                 <tornadovm.version>${tornadovm.base.version}${tornadovm.jdk.suffix}${tornadovm.dev.qualifier}</tornadovm.version>
             </properties>

@@ -5,24 +5,24 @@ capability, and how releases and the downstream integrations fit together.
 
 ## JDKs and TornadoVM
 
-Two JDK lines are supported, and each publishes its own artifact against its own TornadoVM
-line.
+Two JDK lines are supported, and each publishes its own artifact against the TornadoVM line
+of the same name.
 
 | Build JDK | This project publishes | It compiles against | `--enable-preview` |
 | --- | --- | --- | --- |
 | 21 | `jitllm:<version>-jdk21` | `tornado-api`/`tornado-runtime` `<tvm>-jdk21` | yes — `java.lang.foreign` is a preview API on 21 |
-| 25 | `jitllm:<version>-jdk25` | `tornado-api`/`tornado-runtime` `<tvm>-jdk22plus` | no |
+| 22+ (CI: 25) | `jitllm:<version>-jdk22plus` | `tornado-api`/`tornado-runtime` `<tvm>-jdk22plus` | no |
 
 TornadoVM 6.0.0 collapsed its per-version `jdk25`/`jdk26`/`jdk27` profiles into one
-`jdk22plus` profile and publishes only `-jdk21` and `-jdk22plus`, so `6.0.0-jdk25` does not
-exist. This project's own suffix stays `-jdk25`; the two are separate Maven properties on
-purpose, because tying them together would silently rename `jitllm`'s coordinates.
+`jdk22plus` profile and publishes only `-jdk21` and `-jdk22plus`; this project mirrors that.
+The `jdk22plus` line compiles with `release 22`, so its artifact runs on any JDK from 22 up
+whichever JDK built it. `jdk.version.suffix` (this project) and `tornadovm.jdk.suffix`
+(TornadoVM) stay separate Maven properties even though they currently agree.
 
-Profile activation is `[21,22)` and `[25,26)`, and `maven-enforcer-plugin` rejects any
-other JDK at `validate` with a message naming both lines. Nothing between or beyond the two
-can quietly produce a mislabelled artifact.
+Profile activation is `[21,22)` and `[22,)`, and `maven-enforcer-plugin` rejects anything
+older than 21 at `validate`.
 
-The JDK 25 artifact contains **no preview class file**, so it is not pinned to one JDK
+The `-jdk22plus` artifact contains **no preview class file**, so it is not pinned to one JDK
 version. The JDK 21 artifact necessarily does, because the foreign-memory API it uses is
 preview there.
 
@@ -40,7 +40,7 @@ rm -rf graalJars && mkdir -p graalJars           # never seed from a shared dire
 
 export JAVA_HOME=<a JDK 21 or JDK 25 home>
 make BACKEND=cuda            # JDK 21 — the default target passes --jdk jdk21
-make jdk22plus BACKEND=cuda  # JDK 25 — everything from 22 up is one profile
+make jdk22plus BACKEND=cuda  # JDK 22+ — everything from 22 up is one profile
 ```
 
 Backends are `opencl`, `cuda` and `metal`, comma-separable. A few things repay knowing:

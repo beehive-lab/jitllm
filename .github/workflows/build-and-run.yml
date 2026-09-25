@@ -81,7 +81,7 @@ jobs:
         run: make test-scripts
 
   # Linux build and Class A gates, on both published JDK lines. The artifact coordinates and
-  # the TornadoVM line both follow from the JDK the build runs on (pom.xml's jdk21/jdk25
+  # the TornadoVM line both follow from the JDK the build runs on (pom.xml's jdk21/jdk22plus
   # profiles), so a line that is never compiled here is a line nobody has checked.
   #
   # Split from the macOS job rather than expressed as one matrix with an `os` dimension: jobs
@@ -139,13 +139,12 @@ jobs:
       - name: Check the artifact matches the JDK that built it
         run: |
           set -euo pipefail
-          EXPECTED_SUFFIX="-jdk${{ matrix.jdk }}"
+          # JDK 21 -> -jdk21 (class major 65); JDK 25 -> -jdk22plus, compiled with release 22 (66).
+          if [ "${{ matrix.jdk }}" = 21 ]; then EXPECTED_SUFFIX=-jdk21; EXPECTED_MAJOR=65; else EXPECTED_SUFFIX=-jdk22plus; EXPECTED_MAJOR=66; fi
           case "$JITLLM_VERSION" in
             *"$EXPECTED_SUFFIX") ;;
             *) echo "::error::JDK ${{ matrix.jdk }} produced $JITLLM_VERSION, which does not end in $EXPECTED_SUFFIX"; exit 1 ;;
           esac
-          # 21 -> class major 65, 25 -> 69.
-          EXPECTED_MAJOR=$(( 44 + ${{ matrix.jdk }} ))
           JAR="target/jitllm-${JITLLM_VERSION}.jar"
           MAJOR=$("$JAVA_HOME/bin/javap" -verbose -classpath "$JAR" \
             org.beehive.jitllm.model.Model | awk '/major version:/ { print $3; exit }')

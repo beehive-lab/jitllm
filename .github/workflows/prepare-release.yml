@@ -154,12 +154,12 @@ jobs:
           </dependency>
           \`\`\`
 
-          **JDK 25** (\`jdk25\` profile, auto-activates for JDK \`[25.0.2,)\`):
+          **JDK 22+** (\`jdk22plus\` profile, auto-activates for JDK \`[22,)\`):
           \`\`\`xml
           <dependency>
               <groupId>io.github.beehive-lab</groupId>
               <artifactId>jitllm</artifactId>
-              <version>${VERSION}-jdk25</version>
+              <version>${VERSION}-jdk22plus</version>
           </dependency>
           \`\`\`
 
@@ -170,9 +170,9 @@ jobs:
           implementation 'io.github.beehive-lab:jitllm:${VERSION}-jdk21'
           \`\`\`
 
-          **JDK 25**:
+          **JDK 22+**:
           \`\`\`groovy
-          implementation 'io.github.beehive-lab:jitllm:${VERSION}-jdk25'
+          implementation 'io.github.beehive-lab:jitllm:${VERSION}-jdk22plus'
           \`\`\`
           EOF
 
