@@ -349,14 +349,6 @@ Options are grouped as Engine Configuration (model, prompt, sampling, context, p
 and Profiling, TornadoVM Execution Verbose, and Advanced Options, where experimental options
 are tagged `[experimental]`.
 
-Two limits, because they bound different things. `-c`/`--ctx-size` is the context window:
-prompt, conversation history and answers together. It sizes the key/value cache allocated at
-load, so it drives memory use (`--ctx` and `--context-length` are accepted spellings).
-`--max-new-tokens` only stops one answer early and allocates nothing. They mirror llama.cpp's
-`-c` and `-n`. The default context is 512 tokens for run/chat and the model's own for serve
-(a larger request is clamped to it); by default an answer runs until the model ends its turn
-or the context is full. Benchmark context is derived from its workload sizes and depths.
-
 ```bash
 ./jitllm run -m model.gguf --gpu -c 4096 --max-new-tokens 128 --prompt "Explain SIMD."
 ./jitllm chat -m model.gguf --gpu -c 4096 --max-new-tokens 128
@@ -382,35 +374,6 @@ limit. HTTP `max_tokens` keeps its existing generated-token meaning. Legacy
 Serving binds to loopback by default and prints its actual address and port when ready.
 Use `--host 0.0.0.0` explicitly for all IPv4 interfaces. Clients submit conversation
 history in each HTTP request; `chat` retains terminal conversation history locally.
-
-**Experimental: continuous batching.** `serve --continuous-batching SLOTS` decodes up to
-`SLOTS` HTTP requests together in one batch instead of one at a time, with
-`--max-queued-requests` and `--prefix-cache-entries` as its options (listed under
-*Experimental* in `jitllm serve --help`). It prints a warning when enabled and currently supports
-CUDA tensor-core devices, FP16 Llama/Qwen3 weights and greedy (`temperature=0`) requests
-only; its pool follows the KV cache setting (FP16 by default). Prefill chunking and CUDA graphs are
-rejected in that mode because this executor does not implement them. JIT/device setup remains
-lazy there and is labeled accordingly in verbose output; its memory estimate is unavailable.
-Prefix caching requires continuous batching and is disabled by default. Not to be confused with
-`--batch-prefill-size N`, which counts **prompt tokens per chunk** of one request.
-
-**Experimental: native libraries.** By default every configuration runs TornadoVM's JIT
-kernels. `--with-native-libraries` (run, chat, serve, bench; `ExecutionPolicy.builder()
-.nativeLibraries(true)` in the library) replaces Qwen3 FP16 batched-prefill projections with
-cuBLAS GEMMs and the first chunk's attention with cuDNN where usable, and Gemma 4 Q8_0/Q4_0
-batched-prefill projections with cuBLAS FP16 GEMMs over weights decoded once to FP16. It prints a warning, and
-any configuration without a native path — another family or quantization, single-token or
-chunked-prefill mode, a non-CUDA backend, continuous batching — is refused with
-`GPUL-CFG-002` rather than silently running the JIT kernels. It keeps stacked copies of the
-projection weights beside the originals: Qwen3-8B F16 needs about 24.4 GB with it versus about
-17 GB without, so it does not fit a 24 GB device. Measured on an RTX 5090 Laptop GPU, Qwen3-0.6B
-F16, batch 128: pp512 5056 → 9125 t/s, pp2048 2406 → 2951 t/s, tg64 unchanged. Gemma 4 E2B
-Q4_0, batch 2048: pp2048 9090 → 11380 t/s (batch 512, pp512 7240 → 10620), at about 3.7 GB more
-device memory and 2.7 GB more host memory for the FP16 copies; decode unchanged.
-
-`serve -v` and `bench -v` use the same startup report as terminal generation. Server
-request sampling and benchmark token workloads are labeled appropriately; reports stay
-on stderr so HTTP responses and benchmark JSON/CSV stay separate.
 
 
 ```bash
