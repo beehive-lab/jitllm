@@ -23,9 +23,9 @@ public class Gemma4ToolCallsTest {
 
     static final String WEATHER_JSON =
             "{\"type\":\"function\",\"function\":{\"name\":\"getWeather\",\"description\":\"Returns"
-                + " the current weather for a"
-                + " city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\",\"description\":\"The"
-                + " city name\"}},\"required\":[\"city\"]}}}";
+                    + " the current weather for a"
+                    + " city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\",\"description\":\"The"
+                    + " city name\"}},\"required\":[\"city\"]}}}";
 
     static final String CLOCK_JSON =
             "{\"type\":\"function\",\"function\":{\"name\":\"get_current_time\",\"description\":"

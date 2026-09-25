@@ -82,8 +82,7 @@ public class StableSurfaceTest {
                 String name = p.getFileName().toString().replace(".java", "");
                 String body = Files.readString(p);
                 if (Pattern.compile(
-                                        "^public (final |abstract |sealed"
-                                            + " )?(interface|class|enum|record) "
+                                        "^public (final |abstract |sealed )?(interface|class|enum|record) "
                                                 + name,
                                         Pattern.MULTILINE)
                                 .matcher(body)
@@ -99,8 +98,8 @@ public class StableSurfaceTest {
         Set<String> undeclared = new TreeSet<>(publicTypes);
         undeclared.removeAll(declared);
         assertTrue(
-                "these public api/** types are in neither the stable nor the experimental set. A"
-                    + " new public type is an API decision and must be declared in one of them: "
+                "these public api/** types are in neither the stable nor the experimental set."
+                        + " A new public type is an API decision and must be declared in one of them: "
                         + undeclared,
                 undeclared.isEmpty());
         Set<String> vanished = new TreeSet<>(declared);

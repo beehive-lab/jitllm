@@ -445,8 +445,7 @@ final class DelegatingModel implements TextGenerationModel {
                         () ->
                                 "lowering requested but "
                                         + info.name()
-                                        + " has no shared key/value storage; using the legacy"
-                                        + " path");
+                                        + " has no shared key/value storage; using the legacy path");
                 return new LegacySessionRuntime(delegate, lease, policy, storageOptions);
             }
             // Allocated once per domain. A second lowered session reaches neither of these lines.
