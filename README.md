@@ -1,4 +1,4 @@
-# jitllm — LLM inference & serving for the JVM, on any GPU
+# jitLLM: LLM inference & serving for the JVM, on any GPU
 
 [![build JDK21](https://github.com/beehive-lab/jitllm/actions/workflows/build-and-run.yml/badge.svg)](https://github.com/beehive-lab/jitllm/actions/workflows/build-and-run.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.beehive-lab/jitllm?&logo=apache-maven&color=blue)](https://central.sonatype.com/artifact/io.github.beehive-lab/jitllm)
@@ -23,7 +23,7 @@
 
 ### Think vLLM — but pure Java, and it runs on **any** GPU.
 
-**jitllm** is a JVM-native LLM inference and serving engine. You write and ship plain Java; [**TornadoVM**](https://github.com/beehive-lab/TornadoVM) JIT-compiles the hot transformer kernels to **CUDA, OpenCL, or Apple Metal** at runtime — no JNI glue, no second toolchain, no native rebuild per GPU.
+**jitLLM** is a JVM-native LLM inference and serving engine. You write and ship plain Java; [**TornadoVM**](https://github.com/beehive-lab/TornadoVM) JIT-compiles the hot transformer kernels to **CUDA, OpenCL, or Apple Metal** at runtime — no JNI glue, no second toolchain, no native rebuild per GPU.
 
 One `.jar` runs the same model on **NVIDIA, Intel, AMD, and Apple Silicon**, from a laptop to an RTX 5090.
 
@@ -33,11 +33,10 @@ Serve it behind an **OpenAI-compatible API**, embed it in **LangChain4j** or **Q
 </tr>
 </table>
 
-Builds on [Llama3.java](https://github.com/mukel/llama3.java) by [Alfonso² Peterssen](https://github.com/mukel). Earlier Llama2 work: [llama2.tornadovm](https://github.com/mikepapadim/llama2.tornadovm.java).
 
 -----------
 
-## Why jitllm
+## Why jitLLM
 
 - 🟦 **Pure Java, all the way down.** Transformer kernels are written in Java and accelerated by TornadoVM — no CUDA C, no hand-written JNI. Debug and build with the toolchain you already have.
 - 🌍 **Write once, run on any GPU.** NVIDIA (CUDA), Intel & AMD (OpenCL), Apple Silicon (Metal). Backend is auto-detected from your TornadoVM SDK — switch with a flag, not a rebuild.
@@ -65,7 +64,7 @@ Grab a ready-to-run model from the [Hugging Face collections](#-model-collection
 
 ## 🧩 Serving: OpenAI-compatible (preview)
 
-jitllm is growing into a **serving engine** — the vLLM-style path for the JVM:
+jitLLM is growing into a **serving engine** — the vLLM-style path for the JVM:
 
 - 🌐 **OpenAI-compatible server** — `jitllm serve` exposes `/v1/chat/completions` and `/v1/completions` with streaming and zero external dependencies. `/v1/models` reports the served context length, so clients size their prompts instead of guessing. Point any OpenAI client at `localhost`.
 - 🎯 **Tensor-core (MMA) batch prefill** on the CUDA backend, FP16 & Q8_0 — `--with-prefill-decode --batch-prefill-size N`.
@@ -80,7 +79,7 @@ jitllm is growing into a **serving engine** — the vLLM-style path for the JVM:
 Since **LangChain4j v1.7.1**, `jitllm` is an officially supported **model provider** — no glue code, GPU-accelerated out of the box.
 
 ```java
-GPULlama3ChatModel model = GPULlama3ChatModel.builder()
+JitLLMChatModel model = JitLLMChatModel.builder()
         .modelPath(modelPath)
         .temperature(0.9)      // more creative
         .topP(0.9)             // more variety
@@ -240,51 +239,18 @@ Script-like startup à la [Jlama](https://github.com/tjake/Jlama), powered by [J
 curl -Ls https://sh.jbang.dev | bash -s - app setup
 
 # From the catalog
-jbang gpullama3@beehive-lab -m model.gguf -p "Tell me a joke"
-jbang app install gpullama3@beehive-lab && gpullama3 -m model.gguf -p "Hello!"
+jbang jitllm@beehive-lab -m model.gguf -p "Tell me a joke"
+jbang app install jitllm@beehive-lab && jitllm -m model.gguf -p "Hello!"
 ```
 
-> The `gpullama3@beehive-lab` alias is the pre-rename catalog name and still resolves.
+> The `jitllm@beehive-lab` alias is the pre-rename catalog name and still resolves.
 > See [`POST_MOVE_ACTIONS.md`](POST_MOVE_ACTIONS.md) for the migration status.
 
-### 🐳 Docker
+-----------
+## Tested Models
 
-Fully containerized GPU inference via pre-built images ([docker-gpullama3.java](https://github.com/beehive-lab/docker-gpullama3.java)):
-
-| Backend | Image |
-|---------|-------|
-| **OpenCL** | [`beehivelab/gpullama3.java-nvidia-openjdk-opencl`](https://hub.docker.com/r/beehivelab/gpullama3.java-nvidia-openjdk-opencl) |
-| **PTX (CUDA)** | [`beehivelab/gpullama3.java-nvidia-openjdk-ptx`](https://hub.docker.com/r/beehivelab/gpullama3.java-nvidia-openjdk-ptx) |
-
-```bash
-docker run --rm -it --gpus all -v "$PWD":/data \
-  beehivelab/gpullama3.java-nvidia-openjdk-opencl \
-  /gpullama3/GPULlama3.java/llama-tornado \
-  --gpu --verbose \
-  --model /data/Llama-3.2-1B-Instruct.FP16.gguf --prompt "Tell me a joke"
-```
 
 -----------
-
-## 🤗 Model collections
-
-GGUF models, ready to download:
-
-| Family | Collection |
-|--------|-----------|
-| Llama 3.2 | [llama3-gpullama3java](https://huggingface.co/collections/beehive-lab/llama3-gpullama3java) |
-| IBM Granite 4.0 | [granite-40-language-models](https://huggingface.co/collections/beehive-lab/granite-40-language-models-gpullama3java) |
-| IBM Granite 3.3 | [granite-33-language-models](https://huggingface.co/collections/beehive-lab/granite-33-language-models-gpullama3java) |
-| Qwen 2.5 | [qwen-25-gpullama3java](https://huggingface.co/collections/beehive-lab/qwen-25-gpullama3java) |
-| Qwen 3 | [qwen-3-gpullama3java](https://huggingface.co/collections/beehive-lab/qwen-3-gpullama3java) |
-| Phi-3 | [phi-3-gpullama3java](https://huggingface.co/collections/beehive-lab/phi-3-gpullama3java) |
-| Mistral | [mistral-gpullama3java](https://huggingface.co/collections/beehive-lab/mistral-gpullama3java) |
-| DeepSeek-R1-Distill-Qwen | [deepseek-r1-distill-qwen](https://huggingface.co/collections/beehive-lab/deepseek-r1-distill-qwen-gpullama3java) |
-
-Formats: GGUF · FP16 (full), Q8_0 & Q4_0 (partial).
-
------------
-
 ## 💾 GPU memory
 
 Default device allocation is **14GB**. Larger models need more — raise it with `--gpu-memory`:
@@ -453,22 +419,7 @@ on stderr so HTTP responses and benchmark JSON/CSV stay separate.
 ./jitllm --gpu --model model.gguf --prompt "..." --print-bytecodes   # TornadoVM bytecodes
 ./jitllm --gpu --model model.gguf --prompt "..." --debug --full-dump # everything
 ```
-
------------
-
-## 🗺️ Features & roadmap
-
-- ✅ **GGUF models** — full FP16, partial Q8_0 / Q4_0.
-- ✅ **Chat, instruction, and interactive** modes (`--interactive`, `--instruct`).
-- ✅ **Automatic backend detection** — `jitllm`/`jitllm4j` detect and use whichever backend (OpenCL, CUDA, or Metal) your installed TornadoVM SDK was built with; override with `--opencl`/`--cuda`/`--metal`.
-- ✅ **Cross-platform**: NVIDIA (OpenCL · CUDA), Intel (OpenCL), Apple (OpenCL · Metal).
-- ✅ **Serving** — OpenAI-compatible API, llama-bench-style benchmarking, tensor-core (MMA) batch prefill.
-- 🧪 **Native libraries** (experimental, `--with-native-libraries`) — cuBLAS projections and a fused cuDNN first-chunk attention for Qwen3 FP16 batched prefill, and cuBLAS projections for Gemma 4 Q8_0/Q4_0 batched prefill, on CUDA tensor-core devices; off by default (JIT kernels), refused for every other configuration.
-- ✅ **Faster CUDA decode** (Qwen3 FP16) — grouped decode graphs, warp-butterfly matrix-vector reductions and a lane-cooperative attention kernel, all selected by device capability with no flag.
-- 🧩 **Coming next** — static batched decode, on-device sampling (preview; see [Serving](#-serving-openai-compatible-preview)).
-
-📄 [Transformer optimizations in TornadoVM](docs/TORNADOVM_TRANSFORMER_OPTIMIZATIONS.md) · 🧭 [Project roadmap](docs/jitllm-roadmap.md)
-
+        
 -----------
 
 ## 🙏 Acknowledgments
