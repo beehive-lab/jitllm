@@ -97,7 +97,7 @@ jobs:
           set -eo pipefail
           source "$HOME/.sdkman/bin/sdkman-init.sh"
           for JV in "${{ env.JAVA_VERSION }}" "${{ env.JAVA_VERSION_25 }}"; do
-            sdk list java | grep -q "$JV" || sdk install java "$JV"
+            [ -d "$SDKMAN_DIR/candidates/java/$JV" ] || sdkman_auto_answer=true sdk install java "$JV"
             sdk use java "$JV" > /dev/null
             echo "== $(java -version 2>&1 | head -1)"
             ./mvnw -B -q -P release -Dgpg.skip=true -Dmaven.javadoc.skip=true \
