@@ -32,5 +32,11 @@ public enum FinishReason {
      *       rather than a successful call that never was.
      * </ul>
      */
-    TOOL_CALL
+    TOOL_CALL,
+
+    /**
+     * The request's {@link CancellationToken} was cancelled. The result holds the text produced
+     * before generation stopped, and the session remains usable.
+     */
+    CANCELLED
 }

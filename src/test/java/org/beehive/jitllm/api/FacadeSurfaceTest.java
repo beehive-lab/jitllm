@@ -74,6 +74,7 @@ public class FacadeSurfaceTest {
                         "stopSequences",
                         "onToken",
                         "onEvent",
+                        "cancellation",
                         "build"),
                 builderMethods);
     }

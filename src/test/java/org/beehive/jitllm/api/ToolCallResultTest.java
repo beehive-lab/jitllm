@@ -44,14 +44,15 @@ public class ToolCallResultTest {
      * appearing silently would be a change to what callers must handle.
      */
     @Test
-    public void theStopReasonsAreTheFourThatExistedPlusToolCall() {
+    public void theStopReasonsAreTheFourThatExistedPlusToolCallAndCancelled() {
         assertEquals(
                 java.util.EnumSet.of(
                         FinishReason.STOP_TOKEN,
                         FinishReason.MAX_TOKENS,
                         FinishReason.STOP_SEQUENCE,
                         FinishReason.CONTEXT_FULL,
-                        FinishReason.TOOL_CALL),
+                        FinishReason.TOOL_CALL,
+                        FinishReason.CANCELLED),
                 java.util.EnumSet.allOf(FinishReason.class));
     }
 }
