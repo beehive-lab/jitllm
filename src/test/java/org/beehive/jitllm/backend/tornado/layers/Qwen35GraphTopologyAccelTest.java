@@ -316,8 +316,8 @@ public class Qwen35GraphTopologyAccelTest {
         // otherwise. Asserted on the grid because the task name is the same either way, and
         // against the same decision the builder took for this device.
         long limit =
-                org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
-                        .maxWorkGroupSize();
+                Qwen35FFNLayers.deltaRuleWorkGroupLimit(
+                        org.beehive.jitllm.backend.tornado.device.TornadoDevices.current());
         var geometry = Qwen35FFNLayers.selectDeltaRuleGeometry(valueDim, limit);
         WorkerGrid expectedDelta = Qwen35FFNLayers.deltaRuleWorker(geometry, config);
         WorkerGrid delta = scheduler.get(prefix + "ssm_delta_rule");

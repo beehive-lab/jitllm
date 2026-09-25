@@ -98,7 +98,8 @@ public class Fp16KeyValueSupportTest {
         assertTrue(
                 check("gemma4", DataType.F16, ExecutionMode.STANDARD, BackendId.CUDA, true, true)
                         .isPresent());
-        // The quantized gemma4 layers write and read FP16 in both of the family's modes, on CUDA.
+        // The quantized gemma4 layers write and read FP16 in both of the family's modes, on CUDA
+        // and on OpenCL on an NVIDIA-class device.
         for (DataType weights : new DataType[] {DataType.Q8_0, DataType.Q4_0}) {
             for (ExecutionMode mode :
                     new ExecutionMode[] {
@@ -109,7 +110,19 @@ public class Fp16KeyValueSupportTest {
                         check("gemma4", weights, mode, BackendId.CUDA, true, true).isEmpty());
                 assertTrue(
                         weights + " " + mode + " on OpenCL",
-                        check("gemma4", weights, mode, BackendId.OPENCL, true, true).isPresent());
+                        check("gemma4", weights, mode, BackendId.OPENCL, true, false).isEmpty());
+                assertTrue(
+                        weights + " " + mode + " on non-NVIDIA OpenCL",
+                        Fp16KeyValueSupport.unsupported(
+                                        new Combination(
+                                                "gemma4",
+                                                weights,
+                                                mode,
+                                                BackendId.OPENCL,
+                                                false,
+                                                false,
+                                                false))
+                                .isPresent());
             }
         }
         // OpenCL is verified on NVIDIA-class devices only.
@@ -215,16 +228,26 @@ public class Fp16KeyValueSupportTest {
         }
     }
 
+    /** qwen35 on OpenCL: an NVIDIA-class device only, as every OpenCL row. */
     @Test
-    public void qwen35StaysCudaOnly() {
-        assertTrue(
-                check(
-                                "qwen35",
-                                DataType.Q4_0,
-                                ExecutionMode.STANDARD,
-                                BackendId.OPENCL,
-                                true,
-                                false)
-                        .isPresent());
+    public void qwen35RunsOnOpenClOnAnNvidiaDevice() {
+        for (ExecutionMode mode : ExecutionMode.values()) {
+            assertEquals(
+                    mode.toString(),
+                    Optional.empty(),
+                    check("qwen35", DataType.Q4_0, mode, BackendId.OPENCL, true, false));
+            assertTrue(
+                    mode.toString(),
+                    Fp16KeyValueSupport.unsupported(
+                                    new Combination(
+                                            "qwen35",
+                                            DataType.Q4_0,
+                                            mode,
+                                            BackendId.OPENCL,
+                                            false,
+                                            false,
+                                            false))
+                            .isPresent());
+        }
     }
 }

@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
@@ -10,6 +11,7 @@ import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
+
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
@@ -145,7 +147,10 @@ public class Gemma4LogitsQ8_0Layer extends LogitsQ8_0Layer {
                 && weights.wclsByteArray.dataType()
                         == org.beehive.jitllm.runtime.tensor.DataType.Q8_0
                 && config.dim() % 32 == 0
-                && schedulerType != SchedulerType.NON_NVIDIA;
+                && schedulerType != SchedulerType.NON_NVIDIA
+                // An NVIDIA device through OpenCL is on the NVIDIA path as well, and that backend
+                // cannot compile the kernel's shuffle; see Gemma4Q8_0FFNLayers.warpProjection.
+                && SchedulerDetectionService.isShuffleReducedFp16GemvSupported();
     }
 
     @Override
