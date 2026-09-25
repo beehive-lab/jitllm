@@ -33,13 +33,15 @@ import org.beehive.jitllm.tokenizer.Qwen35Tokenizer;
  * wording — including the reminder that reasoning may precede a call but not follow it, which is
  * the one the model was trained against.
  *
- * <h2>One deviation, stated</h2>
+ * <p>The tools block comes first in the system turn and the caller's system text after it, as the
+ * template orders them; consecutive tool results share one user turn ({@link #encodeToolResults},
+ * inherited).
  *
- * <p>The template puts <b>consecutive</b> tool results in a single user turn, one {@code
- * <tool_response>} block after another. {@code ConversationEncoder} calls {@link
- * #encodeToolResultTurn} once per result, so several results in a row become several user turns.
- * Identical for one result, which is the common case; merging them would mean giving the shared
- * encoder a batched entry point, and that changes every family rather than this one.
+ * <h2>Deviations, stated</h2>
+ *
+ * <p>The template's reasoning-effort instructions in the system turn, and the {@code
+ * <think>…</think>} block it writes in front of every replayed assistant turn, are not rendered —
+ * the same as for this family's conversations without tools.
  */
 public class Qwen35ChatFormat extends Qwen3ChatFormat {
 
@@ -48,11 +50,11 @@ public class Qwen35ChatFormat extends Qwen3ChatFormat {
     }
 
     @Override
-    public String toolSystemPromptSuffix(String toolsJson) {
-        return "\n\n# Tools\n\n"
+    protected String toolsBlock(String toolsJson) {
+        return "# Tools\n\n"
                 + "You have access to the following functions:\n\n"
-                + "<tools>\n"
-                + toolsJson
+                + "<tools>"
+                + toolLines(toolsJson)
                 + "\n</tools>\n\n"
                 + "If you choose to call a function ONLY reply in the following format with NO"
                 + " suffix:\n\n"
@@ -79,6 +81,23 @@ public class Qwen35ChatFormat extends Qwen3ChatFormat {
                 + "- If there is no function call available, answer the question like normal with"
                 + " your current knowledge and do not tell the user about function calls\n"
                 + "</IMPORTANT>";
+    }
+
+    /**
+     * The {@code qwen35} template writes the tools block <em>first</em> and the caller's system
+     * text after it: {@code <|im_start|>system\n{tools block}\n\n{system}<|im_end|>\n}.
+     */
+    @Override
+    public List<Integer> encodeToolSystemMessage(String systemContent, String toolsJson) {
+        List<Integer> tokens = new ArrayList<>();
+        tokens.add(imStart);
+        tokens.addAll(tokenizer.encodeOrdinaryAsList("system\n"));
+        tokens.addAll(templateText(toolsBlock(toolsJson)));
+        if (systemContent != null && !systemContent.isBlank()) {
+            tokens.addAll(tokenizer.encodeOrdinaryAsList("\n\n" + systemContent.strip()));
+        }
+        tokens.addAll(endOfTurn());
+        return tokens;
     }
 
     @Override
@@ -110,14 +129,11 @@ public class Qwen35ChatFormat extends Qwen3ChatFormat {
                     .append(Qwen35ToolCalls.renderFunctionBlock(toolCalls.get(i)))
                     .append("\n</tool_call>");
         }
-        tokens.addAll(tokenizer.encodeOrdinaryAsList(body.toString()));
-        if (imEnd != -1) {
-            tokens.add(imEnd);
-        }
+        tokens.addAll(templateText(body.toString()));
+        tokens.addAll(endOfTurn());
         return tokens;
     }
 
-    @Override
     public Optional<ToolCallExtract> extractToolCall(String responseText) {
         return Qwen35ToolCalls.parseFirst(responseText);
     }

@@ -16,8 +16,8 @@ import org.beehive.jitllm.model.format.LlamaChatFormat;
 import org.beehive.jitllm.model.format.Qwen3ChatFormat;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.tokenizer.Qwen3Tokenizer;
+import org.beehive.jitllm.tokenizer.TestVocabularies;
 import org.beehive.jitllm.tokenizer.Tokenizer;
-import org.beehive.jitllm.tokenizer.Vocabulary;
 import org.junit.Test;
 
 /**
@@ -119,19 +119,58 @@ public class ModelCapabilitiesTest {
     }
 
     private static ChatFormat qwen3() {
-        String[] tokens = {
-            "a", "b", "<|endoftext|>", "<|im_start|>", "<|im_end|>", "<think>", "</think>"
-        };
-        Map<String, Object> metadata =
-                Map.of(
-                        "tokenizer.ggml.token_type", new int[] {1, 1, 3, 3, 3, 3, 3},
-                        "tokenizer.ggml.merges", new String[0]);
-        Qwen3Tokenizer tokenizer =
-                new Qwen3Tokenizer(metadata, new Vocabulary(tokens, null), false);
+        return qwen(TestVocabularies.QWEN_MARKERS);
+    }
+
+    private static ChatFormat qwen(List<String> toolMarkers) {
         return new Qwen3ChatFormat(
-                tokenizer,
+                TestVocabularies.qwen(toolMarkers),
                 new ChatFormat.ChatTokens(
                         "<|im_start|>", "<|im_end|>", "", "<|endoftext|>", "<|fim_pad|>"));
+    }
+
+    /**
+     * Qwen 1.5 / Qwen 2 — and their MoE releases, which load through the same format — have no
+     * {@code <tool_call>} in their vocabulary and no tools in their templates.
+     */
+    @Test
+    public void aQwenVocabularyWithoutToolCallTokensReportsNoTools() {
+        assertEquals(
+                new ModelCapabilities(false, true),
+                DelegatingModel.capabilitiesOf(qwen(List.of())));
+    }
+
+    /**
+     * DeepSeek-R1-Distill-Qwen loads through the Qwen 3 format without {@code <|im_end|>}; its
+     * template never renders tool definitions, so the model cannot be told what it may call.
+     */
+    @Test
+    public void deepSeekR1DistillReportsNone() {
+        Qwen3Tokenizer tokenizer = TestVocabularies.qwen(TestVocabularies.QWEN_MARKERS);
+        ChatFormat deepSeek =
+                new Qwen3ChatFormat(
+                        tokenizer,
+                        new ChatFormat.ChatTokens("<|im_start|>", "", "", "<|endoftext|>", ""));
+        assertEquals(ModelCapabilities.NONE, DelegatingModel.capabilitiesOf(deepSeek));
+    }
+
+    /** Granite reports tools when its embedded template is one of the two dialects. */
+    @Test
+    public void graniteWithItsTemplateCallsTools() throws Exception {
+        for (String family : List.of("granite-3.2", "granite-4.0")) {
+            String template =
+                    java.nio.file.Files.readString(
+                            Path.of("src/test/resources/chat-templates", family, "template.jinja"));
+            List<String> markers =
+                    family.equals("granite-3.2")
+                            ? TestVocabularies.GRANITE_3_2_MARKERS
+                            : TestVocabularies.GRANITE_4_MARKERS;
+            assertEquals(
+                    family,
+                    new ModelCapabilities(true, false),
+                    DelegatingModel.capabilitiesOf(
+                            new GraniteChatFormat(TestVocabularies.granite(markers), template)));
+        }
     }
 
     /** A tokenizer that is only a special-token table, which is all these constructors read. */

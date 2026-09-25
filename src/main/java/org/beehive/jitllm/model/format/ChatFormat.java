@@ -53,23 +53,33 @@ public interface ChatFormat {
     }
 
     /**
-     * Encodes the system message that carries the tool definitions, for formats that put them in
-     * the system message (see {@link #injectsToolsInUserMessage()}).
+     * Encodes the system message of a request that carries tools.
      *
-     * <p>The default appends {@link #toolSystemPromptSuffix(String)} to the caller's system text as
-     * plain text; with no system message the suffix stands alone, leading whitespace stripped.
-     * Formats whose tool definitions contain control tokens override this so the tokens are encoded
-     * as tokens rather than as their spelling.
+     * <p>For a format that puts the definitions in the system message, the default appends {@link
+     * #toolSystemPromptSuffix(String)} to the caller's system text as plain text; with no system
+     * message the suffix stands alone, leading whitespace stripped. For a format that puts them in
+     * the first user message ({@link #injectsToolsInUserMessage()}), the system message carries
+     * only {@link #toolSystemMessagePrefix()} ahead of the caller's text, and the encoder asks for
+     * it without a caller's system message only when that prefix is not empty.
+     *
+     * <p>Formats override this when their template's text differs from what the default builds —
+     * including when it contains control tokens, which must be encoded as tokens rather than as
+     * their spelling.
      *
      * @param systemContent the caller's system message text, or {@code null} when the conversation
-     *     has none and this message exists only to carry the tools
+     *     has none and this message exists only for the tools
      * @param toolsJson the tool definitions (see {@link #toolSystemPromptSuffix(String)})
      */
     default List<Integer> encodeToolSystemMessage(String systemContent, String toolsJson) {
-        String content =
-                systemContent == null
-                        ? toolSystemPromptSuffix(toolsJson).stripLeading()
-                        : systemContent + toolSystemPromptSuffix(toolsJson);
+        String content;
+        if (injectsToolsInUserMessage()) {
+            content = toolSystemMessagePrefix() + (systemContent == null ? "" : systemContent);
+        } else {
+            content =
+                    systemContent == null
+                            ? toolSystemPromptSuffix(toolsJson).stripLeading()
+                            : systemContent + toolSystemPromptSuffix(toolsJson);
+        }
         return encodeMessage(new Message(Role.SYSTEM, content));
     }
 
@@ -193,6 +203,30 @@ public interface ChatFormat {
     default List<Integer> encodeToolResultTurn(String toolCallId, String toolName, String result) {
         throw new UnsupportedOperationException(
                 "Tool calling not supported for: " + getClass().getSimpleName());
+    }
+
+    /**
+     * One tool result, as {@link #encodeToolResults(List)} receives it.
+     *
+     * @param toolCallId the id of the call it answers
+     * @param toolName the tool that ran
+     * @param content the result text
+     */
+    record ToolResult(String toolCallId, String toolName, String content) {}
+
+    /**
+     * Encodes a run of consecutive tool results — every result between one assistant turn and the
+     * next non-tool message. Templates that wrap such a run in a single turn (Granite 4 puts them
+     * in one {@code user} turn) override this; the default encodes each with {@link
+     * #encodeToolResultTurn(String, String, String)}.
+     */
+    default List<Integer> encodeToolResults(List<ToolResult> results) {
+        List<Integer> tokens = new ArrayList<>();
+        for (ToolResult result : results) {
+            tokens.addAll(
+                    encodeToolResultTurn(result.toolCallId(), result.toolName(), result.content()));
+        }
+        return tokens;
     }
 
     /**

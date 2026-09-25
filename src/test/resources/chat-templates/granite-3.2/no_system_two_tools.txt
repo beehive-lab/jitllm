@@ -1,0 +1,37 @@
+<|start_of_role|>system<|end_of_role|>Knowledge Cutoff Date: April 2024.
+You are Granite, developed by IBM. You are a helpful AI assistant with access to the following tools. When a tool is required to answer the user's query, respond with <|tool_call|> followed by a JSON list of tools used. If a tool does not exist in the provided list of tools, notify the user that you do not have the ability to fulfill the request.<|end_of_text|>
+<|start_of_role|>tools<|end_of_role|>[
+    {
+        "type": "function",
+        "function": {
+            "name": "getWeather",
+            "description": "Returns the current weather for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "The city name"
+                    }
+                },
+                "required": [
+                    "city"
+                ]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": "Returns the current time.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    }
+]<|end_of_text|>
+<|start_of_role|>user<|end_of_role|>Hi<|end_of_text|>
+<|start_of_role|>assistant<|end_of_role|>

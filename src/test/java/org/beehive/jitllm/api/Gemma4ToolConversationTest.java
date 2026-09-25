@@ -282,8 +282,24 @@ public class Gemma4ToolConversationTest {
 
         private final ChatFormat chatFormat;
 
+        private final boolean beginOfText;
+
         FormatOnlyModel(ChatFormat chatFormat) {
+            this(chatFormat, true);
+        }
+
+        /**
+         * @param beginOfText whether the family's model starts a conversation with the format's
+         *     begin-of-text token, as {@code Model.shouldAddBeginOfText()} says (Qwen's do not)
+         */
+        FormatOnlyModel(ChatFormat chatFormat, boolean beginOfText) {
             this.chatFormat = chatFormat;
+            this.beginOfText = beginOfText;
+        }
+
+        @Override
+        public boolean shouldAddBeginOfText() {
+            return beginOfText;
         }
 
         @Override

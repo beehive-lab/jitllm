@@ -2,7 +2,6 @@ package org.beehive.jitllm.model.format;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -83,19 +82,11 @@ public final class Gemma4ToolCalls {
      */
     public static List<Piece> renderDeclarations(String toolsJson) {
         Out out = new Out();
-        JsonReader reader = new JsonReader(toolsJson);
-        reader.skipWhitespace();
-        while (!reader.atEnd()) {
-            Object tool = reader.value();
+        for (Object tool : ToolJson.parseSequence(toolsJson)) {
             if (tool instanceof Map<?, ?> map) {
                 out.special(TOOL_OPEN);
                 declaration(out, map);
                 out.special(TOOL_CLOSE);
-            }
-            reader.skipWhitespace();
-            while (!reader.atEnd() && reader.peek() == ',') {
-                reader.next();
-                reader.skipWhitespace();
             }
         }
         return out.pieces();
@@ -190,7 +181,7 @@ public final class Gemma4ToolCalls {
                     boolean itemsFirst = false;
                     for (Map.Entry<String, Object> item : dictsort(items)) {
                         Object itemValue = item.getValue();
-                        if (itemValue == JsonReader.NULL) {
+                        if (itemValue == ToolJson.NULL) {
                             continue;
                         }
                         if (itemsFirst) {
@@ -305,7 +296,7 @@ public final class Gemma4ToolCalls {
         Object arguments = null;
         if (!raw.isEmpty()) {
             try {
-                arguments = JsonReader.parse(raw);
+                arguments = ToolJson.parse(raw);
             } catch (IllegalArgumentException e) {
                 arguments = raw; // not JSON: rendered as the pre-serialized string it is
             }
@@ -348,7 +339,7 @@ public final class Gemma4ToolCalls {
 
     /** {@code format_argument}. */
     private static void argument(Out out, Object value, boolean escapeKeys) {
-        if (value == null || value == JsonReader.NULL) {
+        if (value == null || value == ToolJson.NULL) {
             out.text("null");
         } else if (value instanceof String s) {
             out.quoted(s);
@@ -491,7 +482,7 @@ public final class Gemma4ToolCalls {
                     json.append(',');
                 }
                 first = false;
-                json.append(JsonReader.quote(key)).append(':');
+                json.append(ToolJson.quote(key)).append(':');
                 ws();
                 value(json);
                 ws();
@@ -546,7 +537,7 @@ public final class Gemma4ToolCalls {
                 if (end == -1) {
                     throw new IllegalArgumentException("unterminated string");
                 }
-                json.append(JsonReader.quote(s.substring(start, end)));
+                json.append(ToolJson.quote(s.substring(start, end)));
                 i = end + QUOTE.length();
                 return;
             }
@@ -581,12 +572,12 @@ public final class Gemma4ToolCalls {
                 String bare = s.substring(start, i).strip();
                 if (bare.equals("true") || bare.equals("false") || bare.equals("null")) {
                     json.append(bare);
-                } else if (JsonReader.isNumber(bare)) {
+                } else if (ToolJson.isNumber(bare)) {
                     json.append(bare);
                 } else if (bare.isEmpty()) {
                     throw new IllegalArgumentException("missing value");
                 } else {
-                    json.append(JsonReader.quote(bare)); // an unquoted string
+                    json.append(ToolJson.quote(bare)); // an unquoted string
                 }
             }
         }
@@ -633,7 +624,7 @@ public final class Gemma4ToolCalls {
 
     /** Jinja truthiness, for the values a schema holds. */
     private static boolean truthy(Object value) {
-        if (value == null || value == JsonReader.NULL) {
+        if (value == null || value == ToolJson.NULL) {
             return false;
         }
         if (value instanceof String s) {
@@ -648,7 +639,7 @@ public final class Gemma4ToolCalls {
         if (value instanceof List<?> l) {
             return !l.isEmpty();
         }
-        if (value instanceof JsonReader.Number n) {
+        if (value instanceof ToolJson.Number n) {
             return Double.parseDouble(n.text()) != 0;
         }
         return true;
@@ -656,7 +647,7 @@ public final class Gemma4ToolCalls {
 
     /** A value as the template interpolates it; an absent one is the empty string. */
     private static String text(Object value) {
-        if (value == null || value == JsonReader.NULL) {
+        if (value == null || value == ToolJson.NULL) {
             return "";
         }
         return value.toString();
@@ -706,229 +697,5 @@ public final class Gemma4ToolCalls {
             sb.append(piece.text());
         }
         return sb.toString();
-    }
-
-    /**
-     * A minimal JSON reader, into {@link LinkedHashMap} / {@link List} / {@link String} / {@link
-     * Boolean} / {@link Number} / {@link #NULL}. Numbers keep the text they were written with, so
-     * {@code 4} is rendered as {@code 4} and not as {@code 4.0}. The project carries no JSON
-     * dependency, and the server's reader parses numbers to doubles.
-     */
-    static final class JsonReader {
-
-        /** JSON {@code null}, distinct from an absent key. */
-        static final Object NULL =
-                new Object() {
-                    @Override
-                    public String toString() {
-                        return "null";
-                    }
-                };
-
-        /** A JSON number, as written. */
-        record Number(String text) {
-            @Override
-            public String toString() {
-                return text;
-            }
-        }
-
-        private final String s;
-        private int i;
-
-        JsonReader(String s) {
-            this.s = s == null ? "" : s;
-        }
-
-        static Object parse(String s) {
-            JsonReader reader = new JsonReader(s);
-            reader.skipWhitespace();
-            Object value = reader.value();
-            reader.skipWhitespace();
-            if (!reader.atEnd()) {
-                throw new IllegalArgumentException("trailing characters at " + reader.i);
-            }
-            return value;
-        }
-
-        boolean atEnd() {
-            return i >= s.length();
-        }
-
-        char peek() {
-            if (atEnd()) {
-                throw new IllegalArgumentException("unexpected end of JSON");
-            }
-            return s.charAt(i);
-        }
-
-        char next() {
-            char c = peek();
-            i++;
-            return c;
-        }
-
-        void skipWhitespace() {
-            while (i < s.length() && Character.isWhitespace(s.charAt(i))) {
-                i++;
-            }
-        }
-
-        Object value() {
-            skipWhitespace();
-            char c = peek();
-            switch (c) {
-                case '{':
-                    return object();
-                case '[':
-                    return array();
-                case '"':
-                    return string();
-                case 't':
-                    literal("true");
-                    return Boolean.TRUE;
-                case 'f':
-                    literal("false");
-                    return Boolean.FALSE;
-                case 'n':
-                    literal("null");
-                    return NULL;
-                default:
-                    return number();
-            }
-        }
-
-        private Map<String, Object> object() {
-            next();
-            Map<String, Object> map = new LinkedHashMap<>();
-            skipWhitespace();
-            if (peek() == '}') {
-                next();
-                return map;
-            }
-            while (true) {
-                skipWhitespace();
-                String key = string();
-                skipWhitespace();
-                if (next() != ':') {
-                    throw new IllegalArgumentException("expected ':' at " + (i - 1));
-                }
-                map.put(key, value());
-                skipWhitespace();
-                char c = next();
-                if (c == '}') {
-                    return map;
-                }
-                if (c != ',') {
-                    throw new IllegalArgumentException("expected ',' or '}' at " + (i - 1));
-                }
-            }
-        }
-
-        private List<Object> array() {
-            next();
-            List<Object> list = new ArrayList<>();
-            skipWhitespace();
-            if (peek() == ']') {
-                next();
-                return list;
-            }
-            while (true) {
-                list.add(value());
-                skipWhitespace();
-                char c = next();
-                if (c == ']') {
-                    return list;
-                }
-                if (c != ',') {
-                    throw new IllegalArgumentException("expected ',' or ']' at " + (i - 1));
-                }
-            }
-        }
-
-        private String string() {
-            if (next() != '"') {
-                throw new IllegalArgumentException("expected a string at " + (i - 1));
-            }
-            StringBuilder sb = new StringBuilder();
-            while (true) {
-                char c = next();
-                if (c == '"') {
-                    return sb.toString();
-                }
-                if (c != '\\') {
-                    sb.append(c);
-                    continue;
-                }
-                char e = next();
-                switch (e) {
-                    case 'n' -> sb.append('\n');
-                    case 'r' -> sb.append('\r');
-                    case 't' -> sb.append('\t');
-                    case 'b' -> sb.append('\b');
-                    case 'f' -> sb.append('\f');
-                    case 'u' -> {
-                        if (i + 4 > s.length()) {
-                            throw new IllegalArgumentException("truncated \\u escape");
-                        }
-                        sb.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
-                        i += 4;
-                    }
-                    default -> sb.append(e);
-                }
-            }
-        }
-
-        private void literal(String word) {
-            if (!s.startsWith(word, i)) {
-                throw new IllegalArgumentException("unexpected token at " + i);
-            }
-            i += word.length();
-        }
-
-        private Number number() {
-            int start = i;
-            while (i < s.length() && "+-0123456789.eE".indexOf(s.charAt(i)) >= 0) {
-                i++;
-            }
-            String text = s.substring(start, i);
-            if (!isNumber(text)) {
-                throw new IllegalArgumentException("not a JSON value at " + start);
-            }
-            return new Number(text);
-        }
-
-        static boolean isNumber(String v) {
-            if (v.isEmpty()) {
-                return false;
-            }
-            int i = v.charAt(0) == '-' ? 1 : 0;
-            if (i >= v.length()) {
-                return false;
-            }
-            boolean digits = false;
-            boolean dot = false;
-            boolean exponent = false;
-            for (; i < v.length(); i++) {
-                char c = v.charAt(i);
-                if (c >= '0' && c <= '9') {
-                    digits = true;
-                } else if (c == '.' && !dot && !exponent) {
-                    dot = true;
-                } else if ((c == 'e' || c == 'E') && digits && !exponent) {
-                    exponent = true;
-                    if (i + 1 < v.length() && (v.charAt(i + 1) == '+' || v.charAt(i + 1) == '-')) {
-                        i++;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            return digits;
-        }
-
-        static String quote(String text) {
-            return Qwen35ToolCalls.quote(text);
-        }
     }
 }

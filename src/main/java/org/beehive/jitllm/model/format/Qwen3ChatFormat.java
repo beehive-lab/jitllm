@@ -193,22 +193,61 @@ public class Qwen3ChatFormat implements ChatFormat {
 
     // ── Tool calling ──────────────────────────────────────────────────────────
 
-    @Override
-    public boolean supportsToolCalling() {
-        return true;
+    /**
+     * Qwen 2.5's default system message, which its template puts ahead of the tools when the
+     * conversation has none. Used only when the file's own template says so.
+     */
+    static final String QWEN_2_5_DEFAULT_SYSTEM =
+            "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.";
+
+    private static final List<String> TOOL_MARKERS =
+            List.of("<tool_call>", "</tool_call>", "<tool_response>", "</tool_response>");
+
+    /**
+     * The system text the template uses when tools are attached and the conversation has no system
+     * message, or {@code null} when it uses none.
+     */
+    private String defaultToolSystemMessage;
+
+    /**
+     * Declares the file's chat template ({@code tokenizer.chat_template}), so template-specific
+     * defaults are read from it rather than assumed. Returns this format.
+     */
+    public Qwen3ChatFormat withChatTemplate(String chatTemplate) {
+        this.defaultToolSystemMessage =
+                chatTemplate != null
+                                && chatTemplate.contains("'" + QWEN_2_5_DEFAULT_SYSTEM + "'")
+                                && chatTemplate.contains("{%- if tools %}")
+                        ? QWEN_2_5_DEFAULT_SYSTEM
+                        : null;
+        return this;
     }
 
     /**
-     * Qwen3 tool calling system prompt suffix. Appended to the system message; instructs the model
-     * to wrap tool calls in {@code <tool_call>…</tool_call>} XML tags.
+     * Only a ChatML model whose vocabulary has the {@code <tool_call>} / {@code </tool_call>}
+     * tokens its template's tool format is written in (Qwen 2.5, Qwen 3, Qwen 3.5). Not
+     * DeepSeek-R1-Distill-Qwen, routed here without {@code <|im_end|>}: its template renders no
+     * tool definitions. Not Qwen 1.5 / Qwen 2 (and their MoE releases): their templates have no
+     * tools and their vocabularies no {@code <tool_call>}.
      */
     @Override
-    public String toolSystemPromptSuffix(String toolsJson) {
-        return "\n\n# Tools\n\n"
+    public boolean supportsToolCalling() {
+        Map<String, Integer> special = tokenizer.getSpecialTokens();
+        return imEnd != -1
+                && special.containsKey("<tool_call>")
+                && special.containsKey("</tool_call>");
+    }
+
+    /**
+     * The tools block of the system turn, as the Qwen 2.5 and Qwen 3 templates write it: the
+     * instructions, and one {@code tojson} line per tool between {@code <tools></tools>}.
+     */
+    protected String toolsBlock(String toolsJson) {
+        return "# Tools\n\n"
                 + "You may call one or more functions to assist with the user query.\n\n"
                 + "You are provided with function signatures within <tools></tools> XML tags:\n"
-                + "<tools>\n"
-                + toolsJson
+                + "<tools>"
+                + toolLines(toolsJson)
                 + "\n</tools>\n\n"
                 + "For each function call, return a json object with function name and arguments "
                 + "within <tool_call></tool_call> XML tags:\n"
@@ -217,68 +256,96 @@ public class Qwen3ChatFormat implements ChatFormat {
                 + "</tool_call>";
     }
 
-    /**
-     * Re-encodes a prior assistant tool-call turn for multi-turn history. Format: {@code
-     * <|im_start|>assistant\n<tool_call>\nJSON\n</tool_call><|im_end|>}
-     */
-    @Override
-    public List<Integer> encodeToolCallAssistantTurn(ToolCallExtract toolCall) {
-        List<Integer> tokens = new ArrayList<>();
-        tokens.add(imStart);
-        tokens.addAll(tokenizer.encodeOrdinaryAsList("assistant\n"));
-        String json =
-                "{\"name\":\""
-                        + toolCall.name()
-                        + "\",\"arguments\":"
-                        + toolCall.argumentsJson()
-                        + "}";
-        tokens.addAll(tokenizer.encodeOrdinaryAsList("<tool_call>\n" + json + "\n</tool_call>"));
-        if (imEnd != -1) {
-            tokens.add(imEnd);
+    /** {@code "\n" + tool | tojson} for each tool, as the templates' tools loop writes them. */
+    protected static String toolLines(String toolsJson) {
+        StringBuilder lines = new StringBuilder();
+        for (Object tool : ToolJson.parseSequence(toolsJson)) {
+            lines.append('\n').append(ToolJson.dumps(tool));
         }
-        return tokens;
+        return lines.toString();
+    }
+
+    @Override
+    public String toolSystemPromptSuffix(String toolsJson) {
+        return "\n\n" + toolsBlock(toolsJson);
     }
 
     /**
-     * Encodes multiple tool calls as a single assistant turn: one {@code <|im_start|>assistant}
-     * header, all {@code <tool_call>} blocks concatenated, then {@code <|im_end|>}. For a single
-     * call, delegates to the existing single-call method.
+     * {@code <|im_start|>system\n{system}\n\n{tools block}<|im_end|>\n}; without a system message,
+     * the template's default one (Qwen 2.5) or none (Qwen 3).
+     */
+    @Override
+    public List<Integer> encodeToolSystemMessage(String systemContent, String toolsJson) {
+        String system = systemContent != null ? systemContent.strip() : defaultToolSystemMessage;
+        List<Integer> tokens = new ArrayList<>();
+        tokens.add(imStart);
+        tokens.addAll(tokenizer.encodeOrdinaryAsList("system\n"));
+        if (system != null) {
+            tokens.addAll(tokenizer.encodeOrdinaryAsList(system + "\n\n"));
+        }
+        tokens.addAll(templateText(toolsBlock(toolsJson)));
+        tokens.addAll(endOfTurn());
+        return tokens;
+    }
+
+    @Override
+    public List<Integer> encodeToolCallAssistantTurn(ToolCallExtract toolCall) {
+        return encodeToolCallAssistantTurn(List.of(toolCall));
+    }
+
+    /**
+     * One assistant turn with every call, as the templates replay {@code tool_calls}: {@code
+     * <tool_call>\n{"name": "…", "arguments": {…}}\n</tool_call>} per call, newline-separated, the
+     * arguments through {@code tojson}.
      */
     @Override
     public List<Integer> encodeToolCallAssistantTurn(List<ToolCallExtract> toolCalls) {
-        if (toolCalls.isEmpty()) return List.of();
-        if (toolCalls.size() == 1) return encodeToolCallAssistantTurn(toolCalls.get(0));
+        if (toolCalls.isEmpty()) {
+            return List.of();
+        }
         List<Integer> tokens = new ArrayList<>();
         tokens.add(imStart);
         tokens.addAll(tokenizer.encodeOrdinaryAsList("assistant\n"));
-        for (ToolCallExtract tc : toolCalls) {
-            String json =
-                    "{\"name\":\"" + tc.name() + "\",\"arguments\":" + tc.argumentsJson() + "}";
+        for (int i = 0; i < toolCalls.size(); i++) {
+            ToolCallExtract call = toolCalls.get(i);
+            if (i > 0) {
+                tokens.addAll(tokenizer.encodeOrdinaryAsList("\n"));
+            }
+            tokens.addAll(markerTokens("<tool_call>"));
             tokens.addAll(
-                    tokenizer.encodeOrdinaryAsList("<tool_call>\n" + json + "\n</tool_call>"));
+                    tokenizer.encodeOrdinaryAsList(
+                            "\n{\"name\": \""
+                                    + call.name()
+                                    + "\", \"arguments\": "
+                                    + argumentsJson(call.argumentsJson())
+                                    + "}\n"));
+            tokens.addAll(markerTokens("</tool_call>"));
         }
-        if (imEnd != -1) {
-            tokens.add(imEnd);
-        }
+        tokens.addAll(endOfTurn());
         return tokens;
     }
 
-    /**
-     * Encodes a tool result in the native Qwen3 format: a {@code user} turn whose content is the
-     * result wrapped in {@code <tool_response>…</tool_response>} tags, matching the official Qwen3
-     * chat template. (Qwen3 has no dedicated "tool" role — results are delivered as user turns.)
-     * Format: {@code <|im_start|>user\n<tool_response>\nresult\n</tool_response><|im_end|>}
-     */
     @Override
     public List<Integer> encodeToolResultTurn(String toolCallId, String toolName, String result) {
+        return encodeToolResults(List.of(new ToolResult(toolCallId, toolName, result)));
+    }
+
+    /**
+     * A run of results as one {@code user} turn, each in {@code \n<tool_response>\n…\n
+     * </tool_response>} — the templates' {@code role: tool} branch. Qwen has no tool role.
+     */
+    @Override
+    public List<Integer> encodeToolResults(List<ToolResult> results) {
         List<Integer> tokens = new ArrayList<>();
         tokens.add(imStart);
-        tokens.addAll(
-                tokenizer.encodeOrdinaryAsList(
-                        "user\n<tool_response>\n" + result + "\n</tool_response>"));
-        if (imEnd != -1) {
-            tokens.add(imEnd);
+        tokens.addAll(tokenizer.encodeOrdinaryAsList("user"));
+        for (ToolResult result : results) {
+            tokens.addAll(tokenizer.encodeOrdinaryAsList("\n"));
+            tokens.addAll(markerTokens("<tool_response>"));
+            tokens.addAll(tokenizer.encodeOrdinaryAsList("\n" + result.content() + "\n"));
+            tokens.addAll(markerTokens("</tool_response>"));
         }
+        tokens.addAll(endOfTurn());
         return tokens;
     }
 
@@ -294,5 +361,45 @@ public class Qwen3ChatFormat implements ChatFormat {
     @Override
     public List<ToolCallExtract> extractAllToolCalls(String responseText) {
         return ToolCallParserUtils.parseAllToolCalls(responseText);
+    }
+
+    /** {@code <|im_end|>\n}. */
+    protected List<Integer> endOfTurn() {
+        List<Integer> tokens = new ArrayList<>();
+        if (imEnd != -1) {
+            tokens.add(imEnd);
+        }
+        tokens.addAll(tokenizer.encodeOrdinaryAsList("\n"));
+        return tokens;
+    }
+
+    /** Template text whose tool markers are encoded as their tokens. */
+    protected List<Integer> templateText(String text) {
+        Map<String, Integer> markers = new LinkedHashMap<>();
+        for (String spelling : TOOL_MARKERS) {
+            Integer id = tokenizer.getSpecialTokens().get(spelling);
+            if (id != null) {
+                markers.put(spelling, id);
+            }
+        }
+        return MarkerText.encode(text, markers, tokenizer::encodeOrdinaryAsList);
+    }
+
+    /** A tool marker's token, or its spelling as text when the vocabulary lacks it. */
+    protected List<Integer> markerTokens(String spelling) {
+        Integer id = tokenizer.getSpecialTokens().get(spelling);
+        return id != null ? List.of(id) : tokenizer.encodeOrdinaryAsList(spelling);
+    }
+
+    /** Arguments as the templates' {@code tojson} writes a mapping; non-JSON text as it stands. */
+    static String argumentsJson(String argumentsJson) {
+        if (argumentsJson == null || argumentsJson.isBlank()) {
+            return "{}";
+        }
+        try {
+            return ToolJson.dumps(ToolJson.parse(argumentsJson));
+        } catch (IllegalArgumentException e) {
+            return argumentsJson;
+        }
     }
 }

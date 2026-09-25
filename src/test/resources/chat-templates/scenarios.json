@@ -1,0 +1,49 @@
+{
+  "tools": {
+    "getWeather": {
+      "description": "Returns the current weather for a city.",
+      "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "The city name"}}, "required": ["city"]}
+    },
+    "get_current_time": {
+      "description": "Returns the current time.",
+      "parameters": {"type": "object", "properties": {}, "required": []}
+    }
+  },
+  "scenarios": {
+    "system_and_tool": {
+      "tools": ["getWeather"],
+      "messages": [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "What is the weather in Paris?"}
+      ]
+    },
+    "no_system_two_tools": {
+      "tools": ["getWeather", "get_current_time"],
+      "messages": [
+        {"role": "user", "content": "Hi"}
+      ]
+    },
+    "call_and_result": {
+      "tools": ["getWeather"],
+      "messages": [
+        {"role": "user", "content": "What is the weather in Paris?"},
+        {"role": "assistant", "tool_calls": [{"id": "c1", "name": "getWeather", "arguments": {"city": "Paris"}}]},
+        {"role": "tool", "tool_call_id": "c1", "name": "getWeather", "content": "{\"temperature\":18,\"condition\":\"sunny\"}"}
+      ]
+    },
+    "two_calls_results_answer_user": {
+      "tools": ["getWeather", "get_current_time"],
+      "messages": [
+        {"role": "user", "content": "Weather in Paris and the time?"},
+        {"role": "assistant", "tool_calls": [
+          {"id": "c1", "name": "getWeather", "arguments": {"city": "Paris"}},
+          {"id": "c2", "name": "get_current_time", "arguments": {}}
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "name": "getWeather", "content": "sunny"},
+        {"role": "tool", "tool_call_id": "c2", "name": "get_current_time", "content": "12:00"},
+        {"role": "assistant", "content": "It is sunny and noon."},
+        {"role": "user", "content": "Thanks"}
+      ]
+    }
+  }
+}
