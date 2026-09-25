@@ -84,8 +84,10 @@ public final class TokenGenerationLoop {
 
     /**
      * Whether the caller asked generation to stop, checked after each generated token has been
-     * delivered. The token consumer carries the request's {@link
-     * org.beehive.jitllm.api.CancellationToken}; a plain consumer is never cancelled.
+     * delivered. Unlike a terminal stop token, that token remains in the response, so a cancelling
+     * loop must save it as its continuation seed before returning. The token consumer carries the
+     * request's {@link org.beehive.jitllm.api.CancellationToken}; a plain consumer is never
+     * cancelled.
      */
     static boolean cancellationRequested(IntConsumer onTokenGenerated) {
         return onTokenGenerated instanceof CancellableTokenConsumer consumer
@@ -306,6 +308,7 @@ public final class TokenGenerationLoop {
                 break;
             }
             if (cancellationRequested(onTokenGenerated)) {
+                state.latestToken = nextToken;
                 break;
             }
 
@@ -392,6 +395,7 @@ public final class TokenGenerationLoop {
                 break;
             }
             if (cancellationRequested(onTokenGenerated)) {
+                state.latestToken = nextToken;
                 break;
             }
 
@@ -492,6 +496,7 @@ public final class TokenGenerationLoop {
                     break;
                 }
                 if (cancellationRequested(onTokenGenerated)) {
+                    state.latestToken = nextToken;
                     break;
                 }
             }
@@ -599,6 +604,7 @@ public final class TokenGenerationLoop {
                 break;
             }
             if (cancellationRequested(onTokenGenerated)) {
+                state.latestToken = nextToken;
                 break;
             }
 
@@ -718,6 +724,7 @@ public final class TokenGenerationLoop {
                 break;
             }
             if (cancellationRequested(onTokenGenerated)) {
+                state.latestToken = token;
                 break;
             }
 
@@ -812,6 +819,7 @@ public final class TokenGenerationLoop {
                     break;
                 }
                 if (cancellationRequested(onTokenGenerated)) {
+                    state.latestToken = nextToken;
                     break;
                 }
             }
@@ -1124,6 +1132,7 @@ public final class TokenGenerationLoop {
                 break;
             }
             if (cancellationRequested(onTokenGenerated)) {
+                cursor.advance(nextToken);
                 break;
             }
             currentToken = nextToken;
@@ -1255,6 +1264,7 @@ public final class TokenGenerationLoop {
                     break;
                 }
                 if (cancellationRequested(onTokenGenerated)) {
+                    cursor.advance(nextToken);
                     break;
                 }
             }
@@ -1418,6 +1428,7 @@ public final class TokenGenerationLoop {
                 break;
             }
             if (cancellationRequested(onTokenGenerated)) {
+                state.latestToken = nextToken;
                 break;
             }
 
@@ -1512,6 +1523,7 @@ public final class TokenGenerationLoop {
                     break;
                 }
                 if (cancellationRequested(onTokenGenerated)) {
+                    state.latestToken = nextToken;
                     break;
                 }
             }
@@ -1599,6 +1611,7 @@ public final class TokenGenerationLoop {
                     break;
                 }
                 if (cancellationRequested(onTokenGenerated)) {
+                    state.latestToken = nextToken;
                     break;
                 }
             }
@@ -1687,6 +1700,7 @@ public final class TokenGenerationLoop {
                     break;
                 }
                 if (cancellationRequested(onTokenGenerated)) {
+                    state.latestToken = nextToken;
                     break;
                 }
             }
