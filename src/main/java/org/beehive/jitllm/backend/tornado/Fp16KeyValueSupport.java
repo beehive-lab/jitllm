@@ -75,6 +75,11 @@ public final class Fp16KeyValueSupport {
                                     ? " on this (non-NVIDIA) device"
                                     : ""));
         }
+        Optional<String> noBatchedPrefill = BatchPrefillSupport.unsupported(c);
+        if (noBatchedPrefill.isPresent()) {
+            // Not a key/value question: the plan cannot be built with either cache.
+            return noBatchedPrefill;
+        }
         switch (c.architecture()) {
             case "qwen35" -> {
                 // FP16 writers and readers in every mode, including batched prefill. On CUDA the
@@ -157,6 +162,9 @@ public final class Fp16KeyValueSupport {
             return;
         }
         Combination combination = resolve(model, policy, gpu);
+        // A plan that cannot be built at all is refused as that, not as a cache the FP32 setting
+        // would rescue.
+        BatchPrefillSupport.require(model, policy, gpu);
         unsupported(combination)
                 .ifPresent(
                         reason -> {
@@ -171,9 +179,11 @@ public final class Fp16KeyValueSupport {
                         + combination
                         + ": "
                         + reason
-                        + ". Run with --fp32-kv-cache, or load with"
-                        + " ModelOptions.builder().storageOptions(StorageOptions.fp32()) from"
-                        + " Java");
+                        + ". Run with --fp32-kv-cache; from Java, load with"
+                        + " ModelOptions.builder().storageOptions(StorageOptions.fp32()), or start"
+                        + " the JVM with -D"
+                        + StorageOptions.FP32_PROPERTY
+                        + "=true");
     }
 
     /** The combination this model and policy resolve to on the current device. */

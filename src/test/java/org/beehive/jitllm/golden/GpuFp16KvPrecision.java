@@ -72,6 +72,15 @@ public final class GpuFp16KvPrecision {
         System.setProperty("jitllm.prefillBatchSize", Integer.toString(width));
         try {
             Model model = KvPrecisionHarness.load(file, CONTEXT, true);
+            if (mode == Mode.BATCHED) {
+                // A plan this device cannot build is refused by name at plan build; that refusal is
+                // BatchPrefillSupportTest's subject, not this comparison's.
+                var refused =
+                        org.beehive.jitllm.backend.tornado.BatchPrefillSupport
+                                .unsupportedOnCurrentDevice(model);
+                refused.ifPresent(r -> System.out.println("[SKIP] " + fixture + " batched: " + r));
+                assumeTrue("batched prefill not built here", refused.isEmpty());
+            }
             List<Integer> prompt = KvPrecisionHarness.longPrompt(model, PROMPT_TOKENS);
             var comparison =
                     KvPrecisionHarness.compareFp16AgainstFp32(

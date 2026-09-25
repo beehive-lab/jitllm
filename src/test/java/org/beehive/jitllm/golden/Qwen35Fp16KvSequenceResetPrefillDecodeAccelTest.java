@@ -20,7 +20,7 @@ public class Qwen35Fp16KvSequenceResetPrefillDecodeAccelTest extends Qwen35Seque
 
     @Override
     void verifyAttentionDispatch(TornadoVMMasterPlan plan) {
-        PlanDispatchEvidence.assertQwen35SplitKvAttention(
+        PlanDispatchEvidence.assertQwen35DecodeAttentionForBackend(
                 PlanDispatchEvidence.gridSchedulerIfAvailable(plan));
     }
 

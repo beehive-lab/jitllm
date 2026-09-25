@@ -102,6 +102,8 @@ public interface TornadoVMMasterPlan {
         // has already asked at load; this covers the callers that build a state themselves.
         Fp16KeyValueSupport.require(model, state.executionPolicy(), state.storageOptions(), true);
         NativeLibrarySupport.require(model, state.executionPolicy(), true);
+        // A batched prefill the family cannot build on this device, with either cache.
+        BatchPrefillSupport.require(model, state.executionPolicy(), true);
 
         // The lowering's opt-in is consulted here, in the one factory every caller reaches, rather
         // than at each construction site. It was branched at two sites before — the API session and

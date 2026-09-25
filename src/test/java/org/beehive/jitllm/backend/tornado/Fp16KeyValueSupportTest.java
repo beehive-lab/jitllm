@@ -108,8 +108,11 @@ public class Fp16KeyValueSupportTest {
                 assertTrue(
                         weights + " " + mode,
                         check("gemma4", weights, mode, BackendId.CUDA, true, true).isEmpty());
-                assertTrue(
+                // Single-token on OpenCL; the batched plan is tensor-core only
+                // (BatchPrefillSupport).
+                assertEquals(
                         weights + " " + mode + " on OpenCL",
+                        mode == ExecutionMode.STANDARD,
                         check("gemma4", weights, mode, BackendId.OPENCL, true, false).isEmpty());
                 assertTrue(
                         weights + " " + mode + " on non-NVIDIA OpenCL",
@@ -176,6 +179,7 @@ public class Fp16KeyValueSupportTest {
         assertTrue(message, message.contains("the gemma4 layers keep FP32"));
         assertTrue(message, message.contains("--fp32-kv-cache"));
         assertTrue(message, message.contains("StorageOptions.fp32()"));
+        assertTrue(message, message.contains("-Djitllm.kvcache.fp32=true"));
     }
 
     @Test
@@ -232,10 +236,12 @@ public class Fp16KeyValueSupportTest {
     @Test
     public void qwen35RunsOnOpenClOnAnNvidiaDevice() {
         for (ExecutionMode mode : ExecutionMode.values()) {
+            // Batched prefill does not compile on OpenCL, with either cache; see
+            // BatchPrefillSupport.
             assertEquals(
                     mode.toString(),
-                    Optional.empty(),
-                    check("qwen35", DataType.Q4_0, mode, BackendId.OPENCL, true, false));
+                    mode != ExecutionMode.BATCH_PREFILL_DECODE,
+                    check("qwen35", DataType.Q4_0, mode, BackendId.OPENCL, true, false).isEmpty());
             assertTrue(
                     mode.toString(),
                     Fp16KeyValueSupport.unsupported(

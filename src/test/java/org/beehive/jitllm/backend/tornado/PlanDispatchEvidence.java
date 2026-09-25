@@ -488,6 +488,27 @@ public final class PlanDispatchEvidence {
      * @param scheduler the plan's own scheduler; a missing one fails here
      */
     // @formatter:on
+    /**
+     * The decode attention this backend is meant to select for a {@code qwen35} FP16 cache:
+     * split-KV on CUDA ({@link #assertQwen35SplitKvAttention}), the single-workgroup per-head
+     * kernel (an attention task and no combine) everywhere else.
+     */
+    public static void assertQwen35DecodeAttentionForBackend(GridScheduler scheduler) {
+        if (org.beehive.jitllm.runtime.backend.BackendId.CUDA.equals(
+                org.beehive.jitllm.backend.tornado.device.TornadoDevices.current().backend())) {
+            assertQwen35SplitKvAttention(scheduler);
+            return;
+        }
+        assertNotNull(
+                "no grid scheduler for the plan this run built, so its dispatch cannot be checked",
+                scheduler);
+        long attention = scheduler.keySet().stream().filter(t -> t.endsWith(".attention")).count();
+        long combine =
+                scheduler.keySet().stream().filter(t -> t.endsWith(".attention_combine")).count();
+        assertTrue("this plan has no attention task at all", attention > 0);
+        assertEquals("the per-head kernel has no combine", 0, combine);
+    }
+
     public static void assertQwen35SplitKvAttention(GridScheduler scheduler) {
         assertNotNull(
                 "no grid scheduler for the plan this run built, so its dispatch cannot be checked",
