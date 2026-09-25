@@ -36,7 +36,7 @@
 
     <properties>
         <!-- CI-friendly version: resolved by flatten-maven-plugin at build time -->
-        <revision>1.0.0</revision>
+        <revision>1.0.1</revision>
         <!-- Floor is >= 5.2.0, for two independent reasons: BFloat16Array lands in 5.2.0
                  (FP8Array in 5.1.0), along with deterministic generated kernel source and the
                  graph-sized interpreter bytecode buffer; and the packed-half2 split-KV

@@ -2,6 +2,18 @@
 
 All notable changes to GPULlama3.java will be documented in this file.
 
+## [1.0.1] - 2026-09-25
+
+### Bug Fixes
+
+- Release the KV lease when a session fails to build ([#183](https://github.com/beehive-lab/jitllm/pull/183))
+
+### Other Changes
+
+- Expect Mistral-7B F16 to pass in standalone inference again ([#184](https://github.com/beehive-lab/jitllm/pull/184))
+- Publish a thin library jar; TornadoVM comes from the SDK (fixes #176) ([#180](https://github.com/beehive-lab/jitllm/pull/180))
+- Cancel a generation early with a CancellationToken ([#175](https://github.com/beehive-lab/jitllm/pull/175))
+
 ## [1.0.0] - 2026-09-25
 
 ### Features
