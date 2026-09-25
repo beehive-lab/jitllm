@@ -116,7 +116,9 @@ public class Qwen2ModelLoader extends AbstractModelLoader<Qwen2, Qwen2Configurat
                         config,
                         tokenizer,
                         weights,
-                        new Qwen3ChatFormat((Qwen3Tokenizer) tokenizer, chatTokens));
+                        new Qwen3ChatFormat((Qwen3Tokenizer) tokenizer, chatTokens)
+                                .withChatTemplate(
+                                        (String) metadata.get("tokenizer.chat_template")));
     }
 
     // @formatter:on

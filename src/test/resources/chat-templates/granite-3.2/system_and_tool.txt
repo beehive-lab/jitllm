@@ -1,0 +1,24 @@
+<|start_of_role|>system<|end_of_role|>You are helpful.<|end_of_text|>
+<|start_of_role|>tools<|end_of_role|>[
+    {
+        "type": "function",
+        "function": {
+            "name": "getWeather",
+            "description": "Returns the current weather for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "The city name"
+                    }
+                },
+                "required": [
+                    "city"
+                ]
+            }
+        }
+    }
+]<|end_of_text|>
+<|start_of_role|>user<|end_of_role|>What is the weather in Paris?<|end_of_text|>
+<|start_of_role|>assistant<|end_of_role|>

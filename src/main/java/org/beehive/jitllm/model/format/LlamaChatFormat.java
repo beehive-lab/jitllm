@@ -85,16 +85,22 @@ public class LlamaChatFormat implements ChatFormat {
 
     // ── Tool calling ──────────────────────────────────────────────────────────
 
+    /**
+     * The Llama 3.1 / 3.2 templates' {@code date_string} default, used when the renderer provides
+     * no {@code strftime_now}. A fixed value keeps the prompt — and so prefix reuse and tests —
+     * deterministic.
+     */
+    static final String TEMPLATE_DATE = "26 Jul 2024";
+
     @Override
     public boolean supportsToolCalling() {
         return true;
     }
 
     /**
-     * Llama 3.2 Instruct injects tool definitions into the <em>first user message</em> (the
-     * GGUF-embedded chat template has {@code tools_in_user_message = true} by default). The system
-     * message receives only an environment prefix; the tools and usage instructions go in the user
-     * turn.
+     * Llama 3.1 and 3.2 Instruct put the tool definitions in the <em>first user message</em>
+     * ({@code tools_in_user_message = true} by default in both templates). The system message
+     * receives only the environment and date lines.
      */
     @Override
     public boolean injectsToolsInUserMessage() {
@@ -102,103 +108,106 @@ public class LlamaChatFormat implements ChatFormat {
     }
 
     /**
-     * System-message prefix that signals tool availability to Llama 3.2. Matches the template's
-     * {@code "Environment: ipython\n"} line.
+     * The system-message lines the template writes ahead of the caller's system text when tools are
+     * attached: {@code Environment: ipython}, the knowledge cutoff and the date.
      */
     @Override
     public String toolSystemMessagePrefix() {
-        return "Environment: ipython\n\n";
-    }
-
-    /**
-     * Prepends tool definitions and usage instructions to the first user message, matching the
-     * Llama 3.2 GGUF chat template ({@code tools_in_user_message = true}).
-     *
-     * <p>Format mirrors:
-     *
-     * <pre>
-     * Given the following functions, please respond with a JSON for a function call
-     * with its proper arguments that best answers the given prompt.
-     *
-     * Respond in the format {"name": function name, "parameters": dictionary of argument name and its value}.
-     * Do not use variables.
-     *
-     * {toolsJson}
-     *
-     * </pre>
-     */
-    @Override
-    public String toolFirstUserMessagePrefix(String toolsJson) {
-        return "Given the following functions, please respond with a JSON for a function call "
-                + "with its proper arguments that best answers the given prompt.\n\n"
-                + "Respond in the format {\"name\": function name, \"parameters\": dictionary of "
-                + "argument name and its value}. Do not use variables.\n\n"
-                + toolsJson
+        return "Environment: ipython\n"
+                + "Cutting Knowledge Date: December 2023\n"
+                + "Today Date: "
+                + TEMPLATE_DATE
                 + "\n\n";
     }
 
     /**
-     * Re-encodes a prior assistant tool-call turn for multi-turn history using the Llama 3.2 native
-     * JSON format: {@code {"name":"…","parameters":{…}}<|eot_id|>}.
+     * The system turn of a tool request: the environment and date lines, then the caller's system
+     * text, trimmed, as the template writes it — present even when the conversation has no system
+     * message.
      */
     @Override
-    public List<Integer> encodeToolCallAssistantTurn(ToolCallExtract toolCall) {
-        List<Integer> tokens = new ArrayList<>(encodeHeader(new Message(Role.ASSISTANT, "")));
-        // Preserve the <|python_tag|> prefix used by LLaMA 3.1/3.2 for tool calls so that
-        // replayed history looks identical to what the model originally generated.
-        if (pythonTag != -1) {
-            tokens.add(pythonTag);
-        }
-        String json =
-                "{\"name\": \""
-                        + toolCall.name()
-                        + "\", \"parameters\": "
-                        + toolCall.argumentsJson()
-                        + "}";
-        tokens.addAll(tokenizer.encodeAsList(json));
-        // LLaMA 3.1 ends tool-call turns with <|eom_id|>; fall back to <|eot_id|> for 3.2.
-        tokens.add(endOfMessage != -1 ? endOfMessage : endOfTurn);
-        return tokens;
-    }
-
-    /**
-     * Encodes a tool result using the LLaMA "ipython" role. Format: {@code
-     * <|start_header_id|>ipython<|end_header_id|>\nresult<|eot_id|>}
-     */
-    @Override
-    public List<Integer> encodeToolResultTurn(String toolCallId, String toolName, String result) {
-        List<Integer> tokens = new ArrayList<>();
-        tokens.add(startHeader);
-        tokens.addAll(tokenizer.encodeAsList("ipython"));
-        tokens.add(endHeader);
-        tokens.addAll(tokenizer.encodeAsList("\n"));
-        tokens.addAll(tokenizer.encodeAsList(result));
+    public List<Integer> encodeToolSystemMessage(String systemContent, String toolsJson) {
+        List<Integer> tokens = new ArrayList<>(encodeHeader(new Message(Role.SYSTEM, "")));
+        tokens.addAll(
+                tokenizer.encodeAsList(
+                        toolSystemMessagePrefix()
+                                + (systemContent == null ? "" : systemContent.strip())));
         tokens.add(endOfTurn);
         return tokens;
     }
 
     /**
-     * Encodes multiple tool calls as a single assistant turn. For a single call, delegates to the
-     * existing single-call method (preserving the {@code <|python_tag|>} prefix on LLaMA 3.1). For
-     * multiple calls, LLaMA 3.1 prefixes each with {@code <|python_tag|>}; LLaMA 3.2 (no
-     * python_tag) uses {@code <tool_call>} blocks.
+     * The template's preamble to the first user message: the instructions, then each tool as {@code
+     * tojson(indent=4)} followed by a blank line.
+     */
+    @Override
+    public String toolFirstUserMessagePrefix(String toolsJson) {
+        StringBuilder prefix =
+                new StringBuilder(
+                        "Given the following functions, please respond with a JSON for a function"
+                                + " call with its proper arguments that best answers the given"
+                                + " prompt.\n\n"
+                                + "Respond in the format {\"name\": function name, \"parameters\":"
+                                + " dictionary of argument name and its value}."
+                                + "Do not use variables.\n\n");
+        for (Object tool : ToolJson.parseSequence(toolsJson)) {
+            prefix.append(ToolJson.dumps(tool, 4)).append("\n\n");
+        }
+        return prefix.toString();
+    }
+
+    /**
+     * A prior tool call, as the templates replay a custom tool's call: {@code {"name": "…",
+     * "parameters": {…}}<|eot_id|>}, the arguments through {@code tojson}. No {@code
+     * <|python_tag|>} and no {@code <|eom_id|>}: those mark Llama 3.1's built-in tools, which the
+     * facade does not offer.
+     */
+    @Override
+    public List<Integer> encodeToolCallAssistantTurn(ToolCallExtract toolCall) {
+        return encodeToolCallAssistantTurn(List.of(toolCall));
+    }
+
+    /**
+     * The templates accept one call per assistant turn and reject more; several calls the model
+     * made in one turn are replayed in that one turn, one JSON object per line.
      */
     @Override
     public List<Integer> encodeToolCallAssistantTurn(List<ToolCallExtract> toolCalls) {
-        if (toolCalls.isEmpty()) return List.of();
-        if (toolCalls.size() == 1) return encodeToolCallAssistantTurn(toolCalls.get(0));
-        List<Integer> tokens = new ArrayList<>(encodeHeader(new Message(Role.ASSISTANT, "")));
-        for (ToolCallExtract tc : toolCalls) {
-            String json =
-                    "{\"name\": \"" + tc.name() + "\", \"parameters\": " + tc.argumentsJson() + "}";
-            if (pythonTag != -1) {
-                tokens.add(pythonTag);
-                tokens.addAll(tokenizer.encodeAsList(json + "\n"));
-            } else {
-                tokens.addAll(tokenizer.encodeAsList("<tool_call>\n" + json + "\n</tool_call>\n"));
-            }
+        if (toolCalls.isEmpty()) {
+            return List.of();
         }
-        tokens.add(endOfMessage != -1 ? endOfMessage : endOfTurn);
+        List<Integer> tokens = new ArrayList<>(encodeHeader(new Message(Role.ASSISTANT, "")));
+        StringBuilder body = new StringBuilder();
+        for (int i = 0; i < toolCalls.size(); i++) {
+            ToolCallExtract call = toolCalls.get(i);
+            if (i > 0) {
+                body.append('\n');
+            }
+            body.append("{\"name\": \"")
+                    .append(call.name())
+                    .append("\", \"parameters\": ")
+                    .append(Qwen3ChatFormat.argumentsJson(call.argumentsJson()))
+                    .append('}');
+        }
+        tokens.addAll(tokenizer.encodeAsList(body.toString()));
+        tokens.add(endOfTurn);
+        return tokens;
+    }
+
+    /**
+     * A tool result in the {@code ipython} role: {@code
+     * <|start_header_id|>ipython<|end_header_id|>…"result"<|eot_id|>}.
+     *
+     * <p>The result is written through {@code tojson}, so it arrives as a JSON string literal. That
+     * is what the Llama 3.1 and 3.2 templates do with string content — their {@code content is
+     * iterable} test is true for a string, in Jinja2 and in llama.cpp's renderer alike — and so
+     * what a model served by either sees.
+     */
+    @Override
+    public List<Integer> encodeToolResultTurn(String toolCallId, String toolName, String result) {
+        List<Integer> tokens = new ArrayList<>(encodeHeader(new Message(new Role("ipython"), "")));
+        tokens.addAll(tokenizer.encodeAsList(ToolJson.dumps(result)));
+        tokens.add(endOfTurn);
         return tokens;
     }
 

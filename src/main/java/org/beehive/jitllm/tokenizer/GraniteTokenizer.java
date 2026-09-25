@@ -45,6 +45,9 @@ public class GraniteTokenizer implements Tokenizer {
     private final int padTokenId;
     private final String pretokenizerType;
 
+    /** The tool-call markers, displayed although they are special tokens. */
+    private final Set<Integer> toolCallMarkers;
+
     public GraniteTokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
         this.vocabulary = vocabulary;
 
@@ -88,6 +91,11 @@ public class GraniteTokenizer implements Tokenizer {
             }
         }
         this.specialTokens = Map.copyOf(specialTokens);
+        this.toolCallMarkers =
+                java.util.stream.Stream.of("<|tool_call|>", "<tool_call>", "</tool_call>")
+                        .map(this.specialTokens::get)
+                        .filter(java.util.Objects::nonNull)
+                        .collect(Collectors.toUnmodifiableSet());
 
         // Build merge map
         this.merges = new HashMap<>();
@@ -182,9 +190,14 @@ public class GraniteTokenizer implements Tokenizer {
         return specialTokens.containsValue(tokenIndex);
     }
 
+    /**
+     * Ordinary tokens, and the tool-call markers ({@code <|tool_call|>} for Granite 3.2, {@code
+     * <tool_call>} / {@code </tool_call>} for Granite 4): a call is read back from the response
+     * text, so the markers have to reach it.
+     */
     @Override
     public boolean shouldDisplayToken(int token) {
-        return !isSpecialToken(token);
+        return !isSpecialToken(token) || toolCallMarkers.contains(token);
     }
 
     public String regexPattern() {

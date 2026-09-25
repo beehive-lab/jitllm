@@ -125,6 +125,26 @@ public class FacadeSurfaceTest {
     }
 
     /**
+     * What a model can do is asked of its {@link ModelInfo}, before a request is sent — not learnt
+     * from the exception the request throws. Two flags, pinned exactly: a third capability is a
+     * decision, and no format, template or token set rides along with them.
+     */
+    @Test
+    public void capabilitiesAreQueryableFromTheModelInfo() throws Exception {
+        assertEquals(
+                ModelCapabilities.class, ModelInfo.class.getMethod("capabilities").getReturnType());
+        assertTrue(ModelCapabilities.class.isRecord());
+        assertEquals(
+                java.util.List.of("toolCalling", "thinkingControl"),
+                Arrays.stream(ModelCapabilities.class.getRecordComponents())
+                        .map(java.lang.reflect.RecordComponent::getName)
+                        .toList());
+        Set<String> expected =
+                Set.of("toolCalling", "thinkingControl", "equals", "hashCode", "toString");
+        assertEquals(expected, methodNames(ModelCapabilities.class));
+    }
+
+    /**
      * Read from the class file rather than by reflection: the marker is {@code
      * RetentionPolicy.CLASS}, so it is deliberately invisible at runtime — it costs a dependent
      * nothing to run, and tools that care read the bytecode. This test reads the bytecode too.
@@ -137,7 +157,11 @@ public class FacadeSurfaceTest {
             ModelOptions.class, SessionOptions.class,
         };
         Class<?>[] experimental = {
-            GenerationTimings.class, FinishReason.class, ModelInfo.class, ModelConfiguration.class,
+            GenerationTimings.class,
+            FinishReason.class,
+            ModelInfo.class,
+            ModelConfiguration.class,
+            ModelCapabilities.class,
         };
         for (Class<?> type : stable) {
             assertFalse(

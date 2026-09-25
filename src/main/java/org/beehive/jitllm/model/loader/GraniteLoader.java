@@ -110,7 +110,12 @@ public class GraniteLoader extends AbstractModelLoader<Granite, GraniteConfigura
     protected Granite createModel(
             GraniteConfiguration config, Tokenizer tokenizer, Weights weights) {
         return new Granite(
-                config, tokenizer, weights, new GraniteChatFormat((GraniteTokenizer) tokenizer));
+                config,
+                tokenizer,
+                weights,
+                new GraniteChatFormat(
+                        (GraniteTokenizer) tokenizer,
+                        (String) gguf.getMetadata().get("tokenizer.chat_template")));
     }
 
     // @formatter:off

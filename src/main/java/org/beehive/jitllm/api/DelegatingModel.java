@@ -153,7 +153,20 @@ final class DelegatingModel implements TextGenerationModel {
                         delegate.configuration().contextLength(),
                         source,
                         java.util.Set.of(delegate.weights().dataType()),
-                        delegate.configuration().activationType());
+                        delegate.configuration().activationType(),
+                        capabilitiesOf(delegate.chatFormat()));
+    }
+
+    /**
+     * The facade's reading of a chat format's capabilities: the same two predicates that {@link
+     * ConversationEncoder} and {@link #requireRepresentable} enforce, so what is reported is what a
+     * request will be held to.
+     */
+    static ModelCapabilities capabilitiesOf(org.beehive.jitllm.model.format.ChatFormat format) {
+        if (format == null) {
+            return ModelCapabilities.NONE; // no format, nothing a request could use
+        }
+        return new ModelCapabilities(format.supportsToolCalling(), format.supportsThinking());
     }
 
     /**

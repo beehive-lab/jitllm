@@ -69,6 +69,7 @@ public class StableSurfaceTest {
                             "ChatMessage",
                             "FinishReason",
                             "GenerationTimings",
+                            "ModelCapabilities",
                             "ModelConfiguration",
                             "ModelInfo",
                             "InsufficientDeviceMemoryException"));

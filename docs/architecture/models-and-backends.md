@@ -40,6 +40,36 @@ tool-call format: Qwen 3 puts a JSON object inside `<tool_call>`, and Qwen 3.5 p
 pseudo-XML there (`<function=name><parameter=x>`). Inheriting the wrong one would have produced a
 model that converses correctly and gets tool calling silently wrong in both directions.
 
+Gemma 4 has a third tool format, taken from the chat template in its GGUF files: declarations,
+calls and results are written in a bare-key dictionary syntax whose strings are delimited by the
+`<|"|>` token (`<|tool_call>call:getWeather{city:<|"|>Paris<|"|>}<tool_call|>`), and every marker
+is a single token. The results go inside the assistant turn that made the calls, which stays open
+for the answer, so the conversation encoder does not add a new assistant header after them. The
+model ends a call with `<|tool_response>` or `<eos>`, both tool-aware stop tokens.
+
+### Tool calling per family
+
+Each family's tool rendering follows the chat template embedded in its GGUF. The unit tests
+compare the encoder's output with that template rendered by Jinja2
+(`src/test/resources/chat-templates/`). A family whose template has no tool format reports
+`toolCalling = false`; the engine does not invent one.
+
+| Family | Tools | Format (from the template) |
+| --- | --- | --- |
+| Llama 3.1 / 3.2 | yes | tools as `tojson(indent=4)` in the first user message; `{"name", "parameters"}` calls; `ipython` results |
+| Qwen 2.5, Qwen 3 | yes | `<tools>` in the system turn; `<tool_call>{json}</tool_call>`; a run of results in one user turn |
+| Qwen 3.5 (`qwen35`) | yes | as Qwen 3, but calls in `<function=…><parameter=…>` pseudo-XML and tools before the system text |
+| Granite 3.2 | yes | a `tools` turn; `<\|tool_call\|>` + a JSON list; `tool` turns |
+| Granite 4.0 | yes | `<tools>` in the system message; `<tool_call>` blocks; results in one user turn |
+| Gemma 4 | yes | see above |
+| DeepSeek-R1-Distill-Qwen | no | the template replays tool calls and outputs but never renders tool definitions |
+| Qwen 1.5 / Qwen 2 MoE | no | no tools in the template, no `<tool_call>` in the vocabulary |
+| Phi-3 mini | no | no tools in the template (GGUF or upstream) |
+| Mistral v0.3, Devstral | no, for now | the Mistral v0.3 GGUF template has no tools; the upstream one does (`[AVAILABLE_TOOLS]`), but it needs this format's non-tool turns reworked first |
+
+Granite's two dialects are told apart by the file's own template. A Granite file whose template
+is neither dialect has no tool calling.
+
 ## Data types and materialization
 
 | `DataType` | Quantized | Block-structured |

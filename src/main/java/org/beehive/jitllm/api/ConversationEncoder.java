@@ -61,20 +61,28 @@ final class ConversationEncoder {
         boolean toolsInjected = false;
 
         // A format that wants tools in the system message, and a conversation with no system turn
-        // to put them in, gets one.
+        // to put them in, gets one. So does a format that puts them in the user message but still
+        // writes a system turn for them (Llama's environment lines).
         if (toolsJson != null
-                && !injectInUserMessage
                 && !hasSystemMessage
-                && model.shouldAddSystemPrompt()) {
-            tokens.addAll(
-                    chatFormat.encodeMessage(
-                            new ChatFormat.Message(
-                                    ChatFormat.Role.SYSTEM,
-                                    chatFormat.toolSystemPromptSuffix(toolsJson).stripLeading())));
-            toolsInjected = true;
+                && model.shouldAddSystemPrompt()
+                && (!injectInUserMessage || !chatFormat.toolSystemMessagePrefix().isEmpty())) {
+            tokens.addAll(chatFormat.encodeToolSystemMessage(null, toolsJson));
+            toolsInjected = !injectInUserMessage;
         }
 
-        for (ChatMessage message : messages) {
+        // Whether an assistant turn is open: a format that writes tool results inside the turn
+        // that made the calls leaves it open for the answer (Gemma 4). Never set otherwise.
+        boolean openAssistantTurn = false;
+
+        for (int index = 0; index < messages.size(); index++) {
+            ChatMessage message = messages.get(index);
+            if (openAssistantTurn
+                    && message.role() != ChatRole.ASSISTANT
+                    && message.role() != ChatRole.TOOL) {
+                tokens.addAll(chatFormat.encodeOpenAssistantTurnEnd());
+                openAssistantTurn = false;
+            }
             switch (message.role()) {
                 case USER -> {
                     String content = textOf(message);
@@ -92,12 +100,9 @@ final class ConversationEncoder {
                     }
                     String content = textOf(message);
                     if (toolsJson != null) {
-                        if (injectInUserMessage) {
-                            content = chatFormat.toolSystemMessagePrefix() + content;
-                        } else {
-                            content += chatFormat.toolSystemPromptSuffix(toolsJson);
-                            toolsInjected = true;
-                        }
+                        tokens.addAll(chatFormat.encodeToolSystemMessage(content, toolsJson));
+                        toolsInjected |= !injectInUserMessage;
+                        continue;
                     }
                     tokens.addAll(
                             chatFormat.encodeMessage(
@@ -116,7 +121,14 @@ final class ConversationEncoder {
                                                             Optional.of(call.id())))
                                     .toList();
                     if (!calls.isEmpty()) {
-                        tokens.addAll(chatFormat.encodeToolCallAssistantTurn(calls));
+                        tokens.addAll(
+                                openAssistantTurn
+                                        ? chatFormat.encodeToolCallContinuation(calls)
+                                        : chatFormat.encodeToolCallAssistantTurn(calls));
+                        openAssistantTurn = chatFormat.toolResultsStayInAssistantTurn();
+                    } else if (openAssistantTurn) {
+                        tokens.addAll(chatFormat.encodeAssistantContinuation(textOf(message)));
+                        openAssistantTurn = false;
                     } else {
                         tokens.addAll(
                                 chatFormat.encodeMessage(
@@ -125,20 +137,35 @@ final class ConversationEncoder {
                     }
                 }
                 case TOOL -> {
-                    for (ChatContent piece : message.content()) {
-                        ChatContent.ToolResult result = (ChatContent.ToolResult) piece;
-                        tokens.addAll(
-                                chatFormat.encodeToolResultTurn(
-                                        result.id(), result.name(), result.resultJson()));
+                    // The whole run of consecutive results at once: some templates wrap a run in
+                    // a single turn.
+                    List<ChatFormat.ToolResult> results = new ArrayList<>();
+                    while (true) {
+                        for (ChatContent piece : messages.get(index).content()) {
+                            ChatContent.ToolResult result = (ChatContent.ToolResult) piece;
+                            results.add(
+                                    new ChatFormat.ToolResult(
+                                            result.id(), result.name(), result.resultJson()));
+                        }
+                        if (index + 1 < messages.size()
+                                && messages.get(index + 1).role() == ChatRole.TOOL) {
+                            index++;
+                        } else {
+                            break;
+                        }
                     }
+                    tokens.addAll(chatFormat.encodeToolResults(results));
                 }
             }
         }
 
-        // Prime the model to start an assistant turn.
-        tokens.addAll(
-                chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
-        appendThinkingControl(tokens);
+        // Prime the model to start an assistant turn — unless one is still open, in which case the
+        // model's answer continues it, as the template's generation prompt does after tool results.
+        if (!openAssistantTurn) {
+            tokens.addAll(
+                    chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+            appendThinkingControl(tokens);
+        }
         return tokens;
     }
 
