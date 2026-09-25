@@ -32,6 +32,20 @@ public class FacadeLifecycleTest {
 
         private int statesCreated;
 
+        /** Thrown, once, by the next state creation: a session that fails to build. */
+        private Throwable nextStateFailure;
+
+        private void failNextState() {
+            if (nextStateFailure != null) {
+                Throwable failure = nextStateFailure;
+                nextStateFailure = null;
+                if (failure instanceof Error error) {
+                    throw error;
+                }
+                throw (RuntimeException) failure;
+            }
+        }
+
         @Override
         public Configuration configuration() {
             return STUB_CONFIGURATION;
@@ -59,12 +73,14 @@ public class FacadeLifecycleTest {
 
         @Override
         public State createNewState() {
+            failNextState();
             statesCreated++;
             return null;
         }
 
         @Override
         public State createNewState(int batchsize) {
+            failNextState();
             statesCreated++;
             return null;
         }
@@ -188,6 +204,32 @@ public class FacadeLifecycleTest {
                 org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties(),
                 ThinkingMode.DEFAULT,
                 maxConcurrentSessions);
+    }
+
+    /**
+     * A session that fails while it is being built gives its KV slot back. Otherwise the slot is
+     * held by nothing, and with one slot (the default) every later {@code newSession()} fails with
+     * "no free KV slot" — issue #182, hit through a missing TornadoVM class.
+     */
+    @Test
+    public void aSessionThatFailsToBuildReleasesItsKvSlot() {
+        StubModel stub = new StubModel();
+        try (TextGenerationModel model = new DelegatingModel(stub, Path.of("stub.gguf"), false)) {
+            stub.nextStateFailure =
+                    new NoClassDefFoundError("uk/ac/manchester/tornado/api/types/arrays/IntArray");
+            assertThrows(NoClassDefFoundError.class, model::newSession);
+
+            // The same exception type as the leak's "no free KV slot", so the message is what
+            // shows which one this is.
+            stub.nextStateFailure = new IllegalStateException("state allocation failed");
+            assertEquals(
+                    "state allocation failed",
+                    assertThrows(IllegalStateException.class, model::newSession).getMessage());
+
+            GenerationSession session = model.newSession();
+            assertNotNull(session);
+            session.close();
+        }
     }
 
     @Test

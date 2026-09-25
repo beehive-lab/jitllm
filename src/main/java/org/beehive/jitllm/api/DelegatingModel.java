@@ -324,9 +324,17 @@ final class DelegatingModel implements TextGenerationModel {
                         delegate, policy, gpu);
             }
             KvLease lease = sessions.acquire(contextLength);
-            session =
-                    new DelegatingSession(
-                            this, delegate, gpu, contextLength, lease, policy, thinking);
+            try {
+                session =
+                        new DelegatingSession(
+                                this, delegate, gpu, contextLength, lease, policy, thinking);
+            } catch (RuntimeException | Error failure) {
+                // Building the session (its state, its plan) can fail after the lease is taken.
+                // Nothing else holds the lease then, so a leak here would keep the slot forever,
+                // and with one slot the model could never open another session (issue #182).
+                lease.close();
+                throw failure;
+            }
             openSessions.add(session);
         }
         return session;
