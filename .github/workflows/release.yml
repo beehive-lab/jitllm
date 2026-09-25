@@ -101,5 +101,5 @@ jobs:
       contents: read
     uses: ./.github/workflows/deploy-maven-central.yml
     with:
-      tag: v${{ inputs.version }}
+      tag: jitllm-v${{ inputs.version }}
     secrets: inherit

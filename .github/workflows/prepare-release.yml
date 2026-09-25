@@ -214,9 +214,10 @@ jobs:
                 per_page: 10
               });
             
-              const prevRelease = releases.find(r => 
-                r.tag_name === `v${prevVersion}` || r.tag_name === prevVersion
-              );
+              // jitllm tags are jitllm-vX.Y.Z; plain vX.Y.Z tags belong to the GPULlama3.java era.
+              const prevRelease =
+                releases.find(r => r.tag_name === `jitllm-v${prevVersion}`) ||
+                releases.find(r => r.tag_name === `v${prevVersion}` || r.tag_name === prevVersion);
               if (prevRelease) {
                 sinceDate = prevRelease.published_at;
                 console.log(`Found previous release ${prevVersion} from ${sinceDate}`);
@@ -368,7 +369,7 @@ jobs:
             - [ ] CI passes
 
             ### 🔄 After Merge
-            1. **Finalize Release** → tag \`v${version}\` + GitHub release
+            1. **Finalize Release** → tag \`jitllm-v${version}\` + GitHub release
             2. **Deploy to Maven Central** → publish artifacts
             `
             });

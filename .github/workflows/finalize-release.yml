@@ -60,9 +60,9 @@ jobs:
       - name: Create and push tag
         run: |
           VERSION="${{ steps.get_version.outputs.version }}"
-          git tag -a "v${VERSION}" -m "Release ${VERSION}"
-          git push origin "v${VERSION}"
-          echo "✅ Created tag v${VERSION}"
+          git tag -a "jitllm-v${VERSION}" -m "Release ${VERSION}"
+          git push origin "jitllm-v${VERSION}"
+          echo "✅ Created tag jitllm-v${VERSION}"
 
       - name: Extract changelog for release notes
         id: changelog
@@ -118,7 +118,7 @@ jobs:
             const { data: release } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              tag_name: `v${version}`,
+              tag_name: `jitllm-v${version}`,
               name: `jitllm ${version}`,
               body: releaseNotes,
               draft: false,
@@ -130,11 +130,11 @@ jobs:
       - name: Summary
         run: |
           VERSION="${{ steps.get_version.outputs.version }}"
-          echo "## 🎉 Release v${VERSION} Finalized" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎉 Release jitllm-v${VERSION} Finalized" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Tag created | ✅ v${VERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag created | ✅ jitllm-v${VERSION} |" >> $GITHUB_STEP_SUMMARY
           echo "| GitHub Release | ✅ Created |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔄 Next:" >> $GITHUB_STEP_SUMMARY
