@@ -20,6 +20,25 @@ on:
         required: false
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      tornadovm_release:
+        required: true
+        type: string
+      previous_version:
+        required: true
+        type: string
+      dry_run:
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      pr_number:
+        description: 'Number of the release PR (empty on dry run)'
+        value: ${{ jobs.prepare-release.outputs.pr_number }}
 
 env:
   VERSION: ${{ inputs.version }}
@@ -35,6 +54,8 @@ jobs:
       contents: write
       pull-requests: write
     timeout-minutes: 15
+    outputs:
+      pr_number: ${{ steps.create_pr.outputs.pr_number }}
 
     steps:
       - name: Validate version format
@@ -321,6 +342,7 @@ jobs:
           git push origin release/${{ env.VERSION }}
 
       - name: Create Pull Request
+        id: create_pr
         if: ${{ inputs.dry_run == false }}
         uses: actions/github-script@v7
         with:
@@ -352,6 +374,7 @@ jobs:
             });
             
             console.log(`✅ Created PR #${pr.number}: ${pr.html_url}`);
+            core.setOutput('pr_number', pr.number);
             
             const reviewers = ['mikepapadim', 'stratika', 'orionpapadakis'];
             try {

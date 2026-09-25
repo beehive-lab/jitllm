@@ -1,0 +1,105 @@
+name: Release jitllm
+
+# One-click release: prepare → merge the release PR → tag + GitHub release → Maven Central.
+# The individual workflows still work on their own; called from here, their pull_request /
+# workflow_run triggers do not fire (the merge and tag are made with GITHUB_TOKEN, and
+# workflow_run keys off this workflow's name), so nothing runs twice.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 0.2.3)'
+        required: true
+        type: string
+      tornadovm_release:
+        description: 'Published TornadoVM release this jitllm release depends on (e.g. 6.2.0); must be on Maven Central'
+        required: true
+        type: string
+      previous_version:
+        description: 'Previous version for changelog (e.g., 0.2.2)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run - prepare only, no PR, tag, release or deploy'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-jitllm
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'beehive-lab/jitllm'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/prepare-release.yml
+    with:
+      version: ${{ inputs.version }}
+      tornadovm_release: ${{ inputs.tornadovm_release }}
+      previous_version: ${{ inputs.previous_version }}
+      dry_run: ${{ inputs.dry_run }}
+    secrets: inherit
+
+  merge:
+    needs: prepare
+    if: ${{ !inputs.dry_run }}
+    runs-on: [self-hosted, Linux, x64]
+    permissions:
+      contents: write
+      pull-requests: write
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.merge.outputs.sha }}
+    steps:
+      - name: Merge release PR
+        id: merge
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+        with:
+          script: |
+            const pull_number = Number(process.env.PR_NUMBER);
+            if (!pull_number) { core.setFailed('prepare did not report a PR number'); return; }
+            const { owner, repo } = context.repo;
+            // GitHub computes mergeability asynchronously right after the PR is created.
+            for (let i = 0; i < 30; i++) {
+              const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
+              if (pr.mergeable === true) break;
+              if (pr.mergeable === false) { core.setFailed(`PR #${pull_number} is not mergeable (${pr.mergeable_state})`); return; }
+              await new Promise(r => setTimeout(r, 5000));
+            }
+            const { data: merged } = await github.rest.pulls.merge({
+              owner, repo, pull_number, merge_method: 'merge'
+            });
+            console.log(`✅ Merged PR #${pull_number} as ${merged.sha}`);
+            core.setOutput('sha', merged.sha);
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
+            try {
+              await github.rest.git.deleteRef({ owner, repo, ref: `heads/${pr.head.ref}` });
+              console.log(`✅ Deleted branch: ${pr.head.ref}`);
+            } catch (e) {
+              console.log(`Could not delete branch: ${e.message}`);
+            }
+
+  finalize:
+    needs: merge
+    permissions:
+      contents: write
+    uses: ./.github/workflows/finalize-release.yml
+    with:
+      version: ${{ inputs.version }}
+      ref: ${{ needs.merge.outputs.sha }}
+    secrets: inherit
+
+  deploy:
+    needs: finalize
+    permissions:
+      contents: read
+    uses: ./.github/workflows/deploy-maven-central.yml
+    with:
+      tag: v${{ inputs.version }}
+    secrets: inherit

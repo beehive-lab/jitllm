@@ -15,7 +15,15 @@ on:
         required: false
         default: false
         type: boolean
-
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      dry_run:
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   deploy:

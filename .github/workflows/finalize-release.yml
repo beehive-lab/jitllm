@@ -10,6 +10,15 @@ on:
         description: 'Release version to tag (e.g., 0.2.3)'
         required: true
         type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      ref:
+        description: 'Commit to tag (defaults to main)'
+        required: false
+        type: string
 
 jobs:
   create-release-tag:
@@ -17,7 +26,7 @@ jobs:
     if: |
       github.repository == 'beehive-lab/jitllm' &&
       ((github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')) ||
-      github.event_name == 'workflow_dispatch')
+      github.event_name == 'workflow_dispatch' || inputs.version != '')
     runs-on: [self-hosted, Linux, x64]
     permissions:
       contents: write
@@ -30,7 +39,7 @@ jobs:
       - name: Get version
         id: get_version
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ -n "${{ inputs.version }}" ]; then
             echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
           else
             BRANCH="${{ github.event.pull_request.head.ref }}"
@@ -40,7 +49,7 @@ jobs:
       - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ inputs.ref || 'main' }}
           fetch-depth: 0
 
       - name: Configure Git
