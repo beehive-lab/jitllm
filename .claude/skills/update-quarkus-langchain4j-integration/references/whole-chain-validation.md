@@ -74,6 +74,13 @@ extension compiled against, and a Quarkus version that disagrees with the extens
 as `TypeNotPresentException: io/quarkus/arc/impl/TypeVariableImpl` during bean generation.
 Neither is an extension defect; check the pins before investigating anything else.
 
+The packaged demo must not carry TornadoVM: `demos/<demo>/target/quarkus-app/lib/main/` holds the
+jitllm jar and no `tornado-*`, `org.graalvm.*` or log4j jars, and the jitllm jar itself passes
+`scripts/check_library_jar.py` in the jitllm checkout. TornadoVM comes from the SDK argfile only; a
+second copy loaded by Quarkus's RunnerClassLoader fails the first request with a loader constraint
+violation on `org.graalvm.collections.UnmodifiableEconomicMap` (jitllm issue #176). Do not paper
+over that with `-Dquarkus.class-loading.parent-first-artifacts`; the demos must run without it.
+
 ## 5. Run the required demos
 
 Read the current README and demo sources first — commands and modules change over releases:

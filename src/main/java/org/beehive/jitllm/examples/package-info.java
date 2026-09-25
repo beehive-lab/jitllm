@@ -6,10 +6,12 @@
  * never touch a backend, a task graph or a GGUF type, and they are the same shape an embedder's
  * code should be.
  *
- * <p>Run one with the launcher's classpath, passing a model file:
+ * <p>Run one the way the launcher does, with the TornadoVM SDK's argument file (the jar carries
+ * jitllm's classes only; TornadoVM comes from the SDK), passing a model file:
  *
  * <pre>
- *   java -cp target/jitllm-1.0.0-jdk21.jar \
+ *   java @$TORNADOVM_HOME/tornado-argfile --add-modules jdk.incubator.vector \
+ *        -cp target/jitllm-&lt;version&gt;.jar \
  *        org.beehive.jitllm.examples.HelloGeneration model.gguf
  * </pre>
  *

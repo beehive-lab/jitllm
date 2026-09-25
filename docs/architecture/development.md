@@ -95,6 +95,13 @@ reproduced. The launchers add only what the argfile does not supply: heap and di
 sizes, `jdk.incubator.vector`, the interpreter bytecode buffer size, the `tornado.*` and
 `llama.*` properties, and the backend priorities when an SDK has more than one backend.
 
+The jar they run, `target/jitllm-<version>.jar`, is the same library jar that is published:
+jitllm's classes and service files only. TornadoVM and everything it depends on are
+`provided` and come from the SDK's module path, never from the jar, because a second copy on
+the class path collides with the SDK's modules in a container that has its own class loader
+(issue #176). The enforcer rule `ban-runtime-dependencies` fails the build on any compile- or
+runtime-scope dependency, and `scripts/check_library_jar.py` checks the built jar in CI.
+
 If `tornado-argfile` is missing, run `$TORNADOVM_HOME/bin/tornado --devices` once — the
 launcher regenerates it from `tornado-argfile.template`.
 
@@ -120,7 +127,7 @@ families have hit. What follows is the shape of the work.
 5. Add a `TornadoPlanProvider`, and a `TornadoLoweringProvider` if the family is to lower.
 6. Add a `KvStorageFactory` if its KV layout differs.
 7. Register each in `META-INF/services`. Do not add a `switch` — the architecture rules
-   forbid one, and CI counts the service files in the shaded jar.
+   forbid one, and CI counts the service files in the built jar.
 8. Add the family to the CPU↔GPU parity suite. A family whose GPU path is claimed and whose
    parity is not gated is not verified.
 
