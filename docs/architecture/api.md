@@ -129,6 +129,10 @@ model cannot do is told. `DEFAULT` leaves it to the family. Ask first with
 predicate the request path enforces, so an integration can refuse tools or thinking control
 at startup with its own message instead of catching the exception from the first request.
 
+Tool calling is reported by Llama 3.x, Qwen 2.5, Qwen 3, Qwen 3.5, Granite 3.2 / 4.0 and
+Gemma 4; thinking control by Qwen 3 and Qwen 3.5. The per-family table, with what each
+template says, is in [models-and-backends.md](models-and-backends.md#tool-calling-per-family).
+
 ## Streaming
 
 `onEvent` receives one ordered `GenerationEvent` per emitted token, carrying the token id
