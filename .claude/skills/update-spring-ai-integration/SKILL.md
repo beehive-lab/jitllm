@@ -68,6 +68,14 @@ Rules this integration has already had to learn:
   The autoconfigure module declares jitllm itself (optional) so JDK 21 builds pin `-jdk21`.
 - Every autoconfigure dependency must be `<optional>` (enforcer), and the starter needs
   `spring-boot-starter`.
+- **Thinking is load-time configuration.** jitllm keeps `ThinkingMode` off `GenerationRequest` by
+  design; the adapter sets it on `ModelOptions` (`spring.ai.jitllm.chat.thinking`).
+- **Preflight reuses the engine's.** `LocalModels.load` already refuses an `EXACT` over-budget plan;
+  the adapter logs `LocalModels.preflight`'s plan, warns on a `CONSERVATIVE` overrun, and turns
+  `InsufficientDeviceMemoryException` into a startup error. Those types are `@Experimental`: use
+  them inside the adapter only.
+- **One GPU model per JVM.** Closing a GPU model resets TornadoVM state another live GPU model uses
+  (`reset() was called after warmup()`). Tests that need a second model load it on the CPU.
 
 ## 3. Validate
 

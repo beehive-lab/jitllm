@@ -44,12 +44,13 @@ Measured on jitllm 1.0.0 / TornadoVM 7.0.1, RTX 4090:
 
 | JDK / SDK | Model | spring-ai-jitllm | autoconfigure |
 | --- | --- | --- | --- |
-| 25 / jdk22plus-cuda | Qwen3-0.6B-F16 | 37/37 | 5/5 |
-| 21 / jdk21-cuda | Qwen3-0.6B-F16 | 37/37 | 5/5 |
+| 25 / jdk22plus-cuda | Qwen3-0.6B-F16 | 46/46 | 7/7 |
+| 21 / jdk21-cuda | Qwen3-0.6B-F16 | 46/46 | 7/7 |
 | 25 / jdk22plus-opencl | Qwen3-0.6B-F16 | 37/37 | 5/5 |
 | 25 / jdk22plus-cuda | Llama-3.2-3B-Instruct-Q8_0 | 36/37 | 4/5 |
 
-The Llama failures are the tool round trip: the tool is called correctly, but the 3B model's final
+(The OpenCL and Llama rows predate the download, thinking and preflight tests.) The Llama
+failures are the tool round trip: the tool is called correctly, but the 3B model's final
 answer ignores its result. That is model behaviour, not the adapter. Report the model with the
 counts.
 
@@ -65,6 +66,12 @@ installed locally by stage 1) and runs it through `tornado` on the GPU. Each lin
 `[call]` with an answer, `[meta]` with `on-gpu=true` and a token rate, `[stream]` with the streamed
 answer, `[tool] getWeather(...)` and `[tools]` using the tool's result. On JDK 21 the script
 swaps in `jitllm:<version>-jdk21` the way `jitllm-chat.adoc` tells users to.
+
+To check download, thinking and preflight end to end, point the smoke app at
+`spring.ai.jitllm.chat.model-url=hf://unsloth/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf` with an empty
+`cache-directory`, `thinking=disabled` and `logging.level.org.springframework.ai.jitllm=info`: the
+first start logs the download progress, the second `Using cached model`, both the device memory
+plan, and the answer uses far fewer tokens than with thinking on.
 
 ## Record
 
