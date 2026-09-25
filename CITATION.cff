@@ -15,6 +15,6 @@ authors:
   given-names: "Christos"
 title: "jitllm (formerly GPULlama3.java)"
 license: MIT License
-version: 1.0.0
+version: 1.0.1
 date-released: 2026-09-25
 url: "https://github.com/beehive-lab/jitllm"
