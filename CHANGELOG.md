@@ -2,6 +2,51 @@
 
 All notable changes to GPULlama3.java will be documented in this file.
 
+## [1.0.0] - 2026-09-25
+
+### Features
+
+- Auto-detect TornadoVM backend in llama-tornado / llamaTornado ([#137](https://github.com/beehive-lab/jitllm/pull/137))
+- Add TornadoVM CUDA backend support and tensor-core (MMA) accelerated batch prefill (FP16 & Q8_0, Llama & Qwen3) ([#127](https://github.com/beehive-lab/jitllm/pull/127))
+
+### Model Support
+
+- [feat] OpenAI compatible server to serve model context, validate requests, log per request ([#166](https://github.com/beehive-lab/jitllm/pull/166))
+- Add support for Qwen3.8 27B model CPU + GPU ([#150](https://github.com/beehive-lab/jitllm/pull/150))
+- Gemma 4 model support (CPU + GPU/TornadoVM, BF16 and Q8_0) ([#120](https://github.com/beehive-lab/jitllm/pull/120))
+
+### Bug Fixes
+
+- Ci/metal migration ([#142](https://github.com/beehive-lab/jitllm/pull/142))
+
+### Other Changes
+
+- Fix prepare-release: sdkman-init.sh fails under set -u ([#173](https://github.com/beehive-lab/jitllm/pull/173))
+- [gemma4] Prefill and decode: correctness gates, FP16 KV, tensor-core attention, warp decode, native cuBLAS prefill ([#171](https://github.com/beehive-lab/jitllm/pull/171))
+- Depend on TornadoVM release 7.0.1 for releases ([#172](https://github.com/beehive-lab/jitllm/pull/172))
+- Rename jllm to jitllm ([#170](https://github.com/beehive-lab/jitllm/pull/170))
+- Pre-release fixes, CLI options cleanup, FP16 KV default, TaskGraph chain log ([#169](https://github.com/beehive-lab/jitllm/pull/169))
+- Qwen3 FP16 on CUDA: native batched prefill and a faster decode path, both selected automatically ([#165](https://github.com/beehive-lab/jitllm/pull/165))
+- [feat] Improve verbosity for configurations and times. ([#168](https://github.com/beehive-lab/jitllm/pull/168))
+- [qwen3-8][opt][prefill] Qwen3.8 batched prefill optimization ([#163](https://github.com/beehive-lab/jitllm/pull/163))
+- Gemma 4 on CUDA ([#164](https://github.com/beehive-lab/jitllm/pull/164))
+- Rename GPULlama3.java to jllm ([#152](https://github.com/beehive-lab/jitllm/pull/152))
+- Bump TornadoVM to 6.1.0 ([#151](https://github.com/beehive-lab/jitllm/pull/151))
+- Refactor/framework abstractions ([#149](https://github.com/beehive-lab/jitllm/pull/149))
+- FP16 KV cache with packed half2 split-KV attention ([#138](https://github.com/beehive-lab/jitllm/pull/138))
+- Static batched decode (LLaMA + Qwen3): B independent sequences per step, up to 41x aggregate throughput ([#129](https://github.com/beehive-lab/jitllm/pull/129))
+- Add Qwen2-MoE batch prefill and single-token decode ([#147](https://github.com/beehive-lab/jitllm/pull/147))
+- Optimize routed-expert kernel launches and clean up code ([#145](https://github.com/beehive-lab/jitllm/pull/145))
+- Add Qwen1.5-MoE Q8_0 CPU and single-token TornadoVM GPU inference ([#144](https://github.com/beehive-lab/jitllm/pull/144))
+- docs(arch): ARCH-01..15 — review issues on the architecture baseline ([#140](https://github.com/beehive-lab/jitllm/pull/140))
+- Release 1.0.0 ([#139](https://github.com/beehive-lab/jitllm/pull/139))
+- Fix IllegalArgumentException (negative ArrayList capacity) on prompts longer than max-tokens ([#128](https://github.com/beehive-lab/jitllm/pull/128))
+- On-device greedy sampling (-Dllama.deviceSample): GPU argmax, keep logits device-side (~500x less D2H) ([#134](https://github.com/beehive-lab/jitllm/pull/134))
+- Fix Qwen3 FP16 garbage on CUDA backend: cross-workgroup race in RMS-norm reduction ([#132](https://github.com/beehive-lab/jitllm/pull/132))
+- Docs: modernize README — position as JVM-native LLM inference & serving engine ([#136](https://github.com/beehive-lab/jitllm/pull/136))
+- Add llama-bench-style benchmark: llama-tornado --bench (pp/tg/pg matrix, avg±stddev t/s, md/csv/json) ([#133](https://github.com/beehive-lab/jitllm/pull/133))
+- OpenAI-compatible server (llama-tornado --server): /v1/chat/completions + /v1/completions, streaming, zero-dep ([#135](https://github.com/beehive-lab/jitllm/pull/135))
+
 ## [1.0.0] - 2026-07-28
 
 ### Features
