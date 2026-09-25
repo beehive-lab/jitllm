@@ -66,15 +66,21 @@ final class ConversationEncoder {
                 && !injectInUserMessage
                 && !hasSystemMessage
                 && model.shouldAddSystemPrompt()) {
-            tokens.addAll(
-                    chatFormat.encodeMessage(
-                            new ChatFormat.Message(
-                                    ChatFormat.Role.SYSTEM,
-                                    chatFormat.toolSystemPromptSuffix(toolsJson).stripLeading())));
+            tokens.addAll(chatFormat.encodeToolSystemMessage(null, toolsJson));
             toolsInjected = true;
         }
 
+        // Whether an assistant turn is open: a format that writes tool results inside the turn
+        // that made the calls leaves it open for the answer (Gemma 4). Never set otherwise.
+        boolean openAssistantTurn = false;
+
         for (ChatMessage message : messages) {
+            if (openAssistantTurn
+                    && message.role() != ChatRole.ASSISTANT
+                    && message.role() != ChatRole.TOOL) {
+                tokens.addAll(chatFormat.encodeOpenAssistantTurnEnd());
+                openAssistantTurn = false;
+            }
             switch (message.role()) {
                 case USER -> {
                     String content = textOf(message);
@@ -91,13 +97,13 @@ final class ConversationEncoder {
                         continue; // this family has no system turn; dropping it is its rule
                     }
                     String content = textOf(message);
+                    if (toolsJson != null && !injectInUserMessage) {
+                        tokens.addAll(chatFormat.encodeToolSystemMessage(content, toolsJson));
+                        toolsInjected = true;
+                        continue;
+                    }
                     if (toolsJson != null) {
-                        if (injectInUserMessage) {
-                            content = chatFormat.toolSystemMessagePrefix() + content;
-                        } else {
-                            content += chatFormat.toolSystemPromptSuffix(toolsJson);
-                            toolsInjected = true;
-                        }
+                        content = chatFormat.toolSystemMessagePrefix() + content;
                     }
                     tokens.addAll(
                             chatFormat.encodeMessage(
@@ -116,7 +122,14 @@ final class ConversationEncoder {
                                                             Optional.of(call.id())))
                                     .toList();
                     if (!calls.isEmpty()) {
-                        tokens.addAll(chatFormat.encodeToolCallAssistantTurn(calls));
+                        tokens.addAll(
+                                openAssistantTurn
+                                        ? chatFormat.encodeToolCallContinuation(calls)
+                                        : chatFormat.encodeToolCallAssistantTurn(calls));
+                        openAssistantTurn = chatFormat.toolResultsStayInAssistantTurn();
+                    } else if (openAssistantTurn) {
+                        tokens.addAll(chatFormat.encodeAssistantContinuation(textOf(message)));
+                        openAssistantTurn = false;
                     } else {
                         tokens.addAll(
                                 chatFormat.encodeMessage(
@@ -135,10 +148,13 @@ final class ConversationEncoder {
             }
         }
 
-        // Prime the model to start an assistant turn.
-        tokens.addAll(
-                chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
-        appendThinkingControl(tokens);
+        // Prime the model to start an assistant turn — unless one is still open, in which case the
+        // model's answer continues it, as the template's generation prompt does after tool results.
+        if (!openAssistantTurn) {
+            tokens.addAll(
+                    chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+            appendThinkingControl(tokens);
+        }
         return tokens;
     }
 

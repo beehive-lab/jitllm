@@ -53,6 +53,68 @@ public interface ChatFormat {
     }
 
     /**
+     * Encodes the system message that carries the tool definitions, for formats that put them in
+     * the system message (see {@link #injectsToolsInUserMessage()}).
+     *
+     * <p>The default appends {@link #toolSystemPromptSuffix(String)} to the caller's system text as
+     * plain text; with no system message the suffix stands alone, leading whitespace stripped.
+     * Formats whose tool definitions contain control tokens override this so the tokens are encoded
+     * as tokens rather than as their spelling.
+     *
+     * @param systemContent the caller's system message text, or {@code null} when the conversation
+     *     has none and this message exists only to carry the tools
+     * @param toolsJson the tool definitions (see {@link #toolSystemPromptSuffix(String)})
+     */
+    default List<Integer> encodeToolSystemMessage(String systemContent, String toolsJson) {
+        String content =
+                systemContent == null
+                        ? toolSystemPromptSuffix(toolsJson).stripLeading()
+                        : systemContent + toolSystemPromptSuffix(toolsJson);
+        return encodeMessage(new Message(Role.SYSTEM, content));
+    }
+
+    /**
+     * Returns {@code true} when tool results are rendered <em>inside</em> the assistant turn that
+     * made the calls, which then stays open (Gemma 4). The conversation encoder then continues that
+     * turn with {@link #encodeToolCallContinuation(List)} or {@link
+     * #encodeAssistantContinuation(String)} instead of opening a new one, closes it with {@link
+     * #encodeOpenAssistantTurnEnd()} before any other role, and adds no assistant header when the
+     * conversation ends inside it — the model's answer continues the same turn.
+     *
+     * <p>{@code false} (the default) keeps every turn self-contained, as ChatML-style formats do.
+     */
+    default boolean toolResultsStayInAssistantTurn() {
+        return false;
+    }
+
+    /**
+     * Further tool calls inside an assistant turn that is already open. Only called when {@link
+     * #toolResultsStayInAssistantTurn()} is {@code true}.
+     */
+    default List<Integer> encodeToolCallContinuation(List<ToolCallExtract> toolCalls) {
+        throw new UnsupportedOperationException(
+                "Open assistant turns not supported for: " + getClass().getSimpleName());
+    }
+
+    /**
+     * Assistant text that continues, and closes, an assistant turn left open by tool results. Only
+     * called when {@link #toolResultsStayInAssistantTurn()} is {@code true}.
+     */
+    default List<Integer> encodeAssistantContinuation(String content) {
+        throw new UnsupportedOperationException(
+                "Open assistant turns not supported for: " + getClass().getSimpleName());
+    }
+
+    /**
+     * Closes an assistant turn left open by tool results, before a message of another role. Only
+     * called when {@link #toolResultsStayInAssistantTurn()} is {@code true}.
+     */
+    default List<Integer> encodeOpenAssistantTurnEnd() {
+        throw new UnsupportedOperationException(
+                "Open assistant turns not supported for: " + getClass().getSimpleName());
+    }
+
+    /**
      * Returns {@code true} when this format injects tool definitions into the <em>first user
      * message</em> instead of the system message.
      *

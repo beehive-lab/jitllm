@@ -25,6 +25,17 @@ public class Gemma4Tokenizer implements Tokenizer {
     private final int[] tokenType;
     private final int byte0;
 
+    /** The tool-calling markers, which are displayed although they are special tokens. */
+    private static final List<String> TOOL_MARKERS =
+            List.of(
+                    "<|tool_call>",
+                    "<tool_call|>",
+                    "<|tool_response>",
+                    "<tool_response|>",
+                    "<|\"|>");
+
+    private final Set<Integer> toolMarkers;
+
     public Gemma4Tokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
         int[] tokenTypes = (int[]) metadata.get("tokenizer.ggml.token_type");
 
@@ -42,6 +53,11 @@ public class Gemma4Tokenizer implements Tokenizer {
         this.specialTokens = new HashMap<>(specialTokens);
         this.tokenType = tokenTypes;
         this.byte0 = vocabulary.getIndex("<0x00>").orElseThrow();
+        this.toolMarkers =
+                TOOL_MARKERS.stream()
+                        .map(this.specialTokens::get)
+                        .filter(java.util.Objects::nonNull)
+                        .collect(Collectors.toUnmodifiableSet());
     }
 
     @Override
@@ -59,10 +75,27 @@ public class Gemma4Tokenizer implements Tokenizer {
         return getTokenType(tokenIndex) != 1;
     }
 
+    /**
+     * The id of a vocabulary entry by its exact spelling, whatever its type, or {@code -1}.
+     *
+     * <p>For the entries that act as control tokens without being typed as such: the Gemma 4 GGUFs
+     * give {@code <eos>} the ordinary type, so it is not in {@link #getSpecialTokens()}.
+     */
+    public int tokenIndex(String piece) {
+        return vocabulary.getIndex(piece).orElse(-1);
+    }
+
+    /**
+     * Ordinary and byte tokens, and the tool-calling markers ({@code <|tool_call>}, {@code
+     * <tool_call|>}, {@code <|tool_response>}, {@code <tool_response|>}, {@code <|"|>}). The
+     * markers are control-like tokens, but a tool call is read back from the response text, so
+     * hiding them would leave a call nothing can find — the same reason Qwen3's {@code <tool_call>}
+     * tags are text. Turn, thinking-channel and media tokens stay hidden.
+     */
     @Override
     public boolean shouldDisplayToken(int token) {
         int type = getTokenType(token);
-        return type == 1 || type == 6;
+        return type == 1 || type == 6 || toolMarkers.contains(token);
     }
 
     public int getTokenType(int tokenIndex) {

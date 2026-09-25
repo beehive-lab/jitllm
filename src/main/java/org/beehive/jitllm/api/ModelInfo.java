@@ -25,7 +25,15 @@ public final class ModelInfo {
     private final Path source;
     private final Set<DataType> weightTypes;
     private final DataType computeType;
+    private final ModelCapabilities capabilities;
 
+    /**
+     * A description with no capabilities reported ({@link ModelCapabilities#NONE}).
+     *
+     * <p>Kept for callers that describe a model without a loaded chat format. A loaded model's
+     * {@link LocalModel#info()} is built with the constructor that takes {@link ModelCapabilities}
+     * and reports what its format can do.
+     */
     public ModelInfo(
             String name,
             String architecture,
@@ -33,6 +41,25 @@ public final class ModelInfo {
             Path source,
             Set<DataType> weightTypes,
             DataType computeType) {
+        this(
+                name,
+                architecture,
+                contextLength,
+                source,
+                weightTypes,
+                computeType,
+                ModelCapabilities.NONE);
+    }
+
+    public ModelInfo(
+            String name,
+            String architecture,
+            int contextLength,
+            Path source,
+            Set<DataType> weightTypes,
+            DataType computeType,
+            ModelCapabilities capabilities) {
+        this.capabilities = Objects.requireNonNull(capabilities, "capabilities");
         this.name = Objects.requireNonNull(name, "name");
         this.architecture = Objects.requireNonNull(architecture, "architecture");
         this.contextLength = contextLength;
@@ -89,6 +116,15 @@ public final class ModelInfo {
      */
     public DataType computeType() {
         return computeType;
+    }
+
+    /**
+     * What this model's chat format supports — tool calling and thinking control — so an
+     * integration can check before it sends a request rather than catch the exception the request
+     * would throw.
+     */
+    public ModelCapabilities capabilities() {
+        return capabilities;
     }
 
     @Override

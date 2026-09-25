@@ -112,11 +112,22 @@ executes them and sends the results back as `ChatContent.ToolResult` messages.
 Tool calling does not imply forced or named tool choice, and does not imply structured
 output. Those are separate capabilities and are not claimed.
 
+A request with tools on a family whose format cannot call them fails with
+`[GPUL-REQ-003]`. Ask first instead: `model.info().capabilities().toolCalling()`.
+
 ## Thinking control
 
 `ThinkingMode` is `DEFAULT`, `ENABLED` or `DISABLED`. An **explicit** mode on a family with
 no reasoning phase is rejected rather than ignored, so a caller who asks for something the
-model cannot do is told. `DEFAULT` leaves it to the family.
+model cannot do is told. `DEFAULT` leaves it to the family. Ask first with
+`model.info().capabilities().thinkingControl()`.
+
+## Capabilities
+
+`ModelInfo.capabilities()` (experimental) returns a `ModelCapabilities` record,
+`(toolCalling, thinkingControl)`, read from the loaded model's chat format. It is the same
+predicate the request path enforces, so an integration can refuse tools or thinking control
+at startup with its own message instead of catching the exception from the first request.
 
 ## Streaming
 

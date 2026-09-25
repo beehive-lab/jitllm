@@ -40,6 +40,13 @@ tool-call format: Qwen 3 puts a JSON object inside `<tool_call>`, and Qwen 3.5 p
 pseudo-XML there (`<function=name><parameter=x>`). Inheriting the wrong one would have produced a
 model that converses correctly and gets tool calling silently wrong in both directions.
 
+Gemma 4 has a third tool format, taken from the chat template in its GGUF files: declarations,
+calls and results are written in a bare-key dictionary syntax whose strings are delimited by the
+`<|"|>` token (`<|tool_call>call:getWeather{city:<|"|>Paris<|"|>}<tool_call|>`), and every marker
+is a single token. The results go inside the assistant turn that made the calls, which stays open
+for the answer, so the conversation encoder does not add a new assistant header after them. The
+model ends a call with `<|tool_response>` or `<eos>`, both tool-aware stop tokens.
+
 ## Data types and materialization
 
 | `DataType` | Quantized | Block-structured |
