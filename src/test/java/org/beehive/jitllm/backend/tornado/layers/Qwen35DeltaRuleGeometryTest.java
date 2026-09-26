@@ -53,6 +53,62 @@ public class Qwen35DeltaRuleGeometryTest {
                 Qwen35FFNLayers.selectDeltaRuleGeometry(99, 1024));
     }
 
+    /** A device reporting {@code limit} lanes on {@code backend}; nothing else is read. */
+    private static org.beehive.jitllm.runtime.backend.Device device(
+            org.beehive.jitllm.runtime.backend.BackendId backend, long limit) {
+        return new org.beehive.jitllm.runtime.backend.Device() {
+            @Override
+            public org.beehive.jitllm.runtime.backend.DeviceId id() {
+                return org.beehive.jitllm.runtime.backend.DeviceId.of(backend, "test");
+            }
+
+            @Override
+            public org.beehive.jitllm.runtime.backend.DeviceCapabilities capabilities() {
+                return org.beehive.jitllm.runtime.backend.DeviceCapabilities.NONE;
+            }
+
+            @Override
+            public String displayName() {
+                return "test";
+            }
+
+            @Override
+            public long maxWorkGroupSize() {
+                return limit;
+            }
+        };
+    }
+
+    /**
+     * CUDA keeps its full limit and the eight-part kernel; OpenCL, whose per-kernel limit is fixed
+     * only when the driver compiles the kernel, is capped at the two-part kernel's 256 lanes — the
+     * 1024-lane launch was refused there with CL_OUT_OF_RESOURCES.
+     */
+    @Test
+    public void onlyCudaIsGivenTheFullDeviceLimit() {
+        var cuda = device(org.beehive.jitllm.runtime.backend.BackendId.CUDA, 1024);
+        var opencl = device(org.beehive.jitllm.runtime.backend.BackendId.OPENCL, 1024);
+        assertEquals(1024, Qwen35FFNLayers.deltaRuleWorkGroupLimit(cuda));
+        assertEquals(256, Qwen35FFNLayers.deltaRuleWorkGroupLimit(opencl));
+        assertEquals(
+                DeltaRuleGeometry.SPLIT8,
+                Qwen35FFNLayers.selectDeltaRuleGeometry(
+                        HEAD, Qwen35FFNLayers.deltaRuleWorkGroupLimit(cuda)));
+        assertEquals(
+                DeltaRuleGeometry.SPLIT2,
+                Qwen35FFNLayers.selectDeltaRuleGeometry(
+                        HEAD, Qwen35FFNLayers.deltaRuleWorkGroupLimit(opencl)));
+        // A smaller or unknown limit is never raised.
+        assertEquals(
+                128,
+                Qwen35FFNLayers.deltaRuleWorkGroupLimit(
+                        device(org.beehive.jitllm.runtime.backend.BackendId.OPENCL, 128)));
+        assertEquals(
+                0,
+                Qwen35FFNLayers.deltaRuleWorkGroupLimit(
+                        device(org.beehive.jitllm.runtime.backend.BackendId.OPENCL, 0)));
+    }
+
     @Test
     public void theGridIsTheGeometrysWorkgroupPerValueHead() {
         var config = syntheticConfig(32, HEAD);

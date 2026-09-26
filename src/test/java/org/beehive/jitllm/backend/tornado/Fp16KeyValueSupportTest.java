@@ -98,7 +98,8 @@ public class Fp16KeyValueSupportTest {
         assertTrue(
                 check("gemma4", DataType.F16, ExecutionMode.STANDARD, BackendId.CUDA, true, true)
                         .isPresent());
-        // The quantized gemma4 layers write and read FP16 in both of the family's modes, on CUDA.
+        // The quantized gemma4 layers write and read FP16 in both of the family's modes, on CUDA
+        // and on OpenCL on an NVIDIA-class device.
         for (DataType weights : new DataType[] {DataType.Q8_0, DataType.Q4_0}) {
             for (ExecutionMode mode :
                     new ExecutionMode[] {
@@ -107,9 +108,24 @@ public class Fp16KeyValueSupportTest {
                 assertTrue(
                         weights + " " + mode,
                         check("gemma4", weights, mode, BackendId.CUDA, true, true).isEmpty());
-                assertTrue(
+                // Single-token on OpenCL; the batched plan is tensor-core only
+                // (BatchPrefillSupport).
+                assertEquals(
                         weights + " " + mode + " on OpenCL",
-                        check("gemma4", weights, mode, BackendId.OPENCL, true, true).isPresent());
+                        mode == ExecutionMode.STANDARD,
+                        check("gemma4", weights, mode, BackendId.OPENCL, true, false).isEmpty());
+                assertTrue(
+                        weights + " " + mode + " on non-NVIDIA OpenCL",
+                        Fp16KeyValueSupport.unsupported(
+                                        new Combination(
+                                                "gemma4",
+                                                weights,
+                                                mode,
+                                                BackendId.OPENCL,
+                                                false,
+                                                false,
+                                                false))
+                                .isPresent());
             }
         }
         // OpenCL is verified on NVIDIA-class devices only.
@@ -163,6 +179,7 @@ public class Fp16KeyValueSupportTest {
         assertTrue(message, message.contains("the gemma4 layers keep FP32"));
         assertTrue(message, message.contains("--fp32-kv-cache"));
         assertTrue(message, message.contains("StorageOptions.fp32()"));
+        assertTrue(message, message.contains("-Djitllm.kvcache.fp32=true"));
     }
 
     @Test
@@ -215,16 +232,28 @@ public class Fp16KeyValueSupportTest {
         }
     }
 
+    /** qwen35 on OpenCL: an NVIDIA-class device only, as every OpenCL row. */
     @Test
-    public void qwen35StaysCudaOnly() {
-        assertTrue(
-                check(
-                                "qwen35",
-                                DataType.Q4_0,
-                                ExecutionMode.STANDARD,
-                                BackendId.OPENCL,
-                                true,
-                                false)
-                        .isPresent());
+    public void qwen35RunsOnOpenClOnAnNvidiaDevice() {
+        for (ExecutionMode mode : ExecutionMode.values()) {
+            // Batched prefill does not compile on OpenCL, with either cache; see
+            // BatchPrefillSupport.
+            assertEquals(
+                    mode.toString(),
+                    mode != ExecutionMode.BATCH_PREFILL_DECODE,
+                    check("qwen35", DataType.Q4_0, mode, BackendId.OPENCL, true, false).isEmpty());
+            assertTrue(
+                    mode.toString(),
+                    Fp16KeyValueSupport.unsupported(
+                                    new Combination(
+                                            "qwen35",
+                                            DataType.Q4_0,
+                                            mode,
+                                            BackendId.OPENCL,
+                                            false,
+                                            false,
+                                            false))
+                            .isPresent());
+        }
     }
 }

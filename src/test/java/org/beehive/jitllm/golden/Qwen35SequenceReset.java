@@ -85,6 +85,13 @@ abstract class Qwen35SequenceReset {
         GoldenCapture.assertHostLogitsAvailable();
 
         Model model = ModelLoader.loadModel(modelPath, GoldenCapture.CONTEXT_LENGTH, true, true);
+        if (prefillBatchSize > 1) {
+            var refused =
+                    org.beehive.jitllm.backend.tornado.BatchPrefillSupport
+                            .unsupportedOnCurrentDevice(model);
+            refused.ifPresent(r -> System.out.println("[SKIP] batched prefill: " + r));
+            assumeTrue("batched prefill not built here", refused.isEmpty());
+        }
         State state =
                 prefillBatchSize > 1
                         ? State.withPrefillBatchSize(prefillBatchSize, model::createNewState)

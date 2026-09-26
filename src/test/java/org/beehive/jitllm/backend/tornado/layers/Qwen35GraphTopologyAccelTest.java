@@ -316,8 +316,8 @@ public class Qwen35GraphTopologyAccelTest {
         // otherwise. Asserted on the grid because the task name is the same either way, and
         // against the same decision the builder took for this device.
         long limit =
-                org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
-                        .maxWorkGroupSize();
+                Qwen35FFNLayers.deltaRuleWorkGroupLimit(
+                        org.beehive.jitllm.backend.tornado.device.TornadoDevices.current());
         var geometry = Qwen35FFNLayers.selectDeltaRuleGeometry(valueDim, limit);
         WorkerGrid expectedDelta = Qwen35FFNLayers.deltaRuleWorker(geometry, config);
         WorkerGrid delta = scheduler.get(prefix + "ssm_delta_rule");
@@ -1107,6 +1107,13 @@ public class Qwen35GraphTopologyAccelTest {
      */
     @Test
     public void theBatchedDeltaRuleScanIsSharedForThe128WideState() {
+        // The expectation below is CUDA's warp scan. Off CUDA this family's batched plan is not
+        // built at all on OpenCL (BatchPrefillSupport), and the grid it would take is untested.
+        assumeTrue(
+                "the warp-scan grid is CUDA's",
+                org.beehive.jitllm.runtime.backend.BackendId.CUDA.equals(
+                        org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
+                                .backend()));
         for (int stateSize : new int[] {64, 128}) {
             Qwen35Configuration config = config(TRUNK_LAYERS, HIDDEN, stateSize);
             GridScheduler scheduler = new GridScheduler();

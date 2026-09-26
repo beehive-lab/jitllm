@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.kernels.Gemma4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -446,20 +447,39 @@ public class Gemma4Q8_0FFNLayers
         int splits = attentionSplits();
         if (fp16KeyValue) {
             int slices = decodeSlices(isSwa);
-            unifiedLayer.task(
-                    tn(layerIndex, "attention_group"),
-                    Gemma4AttentionKernels::attentionDecodeGroupFP16,
-                    context,
-                    gemma4State.workspace.wrapQ,
-                    gemma4State.workspace.wrapKeyCacheFP16,
-                    gemma4State.workspace.wrapValueCacheFP16,
-                    gemma4State.workspace.wrapAttSplit,
-                    gemma4State.workspace.positionHolder,
-                    headDim,
-                    kvDim,
-                    cacheBaseOffset,
-                    windowSize,
-                    slices);
+            // The shuffle kernel where the backend lowers simdShuffleDown; elsewhere its
+            // shared-memory twin, on the same workgroup, grid and partial layout.
+            if (SchedulerDetectionService.isShuffleReducedFp16GemvSupported()) {
+                unifiedLayer.task(
+                        tn(layerIndex, "attention_group"),
+                        Gemma4AttentionKernels::attentionDecodeGroupFP16,
+                        context,
+                        gemma4State.workspace.wrapQ,
+                        gemma4State.workspace.wrapKeyCacheFP16,
+                        gemma4State.workspace.wrapValueCacheFP16,
+                        gemma4State.workspace.wrapAttSplit,
+                        gemma4State.workspace.positionHolder,
+                        headDim,
+                        kvDim,
+                        cacheBaseOffset,
+                        windowSize,
+                        slices);
+            } else {
+                unifiedLayer.task(
+                        tn(layerIndex, "attention_group"),
+                        Gemma4AttentionKernels::attentionDecodeGroupFP16Shared,
+                        context,
+                        gemma4State.workspace.wrapQ,
+                        gemma4State.workspace.wrapKeyCacheFP16,
+                        gemma4State.workspace.wrapValueCacheFP16,
+                        gemma4State.workspace.wrapAttSplit,
+                        gemma4State.workspace.positionHolder,
+                        headDim,
+                        kvDim,
+                        cacheBaseOffset,
+                        windowSize,
+                        slices);
+            }
             unifiedLayer.task(
                     tn(layerIndex, "attention_combine"),
                     Gemma4AttentionKernels::combineDecodeGroup,
@@ -1175,9 +1195,22 @@ public class Gemma4Q8_0FFNLayers
         }
     }
 
-    /** Whether a projection takes the warp-per-row Q8_0 kernel: Q8_0, on the NVIDIA path. */
+    // @formatter:off
+    /**
+     * Whether a projection takes the warp-per-row Q8_0 kernel: Q8_0, on the NVIDIA path, on a
+     * backend whose {@code simdShuffleDown} is correct.
+     *
+     * <p>The scheduler type alone is not enough: an NVIDIA device reached through OpenCL is on the
+     * NVIDIA path too, and TornadoVM's OpenCL backend refuses the shuffle at compile time ("Unable
+     * to build sketch for method: matrixVectorQ8_0Warp"), which left the first generation failing
+     * and the session unusable. There the generic shared-memory Q8_0 kernel runs, as it does on
+     * every non-NVIDIA device. CUDA holds the capability, so its selection does not change.
+     */
+    // @formatter:on
     private boolean warpProjection(TornadoTensor w) {
-        return w.dataType() == DataType.Q8_0 && !shouldUseFinalNormalization();
+        return w.dataType() == DataType.Q8_0
+                && !shouldUseFinalNormalization()
+                && SchedulerDetectionService.isShuffleReducedFp16GemvSupported();
     }
 
     /** The worker grid of a projection of {@code rows} outputs, matching its kernel. */

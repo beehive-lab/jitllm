@@ -340,6 +340,163 @@ public final class Gemma4AttentionKernels {
         }
     }
 
+    /** Positions and dimensions of one key tile {@link #attentionDecodeGroupFP16Shared} stages. */
+    private static final int SHARED_KEY_TILE = 32;
+
+    /** Row pitch of the staged key tile: one float of padding keeps the rows off one bank. */
+    private static final int SHARED_KEY_PITCH = SHARED_KEY_TILE + 1;
+
+    // @formatter:off
+    /**
+     * {@link #attentionDecodeGroupFP16} for a backend without {@code simdShuffleDown}: the same
+     * workgroup, the same slice, the same partial layout and the same value phase, with every
+     * cross-lane reduction done through shared memory instead of a shuffle tree.
+     *
+     * <p><b>Scores.</b> Lane {@code tid} owns one (position {@code tid / 8}, query head {@code tid
+     * % 8}) pair of the slice and accumulates its whole dot product itself, over key tiles of
+     * {@value #SHARED_KEY_TILE} positions by {@value #SHARED_KEY_TILE} dimensions staged coalesced
+     * in shared memory; no lane partials are left to combine. <b>Softmax.</b> The first lane of
+     * each query head's 32 folds the slice's maximum, then its sum of exponentials, left to right.
+     * <b>Values.</b> Unchanged.
+     *
+     * <p><b>Arithmetic.</b> FP32 after the cache read, as the shuffle kernel. Each dot product is
+     * summed dimension by dimension rather than as 32 lane partials, so the two kernels differ by a
+     * reassociation of the same products; which one runs is a property of the backend, never of the
+     * input. The queries are staged with a row pitch of {@code headDim + 1} for the same bank
+     * reason as the key tile.
+     *
+     * <p>Same requirements and worker as {@link #attentionDecodeGroupFP16}.
+     */
+    // @formatter:on
+    public static void attentionDecodeGroupFP16Shared(
+            KernelContext context,
+            FloatArray q,
+            HalfFloatArray keyCache,
+            HalfFloatArray valueCache,
+            FloatArray partial,
+            IntArray positionHolder,
+            int headDim,
+            int kvDim,
+            int cacheBaseOffset,
+            int windowSize,
+            int maxSlices) {
+        int tid = context.localIdx;
+        int warp = tid >> 5;
+        int lane = tid & 31;
+        int group = context.groupIdx;
+        int kvHead = group / maxSlices;
+        int slice = group - kvHead * maxSlices;
+
+        int pos = positionHolder.get(0);
+        int windowStart = pos - windowSize + 1;
+        if (windowStart < 0) {
+            windowStart = 0;
+        }
+        int from = windowStart + slice * DECODE_SLICE;
+        if (from > pos) {
+            return;
+        }
+        int valid = pos - from + 1;
+        if (valid > DECODE_SLICE) {
+            valid = DECODE_SLICE;
+        }
+
+        float[] qs = context.allocateFloatLocalArray(DECODE_GROUP * (DECODE_MAX_HEAD + 1));
+        float[] kt = context.allocateFloatLocalArray(SHARED_KEY_TILE * SHARED_KEY_PITCH);
+        float[] sc = context.allocateFloatLocalArray(DECODE_GROUP * DECODE_SLICE);
+        float[] stat = context.allocateFloatLocalArray(DECODE_GROUP);
+
+        int groupWidth = DECODE_GROUP * headDim;
+        int qPitch = headDim + 1;
+        int qBase = kvHead * groupWidth;
+        for (int i = tid; i < groupWidth; i += DECODE_LANES) {
+            int member = i / headDim;
+            qs[member * qPitch + (i - member * headDim)] = q.get(qBase + i);
+        }
+
+        // Lane (t, h): position t of the slice, query head h of the group.
+        int t = tid >> 3;
+        int h = tid & 7;
+        int headOff = cacheBaseOffset + kvHead * headDim;
+        float acc = 0.0f;
+        for (int d0 = 0; d0 < headDim; d0 += SHARED_KEY_TILE) {
+            for (int i = tid; i < SHARED_KEY_TILE * SHARED_KEY_TILE; i += DECODE_LANES) {
+                int r = i >> 5;
+                int c = i & 31;
+                float kv = 0.0f;
+                if (r < valid) {
+                    kv = keyCache.get(headOff + (from + r) * kvDim + d0 + c).getFloat32();
+                }
+                kt[r * SHARED_KEY_PITCH + c] = kv;
+            }
+            // Publishes the key tile, and on the first pass the staged queries as well.
+            context.localBarrier();
+            int qRow = h * qPitch + d0;
+            int kRow = t * SHARED_KEY_PITCH;
+            for (int c = 0; c < SHARED_KEY_TILE; c++) {
+                acc += qs[qRow + c] * kt[kRow + c];
+            }
+            // Every lane has read the tile before the next one overwrites it.
+            context.localBarrier();
+        }
+        sc[h * DECODE_SLICE + t] = acc;
+        context.localBarrier();
+
+        // Query head `warp` of the group, a lane per position.
+        int partBase = group * decodePartialStride(headDim);
+        if (lane == 0) {
+            float m = Float.NEGATIVE_INFINITY;
+            for (int p = 0; p < valid; p++) {
+                m = TornadoMath.max(m, sc[warp * DECODE_SLICE + p]);
+            }
+            stat[warp] = m;
+        }
+        context.localBarrier();
+        float m = stat[warp];
+        float e = lane < valid ? TornadoMath.exp(sc[warp * DECODE_SLICE + lane] - m) : 0.0f;
+        sc[warp * DECODE_SLICE + lane] = e;
+        context.localBarrier();
+        if (lane == 0) {
+            float l = 0.0f;
+            for (int p = 0; p < DECODE_SLICE; p++) {
+                l += sc[warp * DECODE_SLICE + p];
+            }
+            partial.set(partBase + groupWidth + warp, m);
+            partial.set(partBase + groupWidth + DECODE_GROUP + warp, l);
+        }
+
+        int valueBase = headOff + from * kvDim;
+        for (int d = tid; d < headDim; d += DECODE_LANES) {
+            float o0 = 0.0f;
+            float o1 = 0.0f;
+            float o2 = 0.0f;
+            float o3 = 0.0f;
+            float o4 = 0.0f;
+            float o5 = 0.0f;
+            float o6 = 0.0f;
+            float o7 = 0.0f;
+            for (int p = 0; p < valid; p++) {
+                float vv = valueCache.get(valueBase + p * kvDim + d).getFloat32();
+                o0 += sc[p] * vv;
+                o1 += sc[DECODE_SLICE + p] * vv;
+                o2 += sc[2 * DECODE_SLICE + p] * vv;
+                o3 += sc[3 * DECODE_SLICE + p] * vv;
+                o4 += sc[4 * DECODE_SLICE + p] * vv;
+                o5 += sc[5 * DECODE_SLICE + p] * vv;
+                o6 += sc[6 * DECODE_SLICE + p] * vv;
+                o7 += sc[7 * DECODE_SLICE + p] * vv;
+            }
+            partial.set(partBase + d, o0);
+            partial.set(partBase + headDim + d, o1);
+            partial.set(partBase + 2 * headDim + d, o2);
+            partial.set(partBase + 3 * headDim + d, o3);
+            partial.set(partBase + 4 * headDim + d, o4);
+            partial.set(partBase + 5 * headDim + d, o5);
+            partial.set(partBase + 6 * headDim + d, o6);
+            partial.set(partBase + 7 * headDim + d, o7);
+        }
+    }
+
     // @formatter:off
     /**
      * Decode attention, phase two: the slices merged, one thread per output element.

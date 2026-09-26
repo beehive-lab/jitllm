@@ -892,9 +892,37 @@ public class Qwen35FFNLayers
         return DeltaRuleGeometry.LANE_PER_COLUMN;
     }
 
+    /**
+     * The widest split workgroup a backend without a verified full-width launch is given: 256
+     * lanes, which an NVIDIA multiprocessor holds even at the 255-register ceiling.
+     */
+    static final long PORTABLE_SPLIT_WORKGROUP = 256;
+
+    // @formatter:off
+    /**
+     * The workgroup limit the delta-rule geometry is chosen against on {@code device}.
+     *
+     * <p>The device's own maximum is an upper bound for a kernel, not a promise to every kernel.
+     * OpenCL fixes a kernel's limit ({@code CL_KERNEL_WORK_GROUP_SIZE}) when the driver compiles
+     * it, from the registers it ends up using, and TornadoVM compiles after the geometry is chosen.
+     * On an NVIDIA device through OpenCL the eight-part kernel's 1024-lane launch was refused with
+     * {@code CL_OUT_OF_RESOURCES} on every recurrent layer, and with it skipped the model generated
+     * degenerate text. So the full device limit is used on CUDA, where the 1024-lane launch is the
+     * one measured, and everywhere else it is capped at {@link #PORTABLE_SPLIT_WORKGROUP}, which
+     * admits the two-part kernel for this family's 128-wide value head.
+     */
+    // @formatter:on
+    public static long deltaRuleWorkGroupLimit(org.beehive.jitllm.runtime.backend.Device device) {
+        long limit = device.maxWorkGroupSize();
+        if (org.beehive.jitllm.runtime.backend.BackendId.CUDA.equals(device.backend())) {
+            return limit;
+        }
+        return Math.min(limit, PORTABLE_SPLIT_WORKGROUP);
+    }
+
     private DeltaRuleGeometry deltaRuleGeometry() {
         return selectDeltaRuleGeometry(
-                config.headValueDim(), TornadoDevices.current().maxWorkGroupSize());
+                config.headValueDim(), deltaRuleWorkGroupLimit(TornadoDevices.current()));
     }
 
     // @formatter:off

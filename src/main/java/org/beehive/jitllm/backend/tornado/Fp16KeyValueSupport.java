@@ -75,20 +75,22 @@ public final class Fp16KeyValueSupport {
                                     ? " on this (non-NVIDIA) device"
                                     : ""));
         }
+        Optional<String> noBatchedPrefill = BatchPrefillSupport.unsupported(c);
+        if (noBatchedPrefill.isPresent()) {
+            // Not a key/value question: the plan cannot be built with either cache.
+            return noBatchedPrefill;
+        }
         switch (c.architecture()) {
             case "qwen35" -> {
-                // FP16 writers and readers in every mode, including batched prefill; measured
-                // on CUDA only (its split-KV and tensor-core attention are CUDA kernels).
-                return BackendId.CUDA.equals(c.backend())
-                        ? Optional.empty()
-                        : Optional.of("the qwen35 FP16 cache is verified on CUDA only");
+                // FP16 writers and readers in every mode, including batched prefill. On CUDA the
+                // split-KV and tensor-core attention read it; on OpenCL (an NVIDIA-class device,
+                // checked above) the single-workgroup FP16 kernel does.
+                return Optional.empty();
             }
             case "gemma4" -> {
                 // The quantized layers' FP16 writers and grouped attention, in both of this
-                // family's modes; measured on CUDA only. The FP16/BF16 layers keep FP32.
-                if (!BackendId.CUDA.equals(c.backend())) {
-                    return Optional.of("the gemma4 FP16 cache is verified on CUDA only");
-                }
+                // family's modes: the shuffle-reduced grouped kernel on CUDA, its shared-memory
+                // twin on OpenCL. The FP16/BF16 layers keep FP32.
                 if (c.weights() != DataType.Q8_0 && c.weights() != DataType.Q4_0) {
                     return Optional.of("the gemma4 " + c.weights() + " layers keep an FP32 cache");
                 }
@@ -151,6 +153,9 @@ public final class Fp16KeyValueSupport {
      * <p>Called before any cache is allocated or plan built, with what is known then: the loaded
      * model, the policy a session will execute, and the storage it asked for.
      *
+     * @throws UnsupportedOperationException from {@link BatchPrefillSupport#require} when the
+     *     batched-prefill plan cannot be built at all, with either cache, so the FP32 setting would
+     *     not help
      * @throws IllegalArgumentException naming the combination, the reason, and the FP32 setting
      */
     public static void require(
@@ -160,6 +165,9 @@ public final class Fp16KeyValueSupport {
             return;
         }
         Combination combination = resolve(model, policy, gpu);
+        // A plan that cannot be built at all is refused as that, not as a cache the FP32 setting
+        // would rescue.
+        BatchPrefillSupport.require(model, policy, gpu);
         unsupported(combination)
                 .ifPresent(
                         reason -> {
@@ -174,9 +182,11 @@ public final class Fp16KeyValueSupport {
                         + combination
                         + ": "
                         + reason
-                        + ". Run with --fp32-kv-cache, or load with"
-                        + " ModelOptions.builder().storageOptions(StorageOptions.fp32()) from"
-                        + " Java");
+                        + ". Run with --fp32-kv-cache; from Java, load with"
+                        + " ModelOptions.builder().storageOptions(StorageOptions.fp32()), or start"
+                        + " the JVM with -D"
+                        + StorageOptions.FP32_PROPERTY
+                        + "=true");
     }
 
     /** The combination this model and policy resolve to on the current device. */
