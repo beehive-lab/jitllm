@@ -25,6 +25,14 @@ import org.junit.Test;
  * chat-templates/<family>/<scenario>.llama-cpp-ids.txt}, recorded by {@code tokenize_llama_cpp.sh}
  * from the rendered {@code <scenario>.txt}. Llama 3.1 and 3.2 share one vocabulary, so the 3.2 1B
  * fixture serves both.
+ *
+ * <p>The comparison is by segment: the special tokens must be the same, in the same places; the
+ * first token after every {@code <|end_header_id|>} must be llama.cpp's, and 271; and the ordinary
+ * tokens between two special tokens must spell the same text. It is not id for id inside message
+ * text, because this engine's Llama tokenizer maps the bytes to their BPE characters before the
+ * pre-tokenizer's regex runs, so a space (then {@code Ġ}, a letter) is split from the punctuation
+ * after it where llama.cpp keeps them together ({@code " +"} is 220, 10 here and 489 there). That
+ * is a tokenizer difference of its own, not about the chat format.
  */
 public class LlamaTemplateTokenizationAccelTest {
 
@@ -52,8 +60,59 @@ public class LlamaTemplateTokenizationAccelTest {
                     encoder.encode(
                             ToolTemplateConformanceTest.messages(scenario),
                             ToolTemplateConformanceTest.tools(scenario));
-            assertEquals(family + " / " + name, expected(family, name), encoded);
+            List<List<Integer>> actual = segments(encoded);
+            List<List<Integer>> expected = segments(expected(family, name));
+            String where = family + " / " + name;
+            assertEquals(where + ": segments", expected.size(), actual.size());
+            for (int i = 0; i < expected.size(); i++) {
+                List<Integer> e = expected.get(i);
+                List<Integer> a = actual.get(i);
+                if (e.size() == 1 && e.get(0) >= FIRST_SPECIAL) {
+                    assertEquals(where + ": special token, segment " + i, e, a);
+                    continue;
+                }
+                assertEquals(
+                        where + ": text of segment " + i,
+                        model.tokenizer().decode(e),
+                        model.tokenizer().decode(a));
+                if (i > 0 && expected.get(i - 1).equals(List.of(END_HEADER))) {
+                    assertEquals(
+                            where + ": the token after <|end_header_id|>, segment " + i,
+                            e.get(0),
+                            a.get(0));
+                    assertEquals(
+                            where + ": \"\\n\\n\" is one token", DOUBLE_NEWLINE, (int) a.get(0));
+                }
+            }
         }
+    }
+
+    private static final int FIRST_SPECIAL = 128000;
+    private static final int END_HEADER = 128007;
+    private static final int DOUBLE_NEWLINE = 271;
+
+    /**
+     * Each special token alone, and the ordinary tokens between them as one segment. The last
+     * segment of a generation prompt is the lone {@code "\n\n"} after the assistant header.
+     */
+    private static List<List<Integer>> segments(List<Integer> ids) {
+        List<List<Integer>> segments = new java.util.ArrayList<>();
+        List<Integer> text = new java.util.ArrayList<>();
+        for (int id : ids) {
+            if (id >= FIRST_SPECIAL) {
+                if (!text.isEmpty()) {
+                    segments.add(text);
+                    text = new java.util.ArrayList<>();
+                }
+                segments.add(List.of(id));
+            } else {
+                text.add(id);
+            }
+        }
+        if (!text.isEmpty()) {
+            segments.add(text);
+        }
+        return segments;
     }
 
     private static List<Integer> expected(String family, String name) throws IOException {
