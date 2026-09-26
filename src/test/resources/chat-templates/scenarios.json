@@ -31,6 +31,31 @@
         {"role": "tool", "tool_call_id": "c1", "name": "getWeather", "content": "{\"temperature\":18,\"condition\":\"sunny\"}"}
       ]
     },
+    "chat_user_only": {
+      "families": ["llama-3.1", "llama-3.2"],
+      "tools": [],
+      "messages": [
+        {"role": "user", "content": "What is the capital of France?"}
+      ]
+    },
+    "chat_system_and_user": {
+      "families": ["llama-3.1", "llama-3.2"],
+      "tools": [],
+      "messages": [
+        {"role": "system", "content": "You are a concise assistant."},
+        {"role": "user", "content": "  Name one colour.\n"}
+      ]
+    },
+    "chat_multi_turn": {
+      "families": ["llama-3.1", "llama-3.2"],
+      "tools": [],
+      "messages": [
+        {"role": "system", "content": "You are a concise assistant."},
+        {"role": "user", "content": "What is 2 + 2?"},
+        {"role": "assistant", "content": "2 + 2 = 4.\n\nAnything else?"},
+        {"role": "user", "content": "Summarise that in one word."}
+      ]
+    },
     "two_calls_results_answer_user": {
       "tools": ["getWeather", "get_current_time"],
       "messages": [

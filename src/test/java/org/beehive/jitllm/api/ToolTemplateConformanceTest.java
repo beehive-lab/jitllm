@@ -127,14 +127,11 @@ public class ToolTemplateConformanceTest {
      * Llama 3.2 (and 3.1, whose official template has the same custom-tool branch): the environment
      * lines in the system turn, the tools as {@code tojson(indent=4)} in the first user message, a
      * call as {@code {"name", "parameters"}}, a result in the {@code ipython} role through {@code
-     * tojson}.
-     *
-     * <p>One pre-existing difference is normalised, and is not about tools: this engine writes a
-     * single newline after {@code <|end_header_id|>} for every Llama turn, where the template
-     * writes two. The template rejects two calls in one turn, so that scenario is not rendered.
+     * tojson}, and {@code <|end_header_id|>\n\n} after every header. Exact, with no normalisation.
+     * The template rejects two calls in one turn, so that scenario is not rendered.
      */
     @Test
-    public void llama32MatchesItsTemplateButForTheHeaderNewline() throws IOException {
+    public void llama32ToolConversationsMatchItsTemplate() throws IOException {
         LlamaTokenizer tokenizer = TestVocabularies.llama();
         assertConforms(
                 "llama-3.2",
@@ -142,7 +139,58 @@ public class ToolTemplateConformanceTest {
                 new LlamaChatFormat(tokenizer),
                 true,
                 0,
-                text -> text.replace("<|end_header_id|>\n\n", "<|end_header_id|>\n"));
+                name -> !isPlainChat(name),
+                text -> text);
+    }
+
+    /**
+     * Llama 3.2 plain chat: every header — system, user, assistant, and the empty assistant header
+     * that starts generation — ends with the template's two newlines.
+     *
+     * <p>One pre-existing difference is normalised, and is not about the header: without tools the
+     * template still opens with a system turn carrying its knowledge-cutoff and date lines, which
+     * this engine writes only for a tool request. The lines are removed from the template's text,
+     * and so is the system turn they leave empty when the conversation has no system message.
+     */
+    @Test
+    public void llama32PlainChatMatchesItsTemplateButForTheDefaultSystemLines() throws IOException {
+        LlamaTokenizer tokenizer = TestVocabularies.llama();
+        assertConforms(
+                "llama-3.2",
+                tokenizer,
+                new LlamaChatFormat(tokenizer),
+                true,
+                0,
+                ToolTemplateConformanceTest::isPlainChat,
+                text ->
+                        text.replace(
+                                        "Cutting Knowledge Date: December 2023\n"
+                                                + "Today Date: 26 Jul 2024\n\n",
+                                        "")
+                                .replace(
+                                        "<|start_header_id|>system<|end_header_id|>\n\n<|eot_id|>",
+                                        ""));
+    }
+
+    /**
+     * Llama 3.1 8B: the template embedded in {@code meta-llama-3.1-8b-instruct.*.gguf}, a plain
+     * chat template with no tool branch. Exact: two newlines after every header, content trimmed.
+     */
+    @Test
+    public void llama31PlainChatMatchesItsTemplate() throws IOException {
+        LlamaTokenizer tokenizer = TestVocabularies.llama();
+        assertConforms(
+                "llama-3.1",
+                tokenizer,
+                new LlamaChatFormat(tokenizer),
+                true,
+                0,
+                ToolTemplateConformanceTest::isPlainChat,
+                text -> text);
+    }
+
+    private static boolean isPlainChat(String scenario) {
+        return scenario.startsWith("chat_");
     }
 
     // ---- harness --------------------------------------------------------------------------------
@@ -171,10 +219,35 @@ public class ToolTemplateConformanceTest {
             int leadingTokensToSkip,
             java.util.function.UnaryOperator<String> normalise)
             throws IOException {
+        assertConforms(
+                family,
+                tokenizer,
+                format,
+                beginOfText,
+                leadingTokensToSkip,
+                name -> true,
+                normalise);
+    }
+
+    /**
+     * @param scenarios which of the rendered scenarios this comparison covers
+     */
+    private static void assertConforms(
+            String family,
+            Tokenizer tokenizer,
+            ChatFormat format,
+            boolean beginOfText,
+            int leadingTokensToSkip,
+            java.util.function.Predicate<String> scenarios,
+            java.util.function.UnaryOperator<String> normalise)
+            throws IOException {
         assertTrue(family + " reports tool calling", format.supportsToolCalling());
         ConversationEncoder encoder = encoder(format, beginOfText);
         int compared = 0;
         for (String name : scenarioNames()) {
+            if (!scenarios.test(name)) {
+                continue;
+            }
             Path expectedFile = ROOT.resolve(family).resolve(name + ".txt");
             if (!Files.exists(expectedFile)) {
                 continue; // a scenario the template rejects
@@ -214,14 +287,14 @@ public class ToolTemplateConformanceTest {
     }
 
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> scenario(String name) throws IOException {
+    static Map<String, Object> scenario(String name) throws IOException {
         Map<String, Object> scenario =
                 (Map<String, Object>) ((Map<String, Object>) data().get("scenarios")).get(name);
         return scenario;
     }
 
     @SuppressWarnings("unchecked")
-    private static List<ToolSpec> tools(Map<String, Object> scenario) throws IOException {
+    static List<ToolSpec> tools(Map<String, Object> scenario) throws IOException {
         Map<String, Object> specs = (Map<String, Object>) data().get("tools");
         List<ToolSpec> tools = new ArrayList<>();
         for (Object name : (List<Object>) scenario.get("tools")) {

@@ -1,0 +1,15 @@
+<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+Cutting Knowledge Date: December 2023
+Today Date: 26 Jul 2024
+
+You are a concise assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+What is 2 + 2?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+2 + 2 = 4.
+
+Anything else?<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Summarise that in one word.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
