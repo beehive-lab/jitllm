@@ -153,6 +153,9 @@ public final class Fp16KeyValueSupport {
      * <p>Called before any cache is allocated or plan built, with what is known then: the loaded
      * model, the policy a session will execute, and the storage it asked for.
      *
+     * @throws UnsupportedOperationException from {@link BatchPrefillSupport#require} when the
+     *     batched-prefill plan cannot be built at all, with either cache, so the FP32 setting would
+     *     not help
      * @throws IllegalArgumentException naming the combination, the reason, and the FP32 setting
      */
     public static void require(
