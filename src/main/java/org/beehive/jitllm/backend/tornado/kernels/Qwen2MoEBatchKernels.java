@@ -14,6 +14,7 @@ public final class Qwen2MoEBatchKernels {
     private static final int Q8_0_REPACK_SCALE_BYTES = Q8_0_REPACK_GROUP_BLOCKS * 2;
     private static final int Q8_0_REPACK_GROUP_BYTES =
             Q8_0_REPACK_SCALE_BYTES + Q8_0_REPACK_GROUP_BLOCKS * Q8_0_BLOCK_SIZE;
+
     private Qwen2MoEBatchKernels() {}
 
     /** Computes one router score for every token-expert pair. */
@@ -474,8 +475,7 @@ public final class Qwen2MoEBatchKernels {
         int lane = localId % Q8_0_BLOCK_SIZE;
         int rowInTile = localId / Q8_0_BLOCK_SIZE;
         int rowsPerGroup = localWorkGroupSize / Q8_0_BLOCK_SIZE;
-        int outputRowTiles =
-                (sharedExpertHiddenDim + rowsPerGroup - 1) / rowsPerGroup;
+        int outputRowTiles = (sharedExpertHiddenDim + rowsPerGroup - 1) / rowsPerGroup;
         int tokenTile = context.groupIdx / outputRowTiles;
         int outputRowTile = context.groupIdx % outputRowTiles;
         int token0 = tokenTile * 2;
@@ -508,8 +508,7 @@ public final class Qwen2MoEBatchKernels {
                         sharedGate.get(quantIndex)
                                 * sharedGate.getHalfFloat(scaleOffset).getFloat32();
                 float upWeight =
-                        sharedUp.get(quantIndex)
-                                * sharedUp.getHalfFloat(scaleOffset).getFloat32();
+                        sharedUp.get(quantIndex) * sharedUp.getHalfFloat(scaleOffset).getFloat32();
 
                 if (active0) {
                     float input0 = inputBatch.get(inputOffset0 + column);
@@ -552,15 +551,13 @@ public final class Qwen2MoEBatchKernels {
                 float gate0 = localPartials[subgroupBase];
                 float up0 = localPartials[localWorkGroupSize + subgroupBase];
                 float siluGate0 = gate0 / (1.0f + TornadoMath.exp(-gate0));
-                sharedHiddenBatch.set(
-                        token0 * sharedExpertHiddenDim + rowId, siluGate0 * up0);
+                sharedHiddenBatch.set(token0 * sharedExpertHiddenDim + rowId, siluGate0 * up0);
             }
             if (active1) {
                 float gate1 = localPartials[2 * localWorkGroupSize + subgroupBase];
                 float up1 = localPartials[3 * localWorkGroupSize + subgroupBase];
                 float siluGate1 = gate1 / (1.0f + TornadoMath.exp(-gate1));
-                sharedHiddenBatch.set(
-                        token1 * sharedExpertHiddenDim + rowId, siluGate1 * up1);
+                sharedHiddenBatch.set(token1 * sharedExpertHiddenDim + rowId, siluGate1 * up1);
             }
         }
     }
@@ -581,8 +578,7 @@ public final class Qwen2MoEBatchKernels {
         int lane = localId % Q8_0_BLOCK_SIZE;
         int rowInTile = localId / Q8_0_BLOCK_SIZE;
         int rowsPerGroup = localWorkGroupSize / Q8_0_BLOCK_SIZE;
-        int outputRowTiles =
-                (sharedExpertHiddenDim + rowsPerGroup - 1) / rowsPerGroup;
+        int outputRowTiles = (sharedExpertHiddenDim + rowsPerGroup - 1) / rowsPerGroup;
         int tokenTile = context.groupIdx / outputRowTiles;
         int outputRowTile = context.groupIdx % outputRowTiles;
         int token0 = tokenTile * 4;
@@ -625,8 +621,7 @@ public final class Qwen2MoEBatchKernels {
                         sharedGate.get(quantIndex)
                                 * sharedGate.getHalfFloat(scaleOffset).getFloat32();
                 float upWeight =
-                        sharedUp.get(quantIndex)
-                                * sharedUp.getHalfFloat(scaleOffset).getFloat32();
+                        sharedUp.get(quantIndex) * sharedUp.getHalfFloat(scaleOffset).getFloat32();
 
                 if (active0) {
                     float input0 = inputBatch.get(inputOffset0 + column);
@@ -669,8 +664,7 @@ public final class Qwen2MoEBatchKernels {
                 int source = target + stride;
                 for (int segment = 0; segment < 8; segment++) {
                     int segmentOffset = segment * localWorkGroupSize;
-                    localPartials[segmentOffset + target] +=
-                            localPartials[segmentOffset + source];
+                    localPartials[segmentOffset + target] += localPartials[segmentOffset + source];
                 }
             }
             context.localBarrier();
@@ -681,29 +675,25 @@ public final class Qwen2MoEBatchKernels {
                 float gate0 = localPartials[subgroupBase];
                 float up0 = localPartials[localWorkGroupSize + subgroupBase];
                 float siluGate0 = gate0 / (1.0f + TornadoMath.exp(-gate0));
-                sharedHiddenBatch.set(
-                        token0 * sharedExpertHiddenDim + rowId, siluGate0 * up0);
+                sharedHiddenBatch.set(token0 * sharedExpertHiddenDim + rowId, siluGate0 * up0);
             }
             if (active1) {
                 float gate1 = localPartials[2 * localWorkGroupSize + subgroupBase];
                 float up1 = localPartials[3 * localWorkGroupSize + subgroupBase];
                 float siluGate1 = gate1 / (1.0f + TornadoMath.exp(-gate1));
-                sharedHiddenBatch.set(
-                        token1 * sharedExpertHiddenDim + rowId, siluGate1 * up1);
+                sharedHiddenBatch.set(token1 * sharedExpertHiddenDim + rowId, siluGate1 * up1);
             }
             if (active2) {
                 float gate2 = localPartials[4 * localWorkGroupSize + subgroupBase];
                 float up2 = localPartials[5 * localWorkGroupSize + subgroupBase];
                 float siluGate2 = gate2 / (1.0f + TornadoMath.exp(-gate2));
-                sharedHiddenBatch.set(
-                        token2 * sharedExpertHiddenDim + rowId, siluGate2 * up2);
+                sharedHiddenBatch.set(token2 * sharedExpertHiddenDim + rowId, siluGate2 * up2);
             }
             if (active3) {
                 float gate3 = localPartials[6 * localWorkGroupSize + subgroupBase];
                 float up3 = localPartials[7 * localWorkGroupSize + subgroupBase];
                 float siluGate3 = gate3 / (1.0f + TornadoMath.exp(-gate3));
-                sharedHiddenBatch.set(
-                        token3 * sharedExpertHiddenDim + rowId, siluGate3 * up3);
+                sharedHiddenBatch.set(token3 * sharedExpertHiddenDim + rowId, siluGate3 * up3);
             }
         }
     }
@@ -774,8 +764,7 @@ public final class Qwen2MoEBatchKernels {
         int rowId = outputRowTile * rowsPerGroup + rowInTile;
         boolean activeRow = rowId < dim;
 
-        int blocksPerRow =
-                (sharedExpertHiddenDim + Q8_0_BLOCK_SIZE - 1) / Q8_0_BLOCK_SIZE;
+        int blocksPerRow = (sharedExpertHiddenDim + Q8_0_BLOCK_SIZE - 1) / Q8_0_BLOCK_SIZE;
         int rowBlockOffset = rowId * blocksPerRow;
         float partial0 = 0.0f;
         float partial1 = 0.0f;
@@ -827,8 +816,7 @@ public final class Qwen2MoEBatchKernels {
                 residualBatch.set(
                         output0,
                         residualBatch.get(output0)
-                                + sharedWeightBatch.get(token0)
-                                        * localPartials[subgroupBase]);
+                                + sharedWeightBatch.get(token0) * localPartials[subgroupBase]);
             }
             if (active1) {
                 int output1 = token1 * dim + rowId;
@@ -872,8 +860,7 @@ public final class Qwen2MoEBatchKernels {
         int rowId = outputRowTile * rowsPerGroup + rowInTile;
         boolean activeRow = rowId < dim;
 
-        int blocksPerRow =
-                (sharedExpertHiddenDim + Q8_0_BLOCK_SIZE - 1) / Q8_0_BLOCK_SIZE;
+        int blocksPerRow = (sharedExpertHiddenDim + Q8_0_BLOCK_SIZE - 1) / Q8_0_BLOCK_SIZE;
         int rowBlockOffset = rowId * blocksPerRow;
         float partial0 = 0.0f;
         float partial1 = 0.0f;
@@ -926,8 +913,7 @@ public final class Qwen2MoEBatchKernels {
                 int source = target + stride;
                 for (int segment = 0; segment < 4; segment++) {
                     int segmentOffset = segment * localWorkGroupSize;
-                    localPartials[segmentOffset + target] +=
-                            localPartials[segmentOffset + source];
+                    localPartials[segmentOffset + target] += localPartials[segmentOffset + source];
                 }
             }
             context.localBarrier();
@@ -939,8 +925,7 @@ public final class Qwen2MoEBatchKernels {
                 residualBatch.set(
                         output0,
                         residualBatch.get(output0)
-                                + sharedWeightBatch.get(token0)
-                                        * localPartials[subgroupBase]);
+                                + sharedWeightBatch.get(token0) * localPartials[subgroupBase]);
             }
             if (active1) {
                 int output1 = token1 * dim + rowId;

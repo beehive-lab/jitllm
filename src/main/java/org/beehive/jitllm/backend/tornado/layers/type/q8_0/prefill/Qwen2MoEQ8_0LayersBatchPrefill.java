@@ -498,10 +498,8 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
         WorkerGrid routedHiddenWorker = tiledExpertRowsWorker(config.moeHiddenDim());
         WorkerGrid routedDownWorker = tiledExpertRowsWorker(dim);
         WorkerGrid tiledSharedHiddenWorker =
-                sharedExpertTiledRowsWorker(
-                        config.sharedExpertHiddenDim(), sharedExpertTokenTile);
-        WorkerGrid tiledSharedDownWorker =
-                sharedExpertTiledRowsWorker(dim, sharedExpertTokenTile);
+                sharedExpertTiledRowsWorker(config.sharedExpertHiddenDim(), sharedExpertTokenTile);
+        WorkerGrid tiledSharedDownWorker = sharedExpertTiledRowsWorker(dim, sharedExpertTokenTile);
         WorkerGrid sharedWeightWorker = groupedRowsWorker(batchSize);
 
         for (int layer = 0; layer < config.numberOfLayers(); layer++) {
@@ -545,12 +543,10 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
     private WorkerGrid sharedExpertTiledRowsWorker(int outputRows, int tokensPerTile) {
         int tokenTiles = (batchSize + tokensPerTile - 1) / tokensPerTile;
         int rowTiles =
-                (outputRows + EXPERT_OUTPUT_ROWS_PER_GROUP - 1)
-                        / EXPERT_OUTPUT_ROWS_PER_GROUP;
+                (outputRows + EXPERT_OUTPUT_ROWS_PER_GROUP - 1) / EXPERT_OUTPUT_ROWS_PER_GROUP;
         int workGroups = tokenTiles * rowTiles;
         return WorkerGridFactory.genericWorker(
-                workGroups * EXPERT_2D_LOCAL_WORK_GROUP_SIZE,
-                EXPERT_2D_LOCAL_WORK_GROUP_SIZE);
+                workGroups * EXPERT_2D_LOCAL_WORK_GROUP_SIZE, EXPERT_2D_LOCAL_WORK_GROUP_SIZE);
     }
 
     /** Finds a legal local size that divides the requested global dimension. */

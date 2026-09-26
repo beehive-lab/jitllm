@@ -131,8 +131,7 @@ public final class Qwen2MoEKernels {
         if (active) {
             for (int column = localId; column < dim; column += localWorkGroupSize) {
                 int blockIndex = rowBlockOffset + column / Q8_0_BLOCK_SIZE;
-                int quantIndex =
-                        repackedQuantOffset(blockIndex) + column % Q8_0_BLOCK_SIZE;
+                int quantIndex = repackedQuantOffset(blockIndex) + column % Q8_0_BLOCK_SIZE;
 
                 float inputValue = input.get(column);
                 int scaleOffset = repackedScaleOffset(blockIndex);
@@ -215,8 +214,7 @@ public final class Qwen2MoEKernels {
                 int hiddenBase = slot * moeHiddenDim;
                 for (int column = localId; column < moeHiddenDim; column += localWorkGroupSize) {
                     int blockIndex = rowBlockOffset + column / Q8_0_BLOCK_SIZE;
-                    int quantIndex =
-                            repackedQuantOffset(blockIndex) + column % Q8_0_BLOCK_SIZE;
+                    int quantIndex = repackedQuantOffset(blockIndex) + column % Q8_0_BLOCK_SIZE;
 
                     float weight =
                             downExperts.get(quantIndex)
@@ -277,8 +275,7 @@ public final class Qwen2MoEKernels {
         for (int column = localId; column < dim; column += localWorkGroupSize) {
 
             int blockIndex = rowBlockOffset + column / Q8_0_BLOCK_SIZE;
-            int quantIndex =
-                    repackedQuantOffset(blockIndex) + column % Q8_0_BLOCK_SIZE;
+            int quantIndex = repackedQuantOffset(blockIndex) + column % Q8_0_BLOCK_SIZE;
 
             float inputValue = input.get(column);
 
@@ -352,8 +349,7 @@ public final class Qwen2MoEKernels {
         float partialSum = 0.0f;
         for (int column = localId; column < sharedExpertHiddenDim; column += localWorkGroupSize) {
             int blockIndex = rowBlockOffset + column / Q8_0_BLOCK_SIZE;
-            int quantIndex =
-                    repackedQuantOffset(blockIndex) + column % Q8_0_BLOCK_SIZE;
+            int quantIndex = repackedQuantOffset(blockIndex) + column % Q8_0_BLOCK_SIZE;
 
             float weight =
                     sharedDown.get(quantIndex)
