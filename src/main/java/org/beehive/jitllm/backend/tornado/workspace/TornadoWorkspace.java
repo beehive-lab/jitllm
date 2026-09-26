@@ -252,6 +252,10 @@ public final class TornadoWorkspace {
     public FloatArray wrapRoutingWeightsBatch;
     public IntArray wrapGroupedAssignmentIds;
     public IntArray wrapGroupedPositionByAssignment;
+    public IntArray wrapExpertTileIds;
+    public IntArray wrapExpertTileStarts;
+    public IntArray wrapExpertTileCounts;
+    public IntArray wrapExpertTileCountHolder;
     public FloatArray wrapGroupedExpertHidden;
     public FloatArray wrapGroupedExpertDown;
     public FloatArray wrapSharedHiddenBatch;

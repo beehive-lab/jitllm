@@ -23,6 +23,10 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
         implements BatchPrefillTransformerLayerTaskGraphs {
 
     private static final int LOCAL_WORK_GROUP_SIZE = 32;
+    private static final int EXPERT_TILE_SIZE = 2;
+    private static final int EXPERT_2D_LOCAL_WORK_GROUP_SIZE = 128;
+    private static final int EXPERT_OUTPUT_ROWS_PER_GROUP =
+            EXPERT_2D_LOCAL_WORK_GROUP_SIZE / LOCAL_WORK_GROUP_SIZE;
 
     private final Qwen2MoEState state;
     private final Qwen2MoETornadoWeights weights;
@@ -33,6 +37,7 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
     private final int kvDim;
     private final int topK;
     private final int numberOfAssignments;
+    private final int sharedExpertTokenTile;
     private final List<ImmutableTaskGraph> layerTaskGraphs;
     private String lastLayerTaskGraphID;
 
@@ -49,6 +54,7 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
         this.kvDim = config.kvDim();
         this.topK = config.numberOfExpertsUsed();
         this.numberOfAssignments = batchSize * topK;
+        this.sharedExpertTokenTile = batchSize >= 4 ? 4 : 2;
         this.layerTaskGraphs =
                 IntStream.range(0, config.numberOfLayers())
                         .mapToObj(this::createBatchPrefillLayerTaskGraph)
@@ -81,12 +87,12 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
                 weights.v_biasLayered[layerIndex].asFloatArray(),
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
                 weights.routerGateLayered[layerIndex].asFloatArray(),
-                weights.gateExpertsLayered[layerIndex].asByteArray(),
-                weights.upExpertsLayered[layerIndex].asByteArray(),
-                weights.downExpertsLayered[layerIndex].asByteArray(),
-                weights.sharedGateLayered[layerIndex].asByteArray(),
-                weights.sharedUpLayered[layerIndex].asByteArray(),
-                weights.sharedDownLayered[layerIndex].asByteArray(),
+                weights.gateExpertsLayered[layerIndex].asRepackedByteArray(),
+                weights.upExpertsLayered[layerIndex].asRepackedByteArray(),
+                weights.downExpertsLayered[layerIndex].asRepackedByteArray(),
+                weights.sharedGateLayered[layerIndex].asRepackedByteArray(),
+                weights.sharedUpLayered[layerIndex].asRepackedByteArray(),
+                weights.sharedDownLayered[layerIndex].asRepackedByteArray(),
                 weights.sharedGateInputLayered[layerIndex].asFloatArray());
         return layer;
     }
@@ -114,6 +120,10 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
                     state.workspace.wrapRoutingWeightsBatch,
                     state.workspace.wrapGroupedAssignmentIds,
                     state.workspace.wrapGroupedPositionByAssignment,
+                    state.workspace.wrapExpertTileIds,
+                    state.workspace.wrapExpertTileStarts,
+                    state.workspace.wrapExpertTileCounts,
+                    state.workspace.wrapExpertTileCountHolder,
                     state.workspace.wrapGroupedExpertHidden,
                     state.workspace.wrapGroupedExpertDown,
                     state.workspace.wrapSharedHiddenBatch,
@@ -145,6 +155,10 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
                     state.workspace.wrapRoutingWeightsBatch,
                     state.workspace.wrapGroupedAssignmentIds,
                     state.workspace.wrapGroupedPositionByAssignment,
+                    state.workspace.wrapExpertTileIds,
+                    state.workspace.wrapExpertTileStarts,
+                    state.workspace.wrapExpertTileCounts,
+                    state.workspace.wrapExpertTileCountHolder,
                     state.workspace.wrapGroupedExpertHidden,
                     state.workspace.wrapGroupedExpertDown,
                     state.workspace.wrapSharedHiddenBatch,
@@ -164,12 +178,12 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
                 weights.woLayered[layerIndex].asByteArray(),
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
                 weights.routerGateLayered[layerIndex].asFloatArray(),
-                weights.gateExpertsLayered[layerIndex].asByteArray(),
-                weights.upExpertsLayered[layerIndex].asByteArray(),
-                weights.downExpertsLayered[layerIndex].asByteArray(),
-                weights.sharedGateLayered[layerIndex].asByteArray(),
-                weights.sharedUpLayered[layerIndex].asByteArray(),
-                weights.sharedDownLayered[layerIndex].asByteArray(),
+                weights.gateExpertsLayered[layerIndex].asRepackedByteArray(),
+                weights.upExpertsLayered[layerIndex].asRepackedByteArray(),
+                weights.downExpertsLayered[layerIndex].asRepackedByteArray(),
+                weights.sharedGateLayered[layerIndex].asRepackedByteArray(),
+                weights.sharedUpLayered[layerIndex].asRepackedByteArray(),
+                weights.sharedDownLayered[layerIndex].asRepackedByteArray(),
                 weights.sharedGateInputLayered[layerIndex].asFloatArray());
     }
 
@@ -322,47 +336,54 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
 
         layer.task(
                 "batch_group_assignments",
-                Qwen2MoEBatchKernels::groupAssignmentsByExpert,
+                Qwen2MoEBatchKernels::groupAssignmentsAndBuildExpertTiles,
                 context,
                 state.workspace.wrapSelectedExpertsBatch,
                 state.workspace.wrapGroupedAssignmentIds,
                 state.workspace.wrapGroupedPositionByAssignment,
+                state.workspace.wrapExpertTileIds,
+                state.workspace.wrapExpertTileStarts,
+                state.workspace.wrapExpertTileCounts,
+                state.workspace.wrapExpertTileCountHolder,
                 state.workspace.activeBatchSizeHolder,
                 config.numberOfExperts(),
-                topK);
+                topK,
+                EXPERT_TILE_SIZE);
 
         layer.task(
                 "batch_routed_gate_up",
-                Qwen2MoEBatchKernels::groupedRoutedExpertsGateUpSwiGLUQ8_0,
+                Qwen2MoEBatchKernels::tiled2DRoutedExpertsGateUpSwiGLUQ8_0,
                 context,
                 state.workspace.wrapXbBatch,
-                state.workspace.wrapSelectedExpertsBatch,
                 state.workspace.wrapGroupedAssignmentIds,
-                state.workspace.activeBatchSizeHolder,
-                weights.gateExpertsLayered[layerIndex].asByteArray(),
-                weights.upExpertsLayered[layerIndex].asByteArray(),
+                state.workspace.wrapExpertTileIds,
+                state.workspace.wrapExpertTileStarts,
+                state.workspace.wrapExpertTileCounts,
+                state.workspace.wrapExpertTileCountHolder,
+                weights.gateExpertsLayered[layerIndex].asRepackedByteArray(),
+                weights.upExpertsLayered[layerIndex].asRepackedByteArray(),
                 state.workspace.wrapGroupedExpertHidden,
                 dim,
                 config.moeHiddenDim(),
                 config.numberOfExperts(),
                 topK,
-                LOCAL_WORK_GROUP_SIZE);
+                EXPERT_2D_LOCAL_WORK_GROUP_SIZE);
 
         layer.task(
                 "batch_routed_down",
-                Qwen2MoEBatchKernels::groupedRoutedExpertsDownQ8_0,
+                Qwen2MoEBatchKernels::tiled2DRoutedExpertsDownQ8_0,
                 context,
                 state.workspace.wrapGroupedExpertHidden,
-                state.workspace.wrapSelectedExpertsBatch,
-                state.workspace.wrapGroupedAssignmentIds,
-                state.workspace.activeBatchSizeHolder,
-                weights.downExpertsLayered[layerIndex].asByteArray(),
+                state.workspace.wrapExpertTileIds,
+                state.workspace.wrapExpertTileStarts,
+                state.workspace.wrapExpertTileCounts,
+                state.workspace.wrapExpertTileCountHolder,
+                weights.downExpertsLayered[layerIndex].asRepackedByteArray(),
                 state.workspace.wrapGroupedExpertDown,
                 dim,
                 config.moeHiddenDim(),
                 config.numberOfExperts(),
-                topK,
-                LOCAL_WORK_GROUP_SIZE);
+                EXPERT_2D_LOCAL_WORK_GROUP_SIZE);
 
         layer.task(
                 "batch_routed_accumulate",
@@ -376,18 +397,38 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
                 dim,
                 topK);
 
-        layer.task(
-                "batch_shared_gate_up",
-                Qwen2MoEBatchKernels::batchedSharedExpertGateUpSwiGLUQ8_0,
-                context,
-                state.workspace.wrapXbBatch,
-                state.workspace.activeBatchSizeHolder,
-                weights.sharedGateLayered[layerIndex].asByteArray(),
-                weights.sharedUpLayered[layerIndex].asByteArray(),
-                state.workspace.wrapSharedHiddenBatch,
-                dim,
-                config.sharedExpertHiddenDim(),
-                LOCAL_WORK_GROUP_SIZE);
+        configureSharedExpert(layer, layerIndex);
+    }
+
+    /** Adds the tiled shared-expert Gate/Up, gate-weight, and Down tasks. */
+    private void configureSharedExpert(TaskGraph layer, int layerIndex) {
+        if (sharedExpertTokenTile == 4) {
+            layer.task(
+                    "batch_shared_gate_up",
+                    Qwen2MoEBatchKernels::tiled4SharedExpertGateUpSwiGLUQ8_0,
+                    context,
+                    state.workspace.wrapXbBatch,
+                    state.workspace.activeBatchSizeHolder,
+                    weights.sharedGateLayered[layerIndex].asRepackedByteArray(),
+                    weights.sharedUpLayered[layerIndex].asRepackedByteArray(),
+                    state.workspace.wrapSharedHiddenBatch,
+                    dim,
+                    config.sharedExpertHiddenDim(),
+                    EXPERT_2D_LOCAL_WORK_GROUP_SIZE);
+        } else {
+            layer.task(
+                    "batch_shared_gate_up",
+                    Qwen2MoEBatchKernels::tiled2SharedExpertGateUpSwiGLUQ8_0,
+                    context,
+                    state.workspace.wrapXbBatch,
+                    state.workspace.activeBatchSizeHolder,
+                    weights.sharedGateLayered[layerIndex].asRepackedByteArray(),
+                    weights.sharedUpLayered[layerIndex].asRepackedByteArray(),
+                    state.workspace.wrapSharedHiddenBatch,
+                    dim,
+                    config.sharedExpertHiddenDim(),
+                    EXPERT_2D_LOCAL_WORK_GROUP_SIZE);
+        }
 
         layer.task(
                 "batch_shared_weight",
@@ -400,18 +441,33 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
                 dim,
                 LOCAL_WORK_GROUP_SIZE);
 
-        layer.task(
-                "batch_shared_down",
-                Qwen2MoEBatchKernels::batchedSharedExpertDownAndAccumulateQ8_0,
-                context,
-                state.workspace.wrapSharedHiddenBatch,
-                state.workspace.wrapSharedWeightBatch,
-                state.workspace.activeBatchSizeHolder,
-                weights.sharedDownLayered[layerIndex].asByteArray(),
-                state.workspace.wrapXBatch,
-                dim,
-                config.sharedExpertHiddenDim(),
-                LOCAL_WORK_GROUP_SIZE);
+        if (sharedExpertTokenTile == 4) {
+            layer.task(
+                    "batch_shared_down",
+                    Qwen2MoEBatchKernels::tiled4SharedExpertDownAndAccumulateQ8_0,
+                    context,
+                    state.workspace.wrapSharedHiddenBatch,
+                    state.workspace.wrapSharedWeightBatch,
+                    state.workspace.activeBatchSizeHolder,
+                    weights.sharedDownLayered[layerIndex].asRepackedByteArray(),
+                    state.workspace.wrapXBatch,
+                    dim,
+                    config.sharedExpertHiddenDim(),
+                    EXPERT_2D_LOCAL_WORK_GROUP_SIZE);
+        } else {
+            layer.task(
+                    "batch_shared_down",
+                    Qwen2MoEBatchKernels::tiled2SharedExpertDownAndAccumulateQ8_0,
+                    context,
+                    state.workspace.wrapSharedHiddenBatch,
+                    state.workspace.wrapSharedWeightBatch,
+                    state.workspace.activeBatchSizeHolder,
+                    weights.sharedDownLayered[layerIndex].asRepackedByteArray(),
+                    state.workspace.wrapXBatch,
+                    dim,
+                    config.sharedExpertHiddenDim(),
+                    EXPERT_2D_LOCAL_WORK_GROUP_SIZE);
+        }
     }
 
     /** Configures the fixed WorkerGrid used by every task in every layer. */
@@ -439,11 +495,13 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
         WorkerGrid batchDimRowsWorker = groupedRowsWorker(batchSize * dim);
         WorkerGrid routerWorker = groupedRowsWorker(batchSize * config.numberOfExperts());
         WorkerGrid groupingWorker = WorkerGridFactory.createSingleWorker();
-        WorkerGrid routedHiddenWorker =
-                groupedRowsWorker(numberOfAssignments * config.moeHiddenDim());
-        WorkerGrid routedDownWorker = groupedRowsWorker(numberOfAssignments * dim);
-        WorkerGrid sharedHiddenWorker =
-                groupedRowsWorker(batchSize * config.sharedExpertHiddenDim());
+        WorkerGrid routedHiddenWorker = tiledExpertRowsWorker(config.moeHiddenDim());
+        WorkerGrid routedDownWorker = tiledExpertRowsWorker(dim);
+        WorkerGrid tiledSharedHiddenWorker =
+                sharedExpertTiledRowsWorker(
+                        config.sharedExpertHiddenDim(), sharedExpertTokenTile);
+        WorkerGrid tiledSharedDownWorker =
+                sharedExpertTiledRowsWorker(dim, sharedExpertTokenTile);
         WorkerGrid sharedWeightWorker = groupedRowsWorker(batchSize);
 
         for (int layer = 0; layer < config.numberOfLayers(); layer++) {
@@ -463,15 +521,36 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
             scheduler.addWorkerGrid(prefix + "batch_routed_gate_up", routedHiddenWorker);
             scheduler.addWorkerGrid(prefix + "batch_routed_down", routedDownWorker);
             scheduler.addWorkerGrid(prefix + "batch_routed_accumulate", batchElementWorker);
-            scheduler.addWorkerGrid(prefix + "batch_shared_gate_up", sharedHiddenWorker);
+            scheduler.addWorkerGrid(prefix + "batch_shared_gate_up", tiledSharedHiddenWorker);
             scheduler.addWorkerGrid(prefix + "batch_shared_weight", sharedWeightWorker);
-            scheduler.addWorkerGrid(prefix + "batch_shared_down", batchDimRowsWorker);
+            scheduler.addWorkerGrid(prefix + "batch_shared_down", tiledSharedDownWorker);
         }
     }
 
     /** Creates a 32-thread work-group for every logical output row. */
     private static WorkerGrid groupedRowsWorker(int rows) {
         return WorkerGridFactory.genericWorker(rows * LOCAL_WORK_GROUP_SIZE, LOCAL_WORK_GROUP_SIZE);
+    }
+
+    /** Creates one 128-thread work-group for four output rows in every expert tile. */
+    private WorkerGrid tiledExpertRowsWorker(int outputRows) {
+        int rowTiles =
+                (outputRows + EXPERT_OUTPUT_ROWS_PER_GROUP - 1) / EXPERT_OUTPUT_ROWS_PER_GROUP;
+        int workGroups = numberOfAssignments * rowTiles;
+        return WorkerGridFactory.genericWorker(
+                workGroups * EXPERT_2D_LOCAL_WORK_GROUP_SIZE, EXPERT_2D_LOCAL_WORK_GROUP_SIZE);
+    }
+
+    /** Creates a token-tiled, four-output-row shared-expert grid. */
+    private WorkerGrid sharedExpertTiledRowsWorker(int outputRows, int tokensPerTile) {
+        int tokenTiles = (batchSize + tokensPerTile - 1) / tokensPerTile;
+        int rowTiles =
+                (outputRows + EXPERT_OUTPUT_ROWS_PER_GROUP - 1)
+                        / EXPERT_OUTPUT_ROWS_PER_GROUP;
+        int workGroups = tokenTiles * rowTiles;
+        return WorkerGridFactory.genericWorker(
+                workGroups * EXPERT_2D_LOCAL_WORK_GROUP_SIZE,
+                EXPERT_2D_LOCAL_WORK_GROUP_SIZE);
     }
 
     /** Finds a legal local size that divides the requested global dimension. */

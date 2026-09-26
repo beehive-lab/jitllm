@@ -62,12 +62,13 @@ public class Qwen2PagedKvKernels {
         float[] v_tile = context.allocateFloatLocalArray(BLOCK_SIZE_C * headSize);
         float[] s_tile = context.allocateFloatLocalArray(BLOCK_SIZE_C);
         float[] shared_max = context.allocateFloatLocalArray(1);
+        float[] output_shared = context.allocateFloatLocalArray(headSize);
 
-        // Per-thread output accumulation
-        float[] output = new float[headSize];
-        for (int i = 0; i < headSize; i++) {
-            output[i] = 0.0f;
+        // Each thread accumulates only its own output dimensions.
+        for (int d = localTid; d < headSize; d += localSize) {
+            output_shared[d] = 0.0f;
         }
+        context.localBarrier();
 
         // Thread-local accumulators for online softmax
         float maxScore = Float.NEGATIVE_INFINITY;
@@ -142,8 +143,8 @@ public class Qwen2PagedKvKernels {
             if (newMax != maxScore && maxScore != Float.NEGATIVE_INFINITY) {
                 float scale = TornadoMath.exp(maxScore - newMax);
                 sumExp *= scale;
-                for (int d = 0; d < headSize; d++) {
-                    output[d] *= scale;
+                for (int d = localTid; d < headSize; d += localSize) {
+                    output_shared[d] *= scale;
                 }
             }
             maxScore = newMax;
@@ -154,8 +155,8 @@ public class Qwen2PagedKvKernels {
                 sumExp += expScore;
 
                 // Accumulate weighted values
-                for (int d = 0; d < headSize; d++) {
-                    output[d] += expScore * v_tile[t_idx_in_s_tile * headSize + d];
+                for (int d = localTid; d < headSize; d += localSize) {
+                    output_shared[d] += expScore * v_tile[t_idx_in_s_tile * headSize + d];
                 }
             }
             context.localBarrier();
@@ -164,7 +165,7 @@ public class Qwen2PagedKvKernels {
         // Normalize and cooperatively write final results
         float normFactor = (sumExp > 0.0f) ? (1.0f / sumExp) : 0.0f;
         for (int d = localTid; d < headSize; d += localSize) {
-            xb.set(h * headSize + d, output[d] * normFactor);
+            xb.set(h * headSize + d, output_shared[d] * normFactor);
         }
     }
 
