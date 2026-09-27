@@ -1,12 +1,11 @@
 package org.beehive.jitllm.api;
 
-import org.beehive.jitllm.inference.PromptIngestion;
-import org.beehive.jitllm.inference.sampler.Sampler;
-import org.beehive.jitllm.model.Model;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import org.beehive.jitllm.inference.PromptIngestion;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.model.Model;
 
 /**
  * Scores continuations instead of generating them: prefill a prefix once, then read the next-token
@@ -32,9 +31,6 @@ import java.util.Set;
  */
 @Experimental
 public final class DecisionSession implements AutoCloseable {
-
-    /** {@code -Djitllm.decision.trace=true}: per-branch token counts and wall time on stderr. */
-    private static final boolean TRACE = Boolean.getBoolean("jitllm.decision.trace");
 
     private final DelegatingSession session;
     private final SessionRuntime runtime;
@@ -72,7 +68,8 @@ public final class DecisionSession implements AutoCloseable {
      */
     public static DecisionSession open(TextGenerationModel model) {
         try {
-            return open(model, SessionOptions.builder().thinkingMode(ThinkingMode.DISABLED).build());
+            return open(
+                    model, SessionOptions.builder().thinkingMode(ThinkingMode.DISABLED).build());
         } catch (IllegalArgumentException | UnsupportedOperationException noThinkingControl) {
             return open(model, SessionOptions.defaults());
         }
@@ -103,7 +100,10 @@ public final class DecisionSession implements AutoCloseable {
         }
         if (candidates.length != branches.size()) {
             throw new IllegalArgumentException(
-                    "one candidate list per branch: " + candidates.length + " vs " + branches.size());
+                    "one candidate list per branch: "
+                            + candidates.length
+                            + " vs "
+                            + branches.size());
         }
         for (List<Integer> branch : branches) {
             if (branch.isEmpty()) {
@@ -116,7 +116,9 @@ public final class DecisionSession implements AutoCloseable {
         }
         if (longest + 3 >= contextLength) {
             throw new IllegalArgumentException(
-                    "state plus the longest question is " + longest + " tokens; the session holds "
+                    "state plus the longest question is "
+                            + longest
+                            + " tokens; the session holds "
                             + contextLength);
         }
         return scoreWith(convention(), prefix, branches, candidates);
@@ -127,12 +129,13 @@ public final class DecisionSession implements AutoCloseable {
      * prefix depends on.
      *
      * <p>Two conventions exist in the engine: most loops feed the session's seed at the start
-     * position before the prompt; the Qwen 3 loops ingest the prompt from its first token and use the
-     * seed only for decoding. Which one a session gets depends on the family and on whether it runs
-     * the lowered or the legacy path, so it is measured rather than assumed (see {@link #calibrate}).
+     * position before the prompt; the Qwen 3 loops ingest the prompt from its first token and use
+     * the seed only for decoding. Which one a session gets depends on the family and on whether it
+     * runs the lowered or the legacy path, so it is measured rather than assumed (see {@link
+     * #calibrate}).
      *
-     * @param shared whether branches reuse the prefix at all; {@code false} scores every branch from
-     *     position 0, correct for any loop and slower
+     * @param shared whether branches reuse the prefix at all; {@code false} scores every branch
+     *     from position 0, correct for any loop and slower
      * @param seedFed the loop feeds the seed at the start position (so a branch is seeded with its
      *     first token and the rest is the prompt); otherwise the whole branch is the prompt
      * @param offset positions before the first prefix token (1 if the seed occupies position 0)
@@ -146,9 +149,6 @@ public final class DecisionSession implements AutoCloseable {
     private Convention convention() {
         if (convention == null) {
             convention = calibrate();
-            if (TRACE) {
-                System.err.println("[decision] convention " + convention);
-            }
         }
         return convention;
     }
@@ -160,15 +160,28 @@ public final class DecisionSession implements AutoCloseable {
      */
     private Convention calibrate() {
         List<List<Integer>> probe = new ArrayList<>();
-        probe.add(session.encoder().encode(List.of(ChatMessage.of(ChatRole.USER,
-                "Calibration. Reply with one letter. First question: is the sky blue? A) yes B) no")), List.of()));
-        probe.add(session.encoder().encode(List.of(ChatMessage.of(ChatRole.USER,
-                "Calibration. Reply with one letter. Second question: is ice hot? A) yes B) no")), List.of()));
+        probe.add(
+                session.encoder()
+                        .encode(
+                                List.of(
+                                        ChatMessage.of(
+                                                ChatRole.USER,
+                                                "Calibration. Reply with one letter. First question: is the sky blue? A) yes B) no")),
+                                List.of()));
+        probe.add(
+                session.encoder()
+                        .encode(
+                                List.of(
+                                        ChatMessage.of(
+                                                ChatRole.USER,
+                                                "Calibration. Reply with one letter. Second question: is ice hot? A) yes B) no")),
+                                List.of()));
         int common = commonPrefix(probe);
         List<Integer> prefix = probe.get(0).subList(0, common);
-        List<List<Integer>> branches = List.of(
-                probe.get(0).subList(common, probe.get(0).size()),
-                probe.get(1).subList(common, probe.get(1).size()));
+        List<List<Integer>> branches =
+                List.of(
+                        probe.get(0).subList(common, probe.get(0).size()),
+                        probe.get(1).subList(common, probe.get(1).size()));
         int[] ids = new int[Math.min(16, model.configuration().vocabularySize())];
         for (int i = 0; i < ids.length; i++) {
             ids[i] = branches.get(1).get(i % branches.get(1).size());
@@ -185,9 +198,6 @@ public final class DecisionSession implements AutoCloseable {
                 double error = 0;
                 for (int i = 0; i < got.length; i++) {
                     error = Math.max(error, Math.abs(got[i] - reference[i]));
-                }
-                if (TRACE) {
-                    System.err.printf("[decision] calibrate %s: max |diff| %.4f%n", c, error);
                 }
                 if (error < bestError) {
                     bestError = error;
@@ -217,23 +227,13 @@ public final class DecisionSession implements AutoCloseable {
             List<Integer> first = new ArrayList<>(prefix);
             first.addAll(branches.get(0));
             PromptIngestion ingestion = PromptIngestion.of(runtime.executionState(), first, 0);
-            long t0 = System.nanoTime();
             out[0] = runOne(0, first, first.size() - ingestion.firstIndex(), candidates[0]);
-            if (TRACE) {
-                System.err.printf("[decision] prefix+branch0: %d tokens, %.1f ms%n",
-                        first.size(), (System.nanoTime() - t0) / 1e6);
-            }
             int afterPrefix = prefix.size() + c.offset();
             for (int b = 1; b < branches.size(); b++) {
                 List<Integer> branch = branches.get(b);
                 runtime.reseed(branch.get(0));
                 List<Integer> prompt = c.seedFed() ? branch.subList(1, branch.size()) : branch;
-                long tb = System.nanoTime();
                 out[b] = runOne(afterPrefix, prompt, prompt.size(), candidates[b]);
-                if (TRACE) {
-                    System.err.printf("[decision] branch%d: %d tokens, %.1f ms%n",
-                            b, branch.size(), (System.nanoTime() - tb) / 1e6);
-                }
             }
             return out;
         } finally {
@@ -336,11 +336,19 @@ public final class DecisionSession implements AutoCloseable {
             runtime.generateOnGpu(model, start, prompt, stopTokens, budget, capture, t -> {});
         } else {
             model.generateTokens(
-                    runtime.executionState(), start, prompt, stopTokens, budget, capture, false, t -> {});
+                    runtime.executionState(),
+                    start,
+                    prompt,
+                    stopTokens,
+                    budget,
+                    capture,
+                    false,
+                    t -> {});
         }
         if (!seen[0]) {
             throw new IllegalStateException(
-                    "no logits were produced after position " + (start + ingested)
+                    "no logits were produced after position "
+                            + (start + ingested)
                             + "; the generation loop sampled nothing (device-side sampling on?)");
         }
         return captured;

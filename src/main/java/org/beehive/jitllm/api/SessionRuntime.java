@@ -72,8 +72,8 @@ sealed interface SessionRuntime permits LegacySessionRuntime, LoweredSessionRunt
      * start position.
      *
      * <p>A turn feeds the session's seed at {@code startPosition} before its prompt; the seed is
-     * normally the last token the previous turn produced and has not written to the KV cache yet.
-     * A caller that rewinds to an earlier position — {@code DecisionSession} scoring several
+     * normally the last token the previous turn produced and has not written to the KV cache yet. A
+     * caller that rewinds to an earlier position — {@code DecisionSession} scoring several
      * continuations of one prefix — must say which token occupies that position, or the second
      * continuation would start from the first one's answer.
      */

@@ -1,17 +1,16 @@
 package org.beehive.jitllm.server;
 
-import org.beehive.jitllm.api.ChatMessage;
-import org.beehive.jitllm.api.ChatRole;
-import org.beehive.jitllm.api.DecisionSession;
-import org.beehive.jitllm.api.TextGenerationModel;
-import org.beehive.jitllm.tokenizer.Tokenizer;
-
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.beehive.jitllm.api.ChatMessage;
+import org.beehive.jitllm.api.ChatRole;
+import org.beehive.jitllm.api.DecisionSession;
+import org.beehive.jitllm.api.TextGenerationModel;
+import org.beehive.jitllm.tokenizer.Tokenizer;
 
 /**
  * {@code POST /v1/systemone}: the "System One" decision contract (a state plus typed questions,
@@ -38,8 +37,8 @@ import java.util.Set;
  * state, the question and its options labelled {@code A}, {@code B}, ..., ending where the
  * assistant's answer would start. {@link DecisionSession} prefills the part every question shares
  * once and reads the next-token logits of the option labels after each question; a softmax over
- * those gives the distribution. A yes/no question is a two-option choice ({@code A) Yes},
- * {@code B) No}); a score is the expected level index.
+ * those gives the distribution. A yes/no question is a two-option choice ({@code A) Yes}, {@code B)
+ * No}); a score is the expected level index.
  *
  * <p>These are the relative preferences of a prompted chat model, not calibrated confidences: a
  * model trained for the task (a pointer head, a fitted temperature) is what calibration needs.
@@ -72,7 +71,11 @@ final class SystemOneService implements AutoCloseable {
         }
     }
 
-    private record Question(String id, String type, String instructions, List<String> keys,
+    private record Question(
+            String id,
+            String type,
+            String instructions,
+            List<String> keys,
             List<String> descriptions) {}
 
     synchronized Map<String, Object> evaluate(Map<String, Object> body) {
@@ -130,8 +133,9 @@ final class SystemOneService implements AutoCloseable {
         Map<String, Object> answers = new LinkedHashMap<>();
         for (int q = 0; q < questions.size(); q++) {
             Question question = questions.get(q);
-            double[] p = optionProbabilities(scored.logits()[q], optionOfCandidate[q],
-                    question.keys().size());
+            double[] p =
+                    optionProbabilities(
+                            scored.logits()[q], optionOfCandidate[q], question.keys().size());
             answers.put(question.id(), answer(question, p));
         }
 
@@ -158,12 +162,14 @@ final class SystemOneService implements AutoCloseable {
         if (instructionsValue == null) {
             throw new BadRequest(400, "question '" + id + "' needs 'instructions'");
         }
-        String instructions = instructionsValue instanceof String s ? s : Json.write(instructionsValue);
+        String instructions =
+                instructionsValue instanceof String s ? s : Json.write(instructionsValue);
         List<String> keys = new ArrayList<>();
         List<String> descriptions = new ArrayList<>();
         switch (type) {
             case "noul" -> {
-                // Optional {"criteria": {"true": "...", "false": "..."}} says what each answer means.
+                // Optional {"criteria": {"true": "...", "false": "..."}} says what each answer
+                // means.
                 String yes = "Yes";
                 String no = "No";
                 if (m.get("criteria") instanceof Map<?, ?> meaning) {
@@ -192,19 +198,22 @@ final class SystemOneService implements AutoCloseable {
                         descriptions.add(String.valueOf(o));
                     }
                 } else {
-                    throw new BadRequest(400,
-                            "choice question '" + id + "' needs 'criteria' (object or array)");
+                    throw new BadRequest(
+                            400, "choice question '" + id + "' needs 'criteria' (object or array)");
                 }
                 if (keys.size() < 2) {
-                    throw new BadRequest(422, "choice question '" + id + "' needs at least 2 options");
+                    throw new BadRequest(
+                            422, "choice question '" + id + "' needs at least 2 options");
                 }
             }
             case "score" -> {
                 if (!(m.get("criteria") instanceof List<?> levels)) {
-                    throw new BadRequest(400, "score question '" + id + "' needs 'criteria' (array)");
+                    throw new BadRequest(
+                            400, "score question '" + id + "' needs 'criteria' (array)");
                 }
                 if (levels.size() < 2 || levels.size() > 10) {
-                    throw new BadRequest(422,
+                    throw new BadRequest(
+                            422,
                             "score question '" + id + "' needs 2-10 levels, got " + levels.size());
                 }
                 for (int i = 0; i < levels.size(); i++) {
@@ -212,11 +221,18 @@ final class SystemOneService implements AutoCloseable {
                     descriptions.add(String.valueOf(levels.get(i)));
                 }
             }
-            default -> throw new BadRequest(422,
-                    "question '" + id + "' has unknown type '" + type + "' (noul, choice, score)");
+            default ->
+                    throw new BadRequest(
+                            422,
+                            "question '"
+                                    + id
+                                    + "' has unknown type '"
+                                    + type
+                                    + "' (noul, choice, score)");
         }
         if (keys.size() > MAX_OPTIONS) {
-            throw new BadRequest(422, "question '" + id + "' has more than " + MAX_OPTIONS + " options");
+            throw new BadRequest(
+                    422, "question '" + id + "' has more than " + MAX_OPTIONS + " options");
         }
         return new Question(id, type, instructions, keys, descriptions);
     }
@@ -229,12 +245,16 @@ final class SystemOneService implements AutoCloseable {
         StringBuilder sb = new StringBuilder();
         if (state instanceof List<?> items) {
             for (Object item : items) {
-                sb.append("- ").append(item instanceof String s ? s : Json.write(item)).append('\n');
+                sb.append("- ")
+                        .append(item instanceof String s ? s : Json.write(item))
+                        .append('\n');
             }
         } else if (state instanceof Map<?, ?> fields) {
             for (Map.Entry<?, ?> f : fields.entrySet()) {
                 Object v = f.getValue();
-                sb.append(f.getKey()).append(": ").append(v instanceof String s ? s : Json.write(v))
+                sb.append(f.getKey())
+                        .append(": ")
+                        .append(v instanceof String s ? s : Json.write(v))
                         .append('\n');
             }
         } else {
@@ -273,8 +293,10 @@ final class SystemOneService implements AutoCloseable {
             double a = perOption[owner[i]];
             double b = logits[i];
             double hi = Math.max(a, b);
-            perOption[owner[i]] = hi == Double.NEGATIVE_INFINITY ? hi
-                    : hi + Math.log(Math.exp(a - hi) + Math.exp(b - hi));
+            perOption[owner[i]] =
+                    hi == Double.NEGATIVE_INFINITY
+                            ? hi
+                            : hi + Math.log(Math.exp(a - hi) + Math.exp(b - hi));
         }
         double max = Double.NEGATIVE_INFINITY;
         for (double v : perOption) {

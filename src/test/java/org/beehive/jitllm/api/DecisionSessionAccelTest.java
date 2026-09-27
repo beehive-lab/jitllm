@@ -13,8 +13,8 @@ import org.junit.Test;
 
 /**
  * {@link DecisionSession} must be a pure optimisation: scoring several questions off one prefilled
- * prefix has to give the logits each question gets when it is scored on its own from position 0.
- * A wrong rewind position or a stale seed shows up here as a different winner or drifted logits.
+ * prefix has to give the logits each question gets when it is scored on its own from position 0. A
+ * wrong rewind position or a stale seed shows up here as a different winner or drifted logits.
  */
 public class DecisionSessionAccelTest {
 
@@ -64,9 +64,9 @@ public class DecisionSessionAccelTest {
 
                 for (int q = 0; q < QUESTIONS.length; q++) {
                     float[] alone =
-                            decisions
-                                    .scoreConversations(
-                                            List.of(conversations.get(q)), new int[][] {candidates[q]})
+                            decisions.scoreConversations(
+                                            List.of(conversations.get(q)),
+                                            new int[][] {candidates[q]})
                                     .logits()[0];
                     float[] shared = branched.logits()[q];
                     assertEquals(
@@ -90,7 +90,12 @@ public class DecisionSessionAccelTest {
     private static int[] letters(DecisionSession decisions, int count) {
         int[] ids = new int[count];
         for (int i = 0; i < count; i++) {
-            ids[i] = decisions.model().tokenizer().encodeAsList(String.valueOf((char) ('A' + i))).get(0);
+            ids[i] =
+                    decisions
+                            .model()
+                            .tokenizer()
+                            .encodeAsList(String.valueOf((char) ('A' + i)))
+                            .get(0);
         }
         return ids;
     }
