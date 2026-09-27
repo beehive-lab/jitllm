@@ -19,17 +19,22 @@ import java.util.Set;
  *
  * <h2>How a branch reuses the prefix</h2>
  *
- * <p>A turn feeds the session's <i>seed</i> at its start position, then its prompt, and writes a
- * KV entry for each. The first branch is ingested together with the prefix from position 0. Every
- * later branch starts at the first position after the prefix, with the seed set to its own first
- * token ({@link SessionRuntime#reseed}), so it overwrites the previous branch's KV entries and
- * attends to the prefix the first call wrote. Prefix cost is paid once per {@link #score} call.
+ * <p>The first branch is ingested together with the prefix from position 0. Every later branch
+ * starts at the first position after the prefix, so it overwrites the previous branch's KV entries
+ * and attends to the prefix the first call wrote: prefix cost is paid once per {@link #score} call.
+ * Where exactly a branch must start, and whether its first token goes in as the session's seed
+ * ({@link SessionRuntime#reseed}) or as the first prompt token, differs between generation loops;
+ * the session measures it once on a small probe ({@link #calibrate}) and falls back to scoring each
+ * branch from position 0 if no convention reproduces the unshared result.
  *
  * <p>One session, one caller at a time, like {@link GenerationSession}. Each {@link #score} call
  * starts from an empty context.
  */
 @Experimental
 public final class DecisionSession implements AutoCloseable {
+
+    /** {@code -Djitllm.decision.trace=true}: per-branch token counts and wall time on stderr. */
+    private static final boolean TRACE = Boolean.getBoolean("jitllm.decision.trace");
 
     private final DelegatingSession session;
     private final SessionRuntime runtime;
@@ -105,48 +110,166 @@ public final class DecisionSession implements AutoCloseable {
                 throw new IllegalArgumentException("a branch must contain at least one token");
             }
         }
+        int longest = prefix.size() + 1;
+        for (List<Integer> branch : branches) {
+            longest = Math.max(longest, prefix.size() + 1 + branch.size());
+        }
+        if (longest + 3 >= contextLength) {
+            throw new IllegalArgumentException(
+                    "state plus the longest question is " + longest + " tokens; the session holds "
+                            + contextLength);
+        }
+        return scoreWith(convention(), prefix, branches, candidates);
+    }
 
+    /**
+     * How this model's generation loop places tokens, which is what rewinding to the end of a
+     * prefix depends on.
+     *
+     * <p>Two conventions exist in the engine: most loops feed the session's seed at the start
+     * position before the prompt; the Qwen 3 loops ingest the prompt from its first token and use the
+     * seed only for decoding. Which one a session gets depends on the family and on whether it runs
+     * the lowered or the legacy path, so it is measured rather than assumed (see {@link #calibrate}).
+     *
+     * @param shared whether branches reuse the prefix at all; {@code false} scores every branch from
+     *     position 0, correct for any loop and slower
+     * @param seedFed the loop feeds the seed at the start position (so a branch is seeded with its
+     *     first token and the rest is the prompt); otherwise the whole branch is the prompt
+     * @param offset positions before the first prefix token (1 if the seed occupies position 0)
+     */
+    private record Convention(boolean shared, boolean seedFed, int offset) {
+        static final Convention UNSHARED = new Convention(false, false, 0);
+    }
+
+    private Convention convention;
+
+    private Convention convention() {
+        if (convention == null) {
+            convention = calibrate();
+            if (TRACE) {
+                System.err.println("[decision] convention " + convention);
+            }
+        }
+        return convention;
+    }
+
+    /**
+     * Picks the convention under which a branched score equals the same continuation scored alone
+     * from position 0, on a small probe rendered through the model's own chat template. Falls back
+     * to {@link Convention#UNSHARED} if none matches.
+     */
+    private Convention calibrate() {
+        List<List<Integer>> probe = new ArrayList<>();
+        probe.add(session.encoder().encode(List.of(ChatMessage.of(ChatRole.USER,
+                "Calibration. Reply with one letter. First question: is the sky blue? A) yes B) no")), List.of()));
+        probe.add(session.encoder().encode(List.of(ChatMessage.of(ChatRole.USER,
+                "Calibration. Reply with one letter. Second question: is ice hot? A) yes B) no")), List.of()));
+        int common = commonPrefix(probe);
+        List<Integer> prefix = probe.get(0).subList(0, common);
+        List<List<Integer>> branches = List.of(
+                probe.get(0).subList(common, probe.get(0).size()),
+                probe.get(1).subList(common, probe.get(1).size()));
+        int[] ids = new int[Math.min(16, model.configuration().vocabularySize())];
+        for (int i = 0; i < ids.length; i++) {
+            ids[i] = branches.get(1).get(i % branches.get(1).size());
+        }
+        int[][] candidates = {ids, ids};
+
+        float[] reference = scoreWith(Convention.UNSHARED, prefix, branches, candidates)[1];
+        Convention best = Convention.UNSHARED;
+        double bestError = Double.MAX_VALUE;
+        for (boolean seedFed : new boolean[] {true, false}) {
+            for (int offset : new int[] {0, 1}) {
+                Convention c = new Convention(true, seedFed, offset);
+                float[] got = scoreWith(c, prefix, branches, candidates)[1];
+                double error = 0;
+                for (int i = 0; i < got.length; i++) {
+                    error = Math.max(error, Math.abs(got[i] - reference[i]));
+                }
+                if (TRACE) {
+                    System.err.printf("[decision] calibrate %s: max |diff| %.4f%n", c, error);
+                }
+                if (error < bestError) {
+                    bestError = error;
+                    best = c;
+                }
+            }
+        }
+        // FP16 accumulation on the device moves logits by a few hundredths; a wrong position moves
+        // them by whole units.
+        return bestError < 0.25 ? best : Convention.UNSHARED;
+    }
+
+    private float[][] scoreWith(
+            Convention c, List<Integer> prefix, List<List<Integer>> branches, int[][] candidates) {
+        float[][] out = new float[branches.size()][];
+        if (!c.shared()) {
+            for (int b = 0; b < branches.size(); b++) {
+                List<Integer> whole = new ArrayList<>(prefix);
+                whole.addAll(branches.get(b));
+                out[b] = fromStart(whole, candidates[b]);
+            }
+            return out;
+        }
         session.reset();
         runtime.beginTurn();
         try {
-            float[][] out = new float[branches.size()][];
-
-            // Branch 0 carries the prefix: one call from position 0.
-            List<Integer> first = new ArrayList<>(prefix.size() + branches.get(0).size());
-            first.addAll(prefix);
+            List<Integer> first = new ArrayList<>(prefix);
             first.addAll(branches.get(0));
-            PromptIngestion ingestion =
-                    PromptIngestion.of(runtime.executionState(), first, 0);
-            // Where the prefix ends: the seed occupies position 0 unless the prompt repeats it,
-            // in which case prompt[0] is fed as the seed and prompt[i] lands at position i.
-            int offset = ingestion.firstIndex() == 1 ? 0 : 1;
-            int afterPrefix = prefix.size() + offset;
-            int longest = afterPrefix;
-            for (List<Integer> branch : branches) {
-                longest = Math.max(longest, afterPrefix + branch.size());
-            }
-            if (longest + 1 >= contextLength) {
-                throw new IllegalArgumentException(
-                        "state plus the longest question is "
-                                + longest
-                                + " tokens; the session holds "
-                                + contextLength);
-            }
+            PromptIngestion ingestion = PromptIngestion.of(runtime.executionState(), first, 0);
+            long t0 = System.nanoTime();
             out[0] = runOne(0, first, first.size() - ingestion.firstIndex(), candidates[0]);
-
-            // Later branches: rewind to the end of the prefix, seed with the branch's own first
-            // token, ingest the rest.
+            if (TRACE) {
+                System.err.printf("[decision] prefix+branch0: %d tokens, %.1f ms%n",
+                        first.size(), (System.nanoTime() - t0) / 1e6);
+            }
+            int afterPrefix = prefix.size() + c.offset();
             for (int b = 1; b < branches.size(); b++) {
                 List<Integer> branch = branches.get(b);
                 runtime.reseed(branch.get(0));
-                List<Integer> rest = branch.subList(1, branch.size());
-                out[b] = runOne(afterPrefix, rest, rest.size(), candidates[b]);
+                List<Integer> prompt = c.seedFed() ? branch.subList(1, branch.size()) : branch;
+                long tb = System.nanoTime();
+                out[b] = runOne(afterPrefix, prompt, prompt.size(), candidates[b]);
+                if (TRACE) {
+                    System.err.printf("[decision] branch%d: %d tokens, %.1f ms%n",
+                            b, branch.size(), (System.nanoTime() - tb) / 1e6);
+                }
             }
             return out;
         } finally {
             runtime.endTurn();
             session.reset();
         }
+    }
+
+    /** Scores {@code tokens} as a whole, from an empty context. */
+    private float[] fromStart(List<Integer> tokens, int[] candidates) {
+        session.reset();
+        runtime.beginTurn();
+        try {
+            PromptIngestion ingestion = PromptIngestion.of(runtime.executionState(), tokens, 0);
+            return runOne(0, tokens, tokens.size() - ingestion.firstIndex(), candidates);
+        } finally {
+            runtime.endTurn();
+            session.reset();
+        }
+    }
+
+    private static int commonPrefix(List<List<Integer>> encoded) {
+        int common = encoded.isEmpty() ? 0 : encoded.get(0).size();
+        for (List<Integer> tokens : encoded) {
+            int limit = Math.min(common, tokens.size());
+            int i = 0;
+            while (i < limit && tokens.get(i).equals(encoded.get(0).get(i))) {
+                i++;
+            }
+            common = i;
+        }
+        // Every branch keeps at least one token of its own.
+        for (List<Integer> tokens : encoded) {
+            common = Math.min(common, tokens.size() - 1);
+        }
+        return Math.max(0, common);
     }
 
     /**
@@ -162,19 +285,7 @@ public final class DecisionSession implements AutoCloseable {
         for (List<ChatMessage> conversation : conversations) {
             encoded.add(session.encoder().encode(conversation, List.of()));
         }
-        int common = encoded.isEmpty() ? 0 : encoded.get(0).size();
-        for (List<Integer> tokens : encoded) {
-            int limit = Math.min(common, tokens.size());
-            int i = 0;
-            while (i < limit && tokens.get(i).equals(encoded.get(0).get(i))) {
-                i++;
-            }
-            common = i;
-        }
-        // Every branch keeps at least one token of its own.
-        for (List<Integer> tokens : encoded) {
-            common = Math.min(common, tokens.size() - 1);
-        }
+        int common = commonPrefix(encoded);
         List<Integer> prefix = encoded.isEmpty() ? List.of() : encoded.get(0).subList(0, common);
         List<List<Integer>> branches = new ArrayList<>(encoded.size());
         int branchTokens = 0;
@@ -196,10 +307,19 @@ public final class DecisionSession implements AutoCloseable {
      */
     public record Scored(float[][] logits, int sharedTokens, int branchTokens) {}
 
-    /** Ingests {@code prompt} from {@code start} and captures the logits of the one next token. */
+    /**
+     * Ingests {@code prompt} from {@code start} and captures the logits of the one next token.
+     *
+     * <p>Where the first sample falls depends on the family: a seed that the prompt does not repeat
+     * (Qwen's start header, or a {@link SessionRuntime#reseed reseeded} branch) occupies a position
+     * of its own. Rather than mirror each loop's position arithmetic, the budget leaves a little
+     * slack and the capturing sampler answers with a token that is the only stop token, so every
+     * loop ends right after its first sample.
+     */
     private float[] runOne(int start, List<Integer> prompt, int ingested, int[] wanted) {
         float[] captured = new float[wanted.length];
         boolean[] seen = new boolean[1];
+        int stop = wanted.length > 0 ? wanted[0] : 0;
         Sampler capture =
                 logits -> {
                     if (!seen[0]) {
@@ -208,19 +328,19 @@ public final class DecisionSession implements AutoCloseable {
                         }
                         seen[0] = true;
                     }
-                    return wanted.length > 0 ? wanted[0] : 0;
+                    return stop;
                 };
-        // One generated token: the loop stops at start + ingested + 1.
-        int budget = Math.min(start + ingested + 1, contextLength);
+        int budget = Math.min(start + ingested + 3, contextLength);
+        Set<Integer> stopTokens = Set.of(stop);
         if (gpu) {
-            runtime.generateOnGpu(model, start, prompt, Set.of(), budget, capture, t -> {});
+            runtime.generateOnGpu(model, start, prompt, stopTokens, budget, capture, t -> {});
         } else {
             model.generateTokens(
-                    runtime.executionState(), start, prompt, Set.of(), budget, capture, false, t -> {});
+                    runtime.executionState(), start, prompt, stopTokens, budget, capture, false, t -> {});
         }
         if (!seen[0]) {
             throw new IllegalStateException(
-                    "no logits were produced at position " + (start + ingested)
+                    "no logits were produced after position " + (start + ingested)
                             + "; the generation loop sampled nothing (device-side sampling on?)");
         }
         return captured;

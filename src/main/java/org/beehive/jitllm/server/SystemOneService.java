@@ -22,7 +22,7 @@ import java.util.Set;
  *
  * <pre>
  * {"state": "..." | [...] | {...}, "model": "...", "questions": {
- *    "id": {"type": "noul",   "instructions": "..."},
+ *    "id": {"type": "noul",   "instructions": "...", "criteria": {"true": "...", "false": "..."}},
  *    "id": {"type": "choice", "instructions": "...", "criteria": {"option": "description", ...}},
  *    "id": {"type": "score",  "instructions": "...", "criteria": ["level 0", "level 1", ...]}}}
  * -&gt; {"model": "...", "answers": {
@@ -163,10 +163,21 @@ final class SystemOneService implements AutoCloseable {
         List<String> descriptions = new ArrayList<>();
         switch (type) {
             case "noul" -> {
+                // Optional {"criteria": {"true": "...", "false": "..."}} says what each answer means.
+                String yes = "Yes";
+                String no = "No";
+                if (m.get("criteria") instanceof Map<?, ?> meaning) {
+                    if (meaning.get("true") != null) {
+                        yes = "Yes: " + meaning.get("true");
+                    }
+                    if (meaning.get("false") != null) {
+                        no = "No: " + meaning.get("false");
+                    }
+                }
                 keys.add("yes");
-                descriptions.add("Yes");
+                descriptions.add(yes);
                 keys.add("no");
-                descriptions.add("No");
+                descriptions.add(no);
             }
             case "choice" -> {
                 Object criteria = m.get("criteria");
