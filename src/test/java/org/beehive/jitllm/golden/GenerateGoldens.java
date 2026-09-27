@@ -21,6 +21,11 @@ public final class GenerateGoldens {
         String commit = System.getProperty("golden.commit", "unknown");
         Path outRoot = Paths.get(System.getProperty("golden.out", "src/test/resources/goldens"));
 
+        // GoldenLogitsAccelTest compares under an FP32 key/value cache (its Fp32KeyValueCache
+        // rule), so the goldens are recorded under one too. Without this they are captured with
+        // the FP16 default and can never match the test bit for bit.
+        System.setProperty(org.beehive.jitllm.runtime.policy.StorageOptions.FP32_PROPERTY, "true");
+
         GoldenCapture.assertHostLogitsAvailable();
         if (!TupleInfo.acceleratorPresent()) {
             throw new IllegalStateException(

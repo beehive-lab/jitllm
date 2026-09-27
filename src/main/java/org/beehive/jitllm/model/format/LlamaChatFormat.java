@@ -42,13 +42,19 @@ public class LlamaChatFormat implements ChatFormat {
         return stopTokens;
     }
 
+    /**
+     * {@code <|start_header_id|>role<|end_header_id|>\n\n}: the Llama 3.x templates end every turn
+     * header with two newlines, for every role and for the empty assistant header that starts
+     * generation. The two are encoded as one string, so the vocabulary's single {@code "\n\n"}
+     * token (271 in Llama 3) is what the model sees, as it does from the rendered template.
+     */
     @Override
     public List<Integer> encodeHeader(Message message) {
         List<Integer> tokens = new ArrayList<>();
         tokens.add(startHeader);
         tokens.addAll(tokenizer.encodeAsList(message.role().name()));
         tokens.add(endHeader);
-        tokens.addAll(tokenizer.encodeAsList("\n"));
+        tokens.addAll(tokenizer.encodeAsList("\n\n"));
         return tokens;
     }
 

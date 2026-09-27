@@ -4,7 +4,9 @@ Each <family>/template.jinja is the tokenizer.chat_template embedded in that fam
 verbatim. The scenarios in scenarios.json are rendered with Jinja2 under the Hugging Face
 transformers settings (trim_blocks, lstrip_blocks, tojson = json.dumps with ensure_ascii=False,
 add_generation_prompt=True), and each result is written to <family>/<scenario>.txt, which the Java
-tests compare the engine's encoding against.
+tests compare the engine's encoding against. A scenario with no tools is rendered with tools=None,
+as transformers' apply_chat_template does when none are given; a scenario that names "families" is
+rendered for those families only.
 
     python3 render_expected.py        # from this directory; needs jinja2
 """
@@ -69,6 +71,10 @@ FAMILIES = {
     # an assistant turn, so that scenario is not rendered for it.
     "llama-3.2": dict(bos_token="<|begin_of_text|>", eos_token="<|eot_id|>", messages=openai_messages,
                       skip={"two_calls_results_answer_user"}),
+    # The template embedded in meta-llama-3.1-8b-instruct.*.gguf: plain chat, no tool branch, so
+    # only the tool-free scenarios are rendered for it.
+    "llama-3.1": dict(bos_token="<|begin_of_text|>", eos_token="<|eot_id|>", messages=openai_messages,
+                      chat_only=True),
 }
 
 if __name__ == "__main__":
@@ -78,8 +84,13 @@ if __name__ == "__main__":
         for name, scenario in data["scenarios"].items():
             if name in cfg.get("skip", ()):
                 continue
+            if family not in scenario.get("families", [family]):
+                continue
+            if cfg.get("chat_only") and scenario["tools"]:
+                continue
+            tools = openai_tools(data["tools"], scenario["tools"]) if scenario["tools"] else None
             prompt = template.render(messages=cfg["messages"](scenario["messages"]),
-                                     tools=openai_tools(data["tools"], scenario["tools"]),
+                                     tools=tools,
                                      add_generation_prompt=True, bos_token=cfg["bos_token"],
                                      eos_token=cfg["eos_token"])
             with open(os.path.join(HERE, family, name + ".txt"), "w") as f:
