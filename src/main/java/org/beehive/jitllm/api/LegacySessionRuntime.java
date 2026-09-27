@@ -112,6 +112,11 @@ final class LegacySessionRuntime implements SessionRuntime {
 
     /** Nothing to do: this session's state is its own, so its values are already current. */
     @Override
+    public void reseed(int token) {
+        state.latestToken = token;
+    }
+
+    @Override
     public void beginTurn() {}
 
     @Override

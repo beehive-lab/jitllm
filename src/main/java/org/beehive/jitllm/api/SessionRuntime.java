@@ -67,6 +67,18 @@ sealed interface SessionRuntime permits LegacySessionRuntime, LoweredSessionRunt
     /** Called after a turn: captures back whatever the turn left in the execution state. */
     void endTurn();
 
+    /**
+     * Sets the token the next {@link #generateOnGpu} (or host generation) call feeds first at its
+     * start position.
+     *
+     * <p>A turn feeds the session's seed at {@code startPosition} before its prompt; the seed is
+     * normally the last token the previous turn produced and has not written to the KV cache yet.
+     * A caller that rewinds to an earlier position — {@code DecisionSession} scoring several
+     * continuations of one prefix — must say which token occupies that position, or the second
+     * continuation would start from the first one's answer.
+     */
+    void reseed(int token);
+
     /** Returns this session's logical state to its starting point. */
     void reset();
 

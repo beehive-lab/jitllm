@@ -76,6 +76,8 @@ public final class OpenAIServer implements AutoCloseable {
     private HttpServer http;
     private java.util.concurrent.ExecutorService httpWorkers;
     private LocalModel ownedModel;
+    /** {@code POST /v1/systemone}; null when the serving mode cannot host a decision session. */
+    private SystemOneService systemOne;
     private boolean closed;
     private final AtomicLong seq = new AtomicLong();
 
@@ -367,7 +369,9 @@ public final class OpenAIServer implements AutoCloseable {
                 throw failure;
             }
         } else {
-            LocalModel model = LocalModels.load(path, modelOptions);
+            // One more session than the chat path uses: /v1/systemone scores on its own session, so
+            // a decision request never rewinds a conversation the chat endpoint is in the middle of.
+            LocalModel model = LocalModels.load(path, withExtraSession(modelOptions));
             long loadNs = System.nanoTime() - startedNs;
             InferenceService service;
             try {
@@ -378,6 +382,13 @@ public final class OpenAIServer implements AutoCloseable {
             }
             server = new OpenAIServer(service, served, config.gpu(), model.info().contextLength());
             server.ownedModel = model;
+            if (model instanceof org.beehive.jitllm.api.TextGenerationModel generator) {
+                try {
+                    server.systemOne = new SystemOneService(generator, served);
+                } catch (RuntimeException unavailable) {
+                    System.err.println("jitllm serve: /v1/systemone disabled: " + unavailable.getMessage());
+                }
+            }
             try {
                 if (StartupDiagnostics.verbose()) {
                     System.err.print(
@@ -421,6 +432,7 @@ public final class OpenAIServer implements AutoCloseable {
         http.createContext("/v1/models", this::handleModels);
         http.createContext("/v1/chat/completions", ex -> handleCompletion(ex, true));
         http.createContext("/v1/completions", ex -> handleCompletion(ex, false));
+        http.createContext("/v1/systemone", this::handleSystemOne);
         httpWorkers = Executors.newFixedThreadPool(8);
         http.setExecutor(httpWorkers);
         http.start();
@@ -447,6 +459,7 @@ public final class OpenAIServer implements AutoCloseable {
         if (http != null) http.stop(1);
         if (httpWorkers != null) httpWorkers.shutdownNow();
         try {
+            if (systemOne != null) systemOne.close();
             service.close();
         } finally {
             if (ownedModel != null) ownedModel.close();
@@ -798,6 +811,50 @@ public final class OpenAIServer implements AutoCloseable {
         try (OutputStream os = ex.getResponseBody()) {
             os.write(bytes);
         }
+    }
+
+    /**
+     * {@code POST /v1/systemone}: a state plus typed questions, answered with probabilities. See
+     * {@link SystemOneService}.
+     */
+    private void handleSystemOne(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            sendError(ex, 405, "Method not allowed — use POST");
+            return;
+        }
+        if (systemOne == null) {
+            sendError(ex, 501, "/v1/systemone is not available in this serving mode"
+                    + " (it needs the per-request session path, not --batch)");
+            return;
+        }
+        Map<String, Object> body;
+        try {
+            String raw = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            body = Json.parseObject(raw);
+        } catch (Exception e) {
+            sendError(ex, 400, "Invalid JSON body: " + e.getMessage());
+            return;
+        }
+        try {
+            sendJson(ex, 200, systemOne.evaluate(body));
+        } catch (SystemOneService.BadRequest bad) {
+            sendError(ex, bad.status, bad.getMessage());
+        } catch (RuntimeException failure) {
+            sendError(ex, 500, "decision failed: " + failure.getMessage());
+        }
+    }
+
+    /** {@code options} with room for one more concurrent session. */
+    private static ModelOptions withExtraSession(ModelOptions options) {
+        ModelOptions.Builder b = ModelOptions.builder()
+                .contextLength(options.contextLength())
+                .maxConcurrentSessions(options.maxConcurrentSessions() + 1)
+                .thinkingMode(options.thinkingMode());
+        if (options.executionPolicy() != null) b.executionPolicy(options.executionPolicy());
+        if (options.storageOptions() != null) b.storageOptions(options.storageOptions());
+        if (options.backend() != null) b.backend(options.backend());
+        if (options.device() != null) b.device(options.device());
+        return b.build();
     }
 
     private void sendError(HttpExchange ex, int status, String message) throws IOException {
