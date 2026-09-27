@@ -2,6 +2,18 @@
 
 All notable changes to GPULlama3.java will be documented in this file.
 
+## [1.0.2] - 2026-09-27
+
+### Model Support
+
+- Tool calling for Gemma 4 and Granite, per-template tool rendering for all families, and ModelInfo.capabilities() ([#181](https://github.com/beehive-lab/jitllm/pull/181))
+
+### Other Changes
+
+- Add DecisionSession and a Jev-compatible POST /v1/systemone (System One scoring) ([#190](https://github.com/beehive-lab/jitllm/pull/190))
+- Write the Llama templates' two newlines after <|end_header_id|> ([#189](https://github.com/beehive-lab/jitllm/pull/189))
+- Run Gemma 4 and Qwen3.8 on OpenCL with FP16 and FP32 key/value caches ([#186](https://github.com/beehive-lab/jitllm/pull/186))
+
 ## [1.0.1] - 2026-09-25
 
 ### Bug Fixes
