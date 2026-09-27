@@ -96,6 +96,11 @@ final class LoweredSessionRuntime implements SessionRuntime {
 
     /** Nothing to restore, and deliberately so. */
     @Override
+    public void reseed(int token) {
+        logical.advance(token);
+    }
+
+    @Override
     public void beginTurn() {}
 
     @Override

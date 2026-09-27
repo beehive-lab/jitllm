@@ -67,6 +67,7 @@ public class StableSurfaceTest {
                     List.of(
                             "CancellationToken",
                             "ChatMessage",
+                            "DecisionSession",
                             "FinishReason",
                             "GenerationTimings",
                             "ModelCapabilities",

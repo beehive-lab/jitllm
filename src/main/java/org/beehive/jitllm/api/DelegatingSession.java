@@ -114,6 +114,27 @@ final class DelegatingSession implements GenerationSession {
         return executionPolicy;
     }
 
+    /** The runtime this session executes with; {@link DecisionSession} drives it directly. */
+    SessionRuntime runtime() {
+        return runtime;
+    }
+
+    org.beehive.jitllm.model.Model model() {
+        return model;
+    }
+
+    boolean onGpu() {
+        return gpu;
+    }
+
+    int contextLength() {
+        return contextLength;
+    }
+
+    ConversationEncoder encoder() {
+        return encoder;
+    }
+
     /**
      * The plan this session has been generating with, or {@code null} if it has not built one.
      * Package-private: not facade v1 surface, and never builds one, because asking {@link
