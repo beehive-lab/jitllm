@@ -81,6 +81,13 @@ Measured on jitllm 1.0.0 / TornadoVM 7.0.1, unit tests included (the script's se
 | `Qwen3-0.6B-F16` | 42/42 on JDK 25 CUDA, JDK 21 CUDA and JDK 25 OpenCL |
 | `Llama-3.2-3B-Instruct-Q8_0` | 36/42 — the six tool tests call the tool correctly, but the final answer lacks the expected text |
 
+On jitllm 1.0.2 / TornadoVM 7.0.1 (RTX 4090, CUDA), `Qwen3-0.6B-F16` gives **40/42 on JDK 25 and
+JDK 21**. The two failures are `should_execute_multiple_tools_in_parallel_then_answer` (chat and
+streaming): the model calls `getWeather` twice instead of `getWeather` + `getTime`. An A/B with only
+the jitllm version changed passes on 1.0.1, so it comes from #181, which renders Qwen's tool list
+one JSON object per line as the official template does (1.0.1 rendered a single array). The prompt
+is now the correct one; the 0.6B model is fragile on the parallel case. Not an adapter defect.
+
 Before recording a failure as an adapter defect, establish which it is. Tool transport is
 covered deterministically by `JitLLMConversionsTest`, whatever a given fixture emits.
 

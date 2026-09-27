@@ -7,7 +7,7 @@
 	<properties>
 		<maven.compiler.release>21</maven.compiler.release>
 		<!-- jitllm base version, for the jdk21 profile -->
-		<jitllm.version>1.0.0</jitllm.version>
+		<jitllm.version>1.0.2</jitllm.version>
 	</properties>
 	<dependencyManagement>
 		<dependencies>
@@ -59,4 +59,14 @@
 		<repository><id>spring-snapshots</id><url>https://repo.spring.io/snapshot</url><snapshots><enabled>true</enabled></snapshots></repository>
 		<repository><id>spring-milestones</id><url>https://repo.spring.io/milestone</url></repository>
 	</repositories>
+	<build>
+		<plugins>
+			<!-- Pinned: mvn 3.6's default compiler plugin (3.1) ignores maven.compiler.release. -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-compiler-plugin</artifactId>
+				<version>3.13.0</version>
+			</plugin>
+		</plugins>
+	</build>
 </project>
