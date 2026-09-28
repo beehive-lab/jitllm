@@ -294,32 +294,32 @@ jobs:
           cd ${{ github.workspace }}/quarkus-langchain4j
           # -i.bak (extension glued to the flag) is the portable form: GNU sed accepts it and
           # BSD sed requires it — a bare `-i ''` is parsed as the script on BSD sed.
-          sed -i.bak 's/<gpu-llama3\.version>.*<\/gpu-llama3\.version>/<gpu-llama3.version>'$JITLLM_VERSION'<\/gpu-llama3.version>/' pom.xml
+          sed -i.bak 's/<jitllm\.version>.*<\/jitllm\.version>/<jitllm.version>'$JITLLM_VERSION'<\/jitllm.version>/' pom.xml
           rm -f pom.xml.bak
-          # -Dtornado activates the TornadoVM profile; -am builds only the gpu-llama3 module + deps
-          mvn -q clean install -pl integration-tests/gpu-llama3 -am -DskipTests -Dtornado -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
+          # -Dtornado activates the TornadoVM profile; -am builds only the jitllm module + deps
+          mvn -q clean install -pl integration-tests/jitllm -am -DskipTests -Dtornado -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
 
       - name: Verify jitllm Dependency
         run: |
-          cd ${{ github.workspace }}/quarkus-langchain4j/integration-tests/gpu-llama3
+          cd ${{ github.workspace }}/quarkus-langchain4j/integration-tests/jitllm
           mvn -Dmaven.repo.local="$MAVEN_REPO_LOCAL" dependency:tree | grep "io.github.beehive-lab:jitllm:jar:$JITLLM_VERSION"
 
       - name: Seed jitllm model cache (avoid HuggingFace download on cold runners)
         shell: bash
         run: |
           set -euo pipefail
-          # The Quarkus gpu-llama3 extension lazily downloads the model from HuggingFace into
+          # The Quarkus jitllm extension lazily downloads the model from HuggingFace into
           # ~/.langchain4j/models on first request, via a no-timeout HttpClient — which hangs
           # until the job wall on a cold-cache runner. The model is already provisioned under
           # $MODELS_DIR, so we point the cache at it and touch the ".finished" marker that
-          # GPULlama3ModelRegistry's cache guard checks, so the download is skipped.
+          # JitllmModelRegistry's cache guard checks, so the download is skipped.
           #
           # Coordinates are read from the integration test's application.properties (falling
           # back to the extension's @WithDefault values), and the cache path is derived the
           # same way the extension does, so this follows an upstream model change instead of
           # silently mismatching. Layout: {home}/.langchain4j/models/{owner}_{name}/{file}
           # where file = name (minus a trailing "-GGUF") + "-<quant>.gguf".
-          PROPS="${{ github.workspace }}/quarkus-langchain4j/integration-tests/gpu-llama3/src/main/resources/application.properties"
+          PROPS="${{ github.workspace }}/quarkus-langchain4j/integration-tests/jitllm/src/main/resources/application.properties"
             
           prop() {  # exact key match, skips comments, trims; prints empty if unset
             awk -F= -v k="$1" '
@@ -329,8 +329,8 @@ jobs:
             ' "$PROPS" | tail -n1
           }
             
-          MODEL_NAME="$(prop quarkus.langchain4j.gpu-llama3.chat-model.model-name)"
-          QUANT="$(prop quarkus.langchain4j.gpu-llama3.chat-model.quantization)"
+          MODEL_NAME="$(prop quarkus.langchain4j.jitllm.chat-model.model-name)"
+          QUANT="$(prop quarkus.langchain4j.jitllm.chat-model.quantization)"
           : "${MODEL_NAME:=unsloth/Llama-3.2-1B-Instruct-GGUF}"   # Consts.DEFAULT_CHAT_MODEL_NAME
           : "${QUANT:=F16}"                                       # Consts.DEFAULT_CHAT_MODEL_QUANTIZATION
             
@@ -356,13 +356,13 @@ jobs:
 
       - name: Start Quarkus Application
         run: |
-          cd ${{ github.workspace }}/quarkus-langchain4j/integration-tests/gpu-llama3
+          cd ${{ github.workspace }}/quarkus-langchain4j/integration-tests/jitllm
           APP_LOG="${{ runner.temp }}/quarkus-app.log"
           echo "APP_LOG=$APP_LOG" >> $GITHUB_ENV
           # Background process output stops being captured by the Actions log once this
           # step ends, so redirect it to a file we can dump later if a request fails.
           #
-          # -Dtornado.device.memory here is dead: the gpu-llama3 extension's ChatModelConfig
+          # -Dtornado.device.memory here is dead: the jitllm extension's ChatModelConfig
           # defaults device-memory to "4GB" and calls System.setProperty("tornado.device.memory", ...)
           # itself during model init, overwriting whatever we pass as a bare JVM flag. On Metal
           # that 4GB budget isn't enough even for Llama-3.2-1B in batch-prefill-decode mode
@@ -374,7 +374,7 @@ jobs:
           # it explicitly.
           java  @"$TORNADOVM_HOME/tornado-argfile" \
                 --add-modules jdk.incubator.vector \
-                -Dquarkus.langchain4j.gpu-llama3.chat-model.device-memory=8GB \
+                -Dquarkus.langchain4j.jitllm.chat-model.device-memory=8GB \
                 -Dquarkus.http.port=$QUARKUS_PORT \
                 -jar target/quarkus-app/quarkus-run.jar > "$APP_LOG" 2>&1 &
           APP_PID=$!

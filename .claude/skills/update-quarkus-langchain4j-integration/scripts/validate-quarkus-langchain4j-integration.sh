@@ -7,15 +7,15 @@ if [[ $# -ne 1 ]]; then
 fi
 
 quarkus_langchain4j_dir=$(realpath "$1")
-runtime_module=model-providers/gpu-llama3/runtime
-deployment_module=model-providers/gpu-llama3/deployment
+runtime_module=model-providers/jitllm/runtime
+deployment_module=model-providers/jitllm/deployment
 
 [[ -x "${quarkus_langchain4j_dir}/mvnw" ]] || {
     echo "quarkus-langchain4j Maven wrapper not found: ${quarkus_langchain4j_dir}/mvnw" >&2
     exit 2
 }
 [[ -d "${quarkus_langchain4j_dir}/${runtime_module}" ]] || {
-    echo "gpu-llama3 runtime module not found: ${quarkus_langchain4j_dir}/${runtime_module}" >&2
+    echo "jitllm runtime module not found: ${quarkus_langchain4j_dir}/${runtime_module}" >&2
     exit 2
 }
 [[ -n ${TORNADOVM_HOME:-} && -x ${TORNADOVM_HOME}/bin/tornado ]] || {

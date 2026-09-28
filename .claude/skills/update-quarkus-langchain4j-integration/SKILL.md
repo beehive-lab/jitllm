@@ -40,19 +40,23 @@ Otherwise build and inspect both JARs locally. Among others check model loading/
 Locate the integration rather than assuming its current layout:
 
 ```bash
-rg -n "gpu-llama3" pom.xml model-providers/gpu-llama3
+rg -n "jitllm" pom.xml model-providers/jitllm
 ```
 
-The module lives at `model-providers/gpu-llama3/{runtime,deployment}`, and the version comes from
-the `gpu-llama3.version` property in the root `pom.xml`: the default picks `-jdk21`, and the
-`jdk25` profile overrides it to `-jdk25`. The branch this project validates against is
+The module lives at `model-providers/jitllm/{runtime,deployment}` (artifact
+`quarkus-langchain4j-jitllm`, configuration prefix `quarkus.langchain4j.jitllm`), and the version
+comes from the `jitllm.version` property in the root `pom.xml`: the default picks `-jdk21`, and
+the `jdk22plus` profile overrides it to `-jdk22plus`. Until jitllm 1.0.2 the extension was named
+`gpu-llama3` (`model-providers/gpu-llama3`, `gpu-llama3.version`,
+`quarkus.langchain4j.gpu-llama3.*`); upstream quarkiverse may still carry those names until the
+rename lands there. The branch this project validates against is
 `jitllm/facade-1.0.0` on the maintainer's fork, which is what jitllm's own CI clones (see
 QUARKUS_LANGCHAIN4J_REF in .github/workflows/build-and-run.yml).
 Re-read the current root `pom.xml` before editing it — do not assume this layout is unchanged.
 
-Read the module POMs, `GPULlama3BaseModel`/`GPULlama3ChatModel`/`GPULlama3StreamingChatModel`,
-`GPULlama3ResponseParser`, config classes, existing unit tests under
-`model-providers/gpu-llama3/runtime/src/test`, the module README, and the root JDK profile.
+Read the module POMs, `JitllmBaseModel`/`JitllmChatModel`/`JitllmStreamingChatModel`,
+`JitllmResponseParser`, config classes, existing unit tests under
+`model-providers/jitllm/runtime/src/test`, the module README, and the root JDK profile.
 
 Keep changes minimal and backend agnostic:
 
@@ -106,7 +110,7 @@ commands.
 
 Any `@ConfigItem`/config-interface change (new property, changed `@WithDefault`, changed Javadoc,
 `Optional` vs primitive) drifts `docs/modules/ROOT/pages/includes/quarkus-all-config.adoc` and the
-module-specific `quarkus-langchain4j-gpu-llama3*.adoc` files, which are generated, not hand-edited.
+module-specific `quarkus-langchain4j-jitllm*.adoc` files, which are generated, not hand-edited.
 CI's `Documentation check` job runs `mvn clean install` and fails the build if
 `git status --porcelain docs/modules/ROOT/pages/includes/` is non-empty afterwards. Regenerate and
 commit these before opening/updating the PR:
@@ -114,7 +118,7 @@ commit these before opening/updating the PR:
 ```bash
 cd "$QUARKUS_LANGCHAIN4J_DIR"
 ./mvnw clean install \
-  -pl model-providers/gpu-llama3/runtime,model-providers/gpu-llama3/deployment,docs \
+  -pl model-providers/jitllm/runtime,model-providers/jitllm/deployment,docs \
   -am -DskipTests -DskipITs -Drevapi.skip=true
 
 git status --short docs/modules/ROOT/pages/includes/
@@ -125,9 +129,9 @@ Review the diff: it should only reflect the config change just made.
 
 `quarkus-all-config.adoc` aggregates every module, so a `-pl ... -am` build regenerates it
 from the subset that was built and deletes the sections for everything else. That is a
-partial-build artifact, not drift. Take the module-specific `quarkus-langchain4j-gpu-llama3*.adoc`
+partial-build artifact, not drift. Take the module-specific `quarkus-langchain4j-jitllm*.adoc`
 files from the regeneration, revert `quarkus-all-config.adoc`, and apply the same edits to its
-gpu-llama3 rows by hand — or run a full `mvn clean install`, which is what CI does. Do not commit
+jitllm rows by hand — or run a full `mvn clean install`, which is what CI does. Do not commit
 the deletions.
 
 Any genuinely unrelated hunk in the module files means the docs were already out of sync before
