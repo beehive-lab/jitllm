@@ -54,8 +54,8 @@ rename lands there. The branch this project validates against is
 QUARKUS_LANGCHAIN4J_REF in .github/workflows/build-and-run.yml).
 Re-read the current root `pom.xml` before editing it — do not assume this layout is unchanged.
 
-Read the module POMs, `JitllmBaseModel`/`JitllmChatModel`/`JitllmStreamingChatModel`,
-`JitllmResponseParser`, config classes, existing unit tests under
+Read the module POMs, `JitLLMBaseModel`/`JitLLMChatModel`/`JitLLMStreamingChatModel`,
+`JitLLMResponseParser`, config classes, existing unit tests under
 `model-providers/jitllm/runtime/src/test`, the module README, and the root JDK profile.
 
 Keep changes minimal and backend agnostic:

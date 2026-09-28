@@ -2,8 +2,8 @@
 #
 # benchmark_backends.sh
 #
-# Measures jitllm inference performance across the three TornadoVM GPU
-# backends (OpenCL, PTX, CUDA) over the full model/quantization/configuration
+# Measures jitllm inference performance across the TornadoVM GPU
+# backends (OpenCL, CUDA) over the full model/quantization/configuration
 # matrix from .github/workflows/build-and-run.yml.
 #
 # For each backend it:
@@ -13,11 +13,11 @@
 # Finally it prints a comparison table (eval / prompt-eval tok/s, mean ± std,
 # plus one-time JIT).
 #
-# The cuda-graphs configurations are PTX-only (mirrors the workflow).
+# The cuda-graphs configurations are CUDA-only (mirrors the workflow).
 #
 # Usage:
 #   scripts/benchmark_backends.sh [backend ...]
-#   BACKENDS="cuda ptx" REPS=3 scripts/benchmark_backends.sh
+#   BACKENDS="cuda" REPS=3 scripts/benchmark_backends.sh
 #
 # Note: no `set -u` — sdkman-init.sh references unbound vars (ZSH_VERSION) when sourced.
 set -o pipefail
@@ -42,7 +42,7 @@ WARMUP="${WARMUP:-1}"
 if [ "$#" -gt 0 ]; then
     BACKEND_LIST=("$@")
 else
-    read -r -a BACKEND_LIST <<< "${BACKENDS:-opencl ptx cuda}"
+    read -r -a BACKEND_LIST <<< "${BACKENDS:-opencl cuda}"
 fi
 
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
@@ -51,19 +51,19 @@ mkdir -p "$RESULTS_DIR"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Case matrix (from .github/workflows/build-and-run.yml)
-# Fields: model_file | model | quant | config | flags | scope(all|ptx)
+# Fields: model_file | model | quant | config | flags | scope(all|cuda)
 # ──────────────────────────────────────────────────────────────────────────────
 read -r -d '' CASES <<'CASES_EOF'
 Llama-3.2-1B-Instruct-F16.gguf|Llama-3.2-1B-Instruct|F16|standard||all
 Llama-3.2-1B-Instruct-F16.gguf|Llama-3.2-1B-Instruct|F16|prefill-decode|--with-prefill-decode|all
 Llama-3.2-1B-Instruct-F16.gguf|Llama-3.2-1B-Instruct|F16|batch-prefill-decode|--with-prefill-decode --batch-prefill-size 32|all
-Llama-3.2-1B-Instruct-F16.gguf|Llama-3.2-1B-Instruct|F16|prefill-decode-cuda-graphs|--with-prefill-decode --cuda-graphs|ptx cuda
-Llama-3.2-1B-Instruct-F16.gguf|Llama-3.2-1B-Instruct|F16|batch-prefill-decode-cuda-graphs|--with-prefill-decode --batch-prefill-size 32 --cuda-graphs|ptx cuda
+Llama-3.2-1B-Instruct-F16.gguf|Llama-3.2-1B-Instruct|F16|prefill-decode-cuda-graphs|--with-prefill-decode --cuda-graphs|cuda
+Llama-3.2-1B-Instruct-F16.gguf|Llama-3.2-1B-Instruct|F16|batch-prefill-decode-cuda-graphs|--with-prefill-decode --batch-prefill-size 32 --cuda-graphs|cuda
 Qwen3-0.6B-f16.gguf|Qwen3-0.6B|F16|standard||all
 Qwen3-0.6B-f16.gguf|Qwen3-0.6B|F16|prefill-decode|--with-prefill-decode|all
 Qwen3-0.6B-f16.gguf|Qwen3-0.6B|F16|batch-prefill-decode|--with-prefill-decode --batch-prefill-size 32|all
-Qwen3-0.6B-f16.gguf|Qwen3-0.6B|F16|prefill-decode-cuda-graphs|--with-prefill-decode --cuda-graphs|ptx cuda
-Qwen3-0.6B-f16.gguf|Qwen3-0.6B|F16|batch-prefill-decode-cuda-graphs|--with-prefill-decode --batch-prefill-size 32 --cuda-graphs|ptx cuda
+Qwen3-0.6B-f16.gguf|Qwen3-0.6B|F16|prefill-decode-cuda-graphs|--with-prefill-decode --cuda-graphs|cuda
+Qwen3-0.6B-f16.gguf|Qwen3-0.6B|F16|batch-prefill-decode-cuda-graphs|--with-prefill-decode --batch-prefill-size 32 --cuda-graphs|cuda
 Mistral-7B-Instruct-v0.3.fp16.gguf|Mistral-7B-Instruct-v0.3|F16|standard||all
 qwen2.5-1.5b-instruct-fp16.gguf|Qwen2.5-1.5B-Instruct|F16|standard||all
 Phi-3-mini-4k-instruct-fp16.gguf|Phi-3-mini-4k-instruct|F16|standard||all
@@ -72,13 +72,13 @@ granite-4.0-1b-F16.gguf|Granite-4.0-1B|F16|standard||all
 Llama-3.2-1B-Instruct-Q8_0.gguf|Llama-3.2-1B-Instruct|Q8_0|standard||all
 Llama-3.2-1B-Instruct-Q8_0.gguf|Llama-3.2-1B-Instruct|Q8_0|prefill-decode|--with-prefill-decode|all
 Llama-3.2-1B-Instruct-Q8_0.gguf|Llama-3.2-1B-Instruct|Q8_0|batch-prefill-decode|--with-prefill-decode --batch-prefill-size 32|all
-Llama-3.2-1B-Instruct-Q8_0.gguf|Llama-3.2-1B-Instruct|Q8_0|prefill-decode-cuda-graphs|--with-prefill-decode --cuda-graphs|ptx cuda
-Llama-3.2-1B-Instruct-Q8_0.gguf|Llama-3.2-1B-Instruct|Q8_0|batch-prefill-decode-cuda-graphs|--with-prefill-decode --batch-prefill-size 32 --cuda-graphs|ptx cuda
+Llama-3.2-1B-Instruct-Q8_0.gguf|Llama-3.2-1B-Instruct|Q8_0|prefill-decode-cuda-graphs|--with-prefill-decode --cuda-graphs|cuda
+Llama-3.2-1B-Instruct-Q8_0.gguf|Llama-3.2-1B-Instruct|Q8_0|batch-prefill-decode-cuda-graphs|--with-prefill-decode --batch-prefill-size 32 --cuda-graphs|cuda
 Qwen3-0.6B-Q8_0.gguf|Qwen3-0.6B|Q8_0|standard||all
 Qwen3-0.6B-Q8_0.gguf|Qwen3-0.6B|Q8_0|prefill-decode|--with-prefill-decode|all
 Qwen3-0.6B-Q8_0.gguf|Qwen3-0.6B|Q8_0|batch-prefill-decode|--with-prefill-decode --batch-prefill-size 32|all
-Qwen3-0.6B-Q8_0.gguf|Qwen3-0.6B|Q8_0|prefill-decode-cuda-graphs|--with-prefill-decode --cuda-graphs|ptx cuda
-Qwen3-0.6B-Q8_0.gguf|Qwen3-0.6B|Q8_0|batch-prefill-decode-cuda-graphs|--with-prefill-decode --batch-prefill-size 32 --cuda-graphs|ptx cuda
+Qwen3-0.6B-Q8_0.gguf|Qwen3-0.6B|Q8_0|prefill-decode-cuda-graphs|--with-prefill-decode --cuda-graphs|cuda
+Qwen3-0.6B-Q8_0.gguf|Qwen3-0.6B|Q8_0|batch-prefill-decode-cuda-graphs|--with-prefill-decode --batch-prefill-size 32 --cuda-graphs|cuda
 Phi-3-mini-4k-instruct-Q8_0.gguf|Phi-3-mini-4k-instruct|Q8_0|standard||all
 qwen2.5-1.5b-instruct-q8_0.gguf|Qwen2.5-1.5B-Instruct|Q8_0|standard||all
 Mistral-7B-Instruct-v0.3.Q8_0.gguf|Mistral-7B-Instruct-v0.3|Q8_0|standard||all
@@ -157,7 +157,7 @@ for backend in "${BACKEND_LIST[@]}"; do
     while IFS='|' read -r model_file model quant config flags scope; do
         [ -z "$model_file" ] && continue
         # Scope filter: "all" runs everywhere; otherwise scope is a space-separated
-        # list of backends the case applies to (cuda-graphs runs on ptx + cuda).
+        # list of backends the case applies to (cuda-graphs runs on cuda only).
         if [ "$scope" != "all" ] && [[ " $scope " != *" $backend "* ]]; then
             continue
         fi

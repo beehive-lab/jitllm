@@ -87,7 +87,7 @@ public class ModelOptionsSelectionTest {
     // cover it structurally. These pin that no special-casing is needed for Metal specifically —
     // the
     // same "no platform branch in user code" claim task 4 requires, made permanent rather than
-    // inferred from the generic cases using CPU/PTX/CUDA.
+    // inferred from the generic cases using CPU/CUDA.
 
     @Test
     public void metalIsCarriedExactlyLikeAnyOtherBackend() {

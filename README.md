@@ -8,7 +8,7 @@
 ![NVIDIA](https://img.shields.io/badge/CUDA-supported-76B900?logo=nvidia)
 ![OpenCL](https://img.shields.io/badge/OpenCL-supported-blue?logo=khronos)
 ![Apple](https://img.shields.io/badge/Metal-Apple%20Silicon-black?logo=apple)
-[![Docker](https://img.shields.io/badge/Docker-OpenCL%20%7C%20PTX-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/beehivelab/gpullama3.java-nvidia-openjdk-opencl)
+[![Docker](https://img.shields.io/badge/Docker-OpenCL-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/beehivelab/gpullama3.java-nvidia-openjdk-opencl)
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/beehive-lab/jitllm)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
