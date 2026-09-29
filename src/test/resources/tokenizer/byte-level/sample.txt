@@ -1,0 +1,18 @@
+Pre-tokenization happens on the raw text; byte-level encoding comes after it.
+
+### src/main/java/Example.java (modified)
+@@ -10,6 +10,8 @@ class Example {
+   10       int a = 1;
+      -     int b = 2;
+   11 +     int b = a + 3;   // off-by-one?
+   12 +     if (a >= b && b != 0) { return a / b; }
+   13       return x;
+
+Spaces:  two,   three,    four; a tab	here, trailing spaces   
+Punctuation: "quoted", (parens), [brackets], {braces}, a+b=c, x->y, i++, --flag, #tag, @Test.
+Numbers: 3.14159, 1,000,000, 2026-09-29, 0x1F, v1.0.2-jdk22plus.
+Contractions: it's, we're, they've, I'm, you'll, he'd, DON'T.
+Unicode: café, naïve, Übergröße, 中文字符, 日本語, emoji 🚀✨, math ∑∫√.
+
+
+Blank lines above, and the end of the text right here.

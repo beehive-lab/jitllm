@@ -215,10 +215,25 @@ public class LlamaTokenizer implements Tokenizer {
         // all chunks of text are encoded separately, then results are joined
         List<Integer> ids = new ArrayList<>();
         for (String chunk : textChunks) {
-            List<Integer> chunkIds = encodeChunk(chunk);
+            List<Integer> chunkIds = encodeChunk(byteLevel(chunk));
             ids.addAll(chunkIds);
         }
         return ids;
+    }
+
+    /**
+     * The byte-level alphabet form of raw text: each UTF-8 byte as the code point {@link
+     * #BYTE_ENCODER} maps it to, so a space becomes {@code Ġ} and a newline {@code Ċ}. BPE merges
+     * operate on this form. It is applied per pre-tokenizer chunk, after the split, never before
+     * it: the split regex is written for the raw text, and in the byte-level form a space is a
+     * letter ({@code Ġ} is {@code \p{L}}), so none of its whitespace rules would fire.
+     */
+    private static String byteLevel(String raw) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : raw.getBytes(StandardCharsets.UTF_8)) {
+            sb.appendCodePoint(BYTE_ENCODER.get(Byte.toUnsignedInt(b)));
+        }
+        return sb.toString();
     }
 
     private Map<Pair<Integer, Integer>, Integer> getStats(List<Integer> ids) {
@@ -274,22 +289,12 @@ public class LlamaTokenizer implements Tokenizer {
     }
 
     public int[] encode(String text) {
-        StringBuilder sb = new StringBuilder();
-        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
-        for (byte b : bytes) {
-            sb.appendCodePoint(BYTE_ENCODER.get(Byte.toUnsignedInt(b)));
-        }
-        return encodeImpl(sb.toString());
+        return encodeImpl(text);
     }
 
     @Override
     public List<Integer> encodeAsList(String text) {
-        StringBuilder sb = new StringBuilder();
-        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
-        for (byte b : bytes) {
-            sb.appendCodePoint(BYTE_ENCODER.get(Byte.toUnsignedInt(b)));
-        }
-        return Arrays.stream(encodeImpl(sb.toString())).boxed().toList();
+        return Arrays.stream(encodeImpl(text)).boxed().toList();
     }
 
     @Override

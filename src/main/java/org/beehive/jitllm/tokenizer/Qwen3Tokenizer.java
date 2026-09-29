@@ -227,17 +227,38 @@ public class Qwen3Tokenizer implements Tokenizer {
 
     // @formatter:off
 
-    /** Encoding that ignores any special tokens. */
+    /**
+     * Encoding that ignores any special tokens.
+     *
+     * @param text raw text, not its byte-level form: the pre-tokenizer splits the raw text, and
+     *     each chunk is converted to the byte-level alphabet only then, as the reference tokenizers
+     *     (Hugging Face, llama.cpp) do
+     */
     public List<Integer> encodeOrdinary(String text) {
         // split text into chunks of text by categories defined in regex pattern
         List<String> textChunks = findAll(compiledPattern, text);
         // all chunks of text are encoded separately, then results are joined
         List<Integer> ids = new ArrayList<>();
         for (String chunk : textChunks) {
-            List<Integer> chunkIds = encodeChunk(chunk);
+            List<Integer> chunkIds = encodeChunk(byteLevel(chunk));
             ids.addAll(chunkIds);
         }
         return ids;
+    }
+
+    /**
+     * The byte-level alphabet form of raw text: each UTF-8 byte as the code point {@link
+     * #BYTE_ENCODER} maps it to, so a space becomes {@code Ġ} and a newline {@code Ċ}. BPE merges
+     * operate on this form. It is applied per pre-tokenizer chunk, after the split, never before
+     * it: the split regex is written for the raw text, and in the byte-level form a space is a
+     * letter ({@code Ġ} is {@code \p{L}}), so none of its whitespace rules would fire.
+     */
+    private static String byteLevel(String raw) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : raw.getBytes(StandardCharsets.UTF_8)) {
+            sb.appendCodePoint(BYTE_ENCODER.get(Byte.toUnsignedInt(b)));
+        }
+        return sb.toString();
     }
 
     // @formatter:on
@@ -286,12 +307,7 @@ public class Qwen3Tokenizer implements Tokenizer {
     }
 
     public int[] encode(String text) {
-        StringBuilder sb = new StringBuilder();
-        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
-        for (byte b : bytes) {
-            sb.appendCodePoint(BYTE_ENCODER.get(Byte.toUnsignedInt(b)));
-        }
-        return encodeImpl(sb.toString());
+        return encodeImpl(text);
     }
 
     // @formatter:off
@@ -322,13 +338,7 @@ public class Qwen3Tokenizer implements Tokenizer {
                 // this is a special token, encode it separately as a special case
                 ids.add(getSpecialTokens().get(part));
             } else {
-                // this is an ordinary sequence, encode it normally.
-                //
-                // encodeOrdinaryAsList, not encodeOrdinary: this vocabulary is byte-level BPE, so
-                // text has to go through BYTE_ENCODER first — a space is "Ġ" and a newline is "Ċ",
-                // and neither exists in the vocabulary as itself. Every other caller already did
-                // that; this one did not, so any ordinary text reaching here threw
-                // NoSuchElementException from encodeChunk.
+                // this is an ordinary sequence, encode it normally
                 ids.addAll(encodeOrdinaryAsList(part));
             }
         }
@@ -339,14 +349,7 @@ public class Qwen3Tokenizer implements Tokenizer {
 
     /** Encode text as ordinary tokens (no special token handling) */
     public List<Integer> encodeOrdinaryAsList(String text) {
-        // First convert to byte-encoded unicode representation
-        StringBuilder sb = new StringBuilder();
-        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
-        for (byte b : bytes) {
-            sb.appendCodePoint(BYTE_ENCODER.get(Byte.toUnsignedInt(b)));
-        }
-        // Then encode using BPE
-        return encodeOrdinary(sb.toString());
+        return encodeOrdinary(text);
     }
 
     @Override
