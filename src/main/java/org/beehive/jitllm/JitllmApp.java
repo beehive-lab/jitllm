@@ -64,13 +64,28 @@ public class JitllmApp {
         }
     }
 
-    /** The request shape both modes share; only the prompt and system prompt differ per turn. */
-    private static GenerationRequest.Builder request(Options options) {
-        return GenerationRequest.builder()
-                .maxNewTokens(options.maxNewTokens())
-                .temperature(options.temperature())
-                .topP(options.topp())
-                .seed(options.seed());
+    /**
+     * The request shape both modes share; only the prompt and system prompt differ per turn.
+     *
+     * <p>An unset {@code --temperature} or {@code --top-p} is NaN in {@link Options} and is left to
+     * the request's own defaults. Passing it through would divide every logit by NaN.
+     */
+    static GenerationRequest.Builder request(Options options) {
+        GenerationRequest.Builder builder =
+                GenerationRequest.builder()
+                        .maxNewTokens(options.maxNewTokens())
+                        .seed(options.seed());
+        if (!Float.isNaN(options.temperature())) {
+            builder.temperature(options.temperature());
+        }
+        if (!Float.isNaN(options.topp())) {
+            builder.topP(options.topp());
+        }
+        return builder;
+    }
+
+    private static String orDefault(float value) {
+        return Float.isNaN(value) ? "default" : String.format(Locale.ROOT, "%.3f", value);
     }
 
     private static void runSingleInstruction(GenerationSession session, Options options) {
@@ -186,9 +201,9 @@ public class JitllmApp {
                                     ? "greedy"
                                     : String.format(
                                             Locale.ROOT,
-                                            "temperature %.3f / top-p %.3f / seed %d",
-                                            options.temperature(),
-                                            options.topp(),
+                                            "temperature %s / top-p %s / seed %d",
+                                            orDefault(options.temperature()),
+                                            orDefault(options.topp()),
                                             options.seed());
                     System.err.print(
                             StartupDiagnostics.render(
