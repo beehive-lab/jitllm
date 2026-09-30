@@ -38,6 +38,8 @@ final class DelegatingModel implements TextGenerationModel {
     /** The default reasoning mode every session inherits unless it overrides it. */
     private final ThinkingMode thinkingMode;
 
+    private final ReasoningEffort reasoningEffort;
+
     /**
      * How this model's key/value storage is shaped, resolved once at load.
      *
@@ -115,6 +117,26 @@ final class DelegatingModel implements TextGenerationModel {
             org.beehive.jitllm.runtime.policy.StorageOptions storageOptions,
             ThinkingMode thinkingMode,
             int maxConcurrentSessions) {
+        this(
+                delegate,
+                source,
+                gpu,
+                executionPolicy,
+                storageOptions,
+                thinkingMode,
+                ReasoningEffort.DEFAULT,
+                maxConcurrentSessions);
+    }
+
+    DelegatingModel(
+            Model delegate,
+            Path source,
+            boolean gpu,
+            ExecutionPolicy executionPolicy,
+            org.beehive.jitllm.runtime.policy.StorageOptions storageOptions,
+            ThinkingMode thinkingMode,
+            ReasoningEffort reasoningEffort,
+            int maxConcurrentSessions) {
         if (maxConcurrentSessions < 1) {
             throw new IllegalArgumentException(
                     "maxConcurrentSessions must be at least 1: " + maxConcurrentSessions);
@@ -123,6 +145,7 @@ final class DelegatingModel implements TextGenerationModel {
         this.delegate = delegate;
         this.gpu = gpu;
         this.thinkingMode = thinkingMode;
+        this.reasoningEffort = reasoningEffort;
         this.executionPolicy = executionPolicy;
         this.storageOptions = storageOptions;
         this.configuration = new ConfigurationView(delegate.configuration());
@@ -166,7 +189,10 @@ final class DelegatingModel implements TextGenerationModel {
         if (format == null) {
             return ModelCapabilities.NONE; // no format, nothing a request could use
         }
-        return new ModelCapabilities(format.supportsToolCalling(), format.supportsThinking());
+        return new ModelCapabilities(
+                format.supportsToolCalling(),
+                format.supportsThinking(),
+                format.supportsReasoningEffort());
     }
 
     /**
@@ -255,6 +281,38 @@ final class DelegatingModel implements TextGenerationModel {
         return mode;
     }
 
+    /**
+     * Rejects an explicit reasoning effort this model's format cannot express, or that asks for
+     * reasoning on a session that turned it off.
+     *
+     * <p>{@link ReasoningEffort#DEFAULT} always passes. An explicit effort is a request, rejected
+     * rather than ignored for the reason {@link #requireRepresentable(ThinkingMode)} gives; with
+     * thinking disabled the template writes no effort at all, so asking for one contradicts the
+     * mode.
+     */
+    private ReasoningEffort requireRepresentable(ReasoningEffort effort, ThinkingMode thinking) {
+        if (!effort.isExplicit()) {
+            return effort;
+        }
+        if (!delegate.chatFormat().supportsReasoningEffort()) {
+            throw new IllegalArgumentException(
+                    "reasoningEffort("
+                            + effort
+                            + ") was requested, but "
+                            + info.name()
+                            + "'s template has no reasoning-effort control."
+                            + " Use ReasoningEffort.DEFAULT for a model without one");
+        }
+        if (thinking == ThinkingMode.DISABLED) {
+            throw new IllegalArgumentException(
+                    "reasoningEffort("
+                            + effort
+                            + ") was requested with thinkingMode(DISABLED): there is no reasoning"
+                            + " phase for it to apply to");
+        }
+        return effort;
+    }
+
     /** The session runtime's capacity — total and free blocks, and what a block costs. */
     KvCacheManager sessionRuntime() {
         return sessions;
@@ -306,6 +364,8 @@ final class DelegatingModel implements TextGenerationModel {
         // model could then never close — which is exactly what the first version of this did, and
         // what ThinkingModeAccelTest caught.
         ThinkingMode thinking = requireRepresentable(options.resolveThinkingMode(thinkingMode));
+        ReasoningEffort effort =
+                requireRepresentable(options.resolveReasoningEffort(reasoningEffort), thinking);
         DelegatingSession session;
         synchronized (this) {
             if (closed) {
@@ -340,7 +400,14 @@ final class DelegatingModel implements TextGenerationModel {
             try {
                 session =
                         new DelegatingSession(
-                                this, delegate, gpu, contextLength, lease, policy, thinking);
+                                this,
+                                delegate,
+                                gpu,
+                                contextLength,
+                                lease,
+                                policy,
+                                thinking,
+                                effort);
             } catch (RuntimeException | Error failure) {
                 // Building the session (its state, its plan) can fail after the lease is taken.
                 // Nothing else holds the lease then, so a leak here would keep the slot forever,

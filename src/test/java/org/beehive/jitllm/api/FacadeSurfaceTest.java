@@ -97,6 +97,7 @@ public class FacadeSurfaceTest {
                         "backend",
                         "device",
                         "thinkingMode",
+                        "reasoningEffort",
                         "maxConcurrentSessions",
                         "build"),
                 builderMethods);
@@ -120,13 +121,18 @@ public class FacadeSurfaceTest {
     @Test
     public void sessionOptionsCarryContextLengthAndThePolicyOverride() {
         assertEquals(
-                Set.of("contextLength", "executionPolicy", "thinkingMode", "build"),
+                Set.of(
+                        "contextLength",
+                        "executionPolicy",
+                        "thinkingMode",
+                        "reasoningEffort",
+                        "build"),
                 methodNames(SessionOptions.Builder.class));
     }
 
     /**
      * What a model can do is asked of its {@link ModelInfo}, before a request is sent — not learnt
-     * from the exception the request throws. Two flags, pinned exactly: a third capability is a
+     * from the exception the request throws. Three flags, pinned exactly: a fourth capability is a
      * decision, and no format, template or token set rides along with them.
      */
     @Test
@@ -135,12 +141,18 @@ public class FacadeSurfaceTest {
                 ModelCapabilities.class, ModelInfo.class.getMethod("capabilities").getReturnType());
         assertTrue(ModelCapabilities.class.isRecord());
         assertEquals(
-                java.util.List.of("toolCalling", "thinkingControl"),
+                java.util.List.of("toolCalling", "thinkingControl", "reasoningEffortControl"),
                 Arrays.stream(ModelCapabilities.class.getRecordComponents())
                         .map(java.lang.reflect.RecordComponent::getName)
                         .toList());
         Set<String> expected =
-                Set.of("toolCalling", "thinkingControl", "equals", "hashCode", "toString");
+                Set.of(
+                        "toolCalling",
+                        "thinkingControl",
+                        "reasoningEffortControl",
+                        "equals",
+                        "hashCode",
+                        "toString");
         assertEquals(expected, methodNames(ModelCapabilities.class));
     }
 

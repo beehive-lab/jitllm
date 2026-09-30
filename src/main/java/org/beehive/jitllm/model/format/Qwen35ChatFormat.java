@@ -37,16 +37,58 @@ import org.beehive.jitllm.tokenizer.Qwen35Tokenizer;
  * template orders them; consecutive tool results share one user turn ({@link #encodeToolResults},
  * inherited).
  *
+ * <p>The template's reasoning effort is rendered ({@link #reasoningEffortInstructions(String)}):
+ * while thinking is on it writes an instruction at the top of the system turn, {@code xhigh} unless
+ * told otherwise, and that instruction changes how long the model reasons several-fold. It used to
+ * be left out, and the model reasoned three to four times less than under llama.cpp or Ollama.
+ *
  * <h2>Deviations, stated</h2>
  *
- * <p>The template's reasoning-effort instructions in the system turn, and the {@code
- * <think>…</think>} block it writes in front of every replayed assistant turn, are not rendered —
- * the same as for this family's conversations without tools.
+ * <p>The {@code <think>…</think>} block the template writes in front of every replayed assistant
+ * turn is not rendered, the same as for this family's conversations without tools. Nor is the
+ * {@code <think>\n} the template's generation prompt opens a thinking turn with: the model writes
+ * it itself, and the integrations recognise the reasoning by it.
  */
 public class Qwen35ChatFormat extends Qwen3ChatFormat {
 
     public Qwen35ChatFormat(Qwen35Tokenizer tokenizer, ChatTokens chatTokens) {
         super(tokenizer, chatTokens);
+    }
+
+    /** The reasoning-effort control exists wherever the thinking control does. */
+    @Override
+    public boolean supportsReasoningEffort() {
+        return supportsThinking();
+    }
+
+    /** The template's {@code reasoning_effort|default('xhigh')}. */
+    @Override
+    public String defaultReasoningEffort() {
+        return "xhigh";
+    }
+
+    /**
+     * The template's instructions, verbatim: one for {@code xhigh} (and {@code high}, which it
+     * treats as {@code xhigh}), one for {@code low}, none for {@code medium}.
+     */
+    @Override
+    public String reasoningEffortInstructions(String effort) {
+        return switch (effort) {
+            case "xhigh", "high" ->
+                    "Reasoning effort is set to xhigh. Please think carefully through the task,"
+                            + " validate key assumptions, consider plausible alternatives, and"
+                            + " prioritize correctness, consistency, and clarity in the final"
+                            + " answer.";
+            case "medium" -> "";
+            case "low" ->
+                    "Reasoning effort is set to low. Keep your thinking brief and focused, moving"
+                            + " directly to the conclusion without unnecessary elaboration.";
+            default ->
+                    throw new IllegalArgumentException(
+                            "Unexpected reasoning effort "
+                                    + effort
+                                    + ". Supported types are xhigh (default), medium, and low.");
+        };
     }
 
     @Override
@@ -89,10 +131,22 @@ public class Qwen35ChatFormat extends Qwen3ChatFormat {
      */
     @Override
     public List<Integer> encodeToolSystemMessage(String systemContent, String toolsJson) {
+        return encodeToolSystemMessage(systemContent, toolsJson, "");
+    }
+
+    /**
+     * As {@link #encodeToolSystemMessage(String, String)}, with the reasoning-effort instructions
+     * first, where the template writes them: {@code <|im_start|>system\n{instructions}\n\n{tools
+     * block}\n\n{system}<|im_end|>\n}.
+     */
+    @Override
+    public List<Integer> encodeToolSystemMessage(
+            String systemContent, String toolsJson, String reasoningInstructions) {
         List<Integer> tokens = new ArrayList<>();
         tokens.add(imStart);
         tokens.addAll(tokenizer.encodeOrdinaryAsList("system\n"));
-        tokens.addAll(templateText(toolsBlock(toolsJson)));
+        String preamble = reasoningInstructions.isEmpty() ? "" : reasoningInstructions + "\n\n";
+        tokens.addAll(templateText(preamble + toolsBlock(toolsJson)));
         if (systemContent != null && !systemContent.isBlank()) {
             tokens.addAll(tokenizer.encodeOrdinaryAsList("\n\n" + systemContent.strip()));
         }

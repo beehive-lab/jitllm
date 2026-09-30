@@ -34,6 +34,7 @@ public final class ModelOptions {
     private final BackendId backend;
     private final DeviceSelector device;
     private final ThinkingMode thinkingMode;
+    private final ReasoningEffort reasoningEffort;
     private final int maxConcurrentSessions;
 
     private ModelOptions(Builder builder) {
@@ -42,6 +43,7 @@ public final class ModelOptions {
         this.backend = builder.backend;
         this.device = builder.device;
         this.thinkingMode = builder.thinkingMode;
+        this.reasoningEffort = builder.reasoningEffort;
         // Resolved here, not left null and resolved at use: a null that means "read the system
         // properties later" is the same deferred, order-dependent read this task removes.
         this.executionPolicy =
@@ -128,6 +130,17 @@ public final class ModelOptions {
         return thinkingMode;
     }
 
+    /**
+     * The default reasoning effort for every session on this model.
+     *
+     * <p>{@link ReasoningEffort#DEFAULT} unless set, which renders what the family's template does
+     * when it is not told.
+     */
+    @Experimental
+    public ReasoningEffort reasoningEffort() {
+        return reasoningEffort;
+    }
+
     /** What device was asked for, or {@code null} for the backend's own pick. */
     @Experimental
     public DeviceSelector device() {
@@ -197,6 +210,7 @@ public final class ModelOptions {
         private BackendId backend;
         private DeviceSelector device;
         private ThinkingMode thinkingMode = ThinkingMode.DEFAULT;
+        private ReasoningEffort reasoningEffort = ReasoningEffort.DEFAULT;
         private int maxConcurrentSessions = 1;
 
         private Builder() {}
@@ -281,6 +295,18 @@ public final class ModelOptions {
          */
         public Builder thinkingMode(ThinkingMode thinkingMode) {
             this.thinkingMode = thinkingMode == null ? ThinkingMode.DEFAULT : thinkingMode;
+            return this;
+        }
+
+        /**
+         * The model's default reasoning effort; sessions may override it.
+         *
+         * @param reasoningEffort the effort, or {@code null} for {@link ReasoningEffort#DEFAULT}
+         */
+        @Experimental
+        public Builder reasoningEffort(ReasoningEffort reasoningEffort) {
+            this.reasoningEffort =
+                    reasoningEffort == null ? ReasoningEffort.DEFAULT : reasoningEffort;
             return this;
         }
 

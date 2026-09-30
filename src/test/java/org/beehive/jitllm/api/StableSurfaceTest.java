@@ -73,7 +73,8 @@ public class StableSurfaceTest {
                             "ModelCapabilities",
                             "ModelConfiguration",
                             "ModelInfo",
-                            "InsufficientDeviceMemoryException"));
+                            "InsufficientDeviceMemoryException",
+                            "ReasoningEffort"));
 
     /** The exact stable set — a type appearing in neither list is an undeclared decision. */
     @Test

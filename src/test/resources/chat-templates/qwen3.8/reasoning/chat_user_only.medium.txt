@@ -1,0 +1,4 @@
+<|im_start|>user
+What is the capital of France?<|im_end|>
+<|im_start|>assistant
+<think>

@@ -77,8 +77,40 @@ FAMILIES = {
                       chat_only=True),
 }
 
+# Qwen3.8's template writes a reasoning-effort instruction into the system turn while thinking is on.
+# ReasoningEffortTemplateTest compares the engine's encoding against these renders, one per scenario
+# and variant: the template's default (reasoning_effort undefined), each explicit effort, and
+# thinking disabled. Written to qwen3.8/reasoning/<scenario>.<variant>.txt.
+REASONING_SCENARIOS = ["chat_user_only", "chat_system_and_user", "chat_multi_turn",
+                       "system_and_tool", "no_system_two_tools"]
+REASONING_VARIANTS = {
+    "default": {},
+    "xhigh": {"reasoning_effort": "xhigh"},
+    "medium": {"reasoning_effort": "medium"},
+    "low": {"reasoning_effort": "low"},
+    "thinking-disabled": {"enable_thinking": False},
+}
+
+
+def render_reasoning(data):
+    template = environment().from_string(open(os.path.join(HERE, "qwen3.8", "template.jinja")).read())
+    out_dir = os.path.join(HERE, "qwen3.8", "reasoning")
+    os.makedirs(out_dir, exist_ok=True)
+    for name in REASONING_SCENARIOS:
+        scenario = data["scenarios"][name]
+        tools = openai_tools(data["tools"], scenario["tools"]) if scenario["tools"] else None
+        for variant, extra in REASONING_VARIANTS.items():
+            prompt = template.render(messages=openai_messages(scenario["messages"]), tools=tools,
+                                     add_generation_prompt=True, bos_token="",
+                                     eos_token="<|im_end|>", **extra)
+            with open(os.path.join(out_dir, name + "." + variant + ".txt"), "w") as f:
+                f.write(prompt)
+            print("qwen3.8", name, variant, len(prompt))
+
+
 if __name__ == "__main__":
     data = json.load(open(os.path.join(HERE, "scenarios.json")))
+    render_reasoning(data)
     for family, cfg in FAMILIES.items():
         template = environment().from_string(open(os.path.join(HERE, family, "template.jinja")).read())
         for name, scenario in data["scenarios"].items():

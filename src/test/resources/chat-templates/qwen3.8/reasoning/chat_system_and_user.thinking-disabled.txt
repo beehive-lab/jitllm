@@ -1,0 +1,9 @@
+<|im_start|>system
+You are a concise assistant.<|im_end|>
+<|im_start|>user
+Name one colour.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
