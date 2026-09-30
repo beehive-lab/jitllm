@@ -16,16 +16,30 @@ package org.beehive.jitllm.api;
  *       ThinkingMode#ENABLED} and {@link ThinkingMode#DISABLED} can switch. When {@code false},
  *       asking for either fails with an {@link IllegalArgumentException}; {@link
  *       ThinkingMode#DEFAULT} is always accepted.
+ *   <li>{@link #reasoningEffortControl()} — the family's template takes a {@link ReasoningEffort}.
+ *       When {@code false}, asking for an explicit one fails with an {@link
+ *       IllegalArgumentException}; {@link ReasoningEffort#DEFAULT} is always accepted.
  * </ul>
  *
  * <p>Immutable and thread-safe.
  *
  * @param toolCalling whether requests carrying tools are supported
  * @param thinkingControl whether an explicit {@link ThinkingMode} is supported
+ * @param reasoningEffortControl whether an explicit {@link ReasoningEffort} is supported
  */
 @Experimental
-public record ModelCapabilities(boolean toolCalling, boolean thinkingControl) {
+public record ModelCapabilities(
+        boolean toolCalling, boolean thinkingControl, boolean reasoningEffortControl) {
 
-    /** Neither tool calling nor thinking control: what a plain text-completion format offers. */
-    public static final ModelCapabilities NONE = new ModelCapabilities(false, false);
+    /**
+     * Neither tool calling nor any reasoning control: what a plain text-completion format offers.
+     */
+    public static final ModelCapabilities NONE = new ModelCapabilities(false, false, false);
+
+    /**
+     * Capabilities of a family without reasoning-effort control, the case of every family but one.
+     */
+    public ModelCapabilities(boolean toolCalling, boolean thinkingControl) {
+        this(toolCalling, thinkingControl, false);
+    }
 }

@@ -26,10 +26,37 @@ final class ConversationEncoder {
 
     private final Model model;
     private final ThinkingMode thinkingMode;
+    private final ReasoningEffort reasoningEffort;
 
     ConversationEncoder(Model model, ThinkingMode thinkingMode) {
+        this(model, thinkingMode, ReasoningEffort.DEFAULT);
+    }
+
+    ConversationEncoder(Model model, ThinkingMode thinkingMode, ReasoningEffort reasoningEffort) {
         this.model = model;
         this.thinkingMode = thinkingMode;
+        this.reasoningEffort = reasoningEffort;
+    }
+
+    /**
+     * The reasoning-effort instructions this conversation's system turn opens with, or an empty
+     * string.
+     *
+     * <p>Only for a family whose template has the control, and only while thinking is not disabled:
+     * the template writes them when {@code enable_thinking} is undefined or true. {@link
+     * ReasoningEffort#DEFAULT} is the template's own default, so a caller who says nothing gets
+     * what llama.cpp and Ollama render.
+     */
+    String reasoningInstructions() {
+        ChatFormat chatFormat = model.chatFormat();
+        if (!chatFormat.supportsReasoningEffort() || thinkingMode == ThinkingMode.DISABLED) {
+            return "";
+        }
+        String effort =
+                reasoningEffort.isExplicit()
+                        ? reasoningEffort.name().toLowerCase(java.util.Locale.ROOT)
+                        : chatFormat.defaultReasoningEffort();
+        return chatFormat.reasoningEffortInstructions(effort);
     }
 
     /**
@@ -59,6 +86,9 @@ final class ConversationEncoder {
         boolean injectInUserMessage = toolsJson != null && chatFormat.injectsToolsInUserMessage();
         boolean hasSystemMessage = messages.stream().anyMatch(m -> m.role() == ChatRole.SYSTEM);
         boolean toolsInjected = false;
+        // Written once, at the front of the first system turn, as the template writes it. Formats
+        // without the control never produce any (reasoningInstructions() is empty for them).
+        String reasoningInstructions = reasoningInstructions();
 
         // A format that wants tools in the system message, and a conversation with no system turn
         // to put them in, gets one. So does a format that puts them in the user message but still
@@ -67,8 +97,19 @@ final class ConversationEncoder {
                 && !hasSystemMessage
                 && model.shouldAddSystemPrompt()
                 && (!injectInUserMessage || !chatFormat.toolSystemMessagePrefix().isEmpty())) {
-            tokens.addAll(chatFormat.encodeToolSystemMessage(null, toolsJson));
+            tokens.addAll(
+                    chatFormat.encodeToolSystemMessage(null, toolsJson, reasoningInstructions));
+            reasoningInstructions = "";
             toolsInjected = !injectInUserMessage;
+        }
+
+        // A conversation with no system turn still gets one for the instructions, which is what
+        // the template does when it has instructions and no system message.
+        if (!reasoningInstructions.isEmpty() && !hasSystemMessage) {
+            tokens.addAll(
+                    chatFormat.encodeMessage(
+                            new ChatFormat.Message(ChatFormat.Role.SYSTEM, reasoningInstructions)));
+            reasoningInstructions = "";
         }
 
         // Whether an assistant turn is open: a format that writes tool results inside the turn
@@ -100,9 +141,16 @@ final class ConversationEncoder {
                     }
                     String content = textOf(message);
                     if (toolsJson != null) {
-                        tokens.addAll(chatFormat.encodeToolSystemMessage(content, toolsJson));
+                        tokens.addAll(
+                                chatFormat.encodeToolSystemMessage(
+                                        content, toolsJson, reasoningInstructions));
+                        reasoningInstructions = "";
                         toolsInjected |= !injectInUserMessage;
                         continue;
+                    }
+                    if (!reasoningInstructions.isEmpty()) {
+                        content = reasoningInstructions + "\n\n" + content.strip();
+                        reasoningInstructions = "";
                     }
                     tokens.addAll(
                             chatFormat.encodeMessage(

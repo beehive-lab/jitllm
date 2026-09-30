@@ -57,6 +57,7 @@ embeddings is a `LocalModel` and nothing else.
 | `executionPolicy` | phase strategy, prefill batch size, sampling residency, attention options |
 | `storageOptions` | KV dtype (FP16 by default; `StorageOptions.fp32()` for FP32) and paging |
 | `thinkingMode` | default for sessions of this model |
+| `reasoningEffort` | default for sessions of this model (experimental) |
 | `maxConcurrentSessions` | how many sessions may be open at once (default 1) |
 
 `maxConcurrentSessions` is a memory decision, like `contextLength`. On the GPU, a model whose
@@ -77,6 +78,7 @@ combination and the FP32 setting. See [kv-cache-support.md](kv-cache-support.md)
 | `contextLength` | per-session budget |
 | `executionPolicy` | *overrides* onto the model's policy, not a replacement |
 | `thinkingMode` | per-session |
+| `reasoningEffort` | per-session (experimental) |
 
 Execution policy is resolved once per generation, never per token.
 
@@ -122,15 +124,27 @@ no reasoning phase is rejected rather than ignored, so a caller who asks for som
 model cannot do is told. `DEFAULT` leaves it to the family. Ask first with
 `model.info().capabilities().thinkingControl()`.
 
+## Reasoning effort
+
+`ReasoningEffort` (experimental) is `DEFAULT`, `XHIGH`, `MEDIUM` or `LOW`, for a family whose
+template takes one: Qwen 3.5 (Qwen3.8). While thinking is on, its template writes an instruction
+at the top of the system turn — `xhigh` unless told otherwise, a brief-thinking one for `low`, none
+for `medium` — and the engine renders it the same way, so `DEFAULT` gives what llama.cpp and Ollama
+give. The instruction changes how long the model reasons several-fold; `MEDIUM` or `LOW` trade
+depth for speed. An explicit effort on a family without the control, or on a session with
+thinking `DISABLED`, is rejected. Ask first with
+`model.info().capabilities().reasoningEffortControl()`.
+
 ## Capabilities
 
 `ModelInfo.capabilities()` (experimental) returns a `ModelCapabilities` record,
-`(toolCalling, thinkingControl)`, read from the loaded model's chat format. It is the same
-predicate the request path enforces, so an integration can refuse tools or thinking control
+`(toolCalling, thinkingControl, reasoningEffortControl)`, read from the loaded model's chat
+format. It is the same predicate the request path enforces, so an integration can refuse tools,
+thinking control or a reasoning effort
 at startup with its own message instead of catching the exception from the first request.
 
 Tool calling is reported by Llama 3.x, Qwen 2.5, Qwen 3, Qwen 3.5, Granite 3.2 / 4.0 and
-Gemma 4; thinking control by Qwen 3 and Qwen 3.5. The per-family table, with what each
+Gemma 4; thinking control by Qwen 3 and Qwen 3.5; reasoning-effort control by Qwen 3.5. The per-family table, with what each
 template says, is in [models-and-backends.md](models-and-backends.md#tool-calling-per-family).
 
 ## Streaming

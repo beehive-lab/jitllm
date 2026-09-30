@@ -1,0 +1,18 @@
+<|im_start|>system
+Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.
+
+You are a concise assistant.<|im_end|>
+<|im_start|>user
+What is 2 + 2?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+2 + 2 = 4.
+
+Anything else?<|im_end|>
+<|im_start|>user
+Summarise that in one word.<|im_end|>
+<|im_start|>assistant
+<think>

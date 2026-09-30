@@ -70,6 +70,7 @@ public final class LocalModels {
                 options.executionPolicy(),
                 options.storageOptions(),
                 options.thinkingMode(),
+                options.reasoningEffort(),
                 options.maxConcurrentSessions());
     }
 

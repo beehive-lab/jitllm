@@ -84,6 +84,49 @@ public interface ChatFormat {
     }
 
     /**
+     * The tool system message with the family's reasoning-effort instructions ({@link
+     * #reasoningEffortInstructions(String)}) at its front, where a template with that control
+     * writes them.
+     *
+     * <p>A format without the control is never given instructions; it gets the two-argument form.
+     *
+     * @param reasoningInstructions the instructions, or empty for none
+     */
+    default List<Integer> encodeToolSystemMessage(
+            String systemContent, String toolsJson, String reasoningInstructions) {
+        if (!reasoningInstructions.isEmpty()) {
+            throw new UnsupportedOperationException(
+                    getClass().getSimpleName() + " has no reasoning-effort control");
+        }
+        return encodeToolSystemMessage(systemContent, toolsJson);
+    }
+
+    /**
+     * Whether this family's template takes a reasoning effort — Qwen3.8's {@code reasoning_effort},
+     * which writes an instruction at the top of the system turn while thinking is on. {@code false}
+     * for every other family.
+     */
+    default boolean supportsReasoningEffort() {
+        return false;
+    }
+
+    /**
+     * The effort the template applies when it is not told one, in its own spelling ({@code
+     * "xhigh"}), or {@code null} for a format without the control.
+     */
+    default String defaultReasoningEffort() {
+        return null;
+    }
+
+    /**
+     * The instructions the template writes at the top of the system turn for an effort ({@code
+     * "xhigh"}, {@code "medium"} or {@code "low"}), or an empty string when it writes none.
+     */
+    default String reasoningEffortInstructions(String effort) {
+        return "";
+    }
+
+    /**
      * Returns {@code true} when tool results are rendered <em>inside</em> the assistant turn that
      * made the calls, which then stays open (Gemma 4). The conversation encoder then continues that
      * turn with {@link #encodeToolCallContinuation(List)} or {@link

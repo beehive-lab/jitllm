@@ -54,30 +54,45 @@ public final class TestVocabularies {
      * the ChatML, tool and think tokens.
      */
     public static Qwen3Tokenizer qwen(List<String> toolMarkers) {
-        List<String> tokens = new ArrayList<>(bytes(Qwen3Tokenizer.BYTE_ENCODER));
-        List<Integer> types = new ArrayList<>();
-        tokens.forEach(t -> types.add(1));
-        for (String special : List.of("<|endoftext|>", "<|im_start|>", "<|im_end|>")) {
-            tokens.add(special);
-            types.add(3);
-        }
-        for (String special : toolMarkers) {
-            tokens.add(special);
-            types.add(4);
-        }
-        tokens.add("<think>");
-        types.add(4);
-        tokens.add("</think>");
-        types.add(4);
-        Vocabulary vocabulary = new Vocabulary(tokens.toArray(String[]::new), null);
         return new Qwen3Tokenizer(
                 Map.of(
                         "tokenizer.ggml.merges",
                         new String[0],
                         "tokenizer.ggml.token_type",
-                        types.stream().mapToInt(Integer::intValue).toArray()),
-                vocabulary,
+                        qwenTokenTypes(toolMarkers)),
+                new Vocabulary(qwenTokens(toolMarkers), null),
                 false);
+    }
+
+    private static String[] qwenTokens(List<String> toolMarkers) {
+        List<String> tokens = new ArrayList<>(bytes(Qwen3Tokenizer.BYTE_ENCODER));
+        tokens.addAll(List.of("<|endoftext|>", "<|im_start|>", "<|im_end|>"));
+        tokens.addAll(toolMarkers);
+        tokens.addAll(List.of("<think>", "</think>"));
+        return tokens.toArray(String[]::new);
+    }
+
+    /** Ordinary for the bytes, 3 for the ChatML block, 4 for the tool and think markers. */
+    private static int[] qwenTokenTypes(List<String> toolMarkers) {
+        List<Integer> types = new ArrayList<>();
+        bytes(Qwen3Tokenizer.BYTE_ENCODER).forEach(t -> types.add(1));
+        List.of("<|endoftext|>", "<|im_start|>", "<|im_end|>").forEach(t -> types.add(3));
+        toolMarkers.forEach(t -> types.add(4));
+        types.add(4);
+        types.add(4);
+        return types.stream().mapToInt(Integer::intValue).toArray();
+    }
+
+    /** As {@link #qwen(List)}, under the {@code qwen35} pre-tokenizer: Qwen3.8's tokenizer. */
+    public static Qwen35Tokenizer qwen35(List<String> toolMarkers) {
+        Qwen3Tokenizer qwen = qwen(toolMarkers);
+        return new Qwen35Tokenizer(
+                Map.of(
+                        "tokenizer.ggml.merges",
+                        new String[0],
+                        "tokenizer.ggml.token_type",
+                        qwenTokenTypes(toolMarkers)),
+                new Vocabulary(qwenTokens(toolMarkers), null));
     }
 
     /** Llama's special tokens start at id 128000, so the bytes are padded up to it. */

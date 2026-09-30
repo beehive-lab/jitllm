@@ -92,14 +92,15 @@ final class DelegatingSession implements GenerationSession {
             int contextLength,
             KvLease lease,
             ExecutionPolicy executionPolicy,
-            ThinkingMode thinkingMode) {
+            ThinkingMode thinkingMode,
+            ReasoningEffort reasoningEffort) {
         this.thinkingMode = thinkingMode;
         this.owner = owner;
         this.model = model;
         this.gpu = gpu;
         this.contextLength = contextLength;
         this.lease = lease;
-        this.encoder = new ConversationEncoder(model, thinkingMode);
+        this.encoder = new ConversationEncoder(model, thinkingMode, reasoningEffort);
         this.executionPolicy = executionPolicy;
         // The runtime decides what this session owns: its own state and plan, or a borrowed
         // workspace and a shared program.

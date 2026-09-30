@@ -19,10 +19,16 @@ public final class SessionOptions {
      */
     private final ThinkingMode thinkingMode;
 
+    /**
+     * This session's reasoning effort, or {@code null} to inherit the model's; see thinkingMode.
+     */
+    private final ReasoningEffort reasoningEffort;
+
     private SessionOptions(Builder builder) {
         this.contextLength = builder.contextLength;
         this.executionPolicy = builder.executionPolicy;
         this.thinkingMode = builder.thinkingMode;
+        this.reasoningEffort = builder.reasoningEffort;
     }
 
     public static Builder builder() {
@@ -61,6 +67,17 @@ public final class SessionOptions {
         return thinkingMode != null ? thinkingMode : modelDefault;
     }
 
+    /** This session's reasoning effort, or {@code null} to inherit the model's default. */
+    @Experimental
+    public ReasoningEffort reasoningEffort() {
+        return reasoningEffort;
+    }
+
+    /** The effort this session runs with, given the model's default; resolved once, at open. */
+    ReasoningEffort resolveReasoningEffort(ReasoningEffort modelDefault) {
+        return reasoningEffort != null ? reasoningEffort : modelDefault;
+    }
+
     public int contextLength() {
         return contextLength;
     }
@@ -70,6 +87,7 @@ public final class SessionOptions {
         private int contextLength;
         private ExecutionPolicy.Overrides executionPolicy = ExecutionPolicy.Overrides.none();
         private ThinkingMode thinkingMode;
+        private ReasoningEffort reasoningEffort;
 
         private Builder() {}
 
@@ -110,6 +128,17 @@ public final class SessionOptions {
          */
         public Builder thinkingMode(ThinkingMode thinkingMode) {
             this.thinkingMode = thinkingMode;
+            return this;
+        }
+
+        /**
+         * Override the model's reasoning effort for this session.
+         *
+         * @param reasoningEffort the effort, or {@code null} to inherit the model's default
+         */
+        @Experimental
+        public Builder reasoningEffort(ReasoningEffort reasoningEffort) {
+            this.reasoningEffort = reasoningEffort;
             return this;
         }
 
