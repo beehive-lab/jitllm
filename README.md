@@ -55,7 +55,7 @@ sdk install tornadovm
 tornado --devices        # confirm your GPU is listed
 
 # 2. Run a model on the GPU — no build required, via JBang
-jbang gpullama3@beehive-lab -m beehive-llama-3.2-1b-instruct-fp16.gguf -p "Explain GPU acceleration in one sentence."
+jbang jitllm@beehive-lab -m beehive-llama-3.2-1b-instruct-fp16.gguf -p "Explain GPU acceleration in one sentence."
 ```
 
 Grab a ready-to-run model from the [Hugging Face collections](#-model-collections) below.
@@ -248,8 +248,8 @@ jbang jitllm@beehive-lab -m model.gguf -p "Tell me a joke"
 jbang app install jitllm@beehive-lab && jitllm -m model.gguf -p "Hello!"
 ```
 
-> The `jitllm@beehive-lab` alias is the pre-rename catalog name and still resolves.
-> See [`POST_MOVE_ACTIONS.md`](POST_MOVE_ACTIONS.md) for the migration status.
+> Runs [`JitllmCli.java`](JitllmCli.java) on the GPU through the TornadoVM SDK in
+> `TORNADOVM_HOME` (JDK 22+). The pre-rename `gpullama3@beehive-lab` alias runs the same script.
 
 -----------
 ## Tested Models

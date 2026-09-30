@@ -45,6 +45,13 @@ public class GenerationRequestTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> GenerationRequest.builder().prompt("x").topP(1.5f).build());
+        // NaN fails every comparison, so a range check written the obvious way lets it through.
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> GenerationRequest.builder().prompt("x").temperature(Float.NaN).build());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> GenerationRequest.builder().prompt("x").topP(Float.NaN).build());
     }
 
     @Test

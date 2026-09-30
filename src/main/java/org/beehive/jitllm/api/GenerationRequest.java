@@ -293,11 +293,12 @@ public final class GenerationRequest {
                 throw new IllegalArgumentException(
                         "maxNewTokens must be positive: " + maxNewTokens);
             }
-            if (temperature < 0) {
+            // Written as negations so that NaN, which fails every comparison, is rejected too.
+            if (!(temperature >= 0)) {
                 throw new IllegalArgumentException(
-                        "temperature must not be negative: " + temperature);
+                        "temperature must be a number, 0 or greater: " + temperature);
             }
-            if (topP <= 0 || topP > 1) {
+            if (!(topP > 0 && topP <= 1)) {
                 throw new IllegalArgumentException("topP must be in (0, 1]: " + topP);
             }
             return new GenerationRequest(this);
