@@ -27,8 +27,19 @@ public class GraniteTokenizer implements Tokenizer {
                     .collect(Collectors.toMap(Map.Entry::getValue, Map.Entry::getKey));
 
     // Pretokenizer patterns
+
+    /**
+     * The second stage of {@code refact} (Granite 3.x): GPT-2's split, run on what is left once
+     * every digit has been split off on its own ({@link #DIGIT}). Two stages, as llama.cpp's {@code
+     * LLAMA_VOCAB_PRE_TYPE_REFACT} and the Hugging Face pre-tokenizer ({@code Digits}, then {@code
+     * ByteLevel}) define it; the single Llama 3 style regex used before grouped newlines and
+     * indentation differently.
+     */
     private static final String REFACT_PATTERN =
-            "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+            "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)|\\s+";
+
+    /** The first stage of {@code refact}: each digit is a chunk of its own. */
+    private static final Pattern DIGIT = Pattern.compile("\\p{N}");
 
     private static final String DBRX_PATTERN =
             "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
@@ -206,12 +217,7 @@ public class GraniteTokenizer implements Tokenizer {
 
     //    @Override
     public int[] encode(String text) {
-        StringBuilder sb = new StringBuilder();
-        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
-        for (byte b : bytes) {
-            sb.appendCodePoint(BYTE_ENCODER.get(Byte.toUnsignedInt(b)));
-        }
-        return encodeImpl(sb.toString());
+        return encodeImpl(text);
     }
 
     @Override
@@ -249,12 +255,48 @@ public class GraniteTokenizer implements Tokenizer {
     }
 
     public List<Integer> encodeOrdinary(String text) {
-        List<String> textChunks = findAll(compiledPattern, text);
+        List<String> textChunks =
+                "dbrx".equals(pretokenizerType)
+                        ? findAll(compiledPattern, text)
+                        : splitRefact(text);
         List<Integer> ids = new ArrayList<>();
         for (String chunk : textChunks) {
-            ids.addAll(encodeChunk(chunk));
+            ids.addAll(encodeChunk(byteLevel(chunk)));
         }
         return ids;
+    }
+
+    /**
+     * The byte-level alphabet form of raw text: each UTF-8 byte as the code point {@link
+     * #BYTE_ENCODER} maps it to, so a space becomes {@code Ġ} and a newline {@code Ċ}. BPE merges
+     * operate on this form. It is applied per pre-tokenizer chunk, after the split, never before
+     * it: the split regex is written for the raw text, and in the byte-level form a space is a
+     * letter ({@code Ġ} is {@code \p{L}}), so none of its whitespace rules would fire.
+     */
+    private static String byteLevel(String raw) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : raw.getBytes(StandardCharsets.UTF_8)) {
+            sb.appendCodePoint(BYTE_ENCODER.get(Byte.toUnsignedInt(b)));
+        }
+        return sb.toString();
+    }
+
+    /** The {@code refact} split: each digit alone, then {@link #REFACT_PATTERN} between them. */
+    private List<String> splitRefact(String text) {
+        List<String> chunks = new ArrayList<>();
+        Matcher digit = DIGIT.matcher(text);
+        int start = 0;
+        while (digit.find()) {
+            if (digit.start() > start) {
+                chunks.addAll(findAll(compiledPattern, text.substring(start, digit.start())));
+            }
+            chunks.add(digit.group());
+            start = digit.end();
+        }
+        if (start < text.length()) {
+            chunks.addAll(findAll(compiledPattern, text.substring(start)));
+        }
+        return chunks;
     }
 
     // === Helpers ===

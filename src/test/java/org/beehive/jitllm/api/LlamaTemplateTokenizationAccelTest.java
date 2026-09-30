@@ -26,13 +26,12 @@ import org.junit.Test;
  * from the rendered {@code <scenario>.txt}. Llama 3.1 and 3.2 share one vocabulary, so the 3.2 1B
  * fixture serves both.
  *
- * <p>The comparison is by segment: the special tokens must be the same, in the same places; the
- * first token after every {@code <|end_header_id|>} must be llama.cpp's, and 271; and the ordinary
- * tokens between two special tokens must spell the same text. It is not id for id inside message
- * text, because this engine's Llama tokenizer maps the bytes to their BPE characters before the
- * pre-tokenizer's regex runs, so a space (then {@code Ġ}, a letter) is split from the punctuation
- * after it where llama.cpp keeps them together ({@code " +"} is 220, 10 here and 489 there). That
- * is a tokenizer difference of its own, not about the chat format.
+ * <p>The comparison is by segment first, for a readable failure: the special tokens must be the
+ * same, in the same places; the first token after every {@code <|end_header_id|>} must be
+ * llama.cpp's, and 271; and the ordinary tokens between two special tokens must spell the same
+ * text. Then the whole prompt must be llama.cpp's, id for id, message text included. (It could not
+ * be while the tokenizer mapped bytes to their BPE characters before the pre-tokenizer ran; see
+ * {@code ByteLevelPreTokenizationAccelTest}.)
  */
 public class LlamaTemplateTokenizationAccelTest {
 
@@ -84,6 +83,7 @@ public class LlamaTemplateTokenizationAccelTest {
                             where + ": \"\\n\\n\" is one token", DOUBLE_NEWLINE, (int) a.get(0));
                 }
             }
+            assertEquals(where + ": ids", expected(family, name), encoded);
         }
     }
 
