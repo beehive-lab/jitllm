@@ -127,7 +127,7 @@ Execution modes (batched prefill is default-off, deliberately):
 | --- | --- |
 | `--with-prefill-decode` | sequential prefill, then single-token decode |
 | `--batch-prefill-size N` | with the above, batch N prompt tokens per invocation |
-| `--cuda-graphs` | PTX/CUDA only: capture and replay to cut launch overhead |
+| `--cuda-graphs` | CUDA only: capture and replay to cut launch overhead |
 
 Diagnostics — for a specific investigation, not for normal runs:
 
