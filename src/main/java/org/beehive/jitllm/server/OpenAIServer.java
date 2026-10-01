@@ -630,6 +630,7 @@ public final class OpenAIServer implements AutoCloseable {
         float topP = (float) Json.num(body, "top_p", 0.95);
         long seed = (long) Json.num(body, "seed", 1234);
         boolean stream = Json.bool(body, "stream", false);
+        boolean includeUsage = stream && includeUsage(body);
 
         String requestedModel = Json.str(body, "model", null);
         int promptChars = promptCharacters(messages);
@@ -655,7 +656,7 @@ public final class OpenAIServer implements AutoCloseable {
         long startNanos = System.nanoTime();
         try {
             if (stream) {
-                streamResponse(ex, req, id, created, chat);
+                streamResponse(ex, req, id, created, chat, includeUsage);
             } else {
                 fullResponse(ex, req, id, created, chat);
             }
@@ -710,19 +711,27 @@ public final class OpenAIServer implements AutoCloseable {
         resp.put("created", created);
         resp.put("model", servedModel);
         resp.put("choices", List.of(choice));
-        resp.put(
-                "usage",
-                Map.of(
-                        "prompt_tokens", r.promptTokens(),
-                        "completion_tokens", r.completionTokens(),
-                        "total_tokens", r.promptTokens() + r.completionTokens()));
+        resp.put("usage", usage(r.promptTokens(), r.completionTokens()));
         sendJson(ex, 200, resp);
+    }
+
+    static Map<String, Object> usage(int promptTokens, int completionTokens) {
+        Map<String, Object> u = new LinkedHashMap<>();
+        u.put("prompt_tokens", promptTokens);
+        u.put("completion_tokens", completionTokens);
+        u.put("total_tokens", promptTokens + completionTokens);
+        return u;
     }
 
     // ── Streaming (Server-Sent Events) ────────────────────────────────────────
 
     private void streamResponse(
-            HttpExchange ex, InferenceService.Request req, String id, long created, boolean chat)
+            HttpExchange ex,
+            InferenceService.Request req,
+            String id,
+            long created,
+            boolean chat,
+            boolean includeUsage)
             throws IOException {
         ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
         ex.getResponseHeaders().set("Cache-Control", "no-cache");
@@ -756,6 +765,18 @@ public final class OpenAIServer implements AutoCloseable {
                             });
             String finish = r.stopped() ? "stop" : "length";
             writeSse(os, chunk(id, object, created, chat ? Map.of() : textField(""), finish));
+            if (includeUsage) {
+                writeSse(
+                        os,
+                        Json.write(
+                                usageChunk(
+                                        id,
+                                        object,
+                                        created,
+                                        servedModel,
+                                        r.promptTokens(),
+                                        r.completionTokens())));
+            }
             os.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
             os.flush();
         } catch (Exception e) {
@@ -763,6 +784,38 @@ public final class OpenAIServer implements AutoCloseable {
         } finally {
             os.close();
         }
+    }
+
+    /**
+     * Whether the client asked for token usage on a streamed reply ({@code
+     * stream_options.include_usage}). Usage is optional, so a malformed {@code stream_options}
+     * means "no", not a 400.
+     */
+    @SuppressWarnings("unchecked")
+    static boolean includeUsage(Map<String, Object> body) {
+        return body.get("stream_options") instanceof Map<?, ?> options
+                && Json.bool((Map<String, Object>) options, "include_usage", false);
+    }
+
+    /**
+     * The OpenAI usage chunk: sent after the finish chunk and before {@code [DONE]}, with empty
+     * {@code choices}, so a client that does not read usage ignores it.
+     */
+    static Map<String, Object> usageChunk(
+            String id,
+            String object,
+            long created,
+            String model,
+            int promptTokens,
+            int completionTokens) {
+        Map<String, Object> obj = new LinkedHashMap<>();
+        obj.put("id", id);
+        obj.put("object", object);
+        obj.put("created", created);
+        obj.put("model", model);
+        obj.put("choices", List.of());
+        obj.put("usage", usage(promptTokens, completionTokens));
+        return obj;
     }
 
     private Map<String, Object> roleDelta() {
