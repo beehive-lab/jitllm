@@ -9,10 +9,9 @@ import java.util.Map;
 import org.junit.Test;
 
 /**
- * Token usage on a streamed reply. OpenAI clients (langchain4j among them) ask for it with
- * {@code stream_options.include_usage} and read it from one extra chunk, sent just before
- * {@code [DONE]}, whose {@code choices} is empty. Without it a streaming client has no in/out
- * token counts at all.
+ * Token usage on a streamed reply. OpenAI clients (langchain4j among them) ask for it with {@code
+ * stream_options.include_usage} and read it from one extra chunk, sent just before {@code [DONE]},
+ * whose {@code choices} is empty. Without it a streaming client has no in/out token counts at all.
  */
 public class OpenAIServerStreamUsageTest {
 
