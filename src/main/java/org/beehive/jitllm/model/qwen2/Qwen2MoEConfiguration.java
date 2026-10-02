@@ -46,4 +46,10 @@ public record Qwen2MoEConfiguration(
     public int contextLengthModel() {
         return contextLengthModel;
     }
+
+    /** Batch decode consumes the weights uploaded by batch prefill. */
+    @Override
+    public int weightBindingFamilies(int layerGraphFamilies) {
+        return 1;
+    }
 }
