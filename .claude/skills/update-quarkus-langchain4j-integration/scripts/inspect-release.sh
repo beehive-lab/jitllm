@@ -20,8 +20,10 @@ artifact=jitllm
 inspection_dir=$(mktemp -d)
 trap 'rm -rf "$inspection_dir"' EXIT
 
-for jdk in 21 25; do
-    artifact_version="${version}-jdk${jdk}"
+for line in jdk21:65 jdk22plus:66; do
+    jdk=${line%%:*}
+    expected_major=${line##*:}
+    artifact_version="${version}-${jdk}"
     artifact_url="${repository_url}/${group_path}/${artifact}/${artifact_version}"
     jar_path="${inspection_dir}/${artifact}-${artifact_version}.jar"
     pom_path="${inspection_dir}/${artifact}-${artifact_version}.pom"
@@ -35,7 +37,6 @@ for jdk in 21 25; do
 
     major_version=$(javap -verbose -classpath "$jar_path" \
         org.beehive.jitllm.model.Model | awk '/major version:/ { print $3; exit }')
-    expected_major=$((44 + jdk))
     if [[ $major_version != "$expected_major" ]]; then
         echo "Unexpected class-file version for ${artifact_version}: ${major_version}; expected ${expected_major}" >&2
         exit 1

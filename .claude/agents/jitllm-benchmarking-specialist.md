@@ -31,7 +31,7 @@ Unless the user narrows the scope, benchmark incrementally across these two axes
 (full cross product, one variable group at a time, everything else held fixed):
 
 - **Execution path**: standard, then `--with-prefill-decode` (batched-prefill-decode)
-- **CUDA graphs**: off, then `--cuda-graphs` on (PTX/CUDA backend only — omit this axis entirely on non-PTX backends)
+- **CUDA graphs**: off, then `--cuda-graphs` on (CUDA backend only — omit this axis entirely on non-PTX backends)
 
 Report each cell of the sweep separately; don't collapse them into a single averaged number.
 

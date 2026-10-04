@@ -8,11 +8,11 @@ import org.junit.Test;
 /**
  * {@link TransformerBatchPrefillKernels#fp16BitsOf} against the JDK's own conversion.
  *
- * <p>The kernel helper exists because the PTX backend cannot lower {@code new
- * HalfFloat(v).getHalfFloatValue()} inside the tensor-core kernels. It replaces a conversion the
- * platform used to perform, so it has to round identically: round-to-nearest-even, subnormals
- * included. A helper that merely truncated would bias every Q8_0 weight in the same direction and
- * cost the model its CPU parity without failing to compile.
+ * <p>The kernel helper exists because TornadoVM could not lower {@code new
+ * HalfFloat(v).getHalfFloatValue()} inside the tensor-core kernels on NVIDIA GPUs. It replaces a
+ * conversion the platform used to perform, so it has to round identically: round-to-nearest-even,
+ * subnormals included. A helper that merely truncated would bias every Q8_0 weight in the same
+ * direction and cost the model its CPU parity without failing to compile.
  */
 public class Fp16BitsTest {
 

@@ -47,14 +47,14 @@ public class BatchedEngineAccelTest {
         }
         if (!TensorCoreSupport.isTensorCoreCapableBackend()) {
             // Metal parity task 9: TornadoVM lowers the MMA intrinsics (gemmMMAQKV and friends)
-            // only on the PTX/CUDA backend — an already-decided, documented capability gap
+            // only on the CUDA backend — an already-decided, documented capability gap
             // (, "Already decided, and not open":
             // "TENSOR_CORE_MMA is CUDA-only. not a Metal gap"), not something to characterise
             // fresh here. Without this gate the request bails out deep inside TornadoVM's sketcher
             // with an opaque TornadoInternalError instead of a named, actionable skip.
             System.out.println(
                     "[SKIP] device lacks DeviceCapability.TENSOR_CORE_MMA — TornadoVM"
-                            + " only lowers the MMA batch-prefill kernels on the PTX/CUDA backend");
+                            + " only lowers the MMA batch-prefill kernels on the CUDA backend");
             assumeTrue("device lacks DeviceCapability.TENSOR_CORE_MMA", false);
         }
 

@@ -6,7 +6,7 @@ This is the verification source of truth. Run all five stages for every claimed 
 
 ```bash
 export QUARKUS_LANGCHAIN4J_DIR=/path/to/quarkus-langchain4j
-export DEMO_DIR=/path/to/Quarkus-Langchain4j-GPULlama3-Demos
+export DEMO_DIR=/path/to/gpullama3-quarkus-langchain4j-demo   # a copy switched to quarkus-langchain4j-jitllm
 export MODEL=/exact/path/to/model.gguf
 ```
 
@@ -16,7 +16,7 @@ Use an exact tool-capable model path for tool demo runs when needed. Never commi
 
 ```bash
 sdk use java 25.0.2-open
-sdk use tornadovm 4.0.0-jdk25-ptx
+sdk use tornadovm 7.0.1-jdk22plus-cuda   # or -opencl / -full; JDK 21: 7.0.1-jdk21-<backend>
 
 java -version
 test -n "$TORNADOVM_HOME"
@@ -38,10 +38,10 @@ selected SDK; do not put backend-specific paths in project configuration.
 ```bash
 cd "$QUARKUS_LANGCHAIN4J_DIR"
 ./mvnw install \
-  -pl model-providers/gpu-llama3/runtime,model-providers/gpu-llama3/deployment \
+  -pl model-providers/jitllm/runtime,model-providers/jitllm/deployment \
   -am -DskipTests
 
-./mvnw -pl model-providers/gpu-llama3/runtime dependency:tree \
+./mvnw -pl model-providers/jitllm/runtime dependency:tree \
   -Dincludes=io.github.beehive-lab:jitllm
 ```
 
@@ -66,10 +66,12 @@ cd "$DEMO_DIR"
 mvn clean install
 ```
 
-Confirm the demos resolve the local `quarkus-langchain4j-gpu-llama3` and matching `gpu-llama3`
+Confirm the demos resolve the local `quarkus-langchain4j-jitllm` and matching `jitllm`
 artifacts installed in step 2, not stale versions from an earlier local repository cache. The
-demos repository pins both `gpu-llama3.version` and `quarkus.version` in its root POM, and both
-drift: a stale `gpu-llama3` pin surfaces as `ClassNotFoundException` on a facade type that the
+demos repository still depends on the extension's old name, `quarkus-langchain4j-gpu-llama3`, and
+configures `quarkus.langchain4j.gpu-llama3.*`; validate on a copy switched to
+`quarkus-langchain4j-jitllm` and `quarkus.langchain4j.jitllm.*`. It pins both `jitllm.version`
+and `quarkus.version` in its root POM, and both drift: a stale `jitllm` pin surfaces as `ClassNotFoundException` on a facade type that the
 extension compiled against, and a Quarkus version that disagrees with the extension's surfaces
 as `TypeNotPresentException: io/quarkus/arc/impl/TypeVariableImpl` during bean generation.
 Neither is an extension defect; check the pins before investigating anything else.
@@ -105,7 +107,7 @@ expected end — a completed response, not just server boot.
 The extension calls `System.setProperty("tornado.device.memory", ...)` from its own
 `device-memory` config during model initialization, so a bare `-Dtornado.device.memory` on the
 command line is overwritten. Raise
-`-Dquarkus.langchain4j.gpu-llama3.chat-model.device-memory` instead.
+`-Dquarkus.langchain4j.jitllm.chat-model.device-memory` instead.
 
 ## Record
 
