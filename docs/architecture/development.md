@@ -26,8 +26,10 @@ The `-jdk22plus` artifact contains **no preview class file**, so it is not pinne
 version. The JDK 21 artifact necessarily does, because the foreign-memory API it uses is
 preview there.
 
-The TornadoVM version floor is in `pom.xml` as `tornadovm.base.version`, and CI builds that
-exact tag from source. Raising it is a maintainer decision, not a CI tweak.
+jitllm compiles against the TornadoVM SDK at `TORNADOVM_HOME` (7.0.0 or newer, on the JDK line
+of the build JDK); `pom.xml` names no development version. CI builds TornadoVM `develop` at the
+commit each run resolves. Releases (`-P release`) depend on `tornadovm.release.version` from
+Maven Central; raising it is a maintainer decision, not a CI tweak.
 
 ## Building TornadoVM
 

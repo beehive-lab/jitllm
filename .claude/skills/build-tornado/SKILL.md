@@ -1,6 +1,6 @@
 ---
 name: build-tornado
-description: Build a TornadoVM SDK for jitllm. Use when TORNADOVM_HOME is unset, points at the wrong JDK line or backend, or the pinned version has moved.
+description: Build a TornadoVM SDK for jitllm. Use when TORNADOVM_HOME is unset, points at the wrong JDK line or backend, or at a TornadoVM older than 7.0.0.
 license: Apache-2.0
 metadata:
   author: TornadoVM Team
@@ -8,8 +8,10 @@ metadata:
 
 # Build TornadoVM
 
-One SDK per (JDK line, backend). jitllm pins the TornadoVM version in `pom.xml`
-as `tornadovm.base.version`; build that tag, not `develop`.
+One SDK per (JDK line, backend). jitllm compiles against whatever SDK `TORNADOVM_HOME`
+points at, from TornadoVM 7.0.0 on. A released SDK (`sdk install tornadovm`) needs no build;
+build one when you need `develop` or a backend no release ships. `pom.xml` names one release,
+`tornadovm.release.version`, which is what `-P release` depends on.
 
 ## When to use
 
@@ -25,14 +27,14 @@ as `tornadovm.base.version`; build that tag, not `develop`.
 Ask, or read, three things. Do not guess any of them.
 
 ```bash
-# The pinned version, from the consuming project:
-sed -n 's:.*<tornadovm.base.version>\(.*\)</tornadovm.base.version>.*:\1:p' /path/to/jitllm/pom.xml
+# The release jitllm releases depend on (the default tag to build):
+sed -n 's:.*<tornadovm.release.version>\(.*\)</tornadovm.release.version>.*:\1:p' /path/to/jitllm/pom.xml
 ```
 
 - **Backend**: `opencl`, `cuda` or `metal`. Comma-separated combinations are accepted but
   make the runtime pick between them, so prefer one.
 - **JDK line**: 21 or 25. It must be the same JDK you build and run jitllm with.
-- **Version**: the pinned tag above.
+- **Version**: the release above, or `develop` for APIs no release has yet (7.0.0 at least).
 
 ## 2. Check the environment
 
@@ -42,7 +44,7 @@ nvidia-smi                    # CUDA/OpenCL on NVIDIA
 system_profiler SPDisplaysDataType | head    # macOS/Metal
 ```
 
-## 3. Get a clean source tree at the pinned tag
+## 3. Get a clean source tree at the chosen tag
 
 Use a directory per tuple, so one build does not overwrite another's `dist/`.
 
