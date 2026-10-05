@@ -154,7 +154,8 @@ class ReleaseVersionSetter(unittest.TestCase):
 
 
 class PomCoordinateSelection(unittest.TestCase):
-    """The POM's own structure: JDK profiles select TornadoVM's suffix, release drops -dev."""
+    """The POM's own structure: development builds compile against TORNADOVM_HOME's SDK, the
+    JDK profiles select the artifact and TornadoVM lines, release depends on a published release."""
 
     def setUp(self):
         self.tree = ET.parse(REPO_ROOT / "pom.xml")
@@ -170,29 +171,51 @@ class PomCoordinateSelection(unittest.TestCase):
         e = parent.find(f"m:properties/m:{name}", self.ns)
         return None if e is None else (e.text or "")
 
-    def test_development_coordinates_per_jdk(self):
-        self.assertEqual(self._prop(self._profile("jdk21"), "jdk.version.suffix"), "-jdk21")
-        self.assertEqual(self._prop(self._profile("jdk21"), "tornadovm.jdk.suffix"), "-jdk21")
-        self.assertEqual(self._prop(self._profile("jdk22plus"), "jdk.version.suffix"), "-jdk22plus")
-        self.assertEqual(self._prop(self._profile("jdk22plus"), "tornadovm.jdk.suffix"), "-jdk22plus")
-        for pid in ("jdk21", "jdk22plus"):
-            self.assertEqual(
-                self._prop(self._profile(pid), "tornadovm.version"),
-                "${tornadovm.base.version}${tornadovm.jdk.suffix}${tornadovm.dev.qualifier}",
-            )
-        root = self.tree.getroot()
-        self.assertEqual(self._prop(root, "tornadovm.dev.qualifier"), "-dev")
-        # Either unset or a published release (the bump workflow sets it): never a -dev version.
-        self.assertRegex(self._prop(root, "tornadovm.release.version"), r"^(\d+\.\d+\.\d+)?$")
+    def _tornado_deps(self, parent):
+        return [d for d in parent.findall("m:dependencies/m:dependency", self.ns)
+                if d.find("m:artifactId", self.ns).text.startswith("tornado-")]
 
-    def test_release_profile_substitutes_the_release_and_drops_dev(self):
+    def test_development_build_uses_the_sdk_and_no_version(self):
+        root = self.tree.getroot()
+        self.assertEqual(self._tornado_deps(root), [], "development builds take TornadoVM from the SDK, not from Maven")
+        self.assertEqual(self._prop(root, "tornadovm.sdk.modules"), "${env.TORNADOVM_HOME}/share/java/tornado")
+        for gone in ("tornadovm.base.version", "tornadovm.dev.qualifier"):
+            self.assertIsNone(self._prop(root, gone), gone)
+        text = (REPO_ROOT / "pom.xml").read_text()
+        self.assertIn("<arg>--module-path=${tornadovm.module.path}</arg>", text)
+        self.assertIn("require-tornadovm-sdk", text)
+
+    def test_jdk_profiles_select_the_lines(self):
+        for pid, suffix, floor in (("jdk21", "-jdk21", "21"), ("jdk22plus", "-jdk22plus", "22")):
+            prof = self._profile(pid)
+            self.assertEqual(self._prop(prof, "jdk.version.suffix"), suffix)
+            self.assertEqual(self._prop(prof, "tornadovm.jdk.suffix"), suffix)
+            self.assertEqual(self._prop(prof, "tornadovm.sdk.jdk.floor"), floor)
+        # Either unset or a published release (the bump workflow sets it): never a -dev version.
+        self.assertRegex(self._prop(self.tree.getroot(), "tornadovm.release.version"), r"^(\d+\.\d+\.\d+)?$")
+
+    def test_release_profile_depends_on_the_published_release(self):
         rel = self._profile("release")
-        self.assertEqual(self._prop(rel, "tornadovm.base.version"), "${tornadovm.release.version}")
-        self.assertEqual(self._prop(rel, "tornadovm.dev.qualifier"), "")
+        self.assertEqual(self._prop(self.tree.getroot(), "tornadovm.version"), "${tornadovm.release.version}${tornadovm.jdk.suffix}")
+        self.assertEqual(self._prop(rel, "tornadovm.add.modules"), "")
+        self.assertEqual(self._prop(rel, "tornadovm.sdk.check.skip"), "true")
+        deps = self._tornado_deps(rel)
+        self.assertEqual(sorted(d.find("m:artifactId", self.ns).text for d in deps),
+                         ["tornado-api", "tornado-cublas", "tornado-cudnn", "tornado-runtime"])
+        for d in deps:
+            self.assertEqual(d.find("m:version", self.ns).text, "${tornadovm.version}")
+            self.assertEqual(d.find("m:scope", self.ns).text, "provided")
         text = ET.tostring(rel, encoding="unicode")
         self.assertIn("enforce-release-tornadovm", text)
         self.assertIn("tornadovm.release.version", text)
         self.assertIn("-jdk(21|22plus)", text)
+
+    def test_ide_profile_points_at_the_sdk_jars(self):
+        ide = self._profile("ide")
+        self.assertEqual(self._prop(ide, "tornadovm.add.modules"), "")
+        for d in self._tornado_deps(ide):
+            self.assertEqual(d.find("m:scope", self.ns).text, "system")
+            self.assertTrue(d.find("m:systemPath", self.ns).text.startswith("${tornadovm.sdk.modules}/"))
 
     def test_no_snapshot_or_range_coordinates(self):
         text = (REPO_ROOT / "pom.xml").read_text()
@@ -260,12 +283,13 @@ class WorkflowRevisionPropagation(unittest.TestCase):
         on = wf[True] if True in wf else wf["on"]
         self.assertIn("tornadovm_ref", on["workflow_dispatch"]["inputs"])
 
-    def test_development_build_does_not_require_pom_agreement(self):
-        text = (REPO_ROOT / ".github" / "workflows" / "build-and-run.yml").read_text()
-        self.assertNotIn("update tornadovm.base.version", text)
-        self.assertIn('-Dtornadovm.version="$TORNADOVM_VERSION"', text)
-        self.assertIn('-Dmaven.repo.local="$MAVEN_REPO_LOCAL"', text)
-        self.assertIn("tornado-runtime", text)
+    def test_development_builds_take_tornadovm_from_the_sdk(self):
+        # setup-tornadovm exports TORNADOVM_HOME, and that is all a jitllm build needs.
+        for name in ("build-and-run.yml", "standalone-inference.yml"):
+            text = (REPO_ROOT / ".github" / "workflows" / name).read_text()
+            self.assertNotIn("update tornadovm.base.version", text, name)
+            self.assertNotIn("-Dtornadovm.version", text, name)
+            self.assertNotIn("-Dmaven.repo.local", text, name)
 
     def test_release_workflows_verify_against_an_empty_repository(self):
         for name in ("prepare-release.yml", "bump-tornadovm-version.yml", "deploy-maven-central.yml"):
@@ -297,8 +321,8 @@ def fake_install(root, backend, jdk, sha, recipe, version, java_major=None, jars
     return d
 
 
-class ArtifactConsistency(unittest.TestCase):
-    """build refuses an installation whose repository does not hold the SDK's own artifacts."""
+class BuildUsesTheInstallationsSdk(unittest.TestCase):
+    """build runs ./mvnw with TORNADOVM_HOME set to the installation's SDK, on its JDK line."""
 
     SHA = "a" * 40
 
@@ -306,45 +330,17 @@ class ArtifactConsistency(unittest.TestCase):
         env = {**os.environ, **(env_extra or {})}
         return run([str(DEV), "build", "--install", str(install), "--dry-run"], env=env)
 
-    def test_cache_hit_builds_with_the_recorded_version_and_repository(self):
+    def test_builds_against_the_recorded_sdk(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             major = run(["java", "-version"]).stderr.split('"')[1].split(".")[0]
-            d = fake_install(root, "cuda", major, self.SHA, "r1", f"6.1.1-jdk{'21' if major == '21' else '22plus'}-dev")
+            d = fake_install(root, "cuda", major, self.SHA, "r1", f"6.2.0-jdk{'21' if major == '21' else '22plus'}-dev")
             r = self._build_dry(d)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn(f"-Dtornadovm.version=6.1.1-jdk{'21' if major == '21' else '22plus'}-dev", r.stdout)
-            self.assertIn(f"-Dmaven.repo.local={d}/m2", r.stdout)
-
-    def test_a_newer_base_version_than_the_pom_default_is_used_as_produced(self):
-        # develop moved to 6.2.0: the build passes what the SDK produced, no POM edit required.
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            major = run(["java", "-version"]).stderr.split('"')[1].split(".")[0]
-            v = f"6.2.0-jdk{'21' if major == '21' else '22plus'}-dev"
-            d = fake_install(root, "cuda", major, self.SHA, "r1", v)
-            r = self._build_dry(d)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn(f"-Dtornadovm.version={v}", r.stdout)
-
-    def test_missing_repository_artifacts_are_refused(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            major = run(["java", "-version"]).stderr.split('"')[1].split(".")[0]
-            d = fake_install(root, "cuda", major, self.SHA, "r1", "6.1.1-jdk21-dev", repo_jars=("tornado-api",))
-            r = self._build_dry(d)
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn("tornado-runtime (missing", r.stderr)
-            self.assertIn("setup --ref", r.stderr)
-
-    def test_mismatched_repository_artifacts_are_refused(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            major = run(["java", "-version"]).stderr.split('"')[1].split(".")[0]
-            d = fake_install(root, "cuda", major, self.SHA, "r1", "6.1.1-jdk21-dev", corrupt=("tornado-runtime",))
-            r = self._build_dry(d)
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn("tornado-runtime (repository jar differs", r.stderr)
+            sdk = json.loads((d / "provenance.json").read_text())["sdk_dir"]
+            self.assertIn(f"TORNADOVM_HOME={sdk} ./mvnw", r.stdout)
+            self.assertNotIn("-Dtornadovm.version", r.stdout)
+            self.assertNotIn("-Dmaven.repo.local", r.stdout)
 
     def test_the_installations_jdk_line_must_match_the_running_java(self):
         with tempfile.TemporaryDirectory() as td:
@@ -376,9 +372,8 @@ class ConcurrentInstallationsDoNotMix(unittest.TestCase):
                 r = run([str(DEV), "build", "--install", str(bound), "--dry-run"])
                 self.assertEqual(r.returncode, 0, r.stderr)
                 bound_prov = json.loads((bound / "provenance.json").read_text())
-                self.assertIn(f"-Dtornadovm.version={bound_prov['artifact_version']}", r.stdout)
-                self.assertIn(f"-Dmaven.repo.local={bound}/m2", r.stdout)
-                self.assertNotIn(str(current / "m2"), r.stdout)
+                self.assertIn(f"TORNADOVM_HOME={bound_prov['sdk_dir']} ", r.stdout)
+                self.assertNotIn(json.loads((current / "provenance.json").read_text())["sdk_dir"], r.stdout)
                 e = run([str(DEV), "env", "--install", str(bound)])
                 self.assertIn(bound_prov["sdk_dir"], e.stdout)
                 self.assertNotIn(json.loads((current / "provenance.json").read_text())["sdk_dir"], e.stdout)

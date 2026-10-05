@@ -119,19 +119,9 @@ jobs:
       - name: Build and unit-test jitllm
         run: |
           set -euo pipefail
-          # The TornadoVM coordinates are the ones the SDK built in the previous step produced
-          # (TORNADOVM_VERSION), resolved from that installation's own Maven repository. What is
-          # checked is the produced artifact line, not agreement with the POM's development
-          # default: develop moving its base version is not an error here.
-          case "$TORNADOVM_VERSION" in
-            *-jdk$([ "${{ matrix.jdk }}" = 21 ] && echo 21 || echo 22plus)-dev) ;;
-            *) echo "::error::JDK ${{ matrix.jdk }} prepared TornadoVM $TORNADOVM_VERSION, which is not that JDK line's -dev artifact"; exit 1 ;;
-          esac
-          for a in tornado-api tornado-runtime; do
-            [ -f "$MAVEN_REPO_LOCAL/io/github/beehive-lab/$a/$TORNADOVM_VERSION/$a-$TORNADOVM_VERSION.jar" ] \
-              || { echo "::error::$a $TORNADOVM_VERSION is not in $MAVEN_REPO_LOCAL"; exit 1; }
-          done
-          ./mvnw clean install -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
+          # Compiles against the SDK the previous step prepared and exported as TORNADOVM_HOME;
+          # the POM refuses an SDK of the other JDK line.
+          ./mvnw clean install
           JITLLM_VERSION=$(./mvnw -q help:evaluate -Dexpression=project.version -DforceStdout)
           echo "jitllm version: $JITLLM_VERSION against TornadoVM $TORNADOVM_RUNTIME_ID"
           echo "JITLLM_VERSION=$JITLLM_VERSION" >> $GITHUB_ENV
@@ -213,7 +203,7 @@ jobs:
           jdk: '21'
 
       - name: Build and unit-test jitllm
-        run: ./mvnw clean install -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
+        run: ./mvnw clean install
 
   standalone-inference-linux:
     if: github.repository == 'beehive-lab/jitllm'
@@ -280,7 +270,7 @@ jobs:
 
       - name: Build jitllm for this leg
         run: |
-          ./mvnw -q clean install -DskipTests -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
+          ./mvnw -q clean install -DskipTests
           echo "JITLLM_VERSION=$(./mvnw help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_ENV
 
       - name: Clone the Quarkus LangChain4j extension
@@ -297,12 +287,12 @@ jobs:
           sed -i.bak 's/<jitllm\.version>.*<\/jitllm\.version>/<jitllm.version>'$JITLLM_VERSION'<\/jitllm.version>/' pom.xml
           rm -f pom.xml.bak
           # -Dtornado activates the TornadoVM profile; -am builds only the jitllm module + deps
-          mvn -q clean install -pl integration-tests/jitllm -am -DskipTests -Dtornado -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
+          mvn -q clean install -pl integration-tests/jitllm -am -DskipTests -Dtornado
 
       - name: Verify jitllm Dependency
         run: |
           cd ${{ github.workspace }}/quarkus-langchain4j/integration-tests/jitllm
-          mvn -Dmaven.repo.local="$MAVEN_REPO_LOCAL" dependency:tree | grep "io.github.beehive-lab:jitllm:jar:$JITLLM_VERSION"
+          mvn dependency:tree | grep "io.github.beehive-lab:jitllm:jar:$JITLLM_VERSION"
 
       - name: Seed jitllm model cache (avoid HuggingFace download on cold runners)
         shell: bash
@@ -478,7 +468,7 @@ jobs:
           jdk: '21'
 
       - name: Build
-        run: ./mvnw -q -B clean package -DskipTests -Dtornadovm.version="$TORNADOVM_VERSION" -Dmaven.repo.local="$MAVEN_REPO_LOCAL"
+        run: ./mvnw -q -B clean package -DskipTests
 
       - name: Gate Llama-3.2-1B-Instruct-Q8_0 on CUDA
         run: |

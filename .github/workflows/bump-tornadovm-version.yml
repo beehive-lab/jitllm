@@ -2,7 +2,7 @@ name: Bump TornadoVM version
 
 # Listens for the release-complete signal dispatched by beehive-lab/TornadoVM's release
 # pipeline (publish-archives-to-sdkman.yml's notify-site job) once a new TornadoVM
-# version is fully published (Maven Central + SDKMAN). Bumps tornadovm.base.version in
+# version is fully published (Maven Central + SDKMAN). Bumps tornadovm.release.version in
 # pom.xml, verifies the bump actually builds against the real published Maven Central
 # coordinate (both JDK profiles), and opens a PR for review — never pushes directly to
 # the default branch, since a green compile does not prove GPU/runtime correctness.
@@ -41,9 +41,8 @@ jobs:
             echo "::error::version must be X.Y.Z (got '$VERSION')."
             exit 1
           fi
-          # The RELEASE dependency, distinct from tornadovm.base.version: that one follows
-          # TornadoVM develop for development builds and may carry the same number as a
-          # release without meaning it, so a bump is judged against the release property.
+          # The RELEASE dependency: the only TornadoVM version pom.xml names. Development builds
+          # take theirs from the SDK at TORNADOVM_HOME.
           CURRENT=$(sed -n 's:.*<tornadovm\.release\.version>\([0-9.]*\)</tornadovm\.release\.version>.*:\1:p' pom.xml | head -1)
           echo "Current release dependency: '${CURRENT:-none}' — target: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -107,7 +106,7 @@ jobs:
           body: |
             Automated: a new TornadoVM release was published.
 
-            Sets `tornadovm.release.version` (the dependency of `-P release` builds) to `${{ needs.resolve-version.outputs.version }}`. Development builds keep following TornadoVM develop through `scripts/tornadovm-dev.sh` and CI's resolved commit; `tornadovm.base.version` is not touched by this bump.
+            Sets `tornadovm.release.version` (the dependency of `-P release` builds) to `${{ needs.resolve-version.outputs.version }}`. Development builds are not affected: they compile against the SDK at `TORNADOVM_HOME` (in CI, the TornadoVM `develop` commit the run resolved).
 
             Verified in CI with an empty local Maven repository: `mvn -P release clean package` against `tornado-api:${{ needs.resolve-version.outputs.version }}-jdk21` (JDK 21) and `tornado-api:${{ needs.resolve-version.outputs.version }}-jdk22plus` (JDK 25).
           labels: dependencies
