@@ -9,6 +9,7 @@ dependency-reduced-pom.xml
 .flattened-pom.xml
 buildNumber.properties
 .mvn/timing.properties
+.mvn/maven.config
 .mvn/wrapper/maven-wrapper.jar
 
 # model files

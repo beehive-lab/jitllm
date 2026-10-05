@@ -601,8 +601,9 @@
 
                  The SDK's jar names carry its version: tornado-api-7.1.0.jar in a released SDK,
                  tornado-api-<base>-jdk21-dev.jar in a develop build. tornadovm.sdk.version
-                 defaults to the release this project depends on; set it for any other SDK
-                 (IntelliJ: Settings > Build Tools > Maven > Runner > Properties).
+                 defaults to the release this project depends on; for any other SDK, run
+                 scripts/ide-setup.sh, which reads the version off the SDK's jars and records it
+                 in .mvn/maven.config. Run it again after switching TORNADOVM_HOME.
             ─────────────────────────────────────────────────────────────────────── -->
         <profile>
             <id>ide</id>

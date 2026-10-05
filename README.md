@@ -171,7 +171,7 @@ SDKs by changing `TORNADOVM_HOME`, and `clean` when you do.
 
 | task | command |
 |---|---|
-| IDE support (IntelliJ IDEA, VS Code, Eclipse) | enable the `ide` Maven profile; it adds the SDK's jars as dependencies. For an SDK other than the release in `pom.xml` (`tornadovm.release.version`), also set `-Dtornadovm.sdk.version=<the version in its jar names>` |
+| IDE support (IntelliJ IDEA, VS Code, Eclipse) | enable the `ide` Maven profile; it adds the SDK's jars as dependencies. For an SDK other than the release in `pom.xml` (`tornadovm.release.version`), run `scripts/ide-setup.sh` first (and again after switching `TORNADOVM_HOME`): it records the SDK's jar version in `.mvn/maven.config` |
 | Build against TornadoVM `develop` | `scripts/tornadovm-dev.sh setup --backend cuda --jdk 21`, then `eval "$(scripts/tornadovm-dev.sh env)"` (exports `TORNADOVM_HOME`) and build as above |
 | Advance to the latest `develop` | `scripts/tornadovm-dev.sh refresh --backend cuda --jdk 21` |
 | Reproduce an exact `develop` revision | `scripts/tornadovm-dev.sh setup --ref <40-hex commit> --backend cuda --jdk 21` |
