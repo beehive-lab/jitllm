@@ -2,11 +2,8 @@
 # set-tornadovm-release.sh X.Y.Z — record the published TornadoVM release that jitllm RELEASE
 # builds (-P release) depend on, in pom.xml's tornadovm.release.version.
 #
-# Development builds are untouched: they follow TornadoVM develop through
-# scripts/tornadovm-dev.sh, and tornadovm.base.version (develop's own base number, which may
-# equal a release number without meaning it) is deliberately not changed here. The release
-# profile substitutes this property for the base version and drops the -dev qualifier, so a
-# release build resolves X.Y.Z-jdk21 / X.Y.Z-jdk22plus and nothing else.
+# Development builds are untouched: they compile against the SDK at TORNADOVM_HOME. The release
+# profile depends on X.Y.Z-jdk21 / X.Y.Z-jdk22plus from Maven Central and nothing else.
 set -euo pipefail
 V=${1:-}
 [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "usage: $0 X.Y.Z" >&2; exit 2; }

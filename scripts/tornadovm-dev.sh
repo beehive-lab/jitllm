@@ -23,9 +23,9 @@
 #
 # The Maven repository is per installation, always: TornadoVM's develop artifacts carry the same
 # coordinates (6.1.1-jdk21-dev) for every commit, so a shared ~/.m2 cannot say which commit a jar
-# came from and two builds of different commits would overwrite each other. `build` runs ./mvnw
-# with -Dmaven.repo.local=<that repository> and -Dtornadovm.version=<the version that SDK
-# produced>; plain ./mvnw does NOT see these artifacts (see README, "Build from source").
+# came from and two builds of different commits would overwrite each other. jitllm itself does not
+# read it: it compiles against the SDK at TORNADOVM_HOME, and `build` is ./mvnw with TORNADOVM_HOME
+# set to this installation's SDK (as `env` exports it).
 # A prepared revision is reused as is; only `refresh`, a different --ref, or a changed recipe
 # builds again. Nothing here runs when jitllm is launched, and nothing is deleted except by `prune`.
 # The user's own TornadoVM (TORNADOVM_HOME, SDKMAN) is never touched.
@@ -275,17 +275,15 @@ do_build() {
     esac
     shift
   done
-  local dir p v sdk repo jdk major mism
+  local dir p sdk jdk major
   dir=$(resolve_install); p="$dir/provenance.json"
-  v=$(prov_field "$p" artifact_version); sdk=$(prov_field "$p" sdk_dir); repo=$(prov_field "$p" maven_repo_local); jdk=$(prov_field "$p" jdk)
-  BACKEND=$(prov_field "$p" backend)
+  sdk=$(prov_field "$p" sdk_dir); jdk=$(prov_field "$p" jdk)
   major=$(java_major)
   [ "$major" = "$jdk" ] || die "the installation was built for JDK $jdk but the java on JAVA_HOME/PATH is $major; select JDK $jdk"
-  mism=$(artifact_mismatches "$dir" "$sdk" "$v")
-  [ -z "$mism" ] || die "the repository at $repo does not match the SDK ($mism); run: scripts/tornadovm-dev.sh setup --ref $(prov_field "$p" ref) --backend $BACKEND --jdk $jdk"
-  echo "tornadovm-dev: ./mvnw -Dtornadovm.version=$v -Dmaven.repo.local=$repo ${mvn_args[*]:-}"
+  # jitllm compiles against the SDK TORNADOVM_HOME points at, so this is all a build needs.
+  echo "tornadovm-dev: TORNADOVM_HOME=$sdk ./mvnw ${mvn_args[*]:-}"
   [ $DRY_RUN = 1 ] && return 0
-  ( cd "$HERE" && ./mvnw "-Dtornadovm.version=$v" "-Dmaven.repo.local=$repo" "${mvn_args[@]}" )
+  ( cd "$HERE" && TORNADOVM_HOME="$sdk" ./mvnw "${mvn_args[@]}" )
 }
 
 do_status() {

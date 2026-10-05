@@ -37,62 +37,45 @@
     <properties>
         <!-- CI-friendly version: resolved by flatten-maven-plugin at build time -->
         <revision>1.0.2</revision>
-        <!-- Floor is >= 5.2.0, for two independent reasons: BFloat16Array lands in 5.2.0
-                 (FP8Array in 5.1.0), along with deterministic generated kernel source and the
-                 graph-sized interpreter bytecode buffer; and the packed-half2 split-KV
-                 attention needs KernelContext.allocateHalf2LocalArray, which 5.0.0 lacks.
+        <!-- Development builds compile against the TornadoVM SDK that TORNADOVM_HOME points at:
+                 its jars, as the named modules the runtime loads them as, so the build and the
+                 jitllm launchers see the same TornadoVM. There is no version to keep in step here,
+                 and nothing is resolved from a Maven repository: a released SDK (SDKMAN) and a
+                 local develop build work alike.
 
-                 Pinned to 6.0.0 rather than the 5.2.0 floor because 5.2.0's interpreter cannot
-                 run batched prefill at all. consumeFromDevice(producer, ...) resolved its source
-                 against the *previously executed* graph instead of the named one, and imported
-                 that graph's device buffer unconditionally — so in a plan that revisits graphs
-                 (prefill layers -> decodeActivation -> decode layers -> logits -> decodeActivation
-                 -> ...) the second decode pass imported a null buffer and the next ALLOC
-                 dereferenced it:
-                   NullPointerException: XPUDeviceBufferState.getXPUBuffer() is null
-                     at TornadoVMInterpreter.executeAlloc
-                 Fixed upstream in beehive-lab/TornadoVM 8603a9fa2d ("Fix consumeFromDevice
-                 silently reading a stale buffer when the named producer is not the previously
-                 executed graph", PR #996), released in 6.0.0. The path is backend-independent —
-                 reproduced here on Metal, and CI recorded the same NPE on its cuda and opencl
-                 legs. 6.0.0 also carries the sketch-phase fix for the LambdaForm hidden-class
-                 reader, which took out every F16 family on OpenCL.
-                 See docs/architecture/metal/SESSION-2026-09-04.md §1.
-
-                 DEVELOPMENT builds depend on TornadoVM develop, whose artifacts are
-                 <base>-jdk21-dev / <base>-jdk22plus-dev and are not on Maven Central: they come
-                 from a local build of the chosen develop commit (scripts/tornadovm-dev.sh, which is
-                 also what CI runs), and that build is what says which version it produced. The
-                 values below are the development DEFAULT so that a plain ./mvnw works once the
-                 environment is prepared; scripts/tornadovm-dev.sh build and CI pass the produced
-                 version explicitly (-Dtornadovm.version=...) and CI fails if the two disagree,
-                 which is the signal to update tornadovm.base.version when develop moves on.
-
-                 The kernels on this branch need what develop carries since 65f06c5d162c36022f9d5724
-                 dd38b9784d85cfcc (2026-09-19): PRs #1091-#1094, #1098, #1099, #1101 (signed
+                 The SDK must carry the APIs this branch uses. TornadoVM 7.0.0 is the first release
+                 that does (BFloat16Array, KernelContext.allocateHalf2LocalArray, signed
                  int-to-float conversion, private array zero-init, FP16 header selection,
-                 HalfFloat(short) bit reinterpretation, float-to-half value conversion, in-kernel
-                 reads of MMA accumulator elements, byte-offset int8 fragment loads).
+                 HalfFloat(short) bit reinterpretation, in-kernel reads of MMA accumulator elements,
+                 byte-offset int8 fragment loads); an older SDK fails at compile time. Its JDK line
+                 must also match the JDK running Maven: a -jdk21 SDK for JDK 21, a -jdk22plus SDK for
+                 JDK 22 and newer, or javac rejects its class files.
 
-                 RELEASE builds (-P release) depend on a published TornadoVM release instead:
-                 tornadovm.release.version, set by the release workflows, replaces the base version
-                 and drops the -dev qualifier, and the enforcer below refuses a release build that
-                 has no such version or still resolves to -dev coordinates. A release also fails to
-                 compile if the chosen TornadoVM release lacks the APIs above: TornadoVM 7.0.0 is the
-                 first release that carries them, so it is the minimum a jitllm release can use. -->
-        <tornadovm.base.version>6.1.1</tornadovm.base.version>
+                 The release profile (-P release) does not use the SDK: it depends on the published
+                 TornadoVM release below, from Maven Central, so the published POM names real
+                 coordinates. The ide profile does the same with the SDK's own jars, for IDEs that
+                 take their class path from Maven dependencies. -->
+        <tornadovm.sdk.modules>${env.TORNADOVM_HOME}/share/java/tornado</tornadovm.sdk.modules>
+        <!-- javac's and the test JVM's module path and root modules; a leading comma because
+                 they extend jdk.incubator.vector, and empty in the profiles that put TornadoVM on
+                 the class path instead. -->
+        <tornadovm.module.path>${tornadovm.sdk.modules}</tornadovm.module.path>
+        <tornadovm.add.modules>,tornado.api,tornado.runtime,tornado.cublas,tornado.cudnn</tornadovm.add.modules>
+        <!-- The test JVM resolves those modules eagerly, so it also needs what tornado.runtime
+                 requires at run time: the Graal the SDK vendors as tornado.graal. -->
+        <tornadovm.test.module.path>${tornadovm.module.path}${path.separator}${env.TORNADOVM_HOME}/share/java/graalJars</tornadovm.test.module.path>
+        <tornadovm.sdk.check.skip>false</tornadovm.sdk.check.skip>
+        <!-- The tornado.jdk.floor a matching SDK records in etc/tornado.jdk; set by the JDK profiles. -->
+        <tornadovm.sdk.jdk.floor>22</tornadovm.sdk.jdk.floor>
         <!-- The published TornadoVM release that -P release builds against (see prepare-release.yml). -->
         <tornadovm.release.version>7.1.0</tornadovm.release.version>
-        <!-- The qualifier TornadoVM's own develop builds carry; emptied by the release profile. -->
-        <tornadovm.dev.qualifier>-dev</tornadovm.dev.qualifier>
         <archunit.version>1.4.2</archunit.version>
         <jdk.version.suffix>-jdk21</jdk.version.suffix>
-        <!-- TornadoVM's own JDK suffix, a separate property from jdk.version.suffix above
-                 (which names *this* project's published artifact). Both lines currently match
-                 TornadoVM's: -jdk21 and -jdk22plus. -->
+        <!-- TornadoVM's own JDK suffix for the release coordinates, a separate property from
+                 jdk.version.suffix above (which names *this* project's published artifact). Both
+                 lines currently match TornadoVM's: -jdk21 and -jdk22plus. -->
         <tornadovm.jdk.suffix>-jdk21</tornadovm.jdk.suffix>
-        <!-- CUDA backend is only available after 5.0.0 TornadoVM version -->
-        <tornadovm.version>${tornadovm.base.version}${tornadovm.jdk.suffix}${tornadovm.dev.qualifier}</tornadovm.version>
+        <tornadovm.version>${tornadovm.release.version}${tornadovm.jdk.suffix}</tornadovm.version>
         <!-- Compiler defaults (overridden by JDK profiles below) -->
         <maven.compiler.source>22</maven.compiler.source>
         <maven.compiler.target>22</maven.compiler.target>
@@ -116,42 +99,18 @@
             <version>${archunit.version}</version>
             <scope>test</scope>
         </dependency>
-        <!-- Every TornadoVM artifact is provided: the TornadoVM SDK supplies it at runtime as a
-             named module, through the module path in $TORNADOVM_HOME/tornado-argfile, together
-             with everything it depends on (Graal collections, log4j, JMH, jopt-simple,
-             commons-math3, snmp4j, ASM). A second copy on the class path is not harmless: a
-             container with its own class loader (Quarkus's RunnerClassLoader) loads the copy
-             while tornado.graal still comes from the SDK, and the first request fails with a
-             loader constraint violation on org.graalvm.collections.UnmodifiableEconomicMap
-             (issue #176). So the published jar carries this project's classes only, and the
-             enforcer rule ban-runtime-dependencies below keeps the dependency graph that way. -->
-        <dependency>
-            <groupId>io.github.beehive-lab</groupId>
-            <artifactId>tornado-api</artifactId>
-            <version>${tornadovm.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <!-- The vendor-library bindings the batched prefill path compiles against: cuBLAS for
-             the four projections, cuDNN for the first chunk's fused attention. Both use the same
-             prepared SDK version and Maven repository as the API. -->
-        <dependency>
-            <groupId>io.github.beehive-lab</groupId>
-            <artifactId>tornado-cublas</artifactId>
-            <version>${tornadovm.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.github.beehive-lab</groupId>
-            <artifactId>tornado-cudnn</artifactId>
-            <version>${tornadovm.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.github.beehive-lab</groupId>
-            <artifactId>tornado-runtime</artifactId>
-            <version>${tornadovm.version}</version>
-            <scope>provided</scope>
-        </dependency>
+        <!-- No TornadoVM dependency here: development builds compile against the SDK's modules
+             (tornadovm.module.path above). The release and ide profiles declare TornadoVM as
+             dependencies, and only ever provided or system scope: the TornadoVM SDK supplies it
+             at runtime as a named module, through the module path in
+             $TORNADOVM_HOME/tornado-argfile, together with everything it depends on (Graal
+             collections, log4j, JMH, jopt-simple, commons-math3, snmp4j, ASM). A second copy on
+             the class path is not harmless: a container with its own class loader (Quarkus's
+             RunnerClassLoader) loads the copy while tornado.graal still comes from the SDK, and
+             the first request fails with a loader constraint violation on
+             org.graalvm.collections.UnmodifiableEconomicMap (issue #176). So the published jar
+             carries this project's classes only, and the enforcer rule ban-runtime-dependencies
+             below keeps the dependency graph that way. -->
     </dependencies>
 
     <build>
@@ -166,16 +125,22 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.11.0</version>
                 <configuration>
+                    <!-- The SDK's modules: tornado.api, tornado.runtime and the vendor-library
+                             bindings the batched prefill path compiles against (tornado.cublas for
+                             the four projections, tornado.cudnn for the first chunk's fused
+                             attention). The profiles that put TornadoVM on the class path instead
+                             empty both properties. -->
                     <compilerArgs>
-                        <arg>--add-modules</arg>
-                        <arg>jdk.incubator.vector</arg>
+                        <arg>--module-path=${tornadovm.module.path}</arg>
+                        <arg>--add-modules=jdk.incubator.vector${tornadovm.add.modules}</arg>
                     </compilerArgs>
                 </configuration>
             </plugin>
 
-            <!-- Class A gates only by default: `mvn test` must never need a model file,
-                     a TornadoVM installation or an accelerator. The Class B tests are named
-                     *AccelTest and run under -Paccel-tests. See verification-gates.md -->
+            <!-- Class A gates only by default: `mvn test` must never need a model file or an
+                     accelerator; it needs the TornadoVM SDK's jars only, as the compiler does.
+                     The Class B tests are named *AccelTest and run under -Paccel-tests. See
+                     verification-gates.md -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
@@ -184,11 +149,12 @@
                     <excludes>
                         <exclude>**/*AccelTest.java</exclude>
                     </excludes>
-                    <!-- Class A tests reference TornadoVM API types and this project's
-                             foreign-memory tensors, which are preview class files on JDK 21. No
-                             accelerator, model or TornadoVM installation is implied — those stay
-                             exclusive to -Paccel-tests, whose argLine replaces this one. -->
-                    <argLine>--enable-preview --add-modules jdk.incubator.vector</argLine>
+                    <!-- Class A tests reference TornadoVM API types, loaded from the same SDK
+                             modules the compiler used, and this project's foreign-memory tensors,
+                             which are preview class files on JDK 21. No accelerator or model is
+                             implied — those stay exclusive to -Paccel-tests, whose argLine
+                             replaces this one. -->
+                    <argLine>--enable-preview --module-path=${tornadovm.test.module.path} --add-modules=jdk.incubator.vector${tornadovm.add.modules}</argLine>
                 </configuration>
             </plugin>
 
@@ -237,6 +203,39 @@
                                     </excludes>
                                     <message>jitllm must not have compile- or runtime-scope dependencies: the TornadoVM SDK supplies TornadoVM and its dependencies at runtime (declare them provided), and a bundled or inherited copy collides with the SDK's modules (issue #176).</message>
                                 </bannedDependencies>
+                            </rules>
+                            <fail>true</fail>
+                        </configuration>
+                    </execution>
+                    <!-- A development build compiles against $TORNADOVM_HOME. Without it, javac
+                             would report only that module tornado.api is not found. Skipped by
+                             the profiles that resolve TornadoVM as dependencies. -->
+                    <execution>
+                        <id>require-tornadovm-sdk</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <phase>validate</phase>
+                        <configuration>
+                            <skip>${tornadovm.sdk.check.skip}</skip>
+                            <rules>
+                                <requireEnvironmentVariable>
+                                    <variableName>TORNADOVM_HOME</variableName>
+                                    <message>TORNADOVM_HOME is not set. jitllm compiles against the TornadoVM SDK it points at (7.0.0 or newer, on the JDK line of the JDK running Maven): install one (sdk install tornadovm) or prepare one (scripts/tornadovm-dev.sh setup) and export TORNADOVM_HOME.</message>
+                                </requireEnvironmentVariable>
+                                <requireFilesExist>
+                                    <files>
+                                        <file>${tornadovm.sdk.modules}</file>
+                                    </files>
+                                    <message>TORNADOVM_HOME (${env.TORNADOVM_HOME}) is not a TornadoVM SDK: it has no share/java/tornado.</message>
+                                </requireFilesExist>
+                                <!-- javac 21 only warns about the class files of a -jdk22plus SDK, so
+                                         without this a JDK 21 build would succeed and fail at run
+                                         time. The SDK records its line in etc/tornado.jdk. -->
+                                <evaluateBeanshell>
+                                    <condition>java.io.File f = new java.io.File("${env.TORNADOVM_HOME}/etc/tornado.jdk"); !f.exists() || new String(java.nio.file.Files.readAllBytes(f.toPath())).contains("tornado.jdk.floor=${tornadovm.sdk.jdk.floor}")</condition>
+                                    <message>TORNADOVM_HOME (${env.TORNADOVM_HOME}) is not the TornadoVM SDK for this JDK: JDK ${java.specification.version} needs a ${tornadovm.jdk.suffix} SDK (etc/tornado.jdk with tornado.jdk.floor=${tornadovm.sdk.jdk.floor}).</message>
+                                </evaluateBeanshell>
                             </rules>
                             <fail>true</fail>
                         </configuration>
@@ -388,7 +387,7 @@
         <!-- ─── JDK 21 ───────────────────────────────────────────────────────────
                  Auto-activates on JDK 21.
                  Publishes: jitllm:${revision}-jdk21
-                 TornadoVM: ${tornadovm.base.version}-jdk21
+                 Needs a -jdk21 TornadoVM SDK; -P release: tornado *:${tornadovm.release.version}-jdk21
             ─────────────────────────────────────────────────────────────────────── -->
         <profile>
             <id>jdk21</id>
@@ -400,7 +399,7 @@
                 <maven.compiler.target>21</maven.compiler.target>
                 <jdk.version.suffix>-jdk21</jdk.version.suffix>
                 <tornadovm.jdk.suffix>-jdk21</tornadovm.jdk.suffix>
-                <tornadovm.version>${tornadovm.base.version}${tornadovm.jdk.suffix}${tornadovm.dev.qualifier}</tornadovm.version>
+                <tornadovm.sdk.jdk.floor>21</tornadovm.sdk.jdk.floor>
             </properties>
             <build>
                 <plugins>
@@ -423,7 +422,7 @@
         <!-- ─── JDK 22+ ──────────────────────────────────────────────────────────
                  Auto-activates on JDK 22 and newer (CI builds it on JDK 25).
                  Publishes: jitllm:${revision}-jdk22plus, compiled with release 22
-                 TornadoVM: ${tornadovm.base.version}-jdk22plus${tornadovm.dev.qualifier}
+                 Needs a -jdk22plus TornadoVM SDK; -P release: tornado *:${tornadovm.release.version}-jdk22plus
                  Mirrors TornadoVM, which since 6.0.0 ships one jdk22plus line for JDK 22 and up.
             ─────────────────────────────────────────────────────────────────────── -->
         <profile>
@@ -437,7 +436,7 @@
                 <maven.compiler.release>22</maven.compiler.release>
                 <jdk.version.suffix>-jdk22plus</jdk.version.suffix>
                 <tornadovm.jdk.suffix>-jdk22plus</tornadovm.jdk.suffix>
-                <tornadovm.version>${tornadovm.base.version}${tornadovm.jdk.suffix}${tornadovm.dev.qualifier}</tornadovm.version>
+                <tornadovm.sdk.jdk.floor>22</tornadovm.sdk.jdk.floor>
             </properties>
         </profile>
 
@@ -446,19 +445,47 @@
             <properties>
                 <maven.javadoc.skip>false</maven.javadoc.skip>
                 <gpg.skip>false</gpg.skip>
-                <!-- A release depends on a published TornadoVM release: the base version becomes
-                         the chosen release and the -dev qualifier goes. This profile is listed after
-                         the JDK profiles, so these take precedence over their defaults. -->
-                <tornadovm.base.version>${tornadovm.release.version}</tornadovm.base.version>
-                <tornadovm.dev.qualifier/>
+                <!-- A release depends on a published TornadoVM release from Maven Central, not
+                         on the SDK at TORNADOVM_HOME: TornadoVM goes on the class path as the
+                         dependencies below, so the module path and the SDK check go. -->
+                <tornadovm.module.path>${project.build.directory}/no-tornadovm-sdk</tornadovm.module.path>
+                <tornadovm.test.module.path>${tornadovm.module.path}</tornadovm.test.module.path>
+                <tornadovm.add.modules/>
+                <tornadovm.sdk.check.skip>true</tornadovm.sdk.check.skip>
             </properties>
+            <dependencies>
+                <dependency>
+                    <groupId>io.github.beehive-lab</groupId>
+                    <artifactId>tornado-api</artifactId>
+                    <version>${tornadovm.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+                <dependency>
+                    <groupId>io.github.beehive-lab</groupId>
+                    <artifactId>tornado-runtime</artifactId>
+                    <version>${tornadovm.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+                <dependency>
+                    <groupId>io.github.beehive-lab</groupId>
+                    <artifactId>tornado-cublas</artifactId>
+                    <version>${tornadovm.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+                <dependency>
+                    <groupId>io.github.beehive-lab</groupId>
+                    <artifactId>tornado-cudnn</artifactId>
+                    <version>${tornadovm.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+            </dependencies>
             <build>
                 <plugins>
                     <!-- Refuse a release that has no concrete published TornadoVM release, or
-                             that would still resolve development coordinates. Whether the chosen
-                             release is actually published (and carries the APIs this branch needs)
-                             is checked by the release workflows, which build with an empty local
-                             repository so nothing can be satisfied by a local -dev install. -->
+                             that would resolve development coordinates. Whether the chosen release
+                             is actually published (and carries the APIs this branch needs) is
+                             checked by the release workflows, which build with an empty local
+                             repository so nothing can be satisfied by a local install. -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-enforcer-plugin</artifactId>
@@ -565,6 +592,59 @@
                 </plugins>
             </build>
         </profile>
+        <!-- ─── IDE ──────────────────────────────────────────────────────────────
+                 For IDEs that take the class path from Maven dependencies (IntelliJ IDEA,
+                 VS Code, Eclipse), which do not read the javac module path the default build
+                 uses: enable the ide profile in the IDE's Maven settings and TornadoVM shows up as
+                 the SDK's own jars, so code insight sees exactly what `mvn package` compiles
+                 against. `mvn -Pide package` builds the same way.
+
+                 The SDK's jar names carry its version: tornado-api-7.1.0.jar in a released SDK,
+                 tornado-api-<base>-jdk21-dev.jar in a develop build. tornadovm.sdk.version
+                 defaults to the release this project depends on; for any other SDK, run
+                 scripts/ide-setup.sh, which reads the version off the SDK's jars and records it
+                 in .mvn/maven.config. Run it again after switching TORNADOVM_HOME.
+            ─────────────────────────────────────────────────────────────────────── -->
+        <profile>
+            <id>ide</id>
+            <properties>
+                <tornadovm.sdk.version>${tornadovm.release.version}</tornadovm.sdk.version>
+                <tornadovm.module.path>${project.build.directory}/no-tornadovm-sdk</tornadovm.module.path>
+                <tornadovm.test.module.path>${tornadovm.module.path}</tornadovm.test.module.path>
+                <tornadovm.add.modules/>
+            </properties>
+            <dependencies>
+                <dependency>
+                    <groupId>io.github.beehive-lab</groupId>
+                    <artifactId>tornado-api</artifactId>
+                    <version>${tornadovm.sdk.version}</version>
+                    <scope>system</scope>
+                    <systemPath>${tornadovm.sdk.modules}/tornado-api-${tornadovm.sdk.version}.jar</systemPath>
+                </dependency>
+                <dependency>
+                    <groupId>io.github.beehive-lab</groupId>
+                    <artifactId>tornado-runtime</artifactId>
+                    <version>${tornadovm.sdk.version}</version>
+                    <scope>system</scope>
+                    <systemPath>${tornadovm.sdk.modules}/tornado-runtime-${tornadovm.sdk.version}.jar</systemPath>
+                </dependency>
+                <dependency>
+                    <groupId>io.github.beehive-lab</groupId>
+                    <artifactId>tornado-cublas</artifactId>
+                    <version>${tornadovm.sdk.version}</version>
+                    <scope>system</scope>
+                    <systemPath>${tornadovm.sdk.modules}/tornado-cublas-${tornadovm.sdk.version}.jar</systemPath>
+                </dependency>
+                <dependency>
+                    <groupId>io.github.beehive-lab</groupId>
+                    <artifactId>tornado-cudnn</artifactId>
+                    <version>${tornadovm.sdk.version}</version>
+                    <scope>system</scope>
+                    <systemPath>${tornadovm.sdk.modules}/tornado-cudnn-${tornadovm.sdk.version}.jar</systemPath>
+                </dependency>
+            </dependencies>
+        </profile>
+
         <!-- Spotless: Code formatting and style checking (Optional)
                  Usage: mvn -Pspotless spotless:check     (to check violations)
                         mvn -Pspotless spotless:apply     (to apply fixes)

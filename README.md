@@ -145,63 +145,45 @@ types directly declares `tornado-api` itself, with `provided` scope.
 - **[TornadoVM](https://github.com/beehive-lab/TornadoVM)** with an OpenCL, CUDA, or Metal backend. `jitllm`/`jitllm4j` auto-detect whichever backend your installed SDK was built with.
 - **GCC/G++ 13+** — to build TornadoVM's native components.
 
-### TornadoVM: released SDK for running, `develop` for building this branch
+### TornadoVM
 
-A **released** TornadoVM SDK — from the [official website](https://www.tornadovm.org/downloads) or
-[SDKMAN!](https://sdkman.io/sdks/tornadovm/) (`sdk install tornadovm`) — runs the published jitllm
-artifacts and the JBang catalog. **Building this branch from source is different:** its kernels
-use TornadoVM APIs that exist only on TornadoVM's `develop` branch (in-kernel reads of MMA
-accumulators, byte-offset int8 fragment loads, `cp.async` staging), so the build depends on
-`<version>-jdk21-dev` / `-jdk22plus-dev` artifacts that are not on Maven Central and do not come
-with SDKMAN. The native prefill path also needs `tornado-cublas` and `tornado-cudnn`,
-which are built from the same revision and are not available on Maven Central.
-`scripts/tornadovm-dev.sh` prepares all of them the same way CI does.
+jitllm compiles against, and runs on, the TornadoVM SDK that `TORNADOVM_HOME` points at. Any SDK
+from **TornadoVM 7.0.0** on works: a released one, from the
+[official website](https://www.tornadovm.org/downloads) or [SDKMAN!](https://sdkman.io/sdks/tornadovm/)
+(`sdk install tornadovm`), or a local build of TornadoVM `develop`. Its JDK line must match the JDK
+you build with: a `-jdk21` SDK for JDK 21, a `-jdk22plus` SDK for JDK 22 and newer. The build
+checks both that `TORNADOVM_HOME` is set and that the line matches.
 
-### Build from source (development)
+### Build from source
 
 ```bash
 git clone https://github.com/beehive-lab/jitllm.git && cd jitllm
 
-# 1. Fresh checkout: resolve upstream TornadoVM develop, build the SDK for your backend and JDK
-#    (cuda | opencl | metal; auto-detected if omitted), install its Maven artifacts, record what
-#    was built. Nothing here touches an SDK you installed yourself.
-scripts/tornadovm-dev.sh setup --backend cuda --jdk 21
+export TORNADOVM_HOME=/path/to/tornadovm-sdk     # e.g. ~/.sdkman/candidates/tornadovm/current
+export PATH="$TORNADOVM_HOME/bin:$PATH"
+mvn clean package -DskipTests                    # or ./mvnw; drop -DskipTests to run the unit tests
 
-# 2. Build jitllm against exactly that TornadoVM (./mvnw with -Dtornadovm.version=<what was built>)
-scripts/tornadovm-dev.sh build clean install -DskipTests
-
-# 3. Run with the matching SDK
-eval "$(scripts/tornadovm-dev.sh env)"        # exports TORNADOVM_HOME and PATH for this shell
 ./jitllm --gpu --model model.gguf --prompt "..."
 ```
 
+Nothing is resolved from a Maven repository for TornadoVM, so there is no version to pass: switch
+SDKs by changing `TORNADOVM_HOME`, and `clean` when you do.
+
 | task | command |
 |---|---|
-| Rebuild without touching TornadoVM | `scripts/tornadovm-dev.sh build clean package -DskipTests` (reuses the prepared installation) |
-| Build against one specific installation | `scripts/tornadovm-dev.sh build --install ~/.jitllm/tornadovm/cuda-jdk21/<commit>-r<recipe> …` |
-| Remove old installations | `scripts/tornadovm-dev.sh prune --yes` (explicit; never automatic) |
+| IDE support (IntelliJ IDEA, VS Code, Eclipse) | enable the `ide` Maven profile; it adds the SDK's jars as dependencies. For an SDK other than the release in `pom.xml` (`tornadovm.release.version`), run `scripts/ide-setup.sh` first (and again after switching `TORNADOVM_HOME`): it records the SDK's jar version in `.mvn/maven.config` |
+| Build against TornadoVM `develop` | `scripts/tornadovm-dev.sh setup --backend cuda --jdk 21`, then `eval "$(scripts/tornadovm-dev.sh env)"` (exports `TORNADOVM_HOME`) and build as above |
 | Advance to the latest `develop` | `scripts/tornadovm-dev.sh refresh --backend cuda --jdk 21` |
-| Reproduce an exact revision | `scripts/tornadovm-dev.sh setup --ref <40-hex commit> --backend cuda --jdk 21` |
-| What is prepared | `scripts/tornadovm-dev.sh status` (revision, artifact version, JDK, backend, SDK path) |
-| Build a jitllm release tag | check out the tag, then `./mvnw -P release -Dtornadovm.release.version=<X.Y.Z> clean package` — a release depends on a published TornadoVM release and refuses `-dev` coordinates |
+| Reproduce an exact `develop` revision | `scripts/tornadovm-dev.sh setup --ref <40-hex commit> --backend cuda --jdk 21` |
+| What is prepared | `scripts/tornadovm-dev.sh status` |
+| Remove old `develop` installations | `scripts/tornadovm-dev.sh prune --yes` (explicit; never automatic) |
+| Build a jitllm release | `./mvnw -P release -Dtornadovm.release.version=<X.Y.Z> clean package` — a release depends on a published TornadoVM release from Maven Central, not on `TORNADOVM_HOME` |
 
-`scripts/tornadovm-dev.sh build` is the reliable build entry point: it reuses the prepared
-installation, passes the exact artifact version that installation produced and that
-installation's own Maven repository to `./mvnw`, and never fetches or rebuilds TornadoVM on its
-own (launching `jitllm` never does either). Installations live under
-`~/.jitllm/tornadovm/<backend>-jdk<N>/<commit>-r<recipe>/` — the checkout, its SDK, its Maven
-repository (`m2/`) and a `provenance.json` — and are immutable; `current` is only a convenience
-pointer to the last one prepared, and nothing is deleted unless you run
+`scripts/tornadovm-dev.sh` is what CI uses to build TornadoVM `develop`. Installations live under
+`~/.jitllm/tornadovm/<backend>-jdk<N>/<commit>-r<recipe>/` and are immutable; `current` is only a
+convenience pointer to the last one prepared, and nothing is deleted unless you run
 `scripts/tornadovm-dev.sh prune --yes` (which removes every installation on that line except
 `current`; do not run it while a build or an inference process is using an older one).
-
-**Plain `./mvnw` does not see these artifacts.** TornadoVM's develop artifacts carry the same
-coordinates for every commit (`6.1.1-jdk21-dev`), so they are kept in each installation's own
-repository rather than in `~/.m2`, and the POM's development default only names a version, it does
-not track develop. A plain `./mvnw` therefore needs `-Dmaven.repo.local=<installation>/m2
--Dtornadovm.version=<its artifact_version>` (both printed by `scripts/tornadovm-dev.sh status`),
-which is exactly what `scripts/tornadovm-dev.sh build` adds; without them it fails to resolve
-`tornado-api:…-dev`, and that failure is the signal to use the helper.
 
 -----------
 
