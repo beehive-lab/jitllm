@@ -68,7 +68,7 @@
         <!-- The tornado.jdk.floor a matching SDK records in etc/tornado.jdk; set by the JDK profiles. -->
         <tornadovm.sdk.jdk.floor>22</tornadovm.sdk.jdk.floor>
         <!-- The published TornadoVM release that -P release builds against (see prepare-release.yml). -->
-        <tornadovm.release.version>7.1.0</tornadovm.release.version>
+        <tornadovm.release.version>7.2.0</tornadovm.release.version>
         <archunit.version>1.4.2</archunit.version>
         <jdk.version.suffix>-jdk21</jdk.version.suffix>
         <!-- TornadoVM's own JDK suffix for the release coordinates, a separate property from
