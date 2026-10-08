@@ -82,6 +82,10 @@ public class Qwen2MoEState extends Qwen2State {
             this.workspace.wrapRoutingWeightsBatch = TornadoWorkspaces.floats(assignments);
             this.workspace.wrapGroupedAssignmentIds = TornadoWorkspaces.ints(assignments);
             this.workspace.wrapGroupedPositionByAssignment = TornadoWorkspaces.ints(assignments);
+            this.workspace.wrapExpertTileIds = TornadoWorkspaces.ints(assignments);
+            this.workspace.wrapExpertTileStarts = TornadoWorkspaces.ints(assignments);
+            this.workspace.wrapExpertTileCounts = TornadoWorkspaces.ints(assignments);
+            this.workspace.wrapExpertTileCountHolder = TornadoWorkspaces.ints(1);
             this.workspace.wrapGroupedExpertHidden =
                     TornadoWorkspaces.floats(assignments * c.moeHiddenDim());
             this.workspace.wrapGroupedExpertDown = TornadoWorkspaces.floats(assignments * c.dim());
@@ -95,6 +99,10 @@ public class Qwen2MoEState extends Qwen2State {
             this.workspace.wrapRoutingWeightsBatch = null;
             this.workspace.wrapGroupedAssignmentIds = null;
             this.workspace.wrapGroupedPositionByAssignment = null;
+            this.workspace.wrapExpertTileIds = null;
+            this.workspace.wrapExpertTileStarts = null;
+            this.workspace.wrapExpertTileCounts = null;
+            this.workspace.wrapExpertTileCountHolder = null;
             this.workspace.wrapGroupedExpertHidden = null;
             this.workspace.wrapGroupedExpertDown = null;
             this.workspace.wrapSharedHiddenBatch = null;
