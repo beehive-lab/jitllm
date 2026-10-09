@@ -1,0 +1,14 @@
+repos:
+  - repo: https://github.com/psf/black
+    rev: 26.10.0
+    hooks:
+      - id: black
+
+  - repo: local
+    hooks:
+      - id: maven-spotless
+        name: Maven Spotless check
+        entry: ./mvnw -B -ntp -Pspotless spotless:check
+        language: system
+        pass_filenames: false
+        always_run: true

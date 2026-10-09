@@ -3,6 +3,12 @@
 We welcome contributions!
 Please follow the instructions below for your Pull Requests (PRs).
 
+## Pre-commit checks
+
+Install the hooks with `pre-commit install`. They run Black on staged Python
+files and the repository's Maven Spotless check before each commit. You can run
+them manually with `pre-commit run --files <changed-file>`.
+
 ## How to submit your changes
 
 1. **Fork** the repository in GitHub.
