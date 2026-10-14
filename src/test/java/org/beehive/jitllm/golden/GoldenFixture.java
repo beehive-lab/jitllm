@@ -148,7 +148,21 @@ public final class GoldenFixture {
                 "Qwen3.8-27B-Q4_0.gguf",
                 "Q4_0",
                 "ede16c7b36e578ca87a8c70e011e4b4633a32c831c0ce76d0f474582384e671d",
-                "qwen3.8-27b");
+                "qwen3.8-27b"),
+
+        /**
+         * The {@code lfm2moe} architecture: LFM2.5-24B-A2B, from {@code
+         * unsloth/LFM2.5-24B-A2B-GGUF} at revision {@code faa77113}. 14.9 GB.
+         *
+         * <p>Mixed by construction: Q4_K, Q5_K and Q6_K stacked experts, Q8_0 attention, dense
+         * layers and token embeddings (also the output projection), F32 norms, routers and
+         * convolution taps. Quantization is recorded as the file's dominant {@code Q4_K}.
+         */
+        LFM2_5_24B_A2B_Q4_K_XL(
+                "LFM2.5-24B-A2B-UD-Q4_K_XL.gguf",
+                "Q4_K",
+                "a235d23638cc5549cb1ff61da7522c8a7e97f056f27093462a1e56f35aba91d8",
+                "lfm2.5-24b-a2b");
 
         public final String fileName;
         public final String quantization;
