@@ -9,3 +9,4 @@ org.beehive.jitllm.model.provider.FamilyProviders$Qwen3Provider
 org.beehive.jitllm.model.provider.FamilyProviders$DeepSeekR1DistillQwenProvider
 org.beehive.jitllm.model.provider.FamilyProviders$Phi3Provider
 org.beehive.jitllm.model.provider.Qwen35Provider
+org.beehive.jitllm.model.provider.Lfm2Provider

@@ -77,7 +77,8 @@ public class TornadoPlanRegistryTest {
                     "gemma4",
                     "phi3",
                     "granite",
-                    "qwen35"
+                    "qwen35",
+                    "lfm2moe"
                 }) {
             assertTrue(
                     architecture
@@ -85,7 +86,7 @@ public class TornadoPlanRegistryTest {
                             + " switches are gone",
                     registered.contains(ArchitectureId.of(architecture)));
         }
-        assertEquals("the matrix has eleven architectures", 11, registered.size());
+        assertEquals("the matrix has twelve architectures", 12, registered.size());
     }
 
     /**
