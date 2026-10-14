@@ -162,7 +162,19 @@ public final class GoldenFixture {
                 "LFM2.5-24B-A2B-UD-Q4_K_XL.gguf",
                 "Q4_K",
                 "a235d23638cc5549cb1ff61da7522c8a7e97f056f27093462a1e56f35aba91d8",
-                "lfm2.5-24b-a2b");
+                "lfm2.5-24b-a2b"),
+
+        /**
+         * LFM2-8B-A1B, the same {@code lfm2moe} architecture at 4.7 GB, from {@code
+         * unsloth/LFM2-8B-A1B-GGUF}. Its token embedding, which is also the output projection, is
+         * Q6_K rather than the 24B's Q8_0. The fixture that fits a 24 GB unified-memory device with
+         * room to spare.
+         */
+        LFM2_8B_A1B_Q4_K_XL(
+                "LFM2-8B-A1B-UD-Q4_K_XL.gguf",
+                "Q4_K",
+                "3d802eb863d99a34c41b4f016faa2786d37dcff0bf15b626766d5be0fc20e14a",
+                "lfm2-8b-a1b");
 
         public final String fileName;
         public final String quantization;

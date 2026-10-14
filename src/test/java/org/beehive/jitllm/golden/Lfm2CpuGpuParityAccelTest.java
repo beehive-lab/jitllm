@@ -23,6 +23,16 @@ public class Lfm2CpuGpuParityAccelTest extends CpuGpuParity {
             new org.beehive.jitllm.golden.Fp32KeyValueCache();
 
     @Test
+    public void lfm2_8b_a1b_cpuGpuParity() throws Exception {
+        assertParity(Fixture.LFM2_8B_A1B_Q4_K_XL, Q8_0);
+    }
+
+    @Test
+    public void lfm2_8b_a1b_prefillDecodeParity() throws Exception {
+        assertParityPrefillDecode(Fixture.LFM2_8B_A1B_Q4_K_XL, Q8_0);
+    }
+
+    @Test
     public void lfm2_5_24b_a2b_cpuGpuParity() throws Exception {
         assertParity(Fixture.LFM2_5_24B_A2B_Q4_K_XL, Q8_0);
     }
