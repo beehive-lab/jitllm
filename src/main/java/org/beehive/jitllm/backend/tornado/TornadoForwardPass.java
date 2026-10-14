@@ -55,6 +55,24 @@ public final class TornadoForwardPass {
         final Configuration configuration = model.configuration();
         final TornadoWeights weights = (TornadoWeights) model.weights();
 
+        stageEmbeddingRow(weights, configuration, state, token);
+
+        return state.workspace.logitsView(tornadoVMMasterPlan.tornadoVMForwardDecode(position));
+    }
+
+    // @formatter:off
+    /**
+     * Copies {@code token}'s embedding row, in the table's own representation, into the staging
+     * buffer the activation graph decodes. Shared by the decode and sequential-prefill passes.
+     *
+     * <p>Dispatches on the <b>embedding tensor's own</b> representation, not the model-wide type:
+     * they agree for a uniform file and disagree for a mixed one, and staging one block layout as
+     * another produces a plausible activation and wrong output. Only the row moves; the table is
+     * never converted.
+     */
+    // @formatter:on
+    static void stageEmbeddingRow(
+            TornadoWeights weights, Configuration configuration, State state, int token) {
         // The *embedding tensor's own* representation, not the model-wide weight type. They are
         // the same for a uniform F16 or Q8_0 file, but a K-quant file is mixed: Devstral's Q4_K_M
         // holds its blk.* weights as Q4_K and other tensors as Q6_K/Q8_0, so asking the model-wide
@@ -104,12 +122,27 @@ public final class TornadoForwardPass {
                         0,
                         bytesPerToken);
             }
+            case Q4_K, Q5_K, Q6_K -> {
+                // Retained K-quants: the row is whole 256-weight super-blocks, decoded on the
+                // device by the activation graph.
+                int superBlockBytes =
+                        switch (weights.getTokenEmbeddingTable().dataType()) {
+                            case Q4_K -> 144;
+                            case Q5_K -> 176;
+                            default -> 210;
+                        };
+                long bytesPerToken = (long) (configuration.dim() / 256) * superBlockBytes;
+                MemorySegment.copy(
+                        weights.getTokenEmbeddingTable().asByteArray().getSegment(),
+                        (long) token * bytesPerToken,
+                        state.workspace.embeddingX.getSegment(),
+                        0,
+                        bytesPerToken);
+            }
             default ->
                     throw new IllegalArgumentException(
                             "Unsupported embedding weight type: "
                                     + weights.getTokenEmbeddingTable().dataType());
         }
-
-        return state.workspace.logitsView(tornadoVMMasterPlan.tornadoVMForwardDecode(position));
     }
 }

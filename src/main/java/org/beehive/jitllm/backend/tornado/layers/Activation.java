@@ -48,6 +48,42 @@ public class Activation extends AbstractLayer implements ActivationTaskGraph {
                             state.workspace.wrapX)
                     .persistOnDevice(state.workspace.wrapX);
         }
+        // K-quant embeddings are staged as raw rows too, and decoded here by their own layout. A
+        // row of dim weights in 256-weight super-blocks fits the Q8_0-sized staging buffer, which
+        // spends 34 bytes per 32 weights against at most 210 per 256.
+        if (embedding == org.beehive.jitllm.runtime.tensor.DataType.Q4_K
+                || embedding == org.beehive.jitllm.runtime.tensor.DataType.Q5_K
+                || embedding == org.beehive.jitllm.runtime.tensor.DataType.Q6_K) {
+            TaskGraph graph =
+                    new TaskGraph(name)
+                            .transferToDevice(
+                                    DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX);
+            ByteArray row = (ByteArray) state.workspace.embeddingX;
+            switch (embedding) {
+                case Q4_K ->
+                        graph.task(
+                                "updateX",
+                                TransformerComputeKernels::convertQ4_KtoFP32,
+                                context,
+                                row,
+                                state.workspace.wrapX);
+                case Q5_K ->
+                        graph.task(
+                                "updateX",
+                                TransformerComputeKernels::convertQ5_KtoFP32,
+                                context,
+                                row,
+                                state.workspace.wrapX);
+                default ->
+                        graph.task(
+                                "updateX",
+                                TransformerComputeKernels::convertQ6_KtoFP32,
+                                context,
+                                row,
+                                state.workspace.wrapX);
+            }
+            return graph.persistOnDevice(state.workspace.wrapX);
+        }
         return switch (config.quantization()) {
             case "FP16" ->
                     new TaskGraph(name)

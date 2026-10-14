@@ -1,6 +1,5 @@
 package org.beehive.jitllm.backend.tornado;
 
-import java.lang.foreign.MemorySegment;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
@@ -39,52 +38,7 @@ public final class TornadoPrefillPass {
         final Configuration configuration = model.configuration();
         final TornadoWeights weights = (TornadoWeights) model.weights();
 
-        // The *embedding tensor's own* representation, not the model-wide weight type: they
-        // agree for a uniform file and disagree for a mixed one, and staging 18-byte blocks as
-        // 34-byte ones produces a plausible activation and wrong output. This is the same
-        // dispatch TornadoForwardPass makes for the decode step.
-        switch (weights.getTokenEmbeddingTable().dataType()) {
-            case F16 -> {
-                MemorySegment tokenEmbeddings =
-                        weights.getTokenEmbeddingTable().asHalfFloatArray().getSegment();
-                int bytes = Short.BYTES;
-                MemorySegment.copy(
-                        tokenEmbeddings,
-                        (long) token * configuration.dim() * bytes,
-                        state.workspace.embeddingX.getSegment(),
-                        0,
-                        (long) configuration.dim() * bytes);
-            }
-            case Q8_0 -> {
-                MemorySegment tokenEmbeddings =
-                        weights.getTokenEmbeddingTable().asByteArray().getSegment();
-                int blocksPerToken = (configuration.dim() + 31) / 32;
-                long bytesPerToken = (long) blocksPerToken * 34;
-                MemorySegment.copy(
-                        tokenEmbeddings,
-                        (long) token * bytesPerToken,
-                        state.workspace.embeddingX.getSegment(),
-                        0,
-                        bytesPerToken);
-            }
-            case Q4_0 -> {
-                // Retained rather than materialized, so a row is 18 bytes per 32 weights.
-                MemorySegment tokenEmbeddings =
-                        weights.getTokenEmbeddingTable().asByteArray().getSegment();
-                int blocksPerToken = (configuration.dim() + 31) / 32;
-                long bytesPerToken = (long) blocksPerToken * 18;
-                MemorySegment.copy(
-                        tokenEmbeddings,
-                        (long) token * bytesPerToken,
-                        state.workspace.embeddingX.getSegment(),
-                        0,
-                        bytesPerToken);
-            }
-            default ->
-                    throw new IllegalArgumentException(
-                            "Unsupported embedding weight type: "
-                                    + weights.getTokenEmbeddingTable().dataType());
-        }
+        TornadoForwardPass.stageEmbeddingRow(weights, configuration, state, token);
 
         prefillPlan.tornadoVMForwardPrefill(position);
     }
