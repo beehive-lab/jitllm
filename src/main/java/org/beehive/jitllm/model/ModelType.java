@@ -5,6 +5,7 @@ import org.beehive.jitllm.format.GGUF;
 import org.beehive.jitllm.model.loader.DevstralModelLoader;
 import org.beehive.jitllm.model.loader.Gemma4ModelLoader;
 import org.beehive.jitllm.model.loader.GraniteLoader;
+import org.beehive.jitllm.model.loader.Lfm2ModelLoader;
 import org.beehive.jitllm.model.loader.LlamaModelLoader;
 import org.beehive.jitllm.model.loader.MistralModelLoader;
 import org.beehive.jitllm.model.loader.Phi3ModelLoader;
@@ -115,6 +116,14 @@ public enum ModelType {
                 FileChannel fileChannel, GGUF gguf, int contextLength, boolean useTornadovm) {
             return new Gemma4ModelLoader(fileChannel, gguf, contextLength, useTornadovm)
                     .loadModel();
+        }
+    },
+
+    LFM2_MOE {
+        @Override
+        public Model loadModel(
+                FileChannel fileChannel, GGUF gguf, int contextLength, boolean useTornadovm) {
+            return new Lfm2ModelLoader(fileChannel, gguf, contextLength, useTornadovm).loadModel();
         }
     },
 

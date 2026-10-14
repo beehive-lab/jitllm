@@ -130,6 +130,10 @@ public final class TornadoWorkspace {
     public FloatArray wrapRouterLogits;
     public IntArray wrapSelectedExperts;
 
+    // lfm2moe. The router's selection, written on the device and read by the expert projections
+    // of the same layer: the experts' normalized mixing weights, beside their ids above.
+    public FloatArray wrapSelectedExpertWeights;
+
     // qwen35. Its recurrent layers hold state that is neither a key/value cache nor scratch: the
     // convolution's rolling window and the delta-net matrices persist across tokens and are
     // updated in place. Both live in one array per kind, addressed by a per-layer offset, because

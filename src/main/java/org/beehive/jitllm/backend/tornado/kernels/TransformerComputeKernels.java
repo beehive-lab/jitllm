@@ -176,6 +176,39 @@ public class TransformerComputeKernels {
      * as Q8_0 purely to be looked up, which is the conversion the rest of this backend no longer
      * does.
      */
+    /**
+     * One embedding row held as Q4_K, decoded to the FP32 activation. A lane per element, decoding
+     * its own super-block with the matrix-vector kernels' decoder.
+     */
+    public static void convertQ4_KtoFP32(KernelContext context, ByteArray x, FloatArray wrapX) {
+        int i = context.globalIdx;
+        if (i >= wrapX.getSize()) {
+            return;
+        }
+        int block = i / 256;
+        wrapX.set(i, TransformerComputeKernelsQ4_K.decode(x, block * 144, i - block * 256));
+    }
+
+    /** {@link #convertQ4_KtoFP32} for a Q5_K row: 176-byte super-blocks. */
+    public static void convertQ5_KtoFP32(KernelContext context, ByteArray x, FloatArray wrapX) {
+        int i = context.globalIdx;
+        if (i >= wrapX.getSize()) {
+            return;
+        }
+        int block = i / 256;
+        wrapX.set(i, TransformerComputeKernelsQ5_K.decode(x, block * 176, i - block * 256));
+    }
+
+    /** {@link #convertQ4_KtoFP32} for a Q6_K row: 210-byte super-blocks. */
+    public static void convertQ6_KtoFP32(KernelContext context, ByteArray x, FloatArray wrapX) {
+        int i = context.globalIdx;
+        if (i >= wrapX.getSize()) {
+            return;
+        }
+        int block = i / 256;
+        wrapX.set(i, TransformerComputeKernelsQ6_K.decode(x, block * 210, i - block * 256));
+    }
+
     public static void convertQ4_0toFP32(KernelContext context, ByteArray x, FloatArray wrapX) {
         int globalId = context.globalIdx;
         if (globalId >= wrapX.getSize()) {

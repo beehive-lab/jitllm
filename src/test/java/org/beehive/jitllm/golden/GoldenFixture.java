@@ -148,7 +148,33 @@ public final class GoldenFixture {
                 "Qwen3.8-27B-Q4_0.gguf",
                 "Q4_0",
                 "ede16c7b36e578ca87a8c70e011e4b4633a32c831c0ce76d0f474582384e671d",
-                "qwen3.8-27b");
+                "qwen3.8-27b"),
+
+        /**
+         * The {@code lfm2moe} architecture: LFM2.5-24B-A2B, from {@code
+         * unsloth/LFM2.5-24B-A2B-GGUF} at revision {@code faa77113}. 14.9 GB.
+         *
+         * <p>Mixed by construction: Q4_K, Q5_K and Q6_K stacked experts, Q8_0 attention, dense
+         * layers and token embeddings (also the output projection), F32 norms, routers and
+         * convolution taps. Quantization is recorded as the file's dominant {@code Q4_K}.
+         */
+        LFM2_5_24B_A2B_Q4_K_XL(
+                "LFM2.5-24B-A2B-UD-Q4_K_XL.gguf",
+                "Q4_K",
+                "a235d23638cc5549cb1ff61da7522c8a7e97f056f27093462a1e56f35aba91d8",
+                "lfm2.5-24b-a2b"),
+
+        /**
+         * LFM2-8B-A1B, the same {@code lfm2moe} architecture at 4.7 GB, from {@code
+         * unsloth/LFM2-8B-A1B-GGUF}. Its token embedding, which is also the output projection, is
+         * Q6_K rather than the 24B's Q8_0. The fixture that fits a 24 GB unified-memory device with
+         * room to spare.
+         */
+        LFM2_8B_A1B_Q4_K_XL(
+                "LFM2-8B-A1B-UD-Q4_K_XL.gguf",
+                "Q4_K",
+                "3d802eb863d99a34c41b4f016faa2786d37dcff0bf15b626766d5be0fc20e14a",
+                "lfm2-8b-a1b");
 
         public final String fileName;
         public final String quantization;

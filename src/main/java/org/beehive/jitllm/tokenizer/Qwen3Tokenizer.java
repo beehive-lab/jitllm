@@ -67,6 +67,29 @@ public class Qwen3Tokenizer implements Tokenizer {
             Vocabulary vocabulary,
             boolean isDeepSeekR1DistillQwen,
             String splitPattern) {
+        this(
+                metadata,
+                vocabulary,
+                isDeepSeekR1DistillQwen ? "<｜end▁of▁sentence｜>" : "<|endoftext|>",
+                splitPattern);
+    }
+
+    /**
+     * The same tokenizer with a different first special token.
+     *
+     * <p>Everything from {@code firstSpecialToken} to the end of the vocabulary is treated as
+     * special. Qwen's block starts at {@code <|endoftext|>}; a vocabulary whose block starts
+     * earlier — LFM2's opens with {@code <|pad|>} and {@code <|startoftext|>} — names its own first
+     * token rather than leaving those two to be encoded as text.
+     *
+     * @param firstSpecialToken the spelling of the lowest-numbered special token
+     * @param splitPattern the pre-tokenizer regex this model was trained with
+     */
+    protected Qwen3Tokenizer(
+            Map<String, Object> metadata,
+            Vocabulary vocabulary,
+            String firstSpecialToken,
+            String splitPattern) {
         int[] tokenTypes = (int[]) metadata.get("tokenizer.ggml.token_type");
         String[] mergeLines = (String[]) metadata.get("tokenizer.ggml.merges");
         List<Pair<Integer, Integer>> merges =
@@ -80,8 +103,6 @@ public class Qwen3Tokenizer implements Tokenizer {
                         .toList();
 
         int allTokens = vocabulary.size();
-        String firstSpecialToken =
-                isDeepSeekR1DistillQwen ? "<｜end▁of▁sentence｜>" : "<|endoftext|>";
         int baseTokens =
                 vocabulary
                         .getIndex(firstSpecialToken)
@@ -253,7 +274,7 @@ public class Qwen3Tokenizer implements Tokenizer {
      * it: the split regex is written for the raw text, and in the byte-level form a space is a
      * letter ({@code Ġ} is {@code \p{L}}), so none of its whitespace rules would fire.
      */
-    private static String byteLevel(String raw) {
+    static String byteLevel(String raw) {
         StringBuilder sb = new StringBuilder();
         for (byte b : raw.getBytes(StandardCharsets.UTF_8)) {
             sb.appendCodePoint(BYTE_ENCODER.get(Byte.toUnsignedInt(b)));
