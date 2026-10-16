@@ -57,6 +57,12 @@ public abstract class TornadoTensor {
                 "Not a Q8_0 ByteArray tensor: " + this.getClass().getSimpleName());
     }
 
+    /** Returns the GPU-oriented Q8_0 layout with separate aligned scales and quants. */
+    public ByteArray asRepackedByteArray() {
+        throw new UnsupportedOperationException(
+                "Not a Q8_0 tensor: " + this.getClass().getSimpleName());
+    }
+
     /**
      * Get quantized scales (for Q8_0 tensors).
      *
