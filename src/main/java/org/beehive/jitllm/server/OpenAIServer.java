@@ -933,7 +933,14 @@ public final class OpenAIServer implements AutoCloseable {
                         .contextLength(options.contextLength())
                         .maxConcurrentSessions(options.maxConcurrentSessions() + 1)
                         .thinkingMode(options.thinkingMode());
-        if (options.executionPolicy() != null) b.executionPolicy(options.executionPolicy());
+        // A properties-derived policy is left unset, so the device's default still applies.
+        if (options.executionPolicy() != null
+                && !options.executionPolicy()
+                        .equals(
+                                org.beehive.jitllm.runtime.policy.ExecutionPolicy
+                                        .fromSystemProperties())) {
+            b.executionPolicy(options.executionPolicy());
+        }
         if (options.storageOptions() != null) b.storageOptions(options.storageOptions());
         if (options.backend() != null) b.backend(options.backend());
         if (options.device() != null) b.device(options.device());

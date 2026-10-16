@@ -8,26 +8,103 @@ import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Where vendor native libraries ({@code --with-native-libraries}) have an implementation.
  *
- * <p>Experimental and off by default: the JIT kernels run every supported configuration, and they
- * are what is measured across models and sizes. On CUDA the native path replaces batched-prefill
- * projections with cuBLAS GEMMs over stacked weight copies (and the first chunk's attention with
- * cuDNN where it is usable), which costs a second copy of those projections on the device — for
- * Qwen3-8B F16, 8.6 GB beside 13.2 GB of weights. On Metal it runs the batched prefill's attention
- * and projections on Apple MLX ({@link MlxPrefill}).
+ * <p>On by default where they are implemented and installed ({@link #defaultFor}); everywhere else
+ * the JIT kernels run. On CUDA the native path replaces batched-prefill projections with cuBLAS
+ * GEMMs over stacked weight copies (and the first chunk's attention with cuDNN where it is usable),
+ * which costs a second copy of those projections on the device — for Qwen3-8B F16, 8.6 GB beside
+ * 13.2 GB of weights. On Metal it runs the batched prefill's attention and projections on Apple MLX
+ * ({@link MlxPrefill}). {@code --no-native-libraries} keeps the JIT kernels.
  *
  * <p>Which families and weights have a path on which backend is each provider's answer ({@code
  * TornadoPlanProvider.nativeLibraryWeights}); nothing here lists them.
  *
- * <p>Asking for it anywhere it is not implemented is refused, never ignored: a request that quietly
- * runs the JIT kernels would read, in a benchmark, as a measurement of the libraries.
+ * <p>Asking for it explicitly anywhere it is not implemented is refused, never ignored: a request
+ * that quietly runs the JIT kernels would read, in a benchmark, as a measurement of the libraries.
  */
 public final class NativeLibrarySupport {
 
     private NativeLibrarySupport() {}
+
+    private static final System.Logger LOGGER =
+            System.getLogger(NativeLibrarySupport.class.getName());
+
+    private static final AtomicBoolean INSTALL_NOTICE = new AtomicBoolean();
+
+    /**
+     * The policy a model runs when its caller did not choose native libraries: on where this
+     * combination has a native implementation and its libraries load, the given policy otherwise.
+     *
+     * <p>Where the combination is implemented but a library is missing, a notice naming what to
+     * install is printed once and the JIT kernels run.
+     */
+    public static ExecutionPolicy defaultFor(Model model, ExecutionPolicy policy) {
+        if (policy.nativeLibraries()) {
+            return policy;
+        }
+        Combination combination = Fp16KeyValueSupport.resolve(model, policy, true);
+        if (unsupported(combination).isPresent() || packedAtLoad(combination)) {
+            return policy;
+        }
+        boolean metal = BackendId.METAL.equals(combination.backend());
+        boolean available =
+                metal
+                        ? loads(MlxPrefill::available)
+                        : NativePrefillSupport.cublasLtResolvable()
+                                && loads(NativePrefillSupport::cublasAvailable);
+        if (!available) {
+            noteInstall(
+                    metal ? "MLX (brew install mlx)" : "cuBLAS 12 and cuDNN 9",
+                    "falling back to the JIT kernels");
+            return policy;
+        }
+        if (!metal && !loads(NativePrefillSupport::cudnnAvailable)) {
+            noteInstall("cuDNN 9", "prefill attention falls back to the JIT kernels");
+        }
+        return ExecutionPolicy.from(policy).nativeLibraries(true).build();
+    }
+
+    /**
+     * Whether Gemma 4 Q4_0 packed its projections at load, which it decides from the load policy
+     * before any default applies: the cuBLAS path reads no packed tiles, so such a load keeps the
+     * JIT kernels. The same question the loader asked, so the same answer.
+     */
+    private static boolean packedAtLoad(Combination c) {
+        return "gemma4".equals(c.architecture())
+                && c.weights() == DataType.Q4_0
+                && org.beehive.jitllm.backend.tornado.tensor.PackedWeights.packQ4(
+                        org.beehive.jitllm.backend.tornado.tensor.PackedWeights.packedIntegerDotOn(
+                                        "jitllm.gemma4.packedIntegerDot")
+                                && !org.beehive.jitllm.backend.tornado.tensor.PackedWeights
+                                        .loadPolicy()
+                                        .nativeLibraries());
+    }
+
+    /** Whether a library probe answers yes; a library whose classes cannot be linked does not. */
+    private static boolean loads(java.util.function.BooleanSupplier probe) {
+        try {
+            return probe.getAsBoolean();
+        } catch (RuntimeException | LinkageError e) {
+            return false;
+        }
+    }
+
+    private static void noteInstall(String libraries, String fallback) {
+        if (INSTALL_NOTICE.compareAndSet(false, true)) {
+            LOGGER.log(
+                    System.Logger.Level.INFO,
+                    "For maximum performance please install "
+                            + libraries
+                            + "; "
+                            + fallback
+                            + ".");
+        }
+    }
 
     /** Why native libraries cannot be used here, or empty when they can. */
     public static Optional<String> unsupported(Combination c) {
@@ -86,6 +163,12 @@ public final class NativeLibrarySupport {
                 if (!MlxPrefill.available()) {
                     reason = Optional.of("MLX's mlx.metallib could not be loaded in this process");
                 }
+            } else if (!NativePrefillSupport.cublasLtResolvable()) {
+                reason =
+                        Optional.of(
+                                NativePrefillSupport.CUBLAS_LT_SONAME
+                                        + " is not on the library path (LD_LIBRARY_PATH or the"
+                                        + " loader cache)");
             } else if (!NativePrefillSupport.cublasAvailable()) {
                 reason = Optional.of("cuBLAS could not be loaded in this process");
             }

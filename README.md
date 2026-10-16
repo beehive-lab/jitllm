@@ -67,7 +67,7 @@ Grab a ready-to-run model from the [Hugging Face collections](#-model-collection
 jitLLM is growing into a **serving engine** — the vLLM-style path for the JVM:
 
 - 🌐 **OpenAI-compatible server** — `jitllm serve` exposes `/v1/chat/completions` and `/v1/completions` with streaming and zero external dependencies. `/v1/models` reports the served context length, so clients size their prompts instead of guessing. Point any OpenAI client at `localhost`.
-- 🎯 **Tensor-core batch prefill on CUDA for every model family** (F16, Q8_0, Q4_0, Q4_K) — `--with-prefill-decode --batch-prefill-size N`; add `--with-native-libraries` for cuBLAS projections. Llama-3.2-1B Q8_0 prompt processing 4.9k → 29k tok/s on an A100, past llama.cpp; Qwen3-0.6B F16 54k tok/s with cuDNN attention. See [Fast prompt processing on CUDA](#fast-prompt-processing-on-cuda).
+- 🎯 **Tensor-core batch prefill on CUDA for every model family** (F16, Q8_0, Q4_0, Q4_K) — on by default with `--gpu`, cuBLAS projections included where cuBLAS is installed. Llama-3.2-1B Q8_0 prompt processing 4.9k → 29k tok/s on an A100, past llama.cpp; Qwen3-0.6B F16 54k tok/s with cuDNN attention. See [Fast prompt processing on CUDA](#fast-prompt-processing-on-cuda).
 - 🍎 **SIMD-group matrix batch prefill on Apple Metal**, on by default for every supported family — e.g. Llama-3.2-1B F16 prompt processing 40 → 2372 tok/s, Qwen3-0.6B F16 4171 tok/s on an M4 Pro.
 - 📈 **llama-bench-style benchmarking** — `jitllm --bench` reports a pp/tg matrix with avg±stddev in md/csv/json/jsonl/sql. See [Running the CLI](#-running-the-cli) for the flag.
 - 🧮 **On-device greedy sampling** *(landing next)* — argmax on the GPU keeps logits device-side, cutting device→host traffic by ~500× per token. ([PR #134](https://github.com/beehive-lab/jitllm/pull/134))
@@ -210,6 +210,10 @@ SDK was built with more than one backend, force one with `--opencl`, `--cuda` (N
 
 Swap in any tested model — e.g. `beehive-llama-3.2-3b-instruct-fp16.gguf` or `...-8b-...`.
 
+GPU runs prefill the prompt in batches and use cuBLAS/cuDNN (CUDA) or MLX (Metal) where they are
+installed; `--no-batch-prefill` and `--no-native-libraries` turn these off. See
+[Fast prompt processing on CUDA](#fast-prompt-processing-on-cuda).
+
 ### `jitllm4j` — zero-dependency Java 25 script
 
 Same backend auto-detection as `jitllm`. A single-file Java 25 launcher that replaces the Python
@@ -272,13 +276,33 @@ consuming the budget before changing anything.
 
 ### Fast prompt processing on CUDA
 
-On an NVIDIA GPU with tensor cores, prefill the prompt in batches and replay the plan as a
-CUDA graph. With `--with-native-libraries` the batched projections run in cuBLAS:
+With `--gpu`, the prompt is prefilled in batches by default (128 tokens per step; 256 on Metal),
+and on an NVIDIA GPU with tensor cores the batched projections run in cuBLAS (MLX on Apple
+silicon) where the model has a native-library path and the libraries are installed. When they
+are not, the run prints a notice naming what to install and uses jitllm's own kernels:
+
+```text
+INFO: For maximum performance please install cuBLAS 12 and cuDNN 9; falling back to the JIT kernels.
+```
+
+A wider chunk and CUDA graph replay are faster still:
 
 ```bash
 ./jitllm run --gpu --cuda --cuda-graphs --with-prefill-decode --batch-prefill-size 512 \
-  --with-native-libraries -m Llama-3.2-1B-Instruct-Q8_0.gguf --prompt "..."
+  -m Llama-3.2-1B-Instruct-Q8_0.gguf --prompt "..."
 ```
+
+| Flag | Effect |
+| --- | --- |
+| `--with-prefill-decode --batch-prefill-size N` | Prefill N tokens per step instead of the default |
+| `--no-batch-prefill` | Read the prompt one token at a time |
+| `--with-native-libraries` | Require cuBLAS/cuDNN or MLX, and refuse a configuration without a native path |
+| `--no-native-libraries` | Keep jitllm's kernels; saves the device memory of the FP16 weight copies the native path stacks |
+
+Batched Q8_0 projections accumulate through FP16 tensor-core GEMMs rather than the FP32
+single-token path, so their logits differ slightly from single-token prefill; use
+`--no-batch-prefill` when you need the single-token numbers. A model split across GPUs
+(`--devices`) keeps single-token prefill unless you ask for batches.
 
 Every model family has a batched prefill on CUDA: Llama, Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen,
 Qwen3, Qwen3.5 / 3.6 / 3.8, Phi-3, Granite, Gemma 4, Devstral, Qwen2-MoE and GLM-4.7-Flash.
@@ -299,14 +323,14 @@ Prompt processing on an NVIDIA A100 80GB (pp512, tok/s, best configuration each)
 | Gemma-4-31B Q8_0 | — | 1,430 | 1,021 |
 | Llama-3.3-70B Q4_0 | — | 663 | 556 |
 
-`--with-native-libraries` needs cuBLAS 12: the TornadoVM binding loads `libcublasLt.so.12`. On a
+The native path needs cuBLAS 12: the TornadoVM binding loads `libcublasLt.so.12`. On a
 CUDA 13 machine, put a CUDA 12 cuBLAS (for example the `nvidia-cublas-cu12` wheel's `lib`
 directory) on `LD_LIBRARY_PATH`. Qwen3 F16 also runs the first prompt chunk's attention in cuDNN when
 cuDNN 9 is present: build TornadoVM's `libtornado-cudnn.so` (`tornado-drivers/cudnn-jni`) against
 cuDNN 9 (for example the `nvidia-cudnn-cu12` wheel) and add its `lib` directory to
 `LD_LIBRARY_PATH`; with cuDNN 8.9 that attention falls back to jitllm's kernels (36k instead of
-54k tok/s for Qwen3-0.6B F16). Without the flag the same prefill runs on jitllm's own
-tensor-core kernels, about 0.5–0.75× as fast.
+54k tok/s for Qwen3-0.6B F16). Without cuBLAS, or with `--no-native-libraries`, the same prefill
+runs on jitllm's own tensor-core kernels, about 0.5–0.75× as fast.
 
 ### Fast prompt processing on Apple silicon (MLX)
 

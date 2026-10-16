@@ -148,7 +148,9 @@ On Metal, every family below prefills in batches of 256 by default
 (`BatchPrefillSupport.defaultFor`), when the caller chose no execution policy and neither
 `--with-prefill-decode` nor `-Djitllm.prefillBatchSize` was given: Qwen3, Llama (including
 Q4_0), Qwen2 / DeepSeek-R1-Distill-Qwen, Mistral, Phi-3, Granite 3.2 / 4.0, Qwen3.5 (Q4_0)
-and Gemma 4 (Q8_0). Pass `-Djitllm.withPrefillDecode=false` to keep single-token prefill.
+and Gemma 4 (Q8_0). With MLX installed, the families MLX covers run that prefill's attention
+and projections on MLX by default (see native libraries below). Pass `--no-batch-prefill`
+(`-Djitllm.withPrefillDecode=false`) to keep single-token prefill.
 
 The batched projections run on Apple's SIMD-group matrices (`simdgroup_matrix`, through
 TornadoVM's `KernelContext` matrix API): `TransformerBatchPrefillSimdgroupKernels` stages
@@ -187,9 +189,10 @@ batched; greedy text is identical in every row:
 
 On CUDA every family has a batched prefill on the tensor cores: Llama (F16, Q8_0, Q4_0),
 Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Phi-3, Granite, Devstral (F16, Q8_0, Q4_K),
-Qwen2-MoE, Gemma 4, Qwen3.5 / 3.6 / 3.8 and deepseek2. It is chosen with
-`--with-prefill-decode --batch-prefill-size N` and needs a tensor-core device; elsewhere it is
-refused with `GPUL-CFG-002`, naming the flag to drop. The Llama-shaped families share
+Qwen2-MoE, Gemma 4, Qwen3.5 / 3.6 / 3.8 and deepseek2. It is the default,
+in chunks of 128 (the tensor-core tile height), wherever the family's batched prefill builds on the device; elsewhere the
+single-token plan runs. `--with-prefill-decode --batch-prefill-size N` chooses the chunk, and an
+explicit request the device cannot build is refused with `GPUL-CFG-002`, naming the flag to drop. The Llama-shaped families share
 `LlamaFP16LayersBatchPrefillMMA` and `LlamaQ8_0LayersBatchPrefillMMA`, which a family extends
 through hooks (its weights, its QKV and gate/up projections, what runs after the QKV
 projection, its RoPE) rather than copying the layer graph.
@@ -212,11 +215,15 @@ projection, its RoPE) rather than copying the layer graph.
 - **Narrow projections** (`SplitKGemm`) whose output fills fewer than 128 tiles of 128×128 split
   their depth into two to four slices and sum the partial products afterwards. The summation
   order differs from the unsplit GEMM; `-Djitllm.prefill.splitK=false` keeps every GEMM whole.
-- **Native libraries.** With `--with-native-libraries` every one of these GEMMs is
+- **Native libraries.** On by default where implemented and installed
+  (`NativeLibrarySupport.defaultFor`): every one of these GEMMs is then
   `cublasGemmExFP16FP32`; Q, K and V (and gate and up) are stacked into one buffer so one call
   covers them. The flag is accepted for Llama, Mistral, Qwen2 / DeepSeek, Qwen3, Phi-3 and
-  Granite (Q8_0, F16), Devstral (Q8_0, Q4_K, F16), Gemma 4 (Q8_0, Q4_0) and Qwen3.5 (Q8_0), and
-  refused elsewhere. The TornadoVM binding loads `libcublasLt.so.12`. For Qwen3 F16 the first
+  Granite (Q8_0, F16), Devstral (Q8_0, Q4_K, F16), Gemma 4 (Q8_0, Q4_0) and Qwen3.5 (Q8_0); the
+  JIT kernels run elsewhere. Where the path exists but cuBLAS does not load, the run notes once
+  (`For maximum performance please install cuBLAS 12 and cuDNN 9; falling back to the JIT
+  kernels.`) and runs the JIT kernels. `--with-native-libraries` requires the path and refuses
+  any configuration without one; `--no-native-libraries` keeps the JIT kernels. The TornadoVM binding loads `libcublasLt.so.12`. For Qwen3 F16 the first
   chunk's attention runs as a cuDNN fused SDPA when the TornadoVM cuDNN shim is built against
   cuDNN 9; against cuDNN 8.9 the plan cannot be built and the tensor-core GEMM attention runs.
 - **Native libraries on Metal (Apple MLX).** With `--with-native-libraries` on a Metal device
@@ -274,7 +281,7 @@ assuming the CUDA result carries over.
 | Model loading, device selection | yes | yes | yes | yes |
 | `STANDARD` single-token decode | yes | yes | yes | yes |
 | Sequential prefill/decode | yes | yes | yes | yes |
-| Batched prefill/decode | yes | yes (tensor cores, every family; cuBLAS with `--with-native-libraries`) | yes | yes (SIMD-group kernels, FP16 or FP32 cache; MLX with `--with-native-libraries`) |
+| Batched prefill/decode | yes | yes (tensor cores, every family; cuBLAS where installed) | yes | yes (SIMD-group kernels, FP16 or FP32 cache; MLX where installed) |
 | FP16 key/value cache (the default) | yes | yes | NVIDIA-class devices | yes, except Gemma 4 Q4_0 ([matrix](kv-cache-support.md#metal)) |
 | F16 and Q8_0 weights | yes | yes | yes | yes |
 | Q4_K / Q6_K device residency | n/a | yes | yes | yes |
@@ -321,8 +328,9 @@ Recorded external limitations, each with its named cause:
   `EXACT` depends on was bisected against measurement on CUDA only, and admission acts on
   the confidence level.
 
-Batched prefill is **default-off on every backend except Metal**, where it is the default for
-the families listed above.
+Batched prefill is **the default on every accelerator backend** where the family builds it: in
+chunks of 128 on CUDA and OpenCL, and of 256 on Metal for the families listed above. A model
+split across devices keeps single-token prefill unless batches are asked for.
 
 ## Metal specifics
 

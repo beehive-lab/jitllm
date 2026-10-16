@@ -197,11 +197,17 @@ public final class ExecutionPolicy {
      */
     public static final String NATIVE_LIBRARIES_PROPERTY = "jitllm.nativeLibraries";
 
-    /**
-     * The earlier spelling, from when the native prefill libraries were on by default. Honoured
-     * when set; the default is now off.
-     */
+    /** The earlier spelling of {@link #NATIVE_LIBRARIES_PROPERTY}, honoured when set. */
     public static final String LEGACY_NATIVE_PREFILL_PROPERTY = "jitllm.prefill.native";
+
+    /**
+     * Whether native libraries were asked for or declined through a property, rather than left to
+     * the default the loaded model resolves ({@code NativeLibrarySupport.defaultFor}).
+     */
+    public static boolean nativeLibrariesSpecified() {
+        return System.getProperty(NATIVE_LIBRARIES_PROPERTY) != null
+                || System.getProperty(LEGACY_NATIVE_PREFILL_PROPERTY) != null;
+    }
 
     private static boolean nativeLibrariesFromProperties() {
         String current = System.getProperty(NATIVE_LIBRARIES_PROPERTY);

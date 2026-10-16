@@ -95,6 +95,17 @@ record ServerOptions(
                             "true");
                     continue;
                 }
+                case "--no-native-libraries" -> {
+                    System.setProperty(
+                            org.beehive.jitllm.runtime.policy.ExecutionPolicy
+                                    .NATIVE_LIBRARIES_PROPERTY,
+                            "false");
+                    continue;
+                }
+                case "--no-batch-prefill" -> {
+                    System.setProperty("jitllm.withPrefillDecode", "false");
+                    continue;
+                }
                 case "--fp16-kv-cache" ->
                         throw new IllegalArgumentException(
                                 "--fp16-kv-cache was removed: FP16 is now the default key/value"
