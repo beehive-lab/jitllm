@@ -3,9 +3,7 @@ package org.beehive.jitllm.api;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Objects;
-import org.beehive.jitllm.backend.tornado.BatchPrefillSupport;
-import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport;
-import org.beehive.jitllm.backend.tornado.NativeLibrarySupport;
+import org.beehive.jitllm.backend.tornado.DeviceDefaultPolicy;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.loader.ModelLoader;
 import org.beehive.jitllm.runtime.backend.BackendId;
@@ -15,7 +13,6 @@ import org.beehive.jitllm.runtime.backend.DeviceResolvers;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 import org.beehive.jitllm.runtime.memory.MemoryPlan;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
-import org.beehive.jitllm.runtime.policy.StorageOptions;
 
 /**
  * Where a caller starts: load a model file, get a {@link LocalModel}.
@@ -98,44 +95,14 @@ public final class LocalModels {
                 options.maxConcurrentSessions());
     }
 
-    /**
-     * A policy nobody chose takes the device's default, which needs the loaded model: batched
-     * prefill where the family builds it ({@link BatchPrefillSupport#defaultFor}), on native
-     * libraries where they are implemented and installed ({@link NativeLibrarySupport#defaultFor}).
-     * A default this configuration then refuses is dropped rather than reported: nobody asked for
-     * it, and the caller's own policy runs instead.
-     */
+    /** A policy nobody chose takes the device's default, which needs the loaded model. */
     private static ExecutionPolicy deviceDefault(Model model, ModelOptions options) {
-        ExecutionPolicy chosen = options.executionPolicy();
-        ExecutionPolicy batched =
-                options.usesDefaultExecutionPolicy()
-                        ? BatchPrefillSupport.defaultFor(model, chosen)
-                        : chosen;
-        ExecutionPolicy accelerated =
-                options.usesDefaultNativeLibraries()
-                        ? NativeLibrarySupport.defaultFor(model, batched)
-                        : batched;
-        for (ExecutionPolicy candidate : java.util.List.of(accelerated, batched)) {
-            if (candidate.equals(chosen)) {
-                break;
-            }
-            if (accepted(model, candidate, options.storageOptions())) {
-                return candidate;
-            }
-        }
-        return chosen;
-    }
-
-    /** Whether the plan checks every GPU load runs accept {@code policy}. */
-    private static boolean accepted(Model model, ExecutionPolicy policy, StorageOptions storage) {
-        try {
-            Fp16KeyValueSupport.require(model, policy, storage, true);
-            NativeLibrarySupport.require(model, policy, true);
-            BatchPrefillSupport.require(model, policy, true);
-            return true;
-        } catch (UnsupportedOperationException refused) {
-            return false;
-        }
+        return DeviceDefaultPolicy.resolve(
+                model,
+                options.executionPolicy(),
+                options.usesDefaultExecutionPolicy(),
+                options.usesDefaultNativeLibraries(),
+                options.storageOptions());
     }
 
     /**
