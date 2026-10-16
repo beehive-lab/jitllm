@@ -25,7 +25,13 @@ if java -version 2>&1 | grep -q '"21\.'; then
     preview="--enable-preview"
 fi
 
-mvn -B -q -f "$app/pom.xml" "${profile[@]}" package dependency:build-classpath -Dmdep.outputFile="$app/cp.txt"
+# JITLLM_VERSION overrides the jitllm base version the JDK 21 profile swaps in (default: the POM's).
+version_arg=()
+if [[ -n ${JITLLM_VERSION:-} ]]; then
+    version_arg=("-Djitllm.version=$JITLLM_VERSION")
+fi
+
+mvn -B -q -f "$app/pom.xml" "${profile[@]}" "${version_arg[@]}" package dependency:build-classpath -Dmdep.outputFile="$app/cp.txt"
 tr ':' '\n' < "$app/cp.txt" | grep '/jitllm-' | xargs -n1 basename
 
 output=$("$TORNADOVM_HOME/bin/tornado" \
