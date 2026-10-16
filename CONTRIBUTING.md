@@ -3,6 +3,25 @@
 We welcome contributions!
 Please follow the instructions below for your Pull Requests (PRs).
 
+## Pre-commit checks
+
+Using the local pre-commit hooks is recommended but optional. First install the
+pre-commit tool, then enable the hooks in your clone:
+
+```bash
+python3 -m pip install pre-commit
+pre-commit install
+```
+
+The hooks run Black on staged Python files and the repository's Maven Spotless
+check before each commit. If Black reformats a file, the commit stops so you can
+inspect the changes, re-stage the file with `git add`, and retry the commit.
+The Spotless hook requires Java and runs on every commit, including
+documentation-only changes.
+
+You can also run the checks manually with
+`pre-commit run --files <changed-file>`.
+
 ## How to submit your changes
 
 1. **Fork** the repository in GitHub.
