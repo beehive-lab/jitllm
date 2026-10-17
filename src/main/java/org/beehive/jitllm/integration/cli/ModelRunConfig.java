@@ -41,7 +41,7 @@ public record ModelRunConfig(Path model, int contextLength, boolean gpu) {
                 .backend(backend)
                 // Left to ModelOptions, which reads the same properties and records that nobody
                 // chose the policy, so that the device's default can apply once the model is
-                // loaded (batched prefill on Metal).
+                // loaded (batched prefill, on native libraries where they are installed).
                 .build();
     }
 }

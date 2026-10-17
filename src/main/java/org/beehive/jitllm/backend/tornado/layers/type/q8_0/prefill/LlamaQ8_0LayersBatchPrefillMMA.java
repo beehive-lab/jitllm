@@ -548,13 +548,7 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // W1 and W3 in ONE tensor-core launch → packed [gate|up] rows.
         gateUpProjection(batchPrefillLayer, layerIndex);
 
-        batchPrefillLayer.task(
-                "swiglu",
-                TransformerBatchPrefillKernels::batchedFFNSwiGLUFP16Packed,
-                context,
-                state.workspace.wrapHbFP16Batch,
-                state.workspace.gateUpResultBatch,
-                hidDim);
+        swiglu(batchPrefillLayer, layerIndex);
         projectQ8(
                 batchPrefillLayer,
                 "w2Proj",
@@ -615,6 +609,20 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     /** Tasks a family runs on {@code w2Out} before it is added to the stream. */
     protected void afterDownProjection(TaskGraph batchPrefillLayer, int layerIndex) {}
+
+    /**
+     * SwiGLU over the packed {@code [gate|up]} rows into {@code wrapHbFP16Batch}, the FP16 operand
+     * of the down projection. A family whose activations can leave the FP16 range scales them here.
+     */
+    protected void swiglu(TaskGraph batchPrefillLayer, int layerIndex) {
+        batchPrefillLayer.task(
+                "swiglu",
+                TransformerBatchPrefillKernels::batchedFFNSwiGLUFP16Packed,
+                context,
+                state.workspace.wrapHbFP16Batch,
+                state.workspace.gateUpResultBatch,
+                config.hiddenDim());
+    }
 
     /**
      * The grids of the family's own tasks in layer {@code layerIndex}, under its prefix {@code p}.

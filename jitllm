@@ -168,6 +168,11 @@ class LlamaRunner:
 
         if args.with_native_libraries:
             cmd.append("-Djitllm.nativeLibraries=true")
+        elif args.no_native_libraries:
+            cmd.append("-Djitllm.nativeLibraries=false")
+
+        if args.no_batch_prefill:
+            cmd.append("-Djitllm.withPrefillDecode=false")
 
         if args.cuda_graphs:
             cmd.append("-Djitllm.cudaGraphs=true")
@@ -564,6 +569,10 @@ def parse_cli_args(argv):
         parser.error("run requires --prompt")
     if mode == "chat" and (args.prompt is not None or args.suffix is not None):
         parser.error("chat reads prompts from the terminal; --prompt/--suffix are run-only")
+    if args.with_native_libraries and args.no_native_libraries:
+        parser.error("--with-native-libraries and --no-native-libraries conflict")
+    if args.no_batch_prefill and (args.with_prefill_decode or args.batch_prefill_size is not None):
+        parser.error("--no-batch-prefill conflicts with --with-prefill-decode and --batch-prefill-size")
     if mode == "serve":
         if not 0 <= args.port <= 65535 or not args.host.strip():
             parser.error("serve requires a nonempty --host and --port in 0..65535")
@@ -662,6 +671,9 @@ def create_parser(command=None) -> argparse.ArgumentParser:
                              "alone it reads the prompt one token at a time")
     engine.add_argument("--batch-prefill-size", dest="batch_prefill_size", type=int, default=None, metavar="N",
                         help="Read the prompt N tokens per step (needs --with-prefill-decode; N > 1)")
+    engine.add_argument("--no-batch-prefill", dest="no_batch_prefill", action="store_true",
+                        help="Read the prompt one token at a time on GPU (default: batched prefill, "
+                             "512 tokens per step, where the model supports it)")
     engine.add_argument("--verbose", "-v", action="store_true",
                         help="Show the startup configuration, initialization timings and detailed diagnostics on stderr")
     engine.add_argument("--show-command", action="store_true",
@@ -754,8 +766,12 @@ def create_parser(command=None) -> argparse.ArgumentParser:
                                 help="Size of the TornadoVM event pool")
     advanced_group.add_argument(
         "--with-native-libraries", action="store_true",
-        help="[experimental] Use cuBLAS/cuDNN instead of JIT kernels; Qwen3 F16 batched "
-             "prefill on CUDA tensor cores only, needs more device memory")
+        help="Require cuBLAS/cuDNN (CUDA) or MLX (Metal) for batched prefill, and refuse "
+             "configurations without them (default: used where implemented and installed)")
+    advanced_group.add_argument(
+        "--no-native-libraries", action="store_true",
+        help="Keep the JIT kernels where cuBLAS/cuDNN or MLX would run batched prefill; "
+             "saves the device memory their weight copies need")
     advanced_group.add_argument(
         "--continuous-batching", type=int, default=None, metavar="SLOTS",
         help="[experimental] (serve) Decode up to SLOTS (at least 2) HTTP requests in one "

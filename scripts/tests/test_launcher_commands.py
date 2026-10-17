@@ -77,15 +77,20 @@ class Commands(unittest.TestCase):
         self.reject("run", "-m", "stub.gguf", "--prompt", "hi", "--continuous-batching", "2")
         self.parse("serve", "-m", "stub.gguf", "--gpu", "--continuous-batching", "2", "--fp32-kv-cache")
 
-    def test_native_libraries_are_opt_in_and_experimental(self):
+    def test_native_libraries_and_batched_prefill_can_be_required_or_declined(self):
         for command in ("run", "chat", "serve", "bench"):
             help_text = launcher.create_parser(command).format_help()
             advanced = help_text[help_text.index("Advanced Options"):]
             self.assertIn("--with-native-libraries", advanced)
-            self.assertIn("[experimental] Use cuBLAS/cuDNN", advanced)
+            self.assertIn("--no-native-libraries", advanced)
+            self.assertIn("--no-batch-prefill", help_text)
         self.assertFalse(self.parse("run", "-m", "stub.gguf", "--prompt", "hi").with_native_libraries)
         self.assertTrue(self.parse("run", "-m", "stub.gguf", "--prompt", "hi",
                                    "--with-native-libraries").with_native_libraries)
+        self.reject("run", "-m", "stub.gguf", "--prompt", "hi",
+                    "--with-native-libraries", "--no-native-libraries")
+        self.reject("run", "-m", "stub.gguf", "--prompt", "hi",
+                    "--no-batch-prefill", "--batch-prefill-size", "32")
         # No native implementation in the continuous-batch engine.
         self.reject("serve", "-m", "stub.gguf", "--gpu", "--continuous-batching", "2",
                     "--with-native-libraries")

@@ -531,9 +531,15 @@ final class DelegatingModel implements TextGenerationModel {
                 return new LegacySessionRuntime(delegate, lease, policy, storageOptions);
             }
             // Allocated once per domain. A second lowered session reaches neither of these lines.
+            // Sized for the model's prefill width, which the policy carries and the properties
+            // may not: a default batched prefill is chosen after load.
             loweredWorkspace =
                     org.beehive.jitllm.inference.state.State.withStorageOptions(
-                            storageOptions, () -> delegate.createNewState(lease));
+                            storageOptions,
+                            () ->
+                                    org.beehive.jitllm.inference.state.State.withPrefillBatchSize(
+                                            executionPolicy.prefillBatchSize(),
+                                            () -> delegate.createNewState(lease)));
             // The domain's workspace carries the model's policy: every session that shares it
             // shares that policy, which is why a session that overrode it took the legacy path
             // above rather than reaching this line.

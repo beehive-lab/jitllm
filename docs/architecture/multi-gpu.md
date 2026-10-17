@@ -41,6 +41,11 @@ direct Java launch can set itself.
 
 ## Which models split
 
+A split keeps single-token prefill by default, because not every family splits its batched
+prefill; ask for batches with `--batch-prefill-size N`. Native libraries then follow the
+single-device default (used where implemented and installed, `--no-native-libraries` to
+decline).
+
 | Family | Single-token decode | Batched prefill across devices |
 | --- | --- | --- |
 | Llama Q4_0 (e.g. Llama-3.3-70B) | yes | yes, with `--batch-prefill-size 256 --with-native-libraries` (int8 / cuBLAS layers) |

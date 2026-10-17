@@ -3,7 +3,7 @@ package org.beehive.jitllm.api;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Objects;
-import org.beehive.jitllm.backend.tornado.BatchPrefillSupport;
+import org.beehive.jitllm.backend.tornado.DeviceDefaultPolicy;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.loader.ModelLoader;
 import org.beehive.jitllm.runtime.backend.BackendId;
@@ -79,12 +79,7 @@ public final class LocalModels {
             }
             throw exhaustion;
         }
-        // A policy nobody chose takes the device's default, which needs the loaded model: batched
-        // prefill on Metal for the families tuned for it (BatchPrefillSupport.defaultFor).
-        ExecutionPolicy policy =
-                gpu && options.usesDefaultExecutionPolicy()
-                        ? BatchPrefillSupport.defaultFor(model, options.executionPolicy())
-                        : options.executionPolicy();
+        ExecutionPolicy policy = gpu ? deviceDefault(model, options) : options.executionPolicy();
         if (gpu) {
             policy = ExecutionPolicy.from(policy).decodedProjections(decodedProjections).build();
         }
@@ -97,6 +92,16 @@ public final class LocalModels {
                 options.thinkingMode(),
                 options.reasoningEffort(),
                 options.maxConcurrentSessions());
+    }
+
+    /** A policy nobody chose takes the device's default, which needs the loaded model. */
+    private static ExecutionPolicy deviceDefault(Model model, ModelOptions options) {
+        return DeviceDefaultPolicy.resolve(
+                model,
+                options.executionPolicy(),
+                options.usesDefaultExecutionPolicy(),
+                options.usesDefaultNativeLibraries(),
+                options.storageOptions());
     }
 
     /**
