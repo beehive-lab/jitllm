@@ -27,6 +27,7 @@ import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
+import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
@@ -175,7 +176,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      */
     private final java.util.Map<String, Integer> warpMatVecTasks = new java.util.LinkedHashMap<>();
 
-    /** The Q4_0 projections placed on the Metal SIMD-group GEMMs, with their output counts. */
+    /** The Q4_0 and Q8_0 projections placed on the Metal SIMD-group GEMMs, with their outputs. */
     private final java.util.Map<String, Integer> simdgroupTasks = new java.util.LinkedHashMap<>();
 
     /**
@@ -784,10 +785,11 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     /** Whether this state's key/value store is half precision. */
     /**
-     * Whether a Q4_0 projection over {@code n} inputs runs on the Metal SIMD-group GEMMs, which
-     * stage the contraction in 64-wide slices; see {@link BatchPrefillGemmPolicy#simdgroup()}.
+     * Whether a Q4_0 or Q8_0 projection over {@code n} inputs runs on the Metal SIMD-group GEMMs,
+     * which stage the contraction in 64-wide slices; see {@link
+     * BatchPrefillGemmPolicy#simdgroup()}.
      */
-    private static boolean simdgroupQ4_0(int n) {
+    private static boolean simdgroupGemm(int n) {
         return BatchPrefillGemmPolicy.simdgroup() && n % 64 == 0;
     }
 
@@ -902,7 +904,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             residual ? Epilogue.RESIDUAL : Epilogue.STORE);
                     return;
                 }
-                if (simdgroupQ4_0(n)) {
+                if (simdgroupGemm(n)) {
                     // Metal: 64-token x 64-output tiles on SIMD-group matrices, the weights
                     // dequantized to float as they are staged.
                     simdgroupTasks.put("batchLayer_" + layer + "." + task, d);
@@ -1069,6 +1071,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      *   <li>the int8 GEMM: the activation quantized per 32-block, and the block-scaled int8
      *       tensor-core GEMM reading the Q8_0 blocks where they lie — the arithmetic of llama.cpp's
      *       MMQ, with the residual added from the accumulators;
+     *   <li>on Metal, the SIMD-group GEMM: 64-token x 64-output tiles on {@code simdgroup_float8x8}
+     *       matrices, the Q8_0 blocks dequantized to float as they are staged — the residual form
+     *       adds into {@code out}, and the stored form is the Q/K/V kernel with its key/value width
+     *       zero, so every tile lies in its first output (which needs {@code d % 64 == 0});
      *   <li>where the shape does not tile, and native libraries are on: the weight decoded to FP32
      *       and one cuBLAS TF32 GEMM ({@code C = op_T(W) · X} in cuBLAS's column-major terms);
      *   <li>otherwise a warp per output.
@@ -1109,6 +1115,39 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             + " task '"
                             + task
                             + "' (shape not tiled by the int8 GEMM)");
+        }
+        if (simdgroupGemm(n) && (residual || d % 64 == 0)) {
+            simdgroupTasks.put(qualified, d);
+            ByteArray weight = w.asByteArray();
+            if (residual) {
+                graph.task(
+                        task,
+                        TransformerBatchPrefillSimdgroupKernels::batchedGemmQ8WithResidual,
+                        context,
+                        xBatch,
+                        outBatch,
+                        weight,
+                        n,
+                        d,
+                        batchSize);
+            } else {
+                graph.task(
+                        task,
+                        TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8,
+                        context,
+                        xBatch,
+                        outBatch,
+                        outBatch,
+                        outBatch,
+                        weight,
+                        weight,
+                        weight,
+                        n,
+                        d,
+                        0,
+                        batchSize);
+            }
+            return;
         }
         FloatArray scratch = state.workspace.wrapDequantScratchF32;
         if (scratch == null) {
@@ -1360,7 +1399,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             throw PackedWeights.noPackedKernel(
                     "qwen35 batch-prefill layer " + layer + " fused gate/up");
         }
-        if (simdgroupQ4_0(config.dim())) {
+        if (simdgroupGemm(config.dim())) {
             // Metal: gate and up as two SIMD-group GEMMs, then SwiGLU, as on the tensor cores.
             matVecBatch(
                     graph,
