@@ -138,17 +138,19 @@ public final class NativePrefillSupport {
 
     // @formatter:off
     /**
-     * Whether {@value #CUBLAS_LT_SONAME} is where the dynamic loader would find it: on
-     * {@code LD_LIBRARY_PATH}, in the loader cache or in a default directory.
+     * Whether {@value #CUBLAS_LT_SONAME} is where the dynamic loader would find it: on {@code
+     * LD_LIBRARY_PATH}, in the loader cache or in a default directory.
      *
-     * <p>Asked before any library is touched, because a cuDNN built for CUDA 12 opens cuBLAS
-     * itself on first use and calls {@code abort()} when it is missing, which no Java code can
-     * catch. Read from the file system, so nothing is loaded. Only Linux is checked; elsewhere
-     * the answer is yes and the libraries' own probes decide.
+     * <p>Asked before any library is touched, because a cuDNN built for CUDA 12 opens cuBLAS itself
+     * on first use and calls {@code abort()} when it is missing, which no Java code can catch. Read
+     * from the file system, so nothing is loaded. Only Linux is checked; elsewhere the answer is
+     * yes and the libraries' own probes decide.
      */
     // @formatter:on
     public static boolean cublasLtResolvable() {
-        if (!System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("linux")) {
+        if (!System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT)
+                .contains("linux")) {
             return true;
         }
         java.util.List<String> directories = new java.util.ArrayList<>();
@@ -166,12 +168,14 @@ public final class NativePrefillSupport {
                         "/usr/lib/aarch64-linux-gnu"));
         for (String directory : directories) {
             if (!directory.isEmpty()
-                    && java.nio.file.Files.exists(java.nio.file.Path.of(directory, CUBLAS_LT_SONAME))) {
+                    && java.nio.file.Files.exists(
+                            java.nio.file.Path.of(directory, CUBLAS_LT_SONAME))) {
                 return true;
             }
         }
         try {
-            byte[] cache = java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/etc/ld.so.cache"));
+            byte[] cache =
+                    java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/etc/ld.so.cache"));
             return new String(cache, java.nio.charset.StandardCharsets.ISO_8859_1)
                     .contains(CUBLAS_LT_SONAME);
         } catch (java.io.IOException | RuntimeException e) {

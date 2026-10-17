@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado;
 
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
@@ -9,7 +10,6 @@ import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Where vendor native libraries ({@code --with-native-libraries}) have an implementation.
@@ -98,11 +98,7 @@ public final class NativeLibrarySupport {
         if (INSTALL_NOTICE.compareAndSet(false, true)) {
             LOGGER.log(
                     System.Logger.Level.INFO,
-                    "For maximum performance please install "
-                            + libraries
-                            + "; "
-                            + fallback
-                            + ".");
+                    "For maximum performance please install " + libraries + "; " + fallback + ".");
         }
     }
 

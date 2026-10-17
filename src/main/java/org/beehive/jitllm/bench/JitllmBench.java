@@ -274,7 +274,8 @@ public class JitllmBench {
                                     && System.getProperty("jitllm.prefillBatchSize") == null,
                             !org.beehive.jitllm.runtime.policy.ExecutionPolicy
                                     .nativeLibrariesSpecified(),
-                            org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties());
+                            org.beehive.jitllm.runtime.policy.StorageOptions
+                                    .fromSystemProperties());
             if (benchPolicy.phaseStrategy()
                     == org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy
                             .PREFILL_DECODE) {

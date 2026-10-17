@@ -79,8 +79,7 @@ public final class LocalModels {
             }
             throw exhaustion;
         }
-        ExecutionPolicy policy =
-                gpu ? deviceDefault(model, options) : options.executionPolicy();
+        ExecutionPolicy policy = gpu ? deviceDefault(model, options) : options.executionPolicy();
         if (gpu) {
             policy = ExecutionPolicy.from(policy).decodedProjections(decodedProjections).build();
         }

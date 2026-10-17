@@ -127,8 +127,7 @@ public record Options(
         out.println(
                 "  --batch-prefill-size <int>    batched prefill chunk size; requires --with-prefill-decode, must be > 1, enables batched CPU/GPU prefill"
                         + " (default on GPU: 512, where the model supports it)");
-        out.println(
-                "  --no-batch-prefill            read the prompt one token at a time on GPU");
+        out.println("  --no-batch-prefill            read the prompt one token at a time on GPU");
         out.println(
                 "  --no-native-libraries         keep the JIT kernels where cuBLAS/cuDNN or MLX would run (GPU default)");
         out.println(
