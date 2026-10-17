@@ -359,6 +359,70 @@ public final class PlanDispatchEvidence {
         return seen;
     }
 
+    // @formatter:off
+    /**
+     * Asserts that every batched Q8_0 projection of a {@code qwen35} plan built on Metal runs on a
+     * SIMD-group GEMM, and returns how many tasks it checked.
+     *
+     * <p>Per task named in {@code outputs} (task name to output width), in every layer graph that
+     * holds it: the stored projections compile {@code batchedGemmQKVQ8} (the Q/K/V kernel with no
+     * key/value rows) and the residual ones {@code batchedGemmQ8WithResidual}, read off the task
+     * graphs by name; and the grid is {@code ceil(d / 64) * ceil(batchSize / 64)} workgroups of
+     * {@code THREADS} lanes. Then, over every task of every batched layer graph, the
+     * warp-per-output Q8_0 kernel may remain only on the tasks in {@code warpAllowed}.
+     */
+    // @formatter:on
+    public static int assertQwen35Q8ProjectionsOnSimdgroup(
+            TornadoVMMasterPlan plan,
+            GridScheduler scheduler,
+            int batchSize,
+            java.util.Map<String, Integer> outputs,
+            java.util.Set<String> residual,
+            java.util.Set<String> warpAllowed) {
+        assertNotNull("no grid scheduler for the plan this run built", scheduler);
+        int threads =
+                org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels
+                        .THREADS;
+        int checked = 0;
+        for (var entry : outputs.entrySet()) {
+            String task = entry.getKey();
+            int d = entry.getValue();
+            String kernel =
+                    residual.contains(task) ? "batchedGemmQ8WithResidual" : "batchedGemmQKVQ8";
+            java.util.Map<String, String> byGraph = batchedTaskKernelsByGraph(plan, task);
+            assertTrue("no batched layer graph holds " + task, !byGraph.isEmpty());
+            for (var graph : byGraph.entrySet()) {
+                String key = graph.getKey() + "." + task;
+                assertEquals(key + " kernel", kernel, graph.getValue());
+                WorkerGrid grid = scheduler.get(key);
+                assertNotNull(key + " has no worker grid", grid);
+                assertEquals(
+                        key + " global",
+                        (long) ((d + 63) / 64) * ((batchSize + 63) / 64) * threads,
+                        grid.getGlobalWork()[0]);
+                assertEquals(key + " local", (long) threads, grid.getLocalWork()[0]);
+                checked++;
+            }
+        }
+        java.util.Set<String> tasks = new TreeSet<>();
+        for (String key : scheduler.keySet()) {
+            if (key.startsWith("batchLayer_")) {
+                tasks.add(key.substring(key.indexOf('.') + 1));
+            }
+        }
+        for (String task : tasks) {
+            if (warpAllowed.contains(task)) {
+                continue;
+            }
+            for (var graph : batchedTaskKernelsByGraph(plan, task).entrySet()) {
+                assertTrue(
+                        graph.getKey() + "." + task + " still runs " + graph.getValue(),
+                        !"batchedMatVecQ8_0Warp".equals(graph.getValue()));
+            }
+        }
+        return checked;
+    }
+
     /**
      * Asserts that the batched F32 alpha and beta projections of every recurrent layer run as the
      * warp-per-tile kernel: {@code batchedMatVecF32WarpTile} by name off the task graphs, and a
