@@ -276,7 +276,7 @@ consuming the budget before changing anything.
 
 ### Fast prompt processing on CUDA
 
-With `--gpu`, the prompt is prefilled in batches by default (128 tokens per step; 256 on Metal),
+With `--gpu`, the prompt is prefilled in batches by default (512 tokens per step),
 and on an NVIDIA GPU with tensor cores the batched projections run in cuBLAS (MLX on Apple
 silicon) where the model has a native-library path and the libraries are installed. When they
 are not, the run prints a notice naming what to install and uses jitllm's own kernels:

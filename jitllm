@@ -673,7 +673,7 @@ def create_parser(command=None) -> argparse.ArgumentParser:
                         help="Read the prompt N tokens per step (needs --with-prefill-decode; N > 1)")
     engine.add_argument("--no-batch-prefill", dest="no_batch_prefill", action="store_true",
                         help="Read the prompt one token at a time on GPU (default: batched prefill, "
-                             "128 tokens per step, 256 on Metal, where the model supports it)")
+                             "512 tokens per step, where the model supports it)")
     engine.add_argument("--verbose", "-v", action="store_true",
                         help="Show the startup configuration, initialization timings and detailed diagnostics on stderr")
     engine.add_argument("--show-command", action="store_true",

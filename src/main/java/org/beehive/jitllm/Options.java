@@ -126,7 +126,7 @@ public record Options(
                 "  --with-prefill-decode         enable prefill/decode separation (skip logits during prefill)");
         out.println(
                 "  --batch-prefill-size <int>    batched prefill chunk size; requires --with-prefill-decode, must be > 1, enables batched CPU/GPU prefill"
-                        + " (default on GPU: 128, 256 on Metal, where the model supports it)");
+                        + " (default on GPU: 512, where the model supports it)");
         out.println(
                 "  --no-batch-prefill            read the prompt one token at a time on GPU");
         out.println(

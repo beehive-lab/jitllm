@@ -103,10 +103,10 @@ public final class BatchPrefillSupport {
                     "gemma4");
 
     /** The batched-prefill chunk Metal runs by default; see {@link #defaultFor}. */
-    public static final int METAL_DEFAULT_PREFILL_BATCH = 256;
+    public static final int METAL_DEFAULT_PREFILL_BATCH = 512;
 
     /** The batched-prefill chunk the other accelerator backends run by default. */
-    public static final int DEFAULT_PREFILL_BATCH = 128;
+    public static final int DEFAULT_PREFILL_BATCH = 512;
 
     // @formatter:off
     /**
@@ -116,10 +116,13 @@ public final class BatchPrefillSupport {
      *
      * <p>CUDA and OpenCL prefill in chunks of {@value #DEFAULT_PREFILL_BATCH}. On Metal, the
      * families in {@link #METAL_BATCHED_FAMILIES}, in F16 and Q8_0, prefill an order of magnitude
-     * faster in batches of {@value #METAL_DEFAULT_PREFILL_BATCH} than one token at a time on an
-     * Apple GPU (M4 Pro, pp512: Qwen3-0.6B F16 151 to 4171 tok/s; Llama-3.2-1B F16 40 to 2372,
+     * faster in batches than one token at a time on an Apple GPU (M4 Pro, pp512 in chunks of 256:
+     * Qwen3-0.6B F16 151 to 4171 tok/s; Llama-3.2-1B F16 40 to 2372,
      * Q8_0 45 to 2075; Qwen3.5-0.8B Q4_0 60 to 2057; Gemma-4-E2B Q8_0 68 to 1067); greedy text is
-     * identical. Q4_0 is batched by default for llama and qwen35 only. Other families keep
+     * identical. Every chunk reads all the weights once and replays every layer graph, so a wider
+     * chunk spreads that fixed cost over more tokens: against 512, chunks of 128 halve prefill on
+     * an A100 (Mistral-7B Q8_0 pp512 2343 against 5206 tok/s) and chunks of 256 cost 5-6% on an
+     * M4 Pro. Q4_0 is batched by default for llama and qwen35 only. Other families keep
      * single-token prefill on Metal until their batched kernels are tuned there. A model split
      * across devices ({@code --devices}) keeps single-token prefill: not every family splits its
      * batched prefill. Only a single-token policy is changed, so an explicit choice is never

@@ -144,7 +144,7 @@ withheld. `SplitKvAttentionPolicy` now reads the device's local-memory size and 
 `processHeadsFlashAttentionSplitKVPaged32`, the same arithmetic in 32-thread workgroups
 (17284 bytes), wherever the 64-thread arrays do not fit.
 
-On Metal, every family below prefills in batches of 256 by default
+On Metal, every family below prefills in batches of 512 by default
 (`BatchPrefillSupport.defaultFor`), when the caller chose no execution policy and neither
 `--with-prefill-decode` nor `-Djitllm.prefillBatchSize` was given: Qwen3, Llama (including
 Q4_0), Qwen2 / DeepSeek-R1-Distill-Qwen, Mistral, Phi-3, Granite 3.2 / 4.0, Qwen3.5 (Q4_0)
@@ -190,7 +190,7 @@ batched; greedy text is identical in every row:
 On CUDA every family has a batched prefill on the tensor cores: Llama (F16, Q8_0, Q4_0),
 Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Phi-3, Granite, Devstral (F16, Q8_0, Q4_K),
 Qwen2-MoE, Gemma 4, Qwen3.5 / 3.6 / 3.8 and deepseek2. It is the default,
-in chunks of 128 (the tensor-core tile height), wherever the family's batched prefill builds on the device; elsewhere the
+in chunks of 512, wherever the family's batched prefill builds on the device; elsewhere the
 single-token plan runs. `--with-prefill-decode --batch-prefill-size N` chooses the chunk, and an
 explicit request the device cannot build is refused with `GPUL-CFG-002`, naming the flag to drop. The Llama-shaped families share
 `LlamaFP16LayersBatchPrefillMMA` and `LlamaQ8_0LayersBatchPrefillMMA`, which a family extends
@@ -329,7 +329,7 @@ Recorded external limitations, each with its named cause:
   the confidence level.
 
 Batched prefill is **the default on every accelerator backend** where the family builds it: in
-chunks of 128 on CUDA and OpenCL, and of 256 on Metal for the families listed above. A model
+chunks of 512 on CUDA, OpenCL and, for the families listed above, Metal. A model
 split across devices keeps single-token prefill unless batches are asked for.
 
 ## Metal specifics
