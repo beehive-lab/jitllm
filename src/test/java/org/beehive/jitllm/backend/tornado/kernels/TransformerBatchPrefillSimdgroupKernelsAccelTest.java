@@ -380,6 +380,55 @@ public class TransformerBatchPrefillSimdgroupKernelsAccelTest {
         checkQkv(true, 64, 128, 64, 70);
     }
 
+    /**
+     * The Q/K/V kernel as a single stored Q8_0 projection, the way {@code qwen35} batched prefill
+     * calls it on Metal: key/value width zero, so every 64-row tile lies in the first output, and
+     * that one buffer and weight bound to all three slots.
+     */
+    private static void checkQ8Store(int n, int d, int batch) {
+        assumeMetal();
+        FloatArray x = activations(batch, n);
+        FloatArray out = new FloatArray(batch * d);
+        out.init(UNTOUCHED);
+        ByteArray w = q8Weights(d, n);
+        String name = "simdgroupQ8Store" + d + "x" + batch;
+        TaskGraph graph = new TaskGraph(name);
+        graph.transferToDevice(DataTransferMode.EVERY_EXECUTION, x, out);
+        graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, w);
+        graph.task(
+                "t",
+                TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8,
+                new KernelContext(),
+                x,
+                out,
+                out,
+                out,
+                w,
+                w,
+                w,
+                n,
+                d,
+                0,
+                batch);
+        graph.transferToHost(DataTransferMode.EVERY_EXECUTION, out);
+        run(graph, name, (d / 64) * ((batch + 63) / 64));
+        for (int b = 0; b < batch; b++) {
+            for (int r = 0; r < d; r++) {
+                assertEquals(
+                        name + " " + b + "," + r,
+                        dot(x, b, n, TransformerBatchPrefillSimdgroupKernelsAccelTest::q8Weight, r),
+                        out.get(b * d + r),
+                        0.0f);
+            }
+        }
+    }
+
+    @Test
+    public void q8StoreWholeAndPartialTiles() {
+        checkQ8Store(128, 192, 128);
+        checkQ8Store(128, 192, 70);
+    }
+
     /** Fused Q/K/V rows (Phi-3's {@code wqkv}): rows {@code [0, qDim)} Q, then K, then V. */
     private static void checkQkvFused(boolean q8, int dim, int kvDim, int batch) {
         assumeMetal();
