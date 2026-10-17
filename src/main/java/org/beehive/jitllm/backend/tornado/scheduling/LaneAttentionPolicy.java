@@ -33,7 +33,8 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * Qwen3 (Q8_0, FP16), Qwen2 (Q8_0, FP16), Granite (Q8_0, through the scaled kernels) and Phi-3
  * (Q8_0, 96-wide heads) families. The FP32 key/value cache, the packed-half2 variant and the
  * non-split per-head kernel keep the kernels they had, as does the Qwen3.5 family (256-wide heads),
- * which has its own single-warp kernel. The FP32-cache kernels ({@link
+ * which has its own single-warp kernel on CUDA and its own lane-cooperative kernels on Metal
+ * ({@link #laneCooperativeAttentionHead256}). The FP32-cache kernels ({@link
  * #laneCooperativeAttentionFp32Cache}) are a separate, Metal-only decision: Metal keeps the
  * key/value cache in FP32.
  *
@@ -238,5 +239,63 @@ public final class LaneAttentionPolicy {
                 && TornadoDevices.target()
                         .capabilities()
                         .supports(DeviceCapability.SUBGROUP_SHUFFLE_32);
+    }
+
+    /** The 256-wide head of the Qwen3.5 family, which has its own lane-cooperative kernels. */
+    public static final int WIDE_HEAD_SIZE = 256;
+
+    // @formatter:off
+    /**
+     * Warps per (head, split) for the 256-wide kernels. Screened on an Apple M4 Pro with the
+     * Qwen3.5-0.8B shape (8 query heads over 2 key/value heads), kernel plus combine, FP32 cache,
+     * depths 680 / 2000 (us): 8 splits x 4 warps 16.6 / 32.8, x 8 warps 16.9 / 32.0, x 16 warps
+     * 24.7 / 45.8; 16 splits x 8 warps 19.0 / 32.7; FP16 cache at 2000, 8 x 8 23.2, 8 x 4 28.7, 16
+     * x 8 26.0. The single-threadgroup-per-head kernel it replaces: 3708 / 11220 us. End to end
+     * (tg128) every shape from 4 to 32 splits and 4 to 16 warps was within 2%.
+     */
+    // @formatter:on
+    public static final int HEAD256_WARPS_PER_GROUP = 8;
+
+    // @formatter:off
+    /**
+     * Splits per head for the 256-wide kernels, unless {@code jitllm.attention.splitKv.count} is
+     * set; screened with {@link #HEAD256_WARPS_PER_GROUP}. At 8 query heads that is 64 groups of
+     * 256 threads.
+     */
+    // @formatter:on
+    public static final int HEAD256_SPLITS = 8;
+
+    // @formatter:off
+    /**
+     * Whether decode attention over a 256-wide head runs the lane-cooperative split-KV kernels
+     * {@code processHeadsFlashAttentionSplitKVPagedLaneHead256} (FP32 cache) and {@code
+     * processHeadsFlashAttentionSplitKVFP16PagedLaneHead256} (FP16 cache).
+     *
+     * <p>Granted where {@link DeviceCapability#SUBGROUP_SHUFFLE_32} holds (Metal), whose decode
+     * attention for this width was otherwise one threadgroup per query head walking every position
+     * in 8-position tiles, a cost linear in the context with a handful of threadgroups in flight.
+     * CUDA keeps its own 256-wide split-KV warp kernel and FP32-cache kernel.
+     */
+    // @formatter:on
+    public static boolean laneCooperativeAttentionHead256(int headSize) {
+        return headSize == WIDE_HEAD_SIZE
+                && TornadoDevices.target()
+                        .capabilities()
+                        .supports(DeviceCapability.SUBGROUP_SHUFFLE_32);
+    }
+
+    /**
+     * Splits per head for the 256-wide kernels against a split scratch sized for {@code capacity}
+     * splits: {@code jitllm.attention.splitKv.count} when set, {@link #HEAD256_SPLITS} otherwise,
+     * never more than the capacity.
+     */
+    public static int head256Splits(int capacity) {
+        int splits = Integer.getInteger("jitllm.attention.splitKv.count", HEAD256_SPLITS);
+        return Math.max(1, Math.min(capacity, splits));
+    }
+
+    /** The grid for {@code groups} (head, split) pairs of the 256-wide kernels. */
+    public static WorkerGrid head256Worker(int groups) {
+        return WorkerGridFactory.createLaneAttentionWorker(groups, HEAD256_WARPS_PER_GROUP);
     }
 }

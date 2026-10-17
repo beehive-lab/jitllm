@@ -172,10 +172,15 @@ public class Fp16KeyValueSupportTest {
                             check(arch, weights, mode, BackendId.METAL, false, false));
                 }
             }
-            assertEquals(
-                    mode.toString(),
-                    Optional.empty(),
-                    check("qwen35", DataType.Q4_0, mode, BackendId.METAL, false, false));
+            for (DataType weights : new DataType[] {DataType.Q4_0, DataType.Q8_0}) {
+                assertEquals(
+                        "qwen35 " + weights + " " + mode,
+                        Optional.empty(),
+                        check("qwen35", weights, mode, BackendId.METAL, false, false));
+            }
+            assertTrue(
+                    "qwen35 F16 " + mode,
+                    check("qwen35", DataType.F16, mode, BackendId.METAL, false, false).isPresent());
             assertEquals(
                     mode.toString(),
                     mode == ExecutionMode.PREFILL_DECODE,

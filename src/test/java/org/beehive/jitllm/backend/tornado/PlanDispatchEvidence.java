@@ -490,13 +490,21 @@ public final class PlanDispatchEvidence {
     // @formatter:on
     /**
      * The decode attention this backend is meant to select for a {@code qwen35} FP16 cache:
-     * split-KV on CUDA ({@link #assertQwen35SplitKvAttention}), the single-workgroup per-head
-     * kernel (an attention task and no combine) everywhere else.
+     * split-KV on CUDA ({@link #assertQwen35SplitKvAttention}), the lane-cooperative 256-wide
+     * split-KV kernels on Metal ({@link #assertQwen35LaneHead256Attention}), the single-workgroup
+     * per-head kernel (an attention task and no combine) everywhere else.
      */
     public static void assertQwen35DecodeAttentionForBackend(GridScheduler scheduler) {
         if (org.beehive.jitllm.runtime.backend.BackendId.CUDA.equals(
                 org.beehive.jitllm.backend.tornado.device.TornadoDevices.current().backend())) {
             assertQwen35SplitKvAttention(scheduler);
+            return;
+        }
+        if (org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy
+                .laneCooperativeAttentionHead256(
+                        org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy
+                                .WIDE_HEAD_SIZE)) {
+            assertQwen35DecodeSplitPairs(scheduler);
             return;
         }
         assertNotNull(
@@ -530,6 +538,77 @@ public final class PlanDispatchEvidence {
                         + combine.size(),
                 attention.size(),
                 combine.size());
+    }
+
+    // @formatter:off
+    /**
+     * Asserts that this plan's {@code qwen35} decode attention is the lane-cooperative 256-wide
+     * split-KV pair, on the grid that kernel is written for, in every one of {@code
+     * attentionLayers} layers.
+     *
+     * <p>The kernel strides a split's positions by warp and folds whole warps, so it must launch
+     * {@code LaneAttentionPolicy.HEAD256_WARPS_PER_GROUP} warps per (head, split) and {@code heads
+     * * splits} groups; the combine one group per head. A plan with the right task names on a
+     * per-head grid would read past its splits without failing, so the geometry is asserted as well
+     * as the names.
+     *
+     * @return the decode attention task names that were checked
+     */
+    // @formatter:on
+    public static List<String> assertQwen35LaneHead256Attention(
+            GridScheduler scheduler, int heads, int splits, int attentionLayers) {
+        List<String> checked = assertQwen35DecodeSplitPairs(scheduler);
+        long local =
+                org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy
+                                .HEAD256_WARPS_PER_GROUP
+                        * 32L;
+        for (String task : checked) {
+            WorkerGrid grid = scheduler.get(task);
+            assertEquals(task + ": threads per (head, split)", local, grid.getLocalWork()[0]);
+            assertEquals(
+                    task + ": one group per (head, split)",
+                    (long) heads * splits * local,
+                    grid.getGlobalWork()[0]);
+            WorkerGrid combine = scheduler.get(task + "_combine");
+            assertEquals(
+                    task + "_combine: one group per head",
+                    (long) heads,
+                    combine.getGlobalWork()[0] / combine.getLocalWork()[0]);
+        }
+        assertEquals(
+                "decode attention tasks, one per attention layer: " + checked,
+                attentionLayers,
+                checked.size());
+        return checked;
+    }
+
+    private static final Pattern QWEN35_DECODE_ATTENTION =
+            Pattern.compile("^layer_\\d+\\.(?:l\\d+_)?attention$");
+
+    /**
+     * Asserts that every single-token decode attention task ({@code layer_<g>.[l<n>_]attention},
+     * not a batched prefill's {@code batchLayer_<n>.attention}) has its combine, and returns them.
+     */
+    public static List<String> assertQwen35DecodeSplitPairs(GridScheduler scheduler) {
+        assertNotNull(
+                "no grid scheduler for the plan this run built, so its dispatch cannot be checked",
+                scheduler);
+        List<String> attention = new ArrayList<>();
+        for (String task : new TreeSet<>(scheduler.keySet())) {
+            if (QWEN35_DECODE_ATTENTION.matcher(task).matches()) {
+                attention.add(task);
+            }
+        }
+        assertTrue(
+                "this plan has no decode attention task at all: "
+                        + new TreeSet<>(scheduler.keySet()),
+                !attention.isEmpty());
+        for (String task : attention) {
+            assertTrue(
+                    task + " has no combine, so it is the per-head kernel",
+                    scheduler.keySet().contains(task + "_combine"));
+        }
+        return attention;
     }
 
     // @formatter:off

@@ -152,10 +152,10 @@ public final class Fp16KeyValueSupport {
      * The Metal rows: each (family, weights, mode) measured against FP32 on an Apple M4 Pro with
      * the {@code GpuFp16Kv*AccelTest} classes. Decode attention over the FP16 cache takes the
      * lane-cooperative split-KV kernel for 128-wide heads (the 64-thread per-key kernel needs more
-     * than Metal's 32 KB of threadgroup memory) and the per-head flash kernels otherwise; batched
-     * prefill takes the FP16 SIMD-group attention kernels. Rows without a model file here stay
-     * refused: Gemma 4 Q4_0 and the families' sequential prefill/decode outside Llama, Qwen3 and
-     * Qwen3.5.
+     * than Metal's 32 KB of threadgroup memory), its 256-wide twin for Qwen3.5, and the per-head
+     * flash kernels otherwise; batched prefill takes the FP16 SIMD-group attention kernels. Rows
+     * without a model file here stay refused: Gemma 4 Q4_0 and the families' sequential
+     * prefill/decode outside Llama, Qwen3 and Qwen3.5.
      */
     // @formatter:on
     private static Optional<String> metal(Combination c) {
@@ -166,7 +166,7 @@ public final class Fp16KeyValueSupport {
         boolean f16OrQ8 = c.weights() == DataType.F16 || c.weights() == DataType.Q8_0;
         switch (c.architecture()) {
             case "qwen35" -> {
-                return c.weights() == DataType.Q4_0
+                return c.weights() == DataType.Q4_0 || c.weights() == DataType.Q8_0
                         ? Optional.empty()
                         : Optional.of(
                                 "the qwen35 " + c.weights() + " layers are not verified on Metal");

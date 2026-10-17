@@ -1007,12 +1007,20 @@ public class Qwen35FFNLayers
      *
      * <p>Restricted to <b>CUDA</b>, whose warp shuffles are the verified ones and where this was
      * measured. FP16 key/value storage is an option rather than a backend property, so the
-     * capability alone would have admitted OpenCL, where nothing has run. The FP32 key/value path
-     * keeps the kernel it has, on every backend. One is not a special case: it selects the per-head
+     * capability alone would have admitted OpenCL, where nothing has run. CUDA's FP32 key/value
+     * path keeps the kernel it has.
+     *
+     * <p>On <b>Metal</b> ({@link #laneHead256Attention}) both caches take the lane-cooperative
+     * 256-wide kernels, several warps per (head, split), with {@code
+     * LaneAttentionPolicy.head256Splits} splits. One is not a special case: it selects the per-head
      * kernel.
      */
     // @formatter:on
     private int attentionSplits() {
+        if (laneHead256Attention()) {
+            return org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy.head256Splits(
+                    Qwen35Configuration.DECODE_ATTENTION_SPLITS);
+        }
         var device = org.beehive.jitllm.backend.tornado.device.TornadoDevices.target();
         boolean eligible =
                 fp16Kv()
@@ -1024,6 +1032,15 @@ public class Qwen35FFNLayers
                                         org.beehive.jitllm.runtime.backend.DeviceCapability
                                                 .SPLIT_KV_ATTENTION);
         return eligible ? Qwen35Configuration.DECODE_ATTENTION_SPLITS : 1;
+    }
+
+    /**
+     * Whether decode attention runs the lane-cooperative split-KV kernels for a 256-wide head
+     * (Metal), over whichever cache precision this state holds.
+     */
+    private boolean laneHead256Attention() {
+        return org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy
+                .laneCooperativeAttentionHead256(config.headSize());
     }
 
     /** Whether this state's key/value store is half precision. */
@@ -1439,13 +1456,68 @@ public class Qwen35FFNLayers
         }
 
         // @formatter:off
-        // Split-KV decode attention, a warp per (head, split), where attentionSplits() admits it
-        // (FP16 store, a 256-wide head, CUDA); the single-workgroup online-softmax kernel
-        // otherwise. The single-workgroup kernel sizes its shared memory from the head width; the
-        // shared 128-wide split-KV kernel of the other families cannot take this family's head.
+        // Split-KV decode attention where attentionSplits() admits it: on Metal the
+        // lane-cooperative 256-wide kernels over either cache, several warps per (head, split);
+        // on CUDA a warp per (head, split) over the FP16 store; the single-workgroup
+        // online-softmax kernel otherwise. The single-workgroup kernel sizes its shared memory from
+        // the head width; the shared 128-wide split-KV kernel of the other families cannot take
+        // this family's head.
         // @formatter:on
         int splits = attentionSplits();
-        if (splits > 1) {
+        if (splits > 1 && laneHead256Attention()) {
+            // Phase 1 on Metal: several warps per (head, split), each streaming its own subset of
+            // the split's positions, folded in the group; partials in the combine's layout.
+            if (fp16Kv()) {
+                layer.task(
+                        tn("attention"),
+                        TransformerPagedKvKernels
+                                ::processHeadsFlashAttentionSplitKVFP16PagedLaneHead256,
+                        context,
+                        qwen35State.workspace.wrapAttnQ,
+                        qwen35State.workspace.wrapKeyCacheFP16,
+                        qwen35State.workspace.wrapValueCacheFP16,
+                        qwen35State.workspace.wrapAttSplit,
+                        config.numberOfHeads(),
+                        headDim,
+                        kvDim,
+                        config.kvMul(),
+                        qwen35State.workspace.positionHolder,
+                        kvLayer,
+                        qwen35State.workspace.wrapBlockTable,
+                        qwen35State.kvBlockCfg,
+                        qwen35State.kvBlockStride,
+                        splits);
+            } else {
+                layer.task(
+                        tn("attention"),
+                        TransformerPagedKvKernels
+                                ::processHeadsFlashAttentionSplitKVPagedLaneHead256,
+                        context,
+                        qwen35State.workspace.wrapAttnQ,
+                        qwen35State.workspace.wrapKeyCache,
+                        qwen35State.workspace.wrapValueCache,
+                        qwen35State.workspace.wrapAttSplit,
+                        config.numberOfHeads(),
+                        headDim,
+                        kvDim,
+                        config.kvMul(),
+                        qwen35State.workspace.positionHolder,
+                        kvLayer,
+                        qwen35State.workspace.wrapBlockTable,
+                        qwen35State.kvBlockCfg,
+                        qwen35State.kvBlockStride,
+                        splits);
+            }
+            layer.task(
+                    tn("attention_combine"),
+                    TransformerComputeKernelsLayered::combineSplitKVAttention,
+                    context,
+                    qwen35State.workspace.wrapAttSplit,
+                    qwen35State.workspace.wrapXb,
+                    config.numberOfHeads(),
+                    headDim,
+                    splits);
+        } else if (splits > 1) {
             // Phase 1: each head's key/value range split across `splits` workgroups, partials into
             // wrapAttSplit in the compact layout the combine expects.
             layer.task(
@@ -1999,14 +2071,19 @@ public class Qwen35FFNLayers
                         config.numberOfHeads() * (config.ropeDimensionCount() / 2), 32);
         WorkerGrid kvAppend = WorkerGridFactory.genericWorker(config.kvDim(), ELEMENTWISE_LOCAL);
         int splits = attentionSplits();
-        // Split-KV launches nHeads*splits warps of SPLIT_KV_LOCAL lanes, followed by a combine
-        // pass of one workgroup per head. With splits == 1 the per-head kernel keeps the worker it
-        // has always had.
+        // Split-KV launches nHeads*splits warps of SPLIT_KV_LOCAL lanes (on Metal, groups of
+        // several warps), followed by a combine pass of one workgroup per head. With splits == 1
+        // the per-head kernel keeps the worker it has always had.
         WorkerGrid attention =
-                splits > 1
-                        ? WorkerGridFactory.genericWorker(
-                                config.numberOfHeads() * splits * SPLIT_KV_LOCAL, SPLIT_KV_LOCAL)
-                        : WorkerGridFactory.createAttentionWorker(config.numberOfHeads(), headDim);
+                splits > 1 && laneHead256Attention()
+                        ? org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy
+                                .head256Worker(config.numberOfHeads() * splits)
+                        : splits > 1
+                                ? WorkerGridFactory.genericWorker(
+                                        config.numberOfHeads() * splits * SPLIT_KV_LOCAL,
+                                        SPLIT_KV_LOCAL)
+                                : WorkerGridFactory.createAttentionWorker(
+                                        config.numberOfHeads(), headDim);
         WorkerGrid attentionCombine =
                 WorkerGridFactory.createAttentionWorker(config.numberOfHeads(), headDim);
         WorkerGrid outputGate =

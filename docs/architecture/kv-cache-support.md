@@ -55,7 +55,7 @@ materialized as Q8_0 runs, and is decided as, Q8_0.
 | Metal | Llama, Qwen3 | F16, Q8_0 | single-token, sequential prefill/decode, batched prefill (SIMD-group) | supported | tested on an Apple M4 Pro, TornadoVM 7.2.1-dev (SIMD-group half fragments): Llama 1B F16 cos ≥ 0.9999987, rel L2 ≤ 0.0016; Llama 1B Q8_0 cos ≥ 0.9999994, rel L2 ≤ 0.0010; Qwen3 0.6B F16 cos ≥ 0.9999982, rel L2 ≤ 0.0020; Qwen3 0.6B Q8_0 cos ≥ 0.9999993, rel L2 ≤ 0.0012; top-1 100% — `GpuFp16Kv{Llama,Qwen3}{F16,Q8}AccelTest` |
 | Metal | Llama | Q4_0 (retained) | single-token, batched prefill | supported | tested on M4 Pro: Llama 1B Q4_0 cos ≥ 0.9999997, rel L2 ≤ 8.8e-4, top-1 100% — `GpuFp16KvLlamaQ4AccelTest` |
 | Metal | Qwen2 / DeepSeek-R1-Distill, Phi-3, Granite 3.2 / 4.0, Mistral | F16, Q8_0 | single-token, batched prefill | supported | tested on M4 Pro: Qwen2.5 1.5B F16/Q8_0 cos ≥ 0.9999990, rel L2 ≤ 0.0015; DeepSeek-R1-Distill-Qwen 1.5B Q8_0 cos ≥ 0.9999975, rel L2 ≤ 0.0023; Phi-3 mini F16/Q8_0 cos ≥ 0.9999993, rel L2 ≤ 0.0013; Granite 3.2 2B F16/Q8_0 cos ≥ 0.9999981, rel L2 ≤ 0.0019; Granite 4.0 1B Q8_0 cos ≥ 0.9999998, rel L2 ≤ 7.8e-4; Mistral-7B Q8_0 cos ≥ 0.9999999, rel L2 ≤ 3.5e-4; top-1 100%. F16 of Granite 4.0 and Mistral structural (no file here) |
-| Metal | Qwen3.5 | Q4_0 (+ mixed) | all | supported | tested on M4 Pro: Qwen3.5-0.8B Q4_0 cos ≥ 0.9999997, rel L2 ≤ 7.1e-4, top-1 100% — `GpuFp16KvQwen35Q4AccelTest` |
+| Metal | Qwen3.5 | Q4_0 (+ mixed), Q8_0 | all | supported | tested on M4 Pro: Qwen3.5-0.8B Q4_0 cos ≥ 0.9999997, rel L2 ≤ 7.2e-4, top-1 100% — `GpuFp16KvQwen35Q4AccelTest`; Qwen3.5-0.8B Q8_0 cos ≥ 0.99999993, rel L2 ≤ 3.9e-4, top-1 100% — `GpuFp16KvQwen35Q8AccelTest`; greedy text identical to the FP32 cache over a 20- and a 1379-token prompt. F16 stays refused (no file here) |
 | Metal | Gemma 4 | Q8_0 | single-token, batched prefill | supported | tested on M4 Pro: gemma-4-E2B-it Q8_0 single-token cos ≥ 0.99999999, rel L2 ≤ 1.1e-4; batched rel L2 ≤ 3.1e-4; top-1 100% — `GpuFp16KvGemma4Q8AccelTest` |
 | Metal | Gemma 4 Q4_0; Qwen2 / DeepSeek, Phi-3, Granite, Mistral in sequential prefill/decode; every other family | any | — | refused (blocked) | no model file here (Gemma 4 Q4_0), or the path was not measured on Metal |
 | CUDA (tensor-core) | continuous batching (`serve --continuous-batching`, experimental): Llama, Qwen3 | F16 | batched decode over the shared pool | supported | tested, token streams only (the engine samples on the device): FP16 and FP32 pools give identical greedy streams — Llama 1B F16 41 and 28 tokens to the stop token, Qwen3 0.6B F16 64 and 64 tokens, two concurrent requests with 150- and 300-token prompts — `EngineFp16KvAccelTest`; the decode kernels are FP16-storage twins of the FP32 ones |
@@ -68,7 +68,8 @@ memory, so the 64-thread per-key FP16 split-KV kernel (34052 bytes) cannot be bu
 - **Decode attention**: the lane-cooperative split-KV kernel
   (`processHeadsFlashAttentionSplitKVFP16PagedLaneHead128`) for 128-wide heads (Qwen3), the
   per-head flash kernel (`processHeadsFlashAttentionFP16Paged`) for Llama, Mistral, Qwen2,
-  Phi-3 and Granite, the 8-position tile kernel for Qwen3.5's 256-wide heads, and Gemma 4's
+  Phi-3 and Granite, the lane-cooperative split-KV kernels for Qwen3.5's 256-wide heads
+  (`processHeadsFlashAttentionSplitKV{,FP16}PagedLaneHead256`, either cache), and Gemma 4's
   shuffle-reduced grouped kernel (`attentionDecodeGroupFP16`, rel L2 ≤ 4.2e-7 against FP64 —
   `Gemma4DecodeGroupSharedParityAccelTest`).
 - **Batched prefill attention**: `TransformerPagedKvBatchPrefillSimdgroupFP16Kernels` (64-, 96-
