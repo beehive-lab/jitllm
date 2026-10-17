@@ -21,6 +21,31 @@ public final class GraniteBatchPrefillKernels {
     }
 
     /**
+     * {@code TransformerBatchPrefillKernels.batchedFFNSwiGLUFP16Packed} with the product scaled by
+     * {@code scale} before it is rounded to FP16. Granite's feed-forward activations peak above the
+     * FP16 range (Granite 4.0 1B reaches 1.3e5 in its fifth layer), and an infinity here turns the
+     * down projection, and every layer after it, into NaN. One thread per (token, hidden row).
+     */
+    public static void batchedFFNSwiGLUFP16PackedScaled(
+            KernelContext context,
+            HalfFloatArray wrapHbFP16Batch,
+            FloatArray gateUpResult,
+            int hiddenDim,
+            float scale,
+            int n) {
+        int gid = context.globalIdx;
+        if (gid < n) {
+            int b = gid / hiddenDim;
+            int i = gid % hiddenDim;
+            int rowBase = b * 2 * hiddenDim;
+            float g = gateUpResult.get(rowBase + i);
+            float u = gateUpResult.get(rowBase + hiddenDim + i);
+            float silu = g / (1.0f + TornadoMath.exp(-g));
+            wrapHbFP16Batch.set(gid, new HalfFloat(silu * u * scale));
+        }
+    }
+
+    /**
      * Scales the Q rows of the packed {@code [q|k|v]} rows the tensor-core QKV GEMM writes, by
      * {@code scale}: row {@code r < dim} of token {@code t} sits at {@code t * (dim + 2 * kvDim) +
      * r}. One thread per (token, Q row); threads past {@code batch} tokens do nothing.

@@ -14,8 +14,8 @@ import uk.ac.manchester.tornado.api.TaskGraph;
  * multipliers. The first layer scales the batch by the embedding multiplier; Q is scaled by {@code
  * attentionScale * sqrt(headSize)} after the QKV GEMM, which the attention kernel's {@code 1 /
  * sqrt(headSize)} turns into the attention multiplier; and both projections added to the stream are
- * scaled by the residual multiplier. RoPE reads the precomputed tables, built from Granite's own
- * base.
+ * scaled by the residual multiplier, the feed-forward's before its FP16 rounding (see {@link
+ * #swiglu}). RoPE reads the precomputed tables, built from Granite's own base.
  */
 public class GraniteFP16LayersBatchPrefillMMA extends LlamaFP16LayersBatchPrefillMMA {
 
@@ -26,6 +26,9 @@ public class GraniteFP16LayersBatchPrefillMMA extends LlamaFP16LayersBatchPrefil
             int batchSize) {
         super(state, weights, config, batchSize);
     }
+
+    /** The power of two the SwiGLU product is divided by on top of the residual multiplier. */
+    private static final float SWIGLU_HEADROOM = 4f;
 
     private GraniteConfiguration granite() {
         return (GraniteConfiguration) config;
@@ -68,6 +71,27 @@ public class GraniteFP16LayersBatchPrefillMMA extends LlamaFP16LayersBatchPrefil
                 batchSize * config.dim());
     }
 
+    /**
+     * The residual multiplier is applied to the SwiGLU product before it is rounded to FP16 rather
+     * than to the down projection's output: the projection is linear, so the result is the same,
+     * and the product stays in range. {@link #SWIGLU_HEADROOM} more keeps it there with room to
+     * spare; the down projection's output is multiplied back by it, which is exact for a power of
+     * two.
+     */
+    @Override
+    protected void swiglu(TaskGraph batchPrefillLayer, int layerIndex) {
+        int n = batchSize * config.hiddenDim();
+        batchPrefillLayer.task(
+                "swiglu",
+                GraniteBatchPrefillKernels::batchedFFNSwiGLUFP16PackedScaled,
+                context,
+                state.workspace.wrapHbFP16Batch,
+                state.workspace.gateUpResultBatch,
+                config.hiddenDim(),
+                granite().residualScale() / SWIGLU_HEADROOM,
+                n);
+    }
+
     @Override
     protected void afterDownProjection(TaskGraph batchPrefillLayer, int layerIndex) {
         batchPrefillLayer.task(
@@ -75,7 +99,7 @@ public class GraniteFP16LayersBatchPrefillMMA extends LlamaFP16LayersBatchPrefil
                 GraniteBatchPrefillKernels::batchedScale,
                 context,
                 state.workspace.w2Out,
-                granite().residualScale(),
+                SWIGLU_HEADROOM,
                 batchSize * config.dim());
     }
 
