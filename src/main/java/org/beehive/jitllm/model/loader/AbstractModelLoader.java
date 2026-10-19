@@ -120,15 +120,30 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
      *
      * @return The loaded model instance
      */
+    /** The vocabulary and tokenizer built for a parsed file by a loader (both immutable). */
+    private record Text(GGUF gguf, Class<?> loader, Vocabulary vocabulary, Tokenizer tokenizer) {}
+
+    /** The last ones built: the repeated loads of one file reuse them (see loadModel). */
+    private static volatile Text lastText;
+
     public final M loadModel() {
         try {
             Map<String, Object> metadata = gguf.getMetadata();
 
-            // Step 1: Load vocabulary
-            this.vocabulary = loadVocabulary(metadata);
-
-            // Step 2: Create tokenizer
-            Tokenizer tokenizer = createTokenizer(metadata, vocabulary);
+            // Steps 1 and 2: vocabulary and tokenizer. One run loads the same file several times (the
+            // memory preflight, the decoded-projection check, the load itself) and the GGUF parse is
+            // shared between them, so these are too: building a tokenizer means hashing every token
+            // and merge (~170 ms for Llama 3's 128k tokens and 280k merges).
+            Tokenizer tokenizer;
+            Text last = lastText;
+            if (last != null && last.gguf() == gguf && last.loader() == getClass()) {
+                this.vocabulary = last.vocabulary();
+                tokenizer = last.tokenizer();
+            } else {
+                this.vocabulary = loadVocabulary(metadata);
+                tokenizer = createTokenizer(metadata, vocabulary);
+                lastText = new Text(gguf, getClass(), vocabulary, tokenizer);
+            }
 
             // Step 3: Create configuration
             C config = createConfiguration(metadata);
