@@ -261,6 +261,13 @@ class LlamaRunner:
                 if backend in args.installed_backends:
                     cmd.append(f"-D{BACKEND_PRIORITY_PROPERTY[backend]}={n - rank}")
 
+            # Start only the backend that runs the model: every other one costs its driver load and
+            # device discovery at start-up (OpenCL next to CUDA on an RTX 4090: ~180 ms of the
+            # runtime's ~290 ms). --devices may name devices of several backends, so it keeps them
+            # all, and a choice already made in JAVA_TOOL_OPTIONS is left alone.
+            if not args.devices and "tornado.enabled.backends" not in os.environ.get("JAVA_TOOL_OPTIONS", ""):
+                cmd.append(f"-Dtornado.enabled.backends={args.backend.value}")
+
         module_config: List[str] = []
 
         if getattr(args, "server", False):

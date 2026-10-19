@@ -134,6 +134,43 @@ class VerbosityOptions(unittest.TestCase):
             args.installed_backends, args.backend = [launcher.Backend.CUDA], launcher.Backend.CUDA
             return runner._build_base_command(args)
 
+    def command_with_backends(self, installed, backend, *flags):
+        args = launcher.create_parser().parse_args(["--model", "stub.gguf", *flags])
+        with tempfile.TemporaryDirectory() as sdk:
+            open(os.path.join(sdk, "tornado-argfile"), "w").close()
+            os.makedirs(os.path.join(sdk, "target"))
+            open(os.path.join(sdk, "target", "jitllm-1.0.0-jdk21.jar"), "w").close()
+            runner = launcher.LlamaRunner.__new__(launcher.LlamaRunner)
+            runner.tornado_sdk = sdk
+            runner.java_home, runner.llama_root = "/stub/java", sdk
+            args.installed_backends, args.backend = installed, backend
+            return runner._build_base_command(args)
+
+    def test_only_the_selected_backend_is_started(self):
+        both = [launcher.Backend.OPENCL, launcher.Backend.CUDA]
+        self.assertIn("-Dtornado.enabled.backends=cuda", self.command_with_backends(both, launcher.Backend.CUDA))
+        self.assertIn("-Dtornado.enabled.backends=opencl", self.command_with_backends(both, launcher.Backend.OPENCL))
+
+    def test_a_single_backend_or_a_device_list_starts_them_all(self):
+        cuda = [launcher.Backend.CUDA]
+        both = [launcher.Backend.OPENCL, launcher.Backend.CUDA]
+        enabled = lambda cmd: [a for a in cmd if "tornado.enabled.backends" in a]
+        self.assertFalse(enabled(self.command_with_backends(cuda, launcher.Backend.CUDA)), "nothing to skip")
+        self.assertFalse(enabled(self.command_with_backends(both, launcher.Backend.CUDA, "--devices", "0:0,1:0")), "--devices may span backends")
+
+    def test_a_backend_choice_in_java_tool_options_wins(self):
+        both = [launcher.Backend.OPENCL, launcher.Backend.CUDA]
+        old = os.environ.get("JAVA_TOOL_OPTIONS")
+        os.environ["JAVA_TOOL_OPTIONS"] = "-Dtornado.enabled.backends=opencl,cuda"
+        try:
+            cmd = self.command_with_backends(both, launcher.Backend.CUDA)
+        finally:
+            if old is None:
+                del os.environ["JAVA_TOOL_OPTIONS"]
+            else:
+                os.environ["JAVA_TOOL_OPTIONS"] = old
+        self.assertFalse([a for a in cmd if "tornado.enabled.backends" in a])
+
     def test_kv_cache_is_fp16_unless_fp32_is_asked_for(self):
         default = self.base_command()
         self.assertFalse([a for a in default if "kvcache" in a], "FP16 is the Java default")
