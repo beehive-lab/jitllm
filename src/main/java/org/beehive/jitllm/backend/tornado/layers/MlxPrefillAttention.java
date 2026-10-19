@@ -9,6 +9,7 @@ import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
+import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.mlx.Mlx;
 
@@ -122,10 +123,18 @@ public final class MlxPrefillAttention {
      * Declares the buffers in layer graph {@code layerIndex}: uploaded by the first, bound after.
      */
     public void declare(TaskGraph layer, int layerIndex, String predecessor) {
-        if (layerIndex == 0) {
+        declare(layer, layerIndex == 0, predecessor);
+    }
+
+    /**
+     * Declares the buffers in a layer graph: uploaded when it is the {@code first} that attends,
+     * otherwise bound from graph {@code source}, which declared them already.
+     */
+    public void declare(TaskGraph layer, boolean first, String source) {
+        if (first) {
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, q, k, v, out);
         } else {
-            layer.consumeFromDevice(predecessor, q, k, v, out);
+            layer.consumeFromDevice(source, q, k, v, out);
         }
     }
 
@@ -134,6 +143,16 @@ public final class MlxPrefillAttention {
      * has rotated {@code wrapQBatch} and written the chunk's keys and values to the cache.
      */
     public void attention(TaskGraph layer, String task, int layerIndex) {
+        attention(layer, task, layerIndex, state.workspace.wrapQBatch, state.workspace.wrapXbBatch);
+    }
+
+    /**
+     * {@link #attention(TaskGraph, String, int)} for a family whose rotated queries are in {@code
+     * queries}, whose output goes to {@code output}, and whose layer addresses the cache as layer
+     * {@code cacheLayer} — a family where only some layers hold a cache counts those densely.
+     */
+    public void attention(
+            TaskGraph layer, String task, int cacheLayer, FloatArray queries, FloatArray output) {
         if (state.usesFp16KeyValueCache()) {
             layer.task(
                     task + "_gather_kv",
@@ -145,7 +164,7 @@ public final class MlxPrefillAttention {
                     k,
                     v,
                     state.workspace.wrapBlockTable,
-                    layerIndex,
+                    cacheLayer,
                     kvDim,
                     headDim,
                     positions,
@@ -164,7 +183,7 @@ public final class MlxPrefillAttention {
                     k,
                     v,
                     state.workspace.wrapBlockTable,
-                    layerIndex,
+                    cacheLayer,
                     kvDim,
                     headDim,
                     positions,
@@ -177,7 +196,7 @@ public final class MlxPrefillAttention {
                 task + "_pack_q",
                 MlxPrefillKernels::packHeads,
                 context,
-                state.workspace.wrapQBatch,
+                queries,
                 q,
                 heads,
                 batchSize,
@@ -204,7 +223,7 @@ public final class MlxPrefillAttention {
                 MlxPrefillKernels::unpackHeadsToFloat,
                 context,
                 out,
-                state.workspace.wrapXbBatch,
+                output,
                 heads,
                 batchSize,
                 headDim,

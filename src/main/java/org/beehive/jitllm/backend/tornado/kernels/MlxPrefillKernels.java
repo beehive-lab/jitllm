@@ -241,6 +241,27 @@ public final class MlxPrefillKernels {
     }
 
     /**
+     * {@code out[b][i] = src[b][offset + i]} for {@code i < width}: one projection's columns of a
+     * stacked product of {@code srcWidth} per row, back into FP32. Over {@code total = rows *
+     * width}.
+     */
+    public static void splitRows(
+            KernelContext context,
+            HalfFloatArray src,
+            FloatArray out,
+            int srcWidth,
+            int offset,
+            int width,
+            int total) {
+        int id = context.globalIdx;
+        if (id < total) {
+            int b = id / width;
+            int i = id % width;
+            out.set(id, src.get(b * srcWidth + offset + i).getFloat32());
+        }
+    }
+
+    /**
      * {@code rowScale[b] = min(1, PROJECTION_INPUT_LIMIT / max_i |GELU(gate[b][i]) * up[b][i]|)}:
      * {@link #swigluRowScale} for a GeGLU feed-forward (Gemma), over the stacked {@code [B][gate |
      * up]} product. One workgroup of {@code localSize} threads per row, over {@code rows} rows.
