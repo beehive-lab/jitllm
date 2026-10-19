@@ -122,6 +122,30 @@ public final class Qwen35PlanProvider implements TornadoPlanProvider {
 
     @Override
     public Set<DataType> nativeLibraryWeights(BackendId backend) {
+        if (BackendId.METAL.equals(backend)) {
+            // Batched prefill projections and attention on Apple MLX (Qwen35MlxPrefill).
+            return Set.of(DataType.Q8_0, DataType.Q4_0);
+        }
         return BackendId.CUDA.equals(backend) ? Set.of(DataType.Q8_0) : Set.of();
+    }
+
+    /** The MLX prefill's projections in MLX's form, its staging and its gathered cache. */
+    @Override
+    public Optional<org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
+            batchPrefillWorkspace(
+                    DataType weights,
+                    org.beehive.jitllm.model.Configuration config,
+                    int batchSize,
+                    ExecutionPolicy policy,
+                    boolean fp16Cache) {
+        if (!(config instanceof org.beehive.jitllm.model.qwen35.Qwen35Configuration qwen35)) {
+            return Optional.empty();
+        }
+        return org.beehive.jitllm.backend.tornado.layers.Qwen35MlxPrefill.resolve(
+                        policy, weights, qwen35)
+                .map(
+                        m ->
+                                org.beehive.jitllm.backend.tornado.layers.Qwen35MlxPrefill
+                                        .workspace(weights, qwen35, batchSize));
     }
 }
