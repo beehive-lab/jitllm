@@ -214,6 +214,92 @@ public final class MlxPrefillKernels {
         }
     }
 
+    /** {@code out[i] = in[i]}: an MLX product back into FP32. */
+    public static void toFloat(
+            KernelContext context, HalfFloatArray in, FloatArray out, int total) {
+        int id = context.globalIdx;
+        if (id < total) {
+            out.set(id, in.get(id).getFloat32());
+        }
+    }
+
+    /**
+     * {@code out[b][i] = in[b][i] / rowScale[b]}: {@link #toFloat} undoing the row factor of {@link
+     * #gegluScaled} in FP32.
+     */
+    public static void toFloatRowScaled(
+            KernelContext context,
+            HalfFloatArray in,
+            FloatArray out,
+            FloatArray rowScale,
+            int width,
+            int total) {
+        int id = context.globalIdx;
+        if (id < total) {
+            out.set(id, in.get(id).getFloat32() / rowScale.get(id / width));
+        }
+    }
+
+    /**
+     * {@code rowScale[b] = min(1, PROJECTION_INPUT_LIMIT / max_i |GELU(gate[b][i]) * up[b][i]|)}:
+     * {@link #swigluRowScale} for a GeGLU feed-forward (Gemma), over the stacked {@code [B][gate |
+     * up]} product. One workgroup of {@code localSize} threads per row, over {@code rows} rows.
+     */
+    public static void gegluRowScale(
+            KernelContext context,
+            HalfFloatArray gateUp,
+            FloatArray rowScale,
+            int hidden,
+            int rows,
+            int localSize) {
+        int tid = context.localIdx;
+        int b = context.groupIdx;
+        float[] partial = context.allocateFloatLocalArray(localSize);
+        float max = 0.0f;
+        if (b < rows) {
+            for (int i = tid; i < hidden; i += localSize) {
+                float gate = gateUp.get(b * 2 * hidden + i).getFloat32();
+                float up = gateUp.get(b * 2 * hidden + hidden + i).getFloat32();
+                float gelu = TransformerComputeKernelsLayered.geluActivation(gate);
+                max = TornadoMath.max(max, TornadoMath.abs(gelu * up));
+            }
+        }
+        partial[tid] = max;
+        context.localBarrier();
+        for (int s = localSize / 2; s > 0; s >>= 1) {
+            if (tid < s) {
+                partial[tid] = TornadoMath.max(partial[tid], partial[tid + s]);
+            }
+            context.localBarrier();
+        }
+        if (tid == 0 && b < rows) {
+            float peak = partial[0];
+            rowScale.set(b, peak > PROJECTION_INPUT_LIMIT ? PROJECTION_INPUT_LIMIT / peak : 1.0f);
+        }
+    }
+
+    /**
+     * {@code hb[b][i] = FP16(GELU(gate[b][i]) * up[b][i] * rowScale[b])} over the stacked {@code
+     * [B][gate | up]} product, for the down projection.
+     */
+    public static void gegluScaled(
+            KernelContext context,
+            HalfFloatArray gateUp,
+            HalfFloatArray hb,
+            FloatArray rowScale,
+            int hidden,
+            int total) {
+        int id = context.globalIdx;
+        if (id < total) {
+            int b = id / hidden;
+            int i = id % hidden;
+            float gate = gateUp.get(b * 2 * hidden + i).getFloat32();
+            float up = gateUp.get(b * 2 * hidden + hidden + i).getFloat32();
+            float gelu = TransformerComputeKernelsLayered.geluActivation(gate);
+            hb.set(id, new HalfFloat(gelu * up * rowScale.get(b)));
+        }
+    }
+
     /**
      * {@code dst[h][t][d] = FP16(src[t][h * headDim + d])}: token-major activations to the
      * head-major layout of MLX's attention, over {@code total = tokens * heads * headDim}.

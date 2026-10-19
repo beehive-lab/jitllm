@@ -592,8 +592,24 @@ public final class MlxPrefillProjections {
             HalfFloatArray y,
             int k,
             int n) {
+        gemm(layer, task, x, w, y, batchSize, k, n);
+    }
+
+    /**
+     * {@code y[m][n] = x[m][k] . w[n][k]} as MLX library task {@code task}, over {@code w} in
+     * whichever form it holds: FP16, or affine-quantized.
+     */
+    static void gemm(
+            TaskGraph layer,
+            String task,
+            HalfFloatArray x,
+            Matrix w,
+            HalfFloatArray y,
+            int m,
+            int k,
+            int n) {
         if (w.fp16() != null) {
-            layer.libraryTask(task, Mlx::matmulTransposed, x, w.fp16(), y, batchSize, k, n);
+            layer.libraryTask(task, Mlx::matmulTransposed, x, w.fp16(), y, m, k, n);
         } else {
             layer.libraryTask(
                     task,
@@ -603,7 +619,7 @@ public final class MlxPrefillProjections {
                     w.scales(),
                     w.biases(),
                     y,
-                    batchSize,
+                    m,
                     k,
                     n,
                     GROUP,
