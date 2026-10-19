@@ -130,10 +130,10 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
         try {
             Map<String, Object> metadata = gguf.getMetadata();
 
-            // Steps 1 and 2: vocabulary and tokenizer. One run loads the same file several times (the
-            // memory preflight, the decoded-projection check, the load itself) and the GGUF parse is
-            // shared between them, so these are too: building a tokenizer means hashing every token
-            // and merge (~170 ms for Llama 3's 128k tokens and 280k merges).
+            // Steps 1 and 2: vocabulary and tokenizer. One run loads the same file several
+            // times (the memory preflight, the decoded-projection check, the load itself), and
+            // the GGUF parse is shared between them, so these are too: building a tokenizer
+            // hashes every token and merge (~170 ms for Llama 3's 128k tokens, 280k merges).
             Tokenizer tokenizer;
             Text last = lastText;
             if (last != null && last.gguf() == gguf && last.loader() == getClass()) {
