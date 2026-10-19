@@ -116,12 +116,7 @@ public record MlxPrefill(DataType weights, Projections projections) {
      * copy holds, and what the affine repack is a form of.
      */
     public static long projectionWeights(Configuration config) {
-        long dim = config.dim();
-        long qDim = (long) config.numberOfHeads() * config.headSize();
-        long kvDim = config.kvDim();
-        long hidden = config.hiddenDim();
-        long perLayer = dim * (qDim + 2 * kvDim) + qDim * dim + 3 * dim * hidden;
-        return perLayer * config.numberOfLayers();
+        return config.projectionWeights();
     }
 
     // @formatter:off

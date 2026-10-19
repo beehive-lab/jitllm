@@ -220,6 +220,23 @@ public record Gemma4Configuration(
     }
 
     /**
+     * Counted layer by layer: the head and feed-forward widths differ between layers, and a layer
+     * that shares an earlier layer's cache projects no key or value. A layer without a value
+     * projection counts its key projection twice, as the batched prefill multiplies it twice.
+     */
+    @Override
+    public long projectionWeights() {
+        long total = 0;
+        for (int l = 0; l < numberOfLayers; l++) {
+            long qDim = (long) numberOfHeads * headDim(l);
+            long kvDim = keyValueDim(l);
+            long qkv = hasOwnKv(l) ? qDim + 2 * kvDim : qDim;
+            total += dim * qkv + qDim * dim + 3L * dim * feedForwardLength(l);
+        }
+        return total;
+    }
+
+    /**
      * Number of (initial) layers that own and populate their own KV cache; later layers reuse one
      * of these.
      */

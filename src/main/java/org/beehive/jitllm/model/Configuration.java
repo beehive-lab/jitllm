@@ -74,6 +74,20 @@ public interface Configuration {
         return layerGraphFamilies;
     }
 
+    /**
+     * The projection weights of every layer: query, key and value, output, gate and up, and down.
+     * What a resident FP16 copy of the projections holds. A family whose layers differ in shape
+     * counts its own.
+     */
+    default long projectionWeights() {
+        long dim = dim();
+        long qDim = (long) numberOfHeads() * headSize();
+        long kvDim = kvDim();
+        long hidden = hiddenDim();
+        long perLayer = dim * (qDim + 2 * kvDim) + qDim * dim + 3 * dim * hidden;
+        return perLayer * numberOfLayers();
+    }
+
     // @formatter:off
     /**
      * Bytes of <b>stacked</b> projection weights a native batch-prefill family keeps per layer.
