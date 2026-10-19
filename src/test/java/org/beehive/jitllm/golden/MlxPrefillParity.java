@@ -36,8 +36,8 @@ import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
  * batched-prefill parity does; the MLX attention then reads keys and values its gather rounded to
  * FP16.
  *
- * <p>Each capture asserts it ran MLX — the gather and the QKV split exist only on that path — so a
- * host where the path quietly did not engage fails rather than comparing the JIT kernels with
+ * <p>Each capture asserts it ran MLX — tasks that exist only on that path ({@link #mlxTasks}) — so
+ * a host where the path quietly did not engage fails rather than comparing the JIT kernels with
  * themselves.
  */
 // @formatter:on
@@ -63,6 +63,21 @@ abstract class MlxPrefillParity extends CpuGpuParity {
     }
 
     void assertMlxParity(Fixture fixture, Bounds bounds, Weights weights) throws Exception {
+        assertMlxParity(width -> assertParityBatched(fixture, bounds, width), weights);
+    }
+
+    /** {@link #assertMlxParity(Fixture, Bounds, Weights)} for a model file found by name. */
+    void assertMlxParity(java.nio.file.Path model, String label, Bounds bounds, Weights weights)
+            throws Exception {
+        assertMlxParity(width -> assertParityBatched(model, label, bounds, width), weights);
+    }
+
+    /** A batched parity run at a chunk width. */
+    interface BatchedParity {
+        GoldenCapture.Result run(int width) throws Exception;
+    }
+
+    private void assertMlxParity(BatchedParity parity, Weights weights) throws Exception {
         assumeTrue(
                 "the MLX prefill runs on Metal only",
                 BackendId.METAL.equals(TornadoDevices.current().backend()));
@@ -74,24 +89,29 @@ abstract class MlxPrefillParity extends CpuGpuParity {
             System.setProperty(ExecutionPolicy.DECODED_PROJECTIONS_PROPERTY, weights.property);
         }
         try {
-            GoldenCapture.Result gpu =
-                    assertParityBatched(
-                            fixture, bounds, weights == Weights.AFFINE ? AFFINE_WIDTH : WIDTH);
+            GoldenCapture.Result gpu = parity.run(weights == Weights.AFFINE ? AFFINE_WIDTH : WIDTH);
             assertTrue(
                     "the plan did not record its dispatch, so it cannot show it ran MLX",
                     gpu.gridScheduler != null);
-            assertTrue(
-                    "no MLX QKV split in the batched prefill: the path did not engage",
-                    gpu.gridScheduler.keySet().stream()
-                            .anyMatch(k -> k.endsWith(".batch_qkv_split")));
-            assertTrue(
-                    "no contiguous key/value gather: the MLX attention did not engage",
-                    gpu.gridScheduler.keySet().stream()
-                            .anyMatch(k -> k.endsWith(".batch_attention_gather_kv")));
+            for (String marker : mlxTasks()) {
+                assertTrue(
+                        "no "
+                                + marker
+                                + " task in the batched prefill: the MLX path did not engage",
+                        gpu.gridScheduler.keySet().stream().anyMatch(k -> k.endsWith(marker)));
+            }
         } finally {
             restore(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, previousNative);
             restore(ExecutionPolicy.DECODED_PROJECTIONS_PROPERTY, previousDecoded);
         }
+    }
+
+    /**
+     * Tasks that exist only on the MLX path, by the suffix of their grid's name: the QKV split and
+     * the contiguous key/value gather of the MLX attention.
+     */
+    String[] mlxTasks() {
+        return new String[] {".batch_qkv_split", ".batch_attention_gather_kv"};
     }
 
     private static void restore(String key, String previous) {
