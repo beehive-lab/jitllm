@@ -918,18 +918,20 @@ public class Gemma4Q8_0FFNLayers
         if (weights.layerOutputScale[layerIndex] != null) {
             shared.add(weights.layerOutputScale[layerIndex].asFloatArray());
         }
-        // The projections: the batch-prefill graph reads them itself, whichever GEMMs it runs.
-        shared.add(weights.wqLayered[layerIndex]);
+        // The projections: the batch-prefill graph reads them itself, whichever JIT GEMMs it
+        // runs. On MLX it reads its own form of them instead, so they are uploaded here.
+        java.util.List<Object> projections = batchedPlan && mlxPrefill() ? own : shared;
+        projections.add(weights.wqLayered[layerIndex]);
         if (config.hasOwnKv(layerIndex)) {
-            shared.add(weights.wkLayered[layerIndex]);
+            projections.add(weights.wkLayered[layerIndex]);
             if (weights.wvLayered[layerIndex] != null) {
-                shared.add(weights.wvLayered[layerIndex]);
+                projections.add(weights.wvLayered[layerIndex]);
             }
         }
-        shared.add(weights.woLayered[layerIndex]);
-        shared.add(weights.w1Layered[layerIndex]);
-        shared.add(weights.w3Layered[layerIndex]);
-        shared.add(weights.w2Layered[layerIndex]);
+        projections.add(weights.woLayered[layerIndex]);
+        projections.add(weights.w1Layered[layerIndex]);
+        projections.add(weights.w3Layered[layerIndex]);
+        projections.add(weights.w2Layered[layerIndex]);
         if (batchedPlan) {
             unifiedLayer.consumeFromDevice(
                     "batchPrefillLayer_" + layerIndex,
@@ -943,6 +945,13 @@ public class Gemma4Q8_0FFNLayers
             own.add(weights.perLayerProj[layerIndex]);
         }
         gemma4State.workspace.packedRepack.upload(unifiedLayer, own.toArray());
+    }
+
+    /** Whether the batched prefill multiplies the projections on MLX, in its own form of them. */
+    private boolean mlxPrefill() {
+        return org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers.mlxPrefill(
+                        gemma4State.executionPolicy(), weights.dataType(), config)
+                .isPresent();
     }
 
     /** Which RoPE pairs the graph being built has bound already: sliding, full. */

@@ -2,15 +2,19 @@ package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.kernels.BatchMmaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4AttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4BatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4BatchPrefillSimdgroupAttentionFP16Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4BatchPrefillSimdgroupAttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
+import org.beehive.jitllm.backend.tornado.kernels.MlxPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TensorCoreAttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels;
+import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -18,6 +22,7 @@ import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.Gemma4State;
 import org.beehive.jitllm.inference.weights.tornado.Gemma4TornadoWeights;
 import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -72,6 +77,11 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     @Override
     public String describeProjections() {
+        if (mlx != null) {
+            return mlx.projections() == MlxPrefill.Projections.AFFINE
+                    ? "MLX quantized GEMMs (Q8_0 weights repacked to MLX's affine format)"
+                    : "MLX GEMMs (Q8_0 weights decoded once to resident FP16 copies)";
+        }
         return simdgroup
                 ? "Metal SIMD-group GEMMs (Q8_0 weights dequantized as they are staged)"
                 : "FP16 tensor-core MMA (quantized weights dequantized where needed)";
@@ -185,6 +195,47 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     // @formatter:on
     private final boolean simdgroup = BatchPrefillGemmPolicy.simdgroup();
 
+    // @formatter:off
+    /**
+     * With native libraries ({@code --with-native-libraries}) on Metal: the query/key/value,
+     * output, gate/up and down projections as MLX GEMMs over each layer's weights in MLX's form
+     * ({@link MlxPrefill#projections()}), query, key and value stacked into one matrix and gate and
+     * up into another; otherwise {@code null}. Attention, the norms and the per-layer-embedding
+     * GEMMs stay on the Metal kernels.
+     */
+    // @formatter:on
+    private final MlxPrefill mlx;
+
+    private MlxPrefillProjections.Matrix[] mlxQkv;
+    private MlxPrefillProjections.Matrix[] mlxWo;
+    private MlxPrefillProjections.Matrix[] mlxGateUp;
+    private MlxPrefillProjections.Matrix[] mlxDown;
+
+    // @formatter:off
+    /**
+     * The MLX GEMMs' FP16 operands and products, and the down projection's row factors.
+     *
+     * <p>MLX takes an array only at its exact extent, and this family's layers differ in head and
+     * feed-forward width, so a buffer exists per width ({@code paddedBatch} rows of it) rather than
+     * one at the widest: the packed {@code [q|k|v]} product, the attention output the output
+     * projection reads, the gate/up product and the GeGLU the down projection reads. Each is
+     * uploaded by the first layer graph that uses it and bound from that graph by the others.
+     */
+    // @formatter:on
+    private final java.util.Map<Integer, HalfFloatArray> mlxQkvOut = new java.util.TreeMap<>();
+
+    private final java.util.Map<Integer, HalfFloatArray> mlxAttnIn = new java.util.TreeMap<>();
+    private final java.util.Map<Integer, HalfFloatArray> mlxGateUpOut = new java.util.TreeMap<>();
+    private final java.util.Map<Integer, HalfFloatArray> mlxHbIn = new java.util.TreeMap<>();
+    private HalfFloatArray mlxOutHalf; // paddedBatch × dim
+    private FloatArray mlxDownRowScale; // paddedBatch
+
+    /** For each MLX buffer, the first layer whose graph uses it, and so uploads it. */
+    private final java.util.Map<Object, Integer> mlxFirstUser = new java.util.IdentityHashMap<>();
+
+    /** Threads per row of the down projection's row-scale reduction. */
+    private static final int ROW_THREADS = 256;
+
     /** The SIMD-group projections with their output counts, for their grids. */
     private final java.util.Map<String, Integer> simdgroupTasks = new java.util.LinkedHashMap<>();
 
@@ -289,6 +340,10 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                         : null;
 
         this.nativeProjections = nativeProjections(state);
+        this.mlx = mlxPrefill(state.executionPolicy(), weights.dataType(), config).orElse(null);
+        if (mlx != null) {
+            buildMlxProjections();
+        }
 
         this.gemmAttention =
                 fp16KeyValue
@@ -336,6 +391,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             }
         }
         return !nativeProjections
+                && mlx == null
                 && org.beehive.jitllm.backend.tornado.TensorCoreSupport
                         .isTensorCoreCapableBackend();
     }
@@ -756,6 +812,193 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 state.executionPolicy());
     }
 
+    // ── MLX projections ──────────────────────────────────────────────────────
+
+    /**
+     * The MLX prefill a session running {@code policy} builds over this model, or empty when its
+     * batched prefill keeps the Metal kernels. The one answer the prefill layers, the decode layers
+     * that bind their weights and the memory preflight all read.
+     */
+    public static Optional<MlxPrefill> mlxPrefill(
+            ExecutionPolicy policy, DataType weights, Gemma4Configuration config) {
+        return MlxPrefill.resolve(policy, weights, config);
+    }
+
+    /**
+     * What the MLX projections allocate besides the model's own weights: the projections in MLX's
+     * form (resident FP16 copies, or the affine repack), and the FP16 operands and products of
+     * {@code paddedBatch} rows, one per distinct width, with the row factors.
+     */
+    public static BatchPrefillWorkspace mlxWorkspace(
+            DataType weights, Gemma4Configuration config, int batchSize) {
+        long rows = (batchSize + 127) & ~127;
+        java.util.Set<Integer> qkv = new java.util.HashSet<>();
+        java.util.Set<Integer> attn = new java.util.HashSet<>();
+        java.util.Set<Integer> ffn = new java.util.HashSet<>();
+        for (int l = 0; l < config.numberOfLayers(); l++) {
+            int qDim = config.numberOfHeads() * config.headDim(l);
+            qkv.add(config.hasOwnKv(l) ? qDim + 2 * config.keyValueDim(l) : qDim);
+            attn.add(qDim);
+            ffn.add(config.feedForwardLength(l));
+        }
+        long widths = config.dim();
+        for (int w : qkv) {
+            widths += w;
+        }
+        for (int w : attn) {
+            widths += w;
+        }
+        for (int w : ffn) {
+            widths += 3L * w;
+        }
+        long staging = Short.BYTES * rows * widths + Float.BYTES * rows;
+        long projections = config.projectionWeights();
+        return new BatchPrefillWorkspace(
+                projections,
+                staging + FP16Projections.residentBytes(projections),
+                staging + MlxPrefill.affineBytes(weights, projections));
+    }
+
+    /** Each layer's projections in MLX's form, and the FP16 buffers the GEMMs share. */
+    private void buildMlxProjections() {
+        int layers = config.numberOfLayers();
+        mlxQkv = new MlxPrefillProjections.Matrix[layers];
+        mlxWo = new MlxPrefillProjections.Matrix[layers];
+        mlxGateUp = new MlxPrefillProjections.Matrix[layers];
+        mlxDown = new MlxPrefillProjections.Matrix[layers];
+        MlxPrefill.Projections form = mlx.projections();
+        for (int l = firstLayer; l < endLayer; l++) {
+            TornadoTensor[] qkv =
+                    config.hasOwnKv(l)
+                            ? new TornadoTensor[] {
+                                weights.wqLayered[l], weights.wkLayered[l], valueWeights(l)
+                            }
+                            : new TornadoTensor[] {weights.wqLayered[l]};
+            String name = "blk." + l;
+            mlxQkv[l] = MlxPrefillProjections.matrix(form, requireMlx(name + ".attn_qkv", qkv));
+            mlxWo[l] =
+                    MlxPrefillProjections.matrix(
+                            form, requireMlx(name + ".attn_output", weights.woLayered[l]));
+            mlxGateUp[l] =
+                    MlxPrefillProjections.matrix(
+                            form,
+                            requireMlx(
+                                    name + ".ffn_gate_up",
+                                    weights.w1Layered[l],
+                                    weights.w3Layered[l]));
+            mlxDown[l] =
+                    MlxPrefillProjections.matrix(
+                            form, requireMlx(name + ".ffn_down", weights.w2Layered[l]));
+        }
+        mlxOutHalf = new HalfFloatArray(paddedBatch * dim);
+        mlxDownRowScale = new FloatArray(paddedBatch);
+        for (int l = firstLayer; l < endLayer; l++) {
+            int qDim = nHead * config.headDim(l);
+            int ffnLen = config.feedForwardLength(l);
+            for (Object buffer :
+                    new Object[] {
+                        mlxBuffer(mlxQkvOut, qkvStride(l)),
+                        mlxBuffer(mlxAttnIn, qDim),
+                        mlxBuffer(mlxGateUpOut, 2 * ffnLen),
+                        mlxBuffer(mlxHbIn, ffnLen),
+                        mlxOutHalf,
+                        mlxDownRowScale
+                    }) {
+                mlxFirstUser.putIfAbsent(buffer, l);
+            }
+        }
+    }
+
+    /** The buffer of {@code paddedBatch} rows of {@code width} in {@code byWidth}, made once. */
+    private HalfFloatArray mlxBuffer(java.util.Map<Integer, HalfFloatArray> byWidth, int width) {
+        return byWidth.computeIfAbsent(width, w -> new HalfFloatArray(paddedBatch * w));
+    }
+
+    /**
+     * Refuses, by name, a projection the MLX prefill was not resolved for: another type, or packed
+     * tiles. Never handed back to the Metal kernels, so the decode layers that ask the same {@link
+     * #mlxPrefill} which weights these graphs bind are always right.
+     */
+    private TornadoTensor[] requireMlx(String name, TornadoTensor... tensors) {
+        for (TornadoTensor t : tensors) {
+            if (t.isPacked()) {
+                throw org.beehive.jitllm.backend.tornado.tensor.PackedWeights.noPackedKernel(
+                        "The gemma4 MLX batched prefill (" + name + ")");
+            }
+            if (t.dataType() != mlx.weights()) {
+                throw new IllegalStateException(
+                        "the gemma4 MLX batched prefill was resolved for "
+                                + mlx.weights()
+                                + " weights, but "
+                                + name
+                                + " is "
+                                + t.dataType());
+            }
+        }
+        return tensors;
+    }
+
+    /**
+     * The stacked query/key/value GEMM on MLX into the packed {@code [q|k|v]} rows the head norms
+     * and the rotation read, in FP32.
+     */
+    private void mlxQkvProjection(TaskGraph layer, int layerIndex, int stride) {
+        MlxPrefillProjections.gemm(
+                layer,
+                "qkvProj",
+                state.workspace.wrapXbFP16Batch,
+                mlxQkv[layerIndex],
+                mlxQkvOut.get(stride),
+                paddedBatch,
+                dim,
+                stride);
+        layer.task(
+                "mlx_qkv_float",
+                MlxPrefillKernels::toFloat,
+                context,
+                mlxQkvOut.get(stride),
+                state.workspace.qkvResultBatch,
+                batchSize * stride);
+    }
+
+    /**
+     * Declares the MLX buffers layer {@code l}'s graph uses: uploaded by the first graph that uses
+     * each, bound from that graph by every later one. From that graph and not the previous one: a
+     * graph that declares an array none of its tasks reads never allocates it.
+     */
+    private void declareMlxBuffers(TaskGraph layer, int l) {
+        int qDim = nHead * config.headDim(l);
+        int ffnLen = config.feedForwardLength(l);
+        for (Object buffer :
+                new Object[] {
+                    mlxQkvOut.get(qkvStride(l)),
+                    mlxAttnIn.get(qDim),
+                    mlxGateUpOut.get(2 * ffnLen),
+                    mlxHbIn.get(ffnLen),
+                    mlxOutHalf,
+                    mlxDownRowScale
+                }) {
+            int firstUser = mlxFirstUser.get(buffer);
+            if (firstUser == l) {
+                layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, buffer);
+            } else {
+                layer.consumeFromDevice("batchPrefillLayer_" + firstUser, buffer);
+            }
+        }
+    }
+
+    /** Layer {@code l}'s projections in MLX's form, which its graph uploads. */
+    private Object[] mlxWeights(int l) {
+        List<Object> arrays = new ArrayList<>();
+        for (MlxPrefillProjections.Matrix m :
+                new MlxPrefillProjections.Matrix[] {
+                    mlxQkv[l], mlxWo[l], mlxGateUp[l], mlxDown[l]
+                }) {
+            arrays.addAll(List.of(m.arrays()));
+        }
+        return arrays.toArray();
+    }
+
     // @formatter:off
     /**
      * {@code out[m][n] = x[m][k] . w[n][k]} as one cuBLAS GEMM: FP16 operands, FP32 accumulation
@@ -1051,7 +1294,8 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     weights.perLayerPostNorm[layerIndex].asFloatArray());
         }
         // Each projection in the file's representation: the int8 and FP16 GEMMs read it, and
-        // cuBLAS reads it decoded into the shared FP16 scratch.
+        // cuBLAS reads it decoded into the shared FP16 scratch. MLX reads its own form instead, so
+        // the decode layers upload the file's projections themselves.
         Object[] projections = {
             weights.wqLayered[layerIndex],
             weights.woLayered[layerIndex],
@@ -1059,15 +1303,22 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             weights.w3Layered[layerIndex],
             weights.w2Layered[layerIndex]
         };
-        state.workspace.packedRepack.upload(layer, projections);
+        if (mlx != null) {
+            declareMlxBuffers(layer, layerIndex);
+            layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, mlxWeights(layerIndex));
+        } else {
+            state.workspace.packedRepack.upload(layer, projections);
+        }
         if (hasOwnKv) {
             requireDecodable(weights.wkLayered[layerIndex], "blk." + layerIndex + ".attn_k");
             requireDecodable(valueWeights(layerIndex), "blk." + layerIndex + ".attn_v");
             layer.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION, weights.attnKNorm[layerIndex].asFloatArray());
-            state.workspace.packedRepack.upload(layer, weights.wkLayered[layerIndex]);
-            if (weights.wvLayered[layerIndex] != null) {
-                state.workspace.packedRepack.upload(layer, weights.wvLayered[layerIndex]);
+            if (mlx == null) {
+                state.workspace.packedRepack.upload(layer, weights.wkLayered[layerIndex]);
+                if (weights.wvLayered[layerIndex] != null) {
+                    state.workspace.packedRepack.upload(layer, weights.wvLayered[layerIndex]);
+                }
             }
         }
         if (weights.layerOutputScale[layerIndex] != null) {
@@ -1111,7 +1362,9 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                                     weights.wqLayered[layerIndex],
                                     weights.wkLayered[layerIndex],
                                     valueWeights(layerIndex));
-            if (simdgroup) {
+            if (mlx != null) {
+                mlxQkvProjection(layer, layerIndex, stride);
+            } else if (simdgroup) {
                 simdgroupGemm(
                         layer,
                         "qkvProj",
@@ -1269,7 +1522,9 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                         cacheBaseOffset);
             }
         } else {
-            if (simdgroup) {
+            if (mlx != null) {
+                mlxQkvProjection(layer, layerIndex, stride);
+            } else if (simdgroup) {
                 simdgroupGemm(
                         layer,
                         "qkvProj",
@@ -1350,6 +1605,9 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     stride);
         }
 
+        // On MLX the attention writes straight into the output projection's exact-width operand.
+        final HalfFloatArray attnOut =
+                mlx != null ? mlxAttnIn.get(qDim) : state.workspace.attnOutFP16;
         if (simdgroupAttention(layerIndex)) {
             if (fp16KeyValue) {
                 layer.task(
@@ -1364,7 +1622,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                         state.workspace.qkvResultBatch,
                         state.workspace.wrapKeyCacheFP16,
                         state.workspace.wrapValueCacheFP16,
-                        state.workspace.attnOutFP16,
+                        attnOut,
                         nHead,
                         headDim,
                         kvDim,
@@ -1385,7 +1643,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                         state.workspace.qkvResultBatch,
                         state.workspace.wrapKeyCache,
                         state.workspace.wrapValueCache,
-                        state.workspace.attnOutFP16,
+                        attnOut,
                         nHead,
                         headDim,
                         kvDim,
@@ -1406,7 +1664,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     state.workspace.wrapKeyCacheFP16,
                     state.workspace.wrapValueCacheFP16,
                     state.workspace.attnOutF32Batch,
-                    state.workspace.attnOutFP16,
+                    attnOut,
                     state.workspace.attnScoresBatch,
                     state.workspace.attnProbStageBatch,
                     nHead,
@@ -1427,7 +1685,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     state.workspace.qkvResultBatch,
                     state.workspace.wrapKeyCacheFP16,
                     state.workspace.wrapValueCacheFP16,
-                    state.workspace.attnOutFP16,
+                    attnOut,
                     state.workspace.attnScoresBatch,
                     nHead,
                     headDim,
@@ -1449,7 +1707,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     state.workspace.qkvResultBatch,
                     state.workspace.wrapKeyCache,
                     state.workspace.wrapValueCache,
-                    state.workspace.attnOutFP16,
+                    attnOut,
                     state.workspace.attnScoresBatch,
                     nHead,
                     headDim,
@@ -1462,7 +1720,24 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     HEAD_LOCAL_SIZE);
         }
 
-        if (simdgroup) {
+        if (mlx != null) {
+            MlxPrefillProjections.gemm(
+                    layer,
+                    "woProj",
+                    attnOut,
+                    mlxWo[layerIndex],
+                    mlxOutHalf,
+                    paddedBatch,
+                    qDim,
+                    dim);
+            layer.task(
+                    "mlx_wo_float",
+                    MlxPrefillKernels::toFloat,
+                    context,
+                    mlxOutHalf,
+                    state.workspace.woOut,
+                    batchSize * dim);
+        } else if (simdgroup) {
             simdgroupGemm(
                     layer,
                     "woProj",
@@ -1586,7 +1861,38 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
                 state.workspace.ffnScaleBatch,
                 dim);
-        if (simdgroup) {
+        if (mlx != null) {
+            // The GeGLU product of a token can pass FP16's range; its row is scaled into range
+            // before the down GEMM, and the scale undone in FP32 after it.
+            // Over the padded rows too: the down GEMM reads every row of its operand.
+            MlxPrefillProjections.gemm(
+                    layer,
+                    "gateUpProj",
+                    state.workspace.normedXFFNFP16,
+                    mlxGateUp[layerIndex],
+                    mlxGateUpOut.get(2 * ffnLen),
+                    paddedBatch,
+                    dim,
+                    2 * ffnLen);
+            layer.task(
+                    "mlx_ffn_row_scale",
+                    MlxPrefillKernels::gegluRowScale,
+                    context,
+                    mlxGateUpOut.get(2 * ffnLen),
+                    mlxDownRowScale,
+                    ffnLen,
+                    paddedBatch,
+                    ROW_THREADS);
+            layer.task(
+                    "batch_geglu",
+                    MlxPrefillKernels::gegluScaled,
+                    context,
+                    mlxGateUpOut.get(2 * ffnLen),
+                    mlxHbIn.get(ffnLen),
+                    mlxDownRowScale,
+                    ffnLen,
+                    paddedBatch * ffnLen);
+        } else if (simdgroup) {
             simdgroupGemm(
                     layer,
                     "gateProj",
@@ -1671,14 +1977,35 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     ffnLen,
                     dim);
         }
-        layer.task(
-                "batch_geglu",
-                Gemma4BatchPrefillKernels::batchedGeGLUFP16Packed,
-                context,
-                state.workspace.wrapHbFP16Batch,
-                state.workspace.gateUpResultBatch,
-                ffnLen);
-        if (simdgroup) {
+        if (mlx == null) {
+            layer.task(
+                    "batch_geglu",
+                    Gemma4BatchPrefillKernels::batchedGeGLUFP16Packed,
+                    context,
+                    state.workspace.wrapHbFP16Batch,
+                    state.workspace.gateUpResultBatch,
+                    ffnLen);
+        }
+        if (mlx != null) {
+            MlxPrefillProjections.gemm(
+                    layer,
+                    "w2Proj",
+                    mlxHbIn.get(ffnLen),
+                    mlxDown[layerIndex],
+                    mlxOutHalf,
+                    paddedBatch,
+                    ffnLen,
+                    dim);
+            layer.task(
+                    "mlx_w2_float",
+                    MlxPrefillKernels::toFloatRowScaled,
+                    context,
+                    mlxOutHalf,
+                    state.workspace.w2Out,
+                    mlxDownRowScale,
+                    dim,
+                    batchSize * dim);
+        } else if (simdgroup) {
             simdgroupGemm(
                     layer,
                     "w2Proj",
@@ -2039,11 +2366,21 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                                             weights.wkLayered[l],
                                             valueWeights(l))
                                     : allQ8(weights.wqLayered[l]));
-            if (!nativeProjections && !simdgroup && !int8Qkv[l]) {
+            if (mlx != null) {
+                // MLX library tasks have no grids; only the glue around them does.
+                int stride = qkvStride(l);
+                scheduler.addWorkerGrid(p + "mlx_qkv_float", elementwise(batchSize * stride, 256));
+                scheduler.addWorkerGrid(p + "mlx_wo_float", dimApplyWorker);
+                scheduler.addWorkerGrid(
+                        p + "mlx_ffn_row_scale",
+                        WorkerGridFactory.genericWorker(paddedBatch * ROW_THREADS, ROW_THREADS));
+                scheduler.addWorkerGrid(p + "mlx_w2_float", dimApplyWorker);
+            }
+            if (mlx == null && !nativeProjections && !simdgroup && !int8Qkv[l]) {
                 scheduler.addWorkerGrid(
                         p + "qkvProj", mmaGrid(paddedBatch, hasOwnKv ? qDim + 2 * kvDim : qDim));
             }
-            if (!simdgroup && (nativeProjections || (!qkvDirect && !int8Qkv[l]))) {
+            if (mlx == null && !simdgroup && (nativeProjections || (!qkvDirect && !int8Qkv[l]))) {
                 scheduler.addWorkerGrid(p + "qDequant", elementwise(qDim * dim, 256));
                 if (hasOwnKv) {
                     scheduler.addWorkerGrid(p + "kDequant", elementwise(kvDim * dim, 256));
@@ -2088,8 +2425,8 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                                         : WorkerGridFactory.genericWorker(
                                                 paddedBatch * nHead * HEAD_LOCAL_SIZE,
                                                 HEAD_LOCAL_SIZE));
-            if (simdgroup) {
-                // the SIMD-group grids below
+            if (simdgroup || mlx != null) {
+                // the SIMD-group grids below, or MLX's
             } else if (nativeProjections) {
                 // cuBLAS, over the projection decoded into the scratch
                 scheduler.addWorkerGrid(p + "woDequant", elementwise(dim * qDim, 256));
@@ -2109,10 +2446,11 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
             scheduler.addWorkerGrid(p + "batch_ffn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_ffn_rms_apply", dimApplyWorker);
-            if (!nativeProjections && !simdgroup && !int8GateUp[l]) {
+            if (mlx == null && !nativeProjections && !simdgroup && !int8GateUp[l]) {
                 scheduler.addWorkerGrid(p + "gateUpProj", mmaGrid(paddedBatch, 2 * ffnLen));
             }
-            if (!simdgroup
+            if (mlx == null
+                    && !simdgroup
                     && (nativeProjections
                             || !int8GateUp[l]
                                     && (DEQUANT_GATE_UP
@@ -2122,9 +2460,11 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 scheduler.addWorkerGrid(p + "gateDequant", dequantWorker);
                 scheduler.addWorkerGrid(p + "upDequant", dequantWorker);
             }
-            scheduler.addWorkerGrid(p + "batch_geglu", elementwise(batchSize * ffnLen, 256));
-            if (simdgroup) {
-                // the SIMD-group grids below
+            scheduler.addWorkerGrid(
+                    p + "batch_geglu",
+                    elementwise((mlx != null ? paddedBatch : batchSize) * ffnLen, 256));
+            if (simdgroup || mlx != null) {
+                // the SIMD-group grids below, or MLX's
             } else if (nativeProjections) {
                 // cuBLAS, over the projection decoded into the scratch
                 scheduler.addWorkerGrid(p + "w2Dequant", elementwise(dim * ffnLen, 256));

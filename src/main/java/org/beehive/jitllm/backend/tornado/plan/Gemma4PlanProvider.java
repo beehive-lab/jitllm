@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.plan;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
+import org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.fp16.Gemma4FP16PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.q8_0.Gemma4Q8_0PlanComponents;
@@ -147,9 +148,32 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
         return Optional.empty();
     }
 
+    /**
+     * CUDA: the projections through cuBLAS over the weights decoded to FP16. Metal: the Q8_0
+     * projections on Apple MLX, attention kept on the SIMD-group kernels.
+     */
     @Override
     public Set<DataType> nativeLibraryWeights(BackendId backend) {
+        if (BackendId.METAL.equals(backend)) {
+            return Set.of(DataType.Q8_0);
+        }
         return BackendId.CUDA.equals(backend) ? Set.of(DataType.Q8_0, DataType.Q4_0) : Set.of();
+    }
+
+    /** The MLX projections' FP16 copies (or affine repack) and staging, on Metal. */
+    @Override
+    public Optional<org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
+            batchPrefillWorkspace(
+                    DataType weights,
+                    org.beehive.jitllm.model.Configuration config,
+                    int batchSize,
+                    ExecutionPolicy policy,
+                    boolean fp16Cache) {
+        if (!(config instanceof org.beehive.jitllm.model.gemma4.Gemma4Configuration gemma4)) {
+            return Optional.empty();
+        }
+        return Gemma4BatchPrefillLayers.mlxPrefill(policy, weights, gemma4)
+                .map(m -> Gemma4BatchPrefillLayers.mlxWorkspace(weights, gemma4, batchSize));
     }
 
     /** The native-library prefill decodes each projection for cuBLAS, from blocks, not tiles. */
