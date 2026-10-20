@@ -59,9 +59,32 @@ public final class DevstralPlanProvider implements TornadoPlanProvider {
      */
     @Override
     public Optional<String> batchPrefillUnsupported(Combination c) {
-        return c.tensorCores()
-                ? Optional.empty()
-                : Optional.of("the devstral batched prefill runs on the CUDA tensor cores");
+        if (c.tensorCores()) {
+            return Optional.empty();
+        }
+        if (BackendId.METAL.equals(c.backend()) && c.weights() == DataType.Q4_K) {
+            // Apple MLX's GEMMs and attention (DevstralLayersBatchPrefillMlx).
+            return org.beehive.jitllm.backend.tornado.MlxPrefill.available()
+                    ? Optional.empty()
+                    : Optional.of(
+                            "the devstral batched prefill on Metal runs on Apple MLX, whose"
+                                    + " mlx.metallib could not be loaded (brew install mlx)");
+        }
+        return Optional.of(
+                "the devstral batched prefill runs on the CUDA tensor cores, and on Metal for Q4_K"
+                        + " weights through Apple MLX");
+    }
+
+    /** On Metal the batched prefill exists only on MLX, so it needs native libraries asked for. */
+    @Override
+    public Optional<String> batchPrefillNeeds(
+            Combination c, org.beehive.jitllm.runtime.policy.ExecutionPolicy policy) {
+        if (BackendId.METAL.equals(c.backend()) && !policy.nativeLibraries()) {
+            return Optional.of(
+                    "the devstral batched prefill on Metal runs on Apple MLX; add"
+                            + " --with-native-libraries");
+        }
+        return Optional.empty();
     }
 
     @Override
@@ -84,6 +107,10 @@ public final class DevstralPlanProvider implements TornadoPlanProvider {
      */
     @Override
     public Set<DataType> nativeLibraryWeights(BackendId backend) {
+        if (BackendId.METAL.equals(backend)) {
+            // Batched prefill projections and attention on Apple MLX.
+            return Set.of(DataType.Q4_K);
+        }
         return BackendId.CUDA.equals(backend)
                 ? Set.of(DataType.Q8_0, DataType.Q4_K, DataType.F16)
                 : Set.of();
@@ -98,6 +125,15 @@ public final class DevstralPlanProvider implements TornadoPlanProvider {
                     int batchSize,
                     org.beehive.jitllm.runtime.policy.ExecutionPolicy policy,
                     boolean fp16Cache) {
+        var mlx =
+                org.beehive.jitllm.backend.tornado.MlxPrefill.resolve(policy, weights, config)
+                        .map(
+                                m ->
+                                        org.beehive.jitllm.backend.tornado.MlxPrefill.workspace(
+                                                weights, config, batchSize, false, false));
+        if (mlx.isPresent()) {
+            return mlx;
+        }
         if (weights == DataType.F16) {
             return Optional.of(
                     org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill

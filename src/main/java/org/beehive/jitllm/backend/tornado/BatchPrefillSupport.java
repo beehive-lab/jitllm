@@ -100,7 +100,8 @@ public final class BatchPrefillSupport {
                     "phi3",
                     "granite",
                     "qwen35",
-                    "gemma4");
+                    "gemma4",
+                    "devstral");
 
     /** The batched-prefill chunk Metal runs by default; see {@link #defaultFor}. */
     public static final int METAL_DEFAULT_PREFILL_BATCH = 512;
@@ -162,8 +163,14 @@ public final class BatchPrefillSupport {
                 type == org.beehive.jitllm.runtime.tensor.DataType.Q4_0
                         && java.util.Set.of("llama", "qwen35")
                                 .contains(model.architectureId().toString());
+        // Devstral's Q4_K batched prefill on Metal is MLX's; without it the default is refused
+        // (batchPrefillNeeds) and the single-token plan runs.
+        boolean q4kBatched =
+                type == org.beehive.jitllm.runtime.tensor.DataType.Q4_K
+                        && "devstral".equals(model.architectureId().toString());
         return type == org.beehive.jitllm.runtime.tensor.DataType.F16
                 || type == org.beehive.jitllm.runtime.tensor.DataType.Q8_0
-                || q4Batched;
+                || q4Batched
+                || q4kBatched;
     }
 }
