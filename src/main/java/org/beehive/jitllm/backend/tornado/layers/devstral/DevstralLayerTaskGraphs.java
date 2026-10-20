@@ -226,34 +226,14 @@ public abstract class DevstralLayerTaskGraphs
                     splits);
             return;
         }
-        if (schedulerType == SchedulerType.NVIDIA) {
-            if (useFp16KVCache()) {
-                layer.task(
-                        "attention",
-                        TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
-                        context,
-                        state.workspace.wrapQ,
-                        state.workspace.wrapKeyCacheFP16,
-                        state.workspace.wrapValueCacheFP16,
-                        state.workspace.wrapXb,
-                        config.numberOfHeads(),
-                        config.headSize(),
-                        config.kvDim(),
-                        config.kvMul(),
-                        state.workspace.positionHolder,
-                        layerIndex,
-                        state.workspace.wrapBlockTable,
-                        state.kvBlockCfg,
-                        state.kvBlockStride);
-                return;
-            }
+        if (useFp16KVCache()) {
             layer.task(
                     "attention",
-                    TransformerPagedKvKernels::processHeadsFlashAttentionPaged,
+                    TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
                     context,
                     state.workspace.wrapQ,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
                     state.workspace.wrapXb,
                     config.numberOfHeads(),
                     config.headSize(),
@@ -266,9 +246,13 @@ public abstract class DevstralLayerTaskGraphs
                     state.kvBlockStride);
             return;
         }
+        // One workgroup per head with an online softmax, on every backend: the one-thread-per-head
+        // kernel this replaced on Metal walked the whole context serially, a quarter of the decode
+        // rate at 680 positions.
         layer.task(
                 "attention",
-                TransformerPagedKvKernels::processHeadsParallelPaged,
+                TransformerPagedKvKernels::processHeadsFlashAttentionPaged,
+                context,
                 state.workspace.wrapQ,
                 state.workspace.wrapKeyCache,
                 state.workspace.wrapValueCache,
@@ -277,9 +261,7 @@ public abstract class DevstralLayerTaskGraphs
                 config.headSize(),
                 config.kvDim(),
                 config.kvMul(),
-                config.contextLength(),
                 state.workspace.positionHolder,
-                state.workspace.wrapAtt,
                 layerIndex,
                 state.workspace.wrapBlockTable,
                 state.kvBlockCfg,
