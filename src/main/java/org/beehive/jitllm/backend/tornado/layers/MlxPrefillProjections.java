@@ -265,6 +265,40 @@ public final class MlxPrefillProjections {
             int hidden,
             float residualScale,
             IntFunction<LayerWeights> layerWeights) {
+        return of(
+                mlx,
+                state,
+                weights,
+                context,
+                batchSize,
+                layers,
+                dim,
+                qDim,
+                kvDim,
+                hidden,
+                residualScale,
+                layerWeights,
+                null);
+    }
+
+    /**
+     * {@link #of(MlxPrefill, State, TornadoWeights, KernelContext, int, int, int, int, int, int,
+     * float, IntFunction)} with the affine repacks kept in {@code cache} (null: in memory).
+     */
+    public static MlxPrefillProjections of(
+            MlxPrefill mlx,
+            State state,
+            TornadoWeights weights,
+            KernelContext context,
+            int batchSize,
+            int layers,
+            int dim,
+            int qDim,
+            int kvDim,
+            int hidden,
+            float residualScale,
+            IntFunction<LayerWeights> layerWeights,
+            MlxWeightCache cache) {
         LayerWeights[] perLayer = new LayerWeights[layers];
         for (int i = 0; i < layers; i++) {
             perLayer[i] = layerWeights.apply(i);
@@ -272,7 +306,7 @@ public final class MlxPrefillProjections {
                 if (t.isPacked()) {
                     throw PackedWeights.noPackedKernel("The MLX batched prefill");
                 }
-                if (t.dataType() != mlx.weights()) {
+                if (!mlx.reads(t.dataType())) {
                     throw new IllegalStateException(
                             "the MLX batched prefill was resolved for "
                                     + mlx.weights()
@@ -295,7 +329,8 @@ public final class MlxPrefillProjections {
                 kvDim,
                 hidden,
                 residualScale,
-                perLayer);
+                perLayer,
+                cache);
     }
 
     private MlxPrefillProjections(
@@ -309,7 +344,8 @@ public final class MlxPrefillProjections {
             int kvDim,
             int hidden,
             float residualScale,
-            LayerWeights[] perLayer) {
+            LayerWeights[] perLayer,
+            MlxWeightCache cache) {
         this.state = state;
         this.weights = weights;
         this.context = context;
@@ -325,12 +361,16 @@ public final class MlxPrefillProjections {
         this.gateUp = new Matrix[layers];
         this.w2 = new Matrix[layers];
         MlxPrefill.Projections form = mlx.projections();
-        for (int i = 0; i < layers; i++) {
-            qkv[i] = matrix(form, perLayer[i].qkv());
-            wo[i] = matrix(form, perLayer[i].wo());
-            gateUp[i] = matrix(form, perLayer[i].gateUp());
-            w2[i] = matrix(form, perLayer[i].w2());
-        }
+        // Layer by layer in parallel: each repack reads its own tensors and fills its own slots.
+        java.util.stream.IntStream.range(0, layers)
+                .parallel()
+                .forEach(
+                        i -> {
+                            qkv[i] = matrix(form, cache, perLayer[i].qkv());
+                            wo[i] = matrix(form, cache, perLayer[i].wo());
+                            gateUp[i] = matrix(form, cache, perLayer[i].gateUp());
+                            w2[i] = matrix(form, cache, perLayer[i].w2());
+                        });
         this.xHalf = new HalfFloatArray(batchSize * dim);
         this.qkvHalf = new HalfFloatArray(batchSize * (qDim + 2 * kvDim));
         this.attnHalf = new HalfFloatArray(batchSize * qDim);
@@ -339,6 +379,16 @@ public final class MlxPrefillProjections {
         this.hbHalf = new HalfFloatArray(batchSize * hidden);
         this.attnRowScale = new FloatArray(batchSize);
         this.downRowScale = new FloatArray(batchSize);
+    }
+
+    /**
+     * {@link #matrix(MlxPrefill.Projections, TornadoTensor...)}, an affine one from {@code cache}.
+     */
+    static Matrix matrix(
+            MlxPrefill.Projections form, MlxWeightCache cache, TornadoTensor... tensors) {
+        return form == MlxPrefill.Projections.AFFINE && cache != null
+                ? cache.affine(tensors)
+                : matrix(form, tensors);
     }
 
     /** The tensors, rows stacked in order, as one matrix in {@code form}. */
@@ -362,42 +412,38 @@ public final class MlxPrefillProjections {
     }
 
     /**
-     * Q8_0 or Q4_0 tensors, rows stacked in order, repacked into MLX's affine format: {@code bits}
-     * -bit unsigned values packed little-end first into 32-bit words, and per group of 32 an FP16
-     * scale and bias with {@code w = scale * q + bias}.
+     * Q8_0, Q4_0, Q4_K or Q6_K tensors, rows stacked in order, repacked into MLX's affine format:
+     * {@code bits}-bit unsigned values packed little-end first into 32-bit words, and per group of
+     * 32 an FP16 scale and bias with {@code w = scale * q + bias}.
+     *
+     * <p>Four bits when every tensor is Q4_0 or Q4_K, eight when any is Q8_0 or Q6_K. A 4-bit
+     * tensor in an 8-bit stack keeps its values and its scale and bias, so it stays exact: a stack
+     * mixing Q4_K with the Q6_K a {@code Q4_K_M} file gives some of its tensors costs that stack
+     * four more bits, not precision. See {@link KQuantGroups} for the k-quants.
      */
     static Matrix affine(TornadoTensor... tensors) {
-        boolean q8 = tensors[0].dataType() == DataType.Q8_0;
-        int bits = q8 ? 8 : 4;
-        int blockBytes = q8 ? 34 : 18;
-        long blocks = 0;
+        int bits = 4;
+        long groups = 0;
         for (TornadoTensor t : tensors) {
-            blocks += t.asByteArray().getSize() / blockBytes;
+            DataType type = t.dataType();
+            if (type == DataType.Q8_0 || type == DataType.Q6_K) {
+                bits = 8;
+            }
+            groups += groups(t);
         }
-        IntArray q = new IntArray(Math.toIntExact(blocks * GROUP * bits / 32));
-        HalfFloatArray scales = new HalfFloatArray(Math.toIntExact(blocks));
-        HalfFloatArray biases = new HalfFloatArray(Math.toIntExact(blocks));
+        IntArray q = new IntArray(Math.toIntExact(groups * GROUP * bits / 32));
+        HalfFloatArray scales = new HalfFloatArray(Math.toIntExact(groups));
+        HalfFloatArray biases = new HalfFloatArray(Math.toIntExact(groups));
+        int perWord = 32 / bits;
+        int[] values = new int[GROUP];
+        float[] affine = new float[2];
         int word = 0;
         int group = 0;
-        int[] values = new int[GROUP];
         for (TornadoTensor t : tensors) {
             MemorySegment src = t.asByteArray().getSegment();
-            long n = t.asByteArray().getSize() / blockBytes;
-            for (long b = 0; b < n; b++) {
-                long base = b * blockBytes;
-                float scale = Float.float16ToFloat(src.get(ValueLayout.JAVA_SHORT_UNALIGNED, base));
-                if (q8) {
-                    for (int j = 0; j < GROUP; j++) {
-                        values[j] = src.get(ValueLayout.JAVA_BYTE, base + 2 + j) + 128;
-                    }
-                } else {
-                    for (int j = 0; j < GROUP / 2; j++) {
-                        int packed = src.get(ValueLayout.JAVA_BYTE, base + 2 + j) & 0xFF;
-                        values[j] = packed & 0xF;
-                        values[j + GROUP / 2] = packed >>> 4;
-                    }
-                }
-                int perWord = 32 / bits;
+            long n = groups(t);
+            for (long g = 0; g < n; g++) {
+                affineGroup(t.dataType(), src, g, values, affine);
                 for (int w = 0; w < GROUP / perWord; w++) {
                     int packed = 0;
                     for (int e = 0; e < perWord; e++) {
@@ -405,43 +451,99 @@ public final class MlxPrefillProjections {
                     }
                     q.set(word++, packed);
                 }
-                scales.set(group, new HalfFloat(scale));
-                biases.set(group, new HalfFloat(-(q8 ? 128 : 8) * scale));
+                scales.set(group, new HalfFloat(affine[0]));
+                biases.set(group, new HalfFloat(affine[1]));
                 group++;
             }
         }
         return new Matrix(null, q, scales, biases, bits);
     }
 
-    /** Q8_0 or Q4_0 tensors, rows stacked in order, decoded to FP16. */
-    static HalfFloatArray decode(TornadoTensor... tensors) {
-        boolean q8 = tensors[0].dataType() == DataType.Q8_0;
-        int blockBytes = q8 ? 34 : 18;
-        long blocks = 0;
-        for (TornadoTensor t : tensors) {
-            blocks += t.asByteArray().getSize() / blockBytes;
+    /** The groups of 32 weights {@code t} holds. */
+    private static long groups(TornadoTensor t) {
+        long bytes = t.asByteArray().getSize();
+        return switch (t.dataType()) {
+            case Q8_0 -> bytes / 34;
+            case Q4_0 -> bytes / 18;
+            case Q4_K -> KQuantGroups.q4kGroups(bytes);
+            case Q6_K -> KQuantGroups.q6kGroups(bytes);
+            default ->
+                    throw new IllegalArgumentException(
+                            "MLX's affine format has no repack of " + t.dataType());
+        };
+    }
+
+    /** Group {@code g} of a tensor of {@code type}: its values, and its scale and bias. */
+    private static void affineGroup(
+            DataType type, MemorySegment src, long g, int[] values, float[] affine) {
+        switch (type) {
+            case Q8_0 -> {
+                long base = g * 34;
+                float scale = Float.float16ToFloat(src.get(ValueLayout.JAVA_SHORT_UNALIGNED, base));
+                for (int j = 0; j < GROUP; j++) {
+                    values[j] = src.get(ValueLayout.JAVA_BYTE, base + 2 + j) + 128;
+                }
+                affine[0] = scale;
+                affine[1] = -128 * scale;
+            }
+            case Q4_0 -> {
+                long base = g * 18;
+                float scale = Float.float16ToFloat(src.get(ValueLayout.JAVA_SHORT_UNALIGNED, base));
+                for (int j = 0; j < GROUP / 2; j++) {
+                    int packed = src.get(ValueLayout.JAVA_BYTE, base + 2 + j) & 0xFF;
+                    values[j] = packed & 0xF;
+                    values[j + GROUP / 2] = packed >>> 4;
+                }
+                affine[0] = scale;
+                affine[1] = -8 * scale;
+            }
+            case Q4_K -> KQuantGroups.q4kAffine(src, g, values, affine);
+            case Q6_K -> KQuantGroups.q6kAffine(src, g, values, affine);
+            default ->
+                    throw new IllegalArgumentException(
+                            "MLX's affine format has no repack of " + type);
         }
-        HalfFloatArray out = new HalfFloatArray(Math.toIntExact(blocks * GROUP));
+    }
+
+    /** Q8_0, Q4_0, Q4_K or Q6_K tensors, rows stacked in order, decoded to FP16. */
+    static HalfFloatArray decode(TornadoTensor... tensors) {
+        long groups = 0;
+        for (TornadoTensor t : tensors) {
+            groups += groups(t);
+        }
+        HalfFloatArray out = new HalfFloatArray(Math.toIntExact(groups * GROUP));
         MemorySegment dst = out.getSegment();
+        int[] values = new int[GROUP];
+        float[] affine = new float[2];
+        float[] weights = new float[GROUP];
         long e = 0;
         for (TornadoTensor t : tensors) {
             MemorySegment src = t.asByteArray().getSegment();
-            long n = t.asByteArray().getSize() / blockBytes;
-            for (long b = 0; b < n; b++, e += GROUP) {
-                long base = b * blockBytes;
-                float scale = Float.float16ToFloat(src.get(ValueLayout.JAVA_SHORT_UNALIGNED, base));
-                for (int j = 0; j < GROUP; j++) {
-                    int q;
-                    if (q8) {
-                        q = src.get(ValueLayout.JAVA_BYTE, base + 2 + j);
-                    } else {
-                        int packed = src.get(ValueLayout.JAVA_BYTE, base + 2 + (j % 16)) & 0xFF;
-                        q = (j < 16 ? packed & 0xF : packed >>> 4) - 8;
+            long n = groups(t);
+            for (long g = 0; g < n; g++, e += GROUP) {
+                switch (t.dataType()) {
+                    case Q6_K -> KQuantGroups.q6kDecode(src, g, weights);
+                    case Q4_K -> {
+                        KQuantGroups.q4kAffine(src, g, values, affine);
+                        for (int j = 0; j < GROUP; j++) {
+                            weights[j] = affine[0] * values[j] + affine[1];
+                        }
                     }
+                    default -> {
+                        // Q8_0 and Q4_0 as s * q, the arithmetic the JIT decoders use.
+                        affineGroup(t.dataType(), src, g, values, affine);
+                        float scale = affine[0];
+                        int zero = t.dataType() == DataType.Q8_0 ? 128 : 8;
+                        for (int j = 0; j < GROUP; j++) {
+                            weights[j] = scale * (values[j] - zero);
+                        }
+                    }
+                }
+                for (int j = 0; j < GROUP; j++) {
                     dst.set(
                             ValueLayout.JAVA_SHORT_UNALIGNED,
                             (e + j) * 2,
-                            Float.floatToFloat16(scale * q));
+                            Float.floatToFloat16(weights[j]));
                 }
             }
         }
