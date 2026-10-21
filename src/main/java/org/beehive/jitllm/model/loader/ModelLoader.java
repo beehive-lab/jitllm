@@ -12,6 +12,9 @@ import org.beehive.jitllm.Options;
 import org.beehive.jitllm.auxiliary.RunMetrics;
 import org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.PackedTiles;
+import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
+import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
@@ -24,6 +27,7 @@ import org.beehive.jitllm.model.ModelType;
 import org.beehive.jitllm.model.provider.ModelProvider;
 import org.beehive.jitllm.model.provider.ModelProviders;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.runtime.tensor.TensorDescriptor;
 import org.beehive.jitllm.tensor.standard.*;
@@ -509,5 +513,37 @@ public abstract class ModelLoader {
             array[i] = loadTornadoTensor(getTensorEntry.apply(i));
         }
         return array;
+    }
+
+    /**
+     * Q4_0 projection packing, when {@code pack} ({@link PackedWeights#packQ4}), for the loaders
+     * whose layer graphs read packed Q4_0 tiles: each retained Q4_0 projection whose shape packs is
+     * recorded as packed, and repacked on the GPU once uploaded (see {@link PackedTiles}). A
+     * projection of another type — the Q4_1 {@code ffn_down} of some layers, a materialized trunk —
+     * is left as it is.
+     */
+    public static TornadoTensor[] packQ4(
+            TornadoTensor[] tensors, IntFunction<GGMLTensorEntry> entries, boolean pack) {
+        if (!pack) {
+            return tensors;
+        }
+        for (int i = 0; i < tensors.length; i++) {
+            GGMLTensorEntry entry = entries.apply(i);
+            TornadoTensor tensor = tensors[i];
+            if (entry == null
+                    || tensor == null
+                    || entry.ggmlType() != GGMLType.Q4_0
+                    || tensor.dataType() != DataType.Q4_0
+                    || entry.shape().length != 2) {
+                continue;
+            }
+            int cols = entry.shape()[0];
+            int rows = entry.shape()[1];
+            if (PackedTiles.fits(rows, cols)) {
+                tensors[i] =
+                        new Q4_0TornadoTensor(tensor.asByteArray(), new PackedTiles(rows, cols));
+            }
+        }
+        return tensors;
     }
 }

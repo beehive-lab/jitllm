@@ -29,6 +29,10 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * poisoned to NaN first, so an element the kernels do not write fails. The bound, relative L2 at
  * most 1e-5 per case, is FP32 arithmetic over FP16 inputs that the host reads identically; the
  * window one position short is the negative control and must exceed it.
+ *
+ * <p>The shuffle-reduced kernel ({@link Gemma4AttentionKernels#attentionDecodeGroupFP16}) is held
+ * to the same bound where the layers select it: CUDA, and Metal, whose 32-wide SIMD-group shuffles
+ * it reduces with.
  */
 // @formatter:on
 public class Gemma4DecodeGroupSharedParityAccelTest {
@@ -50,20 +54,38 @@ public class Gemma4DecodeGroupSharedParityAccelTest {
     @Test
     public void matchesTheExactAttention() {
         assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
+        check(false);
+    }
+
+    @Test
+    public void theShuffleKernelMatchesTheExactAttention() {
+        assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
+        assumeTrue(
+                "this device does not select the shuffle-reduced kernel",
+                org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService
+                                .isShuffleReducedFp16GemvSupported()
+                        || org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService
+                                .isSubgroupShuffle32Supported());
+        check(true);
+    }
+
+    private static void check(boolean shuffle) {
         for (Case c : CASES) {
-            double rel = relativeL2(c, c.window());
-            System.out.printf("[gemma4-decode-shared] %s: rel L2 %.3e%n", c.name(), rel);
+            double rel = relativeL2(c, c.window(), shuffle);
+            System.out.printf(
+                    "[gemma4-decode-%s] %s: rel L2 %.3e%n",
+                    shuffle ? "shuffle" : "shared", c.name(), rel);
             assertTrue(c.name() + ": relative L2 " + rel, rel <= 1e-5);
         }
         // Negative control: the device window one position shorter than the reference's.
         Case past = CASES[2];
-        double control = relativeL2(past, past.window() - 1);
+        double control = relativeL2(past, past.window() - 1, shuffle);
         System.out.printf("[gemma4-decode-shared] control (window - 1): rel L2 %.3e%n", control);
         assertTrue("the control is not distinguished: " + control, control > 1e-5);
     }
 
     /** Runs the kernels with {@code deviceWindow} and compares against the exact attention. */
-    private static double relativeL2(Case c, int deviceWindow) {
+    private static double relativeL2(Case c, int deviceWindow, boolean shuffle) {
         int headDim = c.headDim();
         int kvDim = KV_HEADS * headDim;
         int base = SLOTS_BEFORE * CAPACITY * kvDim;
@@ -108,7 +130,9 @@ public class Gemma4DecodeGroupSharedParityAccelTest {
                                 position)
                         .task(
                                 "group",
-                                Gemma4AttentionKernels::attentionDecodeGroupFP16Shared,
+                                shuffle
+                                        ? Gemma4AttentionKernels::attentionDecodeGroupFP16
+                                        : Gemma4AttentionKernels::attentionDecodeGroupFP16Shared,
                                 context,
                                 q,
                                 keys,

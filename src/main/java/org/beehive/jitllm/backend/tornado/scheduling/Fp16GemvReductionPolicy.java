@@ -67,7 +67,7 @@ public final class Fp16GemvReductionPolicy {
      * is never preferred into it.
      */
     public static boolean preferShuffleReduction() {
-        return TornadoDevices.current()
+        return TornadoDevices.target()
                 .capabilities()
                 .supports(DeviceCapability.SHUFFLE_REDUCED_FP16_GEMV);
     }

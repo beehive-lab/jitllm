@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 import org.beehive.jitllm.backend.tornado.kernels.GraniteKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.scheduling.LogitsWorkgroupPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
@@ -82,7 +83,8 @@ public class LogitsGraniteQ8_0Layer extends LogitsQ8_0Layer {
                 weights.wclsByteArray.asByteArray(),
                 config.dim(),
                 config.vocabularySize(),
-                LOCAL_WORK_GROUP_SIZE_ALLOC * THREAD_SCALE_FOR_LOGITS,
+                // Must match the workgroup LogitsQ8_0Layer.updateGridScheduler launches.
+                LogitsWorkgroupPolicy.q8Threads(),
                 graniteCfg.logitScale());
 
         logits.transferToHost(DataTransferMode.EVERY_EXECUTION, state.workspace.wrapLogits);

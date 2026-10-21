@@ -1,6 +1,6 @@
 ---
 name: build-tornado
-description: Build a TornadoVM SDK for jitllm. Use when TORNADOVM_HOME is unset, points at the wrong JDK line or backend, or at a TornadoVM older than 7.0.0.
+description: Build a TornadoVM SDK for jitllm. Use when TORNADOVM_HOME is unset, points at the wrong JDK line or backend, or at a TornadoVM older than 7.3.
 license: Apache-2.0
 metadata:
   author: TornadoVM Team
@@ -9,7 +9,7 @@ metadata:
 # Build TornadoVM
 
 One SDK per (JDK line, backend). jitllm compiles against whatever SDK `TORNADOVM_HOME`
-points at, from TornadoVM 7.0.0 on. A released SDK (`sdk install tornadovm`) needs no build;
+points at, from TornadoVM 7.3.0 on. A released SDK (`sdk install tornadovm`) needs no build;
 build one when you need `develop` or a backend no release ships. `pom.xml` names one release,
 `tornadovm.release.version`, which is what `-P release` depends on.
 
@@ -34,7 +34,7 @@ sed -n 's:.*<tornadovm.release.version>\(.*\)</tornadovm.release.version>.*:\1:p
 - **Backend**: `opencl`, `cuda` or `metal`. Comma-separated combinations are accepted but
   make the runtime pick between them, so prefer one.
 - **JDK line**: 21 or 25. It must be the same JDK you build and run jitllm with.
-- **Version**: the release above, or `develop` for APIs no release has yet (7.0.0 at least).
+- **Version**: the release above, or `develop` for APIs no release has yet (7.3 at least).
 
 ## 2. Check the environment
 

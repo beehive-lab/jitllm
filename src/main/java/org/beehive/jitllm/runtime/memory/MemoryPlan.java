@@ -55,6 +55,9 @@ public record MemoryPlan(
          * <p><b>Report-only.</b> Never rejects a load on its own — a caller must opt in explicitly
          * for that. An upper bound that happens to exceed the budget would block a load that would
          * in fact have run, and the caller has no way to overrule a refusal from inside the loader.
+         * The one exception is a plan whose logical bytes alone exceed the budget ({@link
+         * MemoryPlan#exceedsConfiguredBudgetAtLowerBound}): that is a lower bound, not an upper
+         * one.
          */
         CONSERVATIVE,
 
@@ -105,6 +108,23 @@ public record MemoryPlan(
      */
     public boolean fitsConfiguredBudget() {
         return configuredBudgetBytes <= 0 || predictedBudgetBytes() <= configuredBudgetBytes;
+    }
+
+    /**
+     * Whether even the <b>logical</b> bytes — every buffer counted once, with no duplication and no
+     * headers — exceed the configured budget.
+     *
+     * <p>A lower bound on what the backend will be charged at any confidence: the uncertainty that
+     * keeps a {@link Confidence#CONSERVATIVE} plan report-only is in multiplicity and overhead,
+     * which only ever add to it. So a {@code true} here cannot block a load that would have run,
+     * which is why admission may act on it below {@link Confidence#EXACT}. Never for {@link
+     * Confidence#UNSUPPORTED}, whose components are not known to be the ones that will be
+     * allocated.
+     */
+    public boolean exceedsConfiguredBudgetAtLowerBound() {
+        return confidence != Confidence.UNSUPPORTED
+                && configuredBudgetBytes > 0
+                && logicalBytes() > configuredBudgetBytes;
     }
 
     /** Components largest first — what a person needs in order to act on a shortfall. */

@@ -4,6 +4,7 @@ import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.enums.MMAShape;
 import uk.ac.manchester.tornado.api.math.TornadoMath;
 import uk.ac.manchester.tornado.api.types.HalfFloat;
+import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
@@ -2649,4 +2650,81 @@ public final class Qwen35BatchKernels {
             values.set(base + i, weights.get(i) * (inv * values.get(base + i)));
         }
     }
+
+    // @formatter:off
+    /**
+     * The delta-net decay and beta projections of the chunk, both Q8_0 and {@code heads} wide — too
+     * narrow for the int8 GEMM's tiles — in one launch: a block of four warps per active token,
+     * each warp a row of either matrix at a time against the token's quantized row. The two
+     * matrices are walked in separate loops, so no value is merged across a branch. Worker: {@code
+     * batch * 128} lanes, local 128.
+     */
+    // @formatter:on
+    public static void alphaBetaQ8_0(
+            KernelContext context,
+            ByteArray a8,
+            FloatArray aScales,
+            ByteArray alphaW,
+            ByteArray betaW,
+            FloatArray alpha,
+            FloatArray beta,
+            IntArray batchInfo,
+            int dim,
+            int heads) {
+        int token = context.groupIdx;
+        int warp = context.localIdx >> 5;
+        int lane = context.localIdx & 31;
+        if (token < batchInfo.get(1)) {
+            for (int o = warp; o < heads; o += 4) {
+                float sum = warpSum(context, rowDotQ8(alphaW, o, a8, aScales, token, dim, lane));
+                if (lane == 0) {
+                    alpha.set(token * heads + o, sum);
+                }
+            }
+            for (int o = warp; o < heads; o += 4) {
+                float sum = warpSum(context, rowDotQ8(betaW, o, a8, aScales, token, dim, lane));
+                if (lane == 0) {
+                    beta.set(token * heads + o, sum);
+                }
+            }
+        }
+    }
+
+    private static float warpSum(KernelContext context, float value) {
+        float v = value;
+        v += context.simdShuffleDown(v, 16);
+        v += context.simdShuffleDown(v, 8);
+        v += context.simdShuffleDown(v, 4);
+        v += context.simdShuffleDown(v, 2);
+        v += context.simdShuffleDown(v, 1);
+        return v;
+    }
+
+    /** One warp's share of Q8_0 row {@code row} dotted with token {@code token}'s int8 row. */
+    private static float rowDotQ8(
+            ByteArray w, int row, ByteArray a8, FloatArray aScales, int token, int dim, int lane) {
+        int blocks = dim / QK;
+        float partial = 0.0f;
+        for (int b = lane; b < blocks; b += 32) {
+            int wOff = (row * blocks + b) * BLOCK_BYTES;
+            int aOff = token * dim + b * QK;
+            int dot = 0;
+            for (int g = 0; g < QK / 4; g++) {
+                int wq = pairBits(w, wOff + 2 + g * 4) | (pairBits(w, wOff + 4 + g * 4) << 16);
+                int aq = pairBits(a8, aOff + g * 4) | (pairBits(a8, aOff + g * 4 + 2) << 16);
+                dot = uk.ac.manchester.tornado.api.utils.QuantizationUtils.dp4a_packed(wq, aq, dot);
+            }
+            partial += w.getHalfFloat(wOff).getFloat32() * aScales.get(token * blocks + b) * dot;
+        }
+        return partial;
+    }
+
+    /** Two adjacent bytes of {@code a} at byte {@code offset}, zero-extended. */
+    private static int pairBits(ByteArray a, int offset) {
+        return a.getHalfFloat(offset).getHalfFloatValue() & 0xFFFF;
+    }
+
+    private static final int QK = 32;
+
+    private static final int BLOCK_BYTES = 34;
 }

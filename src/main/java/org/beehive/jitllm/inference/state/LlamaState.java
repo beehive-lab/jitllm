@@ -49,13 +49,14 @@ public final class LlamaState extends State {
 
         // Key-value cache with Llama/Mistral dimensions
         int kvDim = (config.dim() * config.numberOfKeyValueHeads()) / config.numberOfHeads();
+        int kvLayers = keyValueLayersForConstruction(config.numberOfLayers());
         fields.keyCache =
                 Stream.generate(() -> allocateKeyValue(config.contextLength(), kvDim))
-                        .limit(config.numberOfLayers())
+                        .limit(kvLayers)
                         .toArray(FloatTensor[]::new);
         fields.valueCache =
                 Stream.generate(() -> allocateKeyValue(config.contextLength(), kvDim))
-                        .limit(config.numberOfLayers())
+                        .limit(kvLayers)
                         .toArray(FloatTensor[]::new);
 
         // TornadoVM wrappers with Llama/Mistral dimensions
@@ -76,6 +77,10 @@ public final class LlamaState extends State {
         workspace.wrapQ = TornadoWorkspaces.floats(config.dim());
         workspace.wrapK = TornadoWorkspaces.floats(config.dim());
         workspace.wrapV = TornadoWorkspaces.floats(config.dim());
+
+        // The packed-integer projections' quantized activation, sized for the widest one they read.
+        int widest = Math.max(config.dim(), config.hiddenDim());
+        TornadoWorkspaces.packedActivation(workspace, widest);
 
         workspace.wrapXFP16 = TornadoWorkspaces.halfFloats(config.dim());
         workspace.wrapXbFP16 = TornadoWorkspaces.halfFloats(config.dim());

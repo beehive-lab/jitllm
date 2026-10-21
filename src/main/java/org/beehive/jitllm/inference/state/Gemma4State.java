@@ -59,22 +59,55 @@ public final class Gemma4State extends State {
     // `tempFFN`); each of the others gets its own buffer so consecutive reduce/apply pairs never
     // alias.
 
+    /** The layers a state being built holds a key/value cache for; null for every layer. */
+    private static final ThreadLocal<int[]> LAYER_RANGE = new ThreadLocal<>();
+
+    // @formatter:off
+    /**
+     * Builds a state that holds key/value entries for layers {@code [first, end)} only: one stage
+     * of a model split across devices. The other layers get no cache slot, so a stage allocates a
+     * stage's share of the cache rather than the whole model's.
+     */
+    // @formatter:on
+    public static <T> T withLayerRange(int first, int end, java.util.function.Supplier<T> build) {
+        int[] previous = LAYER_RANGE.get();
+        LAYER_RANGE.set(new int[] {first, end});
+        try {
+            return build.get();
+        } finally {
+            if (previous == null) {
+                LAYER_RANGE.remove();
+            } else {
+                LAYER_RANGE.set(previous);
+            }
+        }
+    }
+
+    /** Whether the state being built keeps a cache for layer {@code l}. */
+    private static boolean inRange(int l) {
+        int[] range = LAYER_RANGE.get();
+        return range == null || (l >= range[0] && l < range[1]);
+    }
+
     public Gemma4State(Configuration config, int batchsize) {
         super(config, batchsize);
 
         Gemma4Configuration gemma4config = (Gemma4Configuration) config;
-        int perLayerTotal = gemma4config.numberOfLayers() * gemma4config.embeddingLengthPerLayer();
+        // Never empty: a model without per-layer embeddings (the 31B) binds these buffers to no
+        // task, and a zero-length device array is not one TornadoVM allocates.
+        int perLayerTotal =
+                Math.max(1, gemma4config.numberOfLayers() * gemma4config.embeddingLengthPerLayer());
+        int perLayerSegment = Math.max(1, gemma4config.embeddingLengthPerLayer());
         this.perLayerInputs = ArrayFloatTensor.allocate(perLayerTotal);
         this.perLayerProjScratch = ArrayFloatTensor.allocate(perLayerTotal);
-        this.perLayerGate = ArrayFloatTensor.allocate(gemma4config.embeddingLengthPerLayer());
+        this.perLayerGate = ArrayFloatTensor.allocate(perLayerSegment);
         this.perLayerOut = ArrayFloatTensor.allocate(gemma4config.dim());
 
         this.cacheLayerBaseOffset = computeCacheLayerBaseOffsets(gemma4config);
 
         this.workspace.wrapPerLayerInputs = TornadoWorkspaces.floats(perLayerTotal);
         this.workspace.wrapPerLayerProjScratch = TornadoWorkspaces.floats(perLayerTotal);
-        this.workspace.wrapPerLayerGate =
-                TornadoWorkspaces.floats(gemma4config.embeddingLengthPerLayer());
+        this.workspace.wrapPerLayerGate = TornadoWorkspaces.floats(perLayerSegment);
         this.workspace.wrapPerLayerOut = TornadoWorkspaces.floats(gemma4config.dim());
         this.workspace.wrapPerLayerTokenEmbedRow = TornadoWorkspaces.floats(perLayerTotal);
 
@@ -109,7 +142,7 @@ public final class Gemma4State extends State {
             return;
         }
         int padded = (batch + 127) & ~127;
-        int segment = config.embeddingLengthPerLayer();
+        int segment = Math.max(1, config.embeddingLengthPerLayer());
 
         this.workspace.wrapPerLayerInputsBatch = TornadoWorkspaces.floats(padded * perLayerTotal);
         this.workspace.wrapPerLayerProjScratchBatch =
@@ -154,6 +187,14 @@ public final class Gemma4State extends State {
         }
         this.workspace.weightsF16Scratch =
                 TornadoWorkspaces.halfFloats(2 * config.maxFeedForwardLength() * config.dim());
+        // A chunk's activation in int8 blocks for the int8 GEMMs over Q8_0 weights: a byte per
+        // element and a scale per 32, at the widest input any projection reads.
+        int widestInput =
+                Math.max(
+                        Math.max(config.dim(), config.maxFeedForwardLength()),
+                        config.numberOfHeads() * config.maxHeadDim());
+        this.workspace.wrapQ8ActBatch = TornadoWorkspaces.bytes(padded * widestInput);
+        this.workspace.wrapQ8ActScales = TornadoWorkspaces.floats(padded * widestInput / 32);
         this.workspace.splitKPartialBatch =
                 TornadoWorkspaces.floats(
                         org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers
@@ -172,7 +213,7 @@ public final class Gemma4State extends State {
     @Override
     protected int batchKvDim(Configuration configuration) {
         Gemma4Configuration config = (Gemma4Configuration) configuration;
-        return config.numberOfKeyValueHeads() * config.maxHeadDim();
+        return config.maxKeyValueDim();
     }
 
     // @formatter:off
@@ -195,14 +236,15 @@ public final class Gemma4State extends State {
      * points to a layer with the same {@code isSwa}-ness).
      */
     private static int[] computeCacheLayerBaseOffsets(Gemma4Configuration config) {
-        int nHeadKv = config.numberOfKeyValueHeads();
         int[] offsets = new int[config.numberOfLayers()];
         int running = 0;
         for (int l = 0; l < config.numberOfLayers(); l++) {
             int reuse = config.kvReuseLayer(l);
             if (reuse < 0) {
                 offsets[l] = running;
-                running += config.contextLength() * (nHeadKv * config.headDim(l));
+                if (inRange(l)) {
+                    running += config.contextLength() * config.keyValueDim(l);
+                }
             } else {
                 offsets[l] = offsets[reuse];
             }
@@ -217,15 +259,14 @@ public final class Gemma4State extends State {
 
     /** Total number of elements needed for the (deduplicated) flat KV cache buffer. */
     private static int totalCacheElements(Gemma4Configuration config, int[] cacheLayerBaseOffset) {
-        int nHeadKv = config.numberOfKeyValueHeads();
         int total = 0;
         for (int l = 0; l < config.numberOfLayers(); l++) {
-            if (config.hasOwnKv(l)) {
+            if (config.hasOwnKv(l) && inRange(l)) {
                 total =
                         Math.max(
                                 total,
                                 cacheLayerBaseOffset[l]
-                                        + config.contextLength() * (nHeadKv * config.headDim(l)));
+                                        + config.contextLength() * config.keyValueDim(l));
             }
         }
         return total;
@@ -244,7 +285,7 @@ public final class Gemma4State extends State {
         int maxFFN = config.maxFeedForwardLength();
 
         int qSize = nHead * maxHeadDim;
-        int kvSize = nHeadKv * maxHeadDim;
+        int kvSize = config.maxKeyValueDim();
 
         fields.x = ArrayFloatTensor.allocate(dim);
         fields.xb = ArrayFloatTensor.allocate(Math.max(dim, qSize));
@@ -264,9 +305,11 @@ public final class Gemma4State extends State {
         for (int l = 0; l < config.numberOfLayers(); l++) {
             int reuse = config.kvReuseLayer(l);
             if (reuse < 0) {
-                int layerKvDim = config.headDim(l) * nHeadKv;
-                keyCache[l] = allocateKeyValue(config.contextLength(), layerKvDim);
-                valueCache[l] = allocateKeyValue(config.contextLength(), layerKvDim);
+                // Outside this state's layer range the host cache is a placeholder.
+                int layerKvDim = config.keyValueDim(l);
+                int positions = inRange(l) ? config.contextLength() : 1;
+                keyCache[l] = allocateKeyValue(positions, layerKvDim);
+                valueCache[l] = allocateKeyValue(positions, layerKvDim);
             } else {
                 keyCache[l] = keyCache[reuse];
                 valueCache[l] = valueCache[reuse];
@@ -314,27 +357,29 @@ public final class Gemma4State extends State {
         // reads and used as a prefix by the narrower ones. This family's feed-forward width differs
         // by layer, so the widest is the maximum over layers rather than a single hiddenDim.
         int widest = Math.max(config.dim(), config.maxFeedForwardLength());
-        workspace.wrapXbQuants = TornadoWorkspaces.ints(widest / 4);
-        workspace.wrapXbScales = TornadoWorkspaces.floats(widest / 32);
-        workspace.wrapXbSums = TornadoWorkspaces.ints(widest / 32);
+        TornadoWorkspaces.packedActivation(workspace, widest);
 
         workspace.wrapAtt = TornadoWorkspaces.floats(nHead * config.contextLength());
         // Split-KV partials: per head, SPLIT_KV numerators of headDim, then SPLIT_KV maxima and
         // SPLIT_KV sums. Sized at the widest head because this family's head width differs by
         // layer -- 256 on the sliding-window layers, 512 on the full ones -- while the buffer is
         // one allocation shared by every layer's graph.
+        // Over a half-precision cache a layer takes the grouped kernel or, where its shape does
+        // not fit that one, the split kernel; the buffer holds whichever layout is larger.
+        int splitFloats = nHead * config.attentionSplits() * (config.maxHeadDim() + 2);
         workspace.wrapAttSplit =
                 usesFp16KeyValue()
                         ? TornadoWorkspaces.floats(
-                                nHeadKv
-                                        * org.beehive.jitllm.backend.tornado.kernels
-                                                .Gemma4AttentionKernels.decodeSlices(
-                                                config.contextLength())
-                                        * org.beehive.jitllm.backend.tornado.kernels
-                                                .Gemma4AttentionKernels.decodePartialStride(
-                                                config.maxHeadDim()))
-                        : TornadoWorkspaces.floats(
-                                nHead * config.attentionSplits() * (config.maxHeadDim() + 2));
+                                Math.max(
+                                        splitFloats,
+                                        nHeadKv
+                                                * org.beehive.jitllm.backend.tornado.kernels
+                                                        .Gemma4AttentionKernels.decodeSlices(
+                                                        config.contextLength())
+                                                * org.beehive.jitllm.backend.tornado.kernels
+                                                        .Gemma4AttentionKernels.decodePartialStride(
+                                                        config.maxHeadDim())))
+                        : TornadoWorkspaces.floats(splitFloats);
         workspace.positionHolder = TornadoWorkspaces.ints(1);
 
         workspace.temp = TornadoWorkspaces.floats(1 + ((dim + localSize - 1) / localSize));

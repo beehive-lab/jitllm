@@ -12,6 +12,7 @@ import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.model.AbstractModel;
 import org.beehive.jitllm.model.ModelType;
 import org.beehive.jitllm.model.format.ChatFormat;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy;
 import org.beehive.jitllm.tokenizer.GraniteTokenizer;
 import org.beehive.jitllm.tokenizer.Tokenizer;
 
@@ -93,6 +94,21 @@ public class Granite extends AbstractModel {
             boolean echo,
             IntConsumer onTokenGenerated,
             TornadoVMMasterPlan tornadoVMPlan) {
+        if (state.executionPolicy().phaseStrategy() == PhaseStrategy.PREFILL_DECODE
+                && state.executionPolicy().prefillBatchSize() > 1) {
+            // Batched prefill, then the shared GPU decode loop (Granite's is Llama's).
+            return TokenGenerationLoop.generateTokensGpu(
+                    this,
+                    state,
+                    startPosition,
+                    promptTokens,
+                    stopTokens,
+                    maxTokens,
+                    sampler,
+                    echo,
+                    onTokenGenerated,
+                    tornadoVMPlan);
+        }
         return TokenGenerationLoop.generateTokensGPUGranite(
                 this,
                 state,

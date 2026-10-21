@@ -10,4 +10,9 @@ public class GpuFp16KvPhi3F16AccelTest {
     public void singleToken() throws Exception {
         GpuFp16KvPrecision.check(Fixture.PHI3_MINI_4K_F16, GpuFp16KvPrecision.Mode.SINGLE_TOKEN);
     }
+
+    @Test
+    public void batchedPrefill() throws Exception {
+        GpuFp16KvPrecision.checkBatchedOnMetal(Fixture.PHI3_MINI_4K_F16);
+    }
 }

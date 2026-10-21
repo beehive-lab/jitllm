@@ -711,8 +711,6 @@ public final class InferenceCore {
         final State state = gs;
         final int dim = config.dim();
         final int nHead = config.numberOfHeads();
-        final int nHeadKv = config.numberOfKeyValueHeads();
-        final int kvMul = config.kvMul();
         final int nLayers = config.numberOfLayers();
         final int nEmbdPerLayer = config.embeddingLengthPerLayer();
         final int perLayerTotal = nLayers * nEmbdPerLayer;
@@ -723,29 +721,31 @@ public final class InferenceCore {
         CpuOperations.embeddingLookup(weights.tokenEmbeddingTable, token, state.x, dim);
         CpuOperations.scale(state.x, (float) Math.sqrt(dim));
 
-        // 2. per-layer embeddings (PLE)
-        CpuOperations.embeddingLookupLongIndexed(
-                weights.perLayerTokenEmbd, token, perLayerTotal, gs.perLayerInputs, 0);
-        CpuOperations.scale(gs.perLayerInputs, (float) Math.sqrt(nEmbdPerLayer));
+        // 2. per-layer embeddings (PLE), where the model has them (E2B does, the 31B does not)
+        if (config.hasPerLayerEmbeddings()) {
+            CpuOperations.embeddingLookupLongIndexed(
+                    weights.perLayerTokenEmbd, token, perLayerTotal, gs.perLayerInputs, 0);
+            CpuOperations.scale(gs.perLayerInputs, (float) Math.sqrt(nEmbdPerLayer));
 
-        CpuOperations.matVec(
-                weights.perLayerModelProj, state.x, gs.perLayerProjScratch, perLayerTotal, dim);
-        CpuOperations.scale(gs.perLayerProjScratch, (float) (1.0 / Math.sqrt(dim)));
-        for (int l = 0; l < nLayers; l++) {
-            CpuOperations.rmsNorm(
-                    gs.perLayerProjScratch,
-                    gs.perLayerProjScratch,
-                    weights.perLayerProjNorm,
-                    l * nEmbdPerLayer,
-                    nEmbdPerLayer,
-                    config.rmsNormEps());
-        }
-        final float perLayerInputScale = (float) (1.0 / Math.sqrt(2.0));
-        for (int i = 0; i < perLayerTotal; i++) {
-            float v =
-                    (gs.perLayerProjScratch.getFloat(i) + gs.perLayerInputs.getFloat(i))
-                            * perLayerInputScale;
-            gs.perLayerInputs.setFloat(i, v);
+            CpuOperations.matVec(
+                    weights.perLayerModelProj, state.x, gs.perLayerProjScratch, perLayerTotal, dim);
+            CpuOperations.scale(gs.perLayerProjScratch, (float) (1.0 / Math.sqrt(dim)));
+            for (int l = 0; l < nLayers; l++) {
+                CpuOperations.rmsNorm(
+                        gs.perLayerProjScratch,
+                        gs.perLayerProjScratch,
+                        weights.perLayerProjNorm,
+                        l * nEmbdPerLayer,
+                        nEmbdPerLayer,
+                        config.rmsNormEps());
+            }
+            final float perLayerInputScale = (float) (1.0 / Math.sqrt(2.0));
+            for (int i = 0; i < perLayerTotal; i++) {
+                float v =
+                        (gs.perLayerProjScratch.getFloat(i) + gs.perLayerInputs.getFloat(i))
+                                * perLayerInputScale;
+                gs.perLayerInputs.setFloat(i, v);
+            }
         }
 
         // 3. transformer layers
@@ -753,6 +753,9 @@ public final class InferenceCore {
             final int headDim = config.headDim(l);
             final boolean isSwa = config.isSwa(l);
             final int qDim = nHead * headDim;
+            // Key/value heads by layer: the 31B has 16 on its sliding-window layers, 4 on the rest.
+            final int nHeadKv = config.keyValueHeads(l);
+            final int kvMul = config.kvMul(l);
             final int kvDim = nHeadKv * headDim;
 
             FloatTensor freqCisReal = isSwa ? weights.freqCisRealSwa : weights.freqCisRealFull;
@@ -779,7 +782,13 @@ public final class InferenceCore {
             final int kvSrcLayer;
             if (config.hasOwnKv(l)) {
                 CpuOperations.matVec(weights.wk[l], state.xb, state.k, kvDim, dim);
-                CpuOperations.matVec(weights.wv[l], state.xb, state.v, kvDim, dim);
+                if (weights.wv[l] != null) {
+                    CpuOperations.matVec(weights.wv[l], state.xb, state.v, kvDim, dim);
+                } else {
+                    // No value projection (the 31B's global layers): the values are the keys,
+                    // taken before the key norm and RoPE, as llama.cpp does.
+                    state.k.copyTo(0, state.v, 0, kvDim);
+                }
                 for (int h = 0; h < nHeadKv; h++) {
                     CpuOperations.rmsNorm(
                             state.k,
@@ -844,24 +853,31 @@ public final class InferenceCore {
             CpuOperations.residualAdd(state.x, state.xb2);
 
             // per-layer embedding contribution
-            CpuOperations.matVec(
-                    weights.perLayerInpGate[l], state.x, gs.perLayerGate, nEmbdPerLayer, dim);
-            gs.perLayerGate.mapInPlace(CpuOperations::gelu);
-            int peOffset = l * nEmbdPerLayer;
-            for (int j = 0; j < nEmbdPerLayer; j++) {
-                gs.perLayerGate.setFloat(
-                        j, gs.perLayerGate.getFloat(j) * gs.perLayerInputs.getFloat(peOffset + j));
+            if (config.hasPerLayerEmbeddings()) {
+                CpuOperations.matVec(
+                        weights.perLayerInpGate[l], state.x, gs.perLayerGate, nEmbdPerLayer, dim);
+                gs.perLayerGate.mapInPlace(CpuOperations::gelu);
+                int peOffset = l * nEmbdPerLayer;
+                for (int j = 0; j < nEmbdPerLayer; j++) {
+                    gs.perLayerGate.setFloat(
+                            j,
+                            gs.perLayerGate.getFloat(j) * gs.perLayerInputs.getFloat(peOffset + j));
+                }
+                CpuOperations.matVec(
+                        weights.perLayerProj[l],
+                        gs.perLayerGate,
+                        gs.perLayerOut,
+                        dim,
+                        nEmbdPerLayer);
+                CpuOperations.rmsNorm(
+                        gs.perLayerOut,
+                        gs.perLayerOut,
+                        weights.perLayerPostNorm[l],
+                        0,
+                        dim,
+                        config.rmsNormEps());
+                CpuOperations.residualAdd(state.x, gs.perLayerOut);
             }
-            CpuOperations.matVec(
-                    weights.perLayerProj[l], gs.perLayerGate, gs.perLayerOut, dim, nEmbdPerLayer);
-            CpuOperations.rmsNorm(
-                    gs.perLayerOut,
-                    gs.perLayerOut,
-                    weights.perLayerPostNorm[l],
-                    0,
-                    dim,
-                    config.rmsNormEps());
-            CpuOperations.residualAdd(state.x, gs.perLayerOut);
 
             // optional learned per-layer output scale — absent when the model has no such weight
             FloatTensor outScale = weights.layerOutputScale[l];

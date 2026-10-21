@@ -134,18 +134,24 @@ public class GraniteFP16FFNLayers
         TaskGraph unifiedLayer = new TaskGraph(layerTaskGraphName);
 
         // === Data Setup ===
-        unifiedLayer.consumeFromDevice(state.workspace.wrapX);
-        unifiedLayer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqLayered[layerIndex].asHalfFloatArray(),
-                weights.wkLayered[layerIndex].asHalfFloatArray(),
-                weights.wvLayered[layerIndex].asHalfFloatArray(),
-                weights.woLayered[layerIndex].asHalfFloatArray(),
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.w1Layered[layerIndex].asHalfFloatArray(),
-                weights.w2Layered[layerIndex].asHalfFloatArray(),
-                weights.w3Layered[layerIndex].asHalfFloatArray());
+        String wrapXSrc = predecessorGraphName(layerIndex);
+        if (wrapXSrc != null) {
+            unifiedLayer.consumeFromDevice(wrapXSrc, state.workspace.wrapX);
+        } else {
+            unifiedLayer.consumeFromDevice(state.workspace.wrapX);
+        }
+        Object[] layerWeights = {
+            weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+            weights.wqLayered[layerIndex].asHalfFloatArray(),
+            weights.wkLayered[layerIndex].asHalfFloatArray(),
+            weights.wvLayered[layerIndex].asHalfFloatArray(),
+            weights.woLayered[layerIndex].asHalfFloatArray(),
+            weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+            weights.w1Layered[layerIndex].asHalfFloatArray(),
+            weights.w2Layered[layerIndex].asHalfFloatArray(),
+            weights.w3Layered[layerIndex].asHalfFloatArray()
+        };
+        bindLayerWeights(unifiedLayer, weightSourceGraphName(layerIndex), layerIndex, layerWeights);
         unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
 
         // === Attention Block ===
@@ -381,7 +387,10 @@ public class GraniteFP16FFNLayers
 
     private TaskGraph configureAttention(
             TaskGraph unifiedLayer, int layerIndex, GraniteConfiguration config) {
-        if (schedulerType == SchedulerType.NVIDIA) {
+        // Metal runs the flash kernel too: processHeadsParallelGranitePaged produces wrong output
+        // there (Granite 3.2 2B and 4.0 1B answered with punctuation in both representations).
+        if (schedulerType == SchedulerType.NVIDIA
+                || SchedulerDetectionService.isSubgroupShuffle32Supported()) {
             // Flash Attention (optimized for NVIDIA GPUs)
             if (useFp16KVCache()) {
                 return unifiedLayer.task(
@@ -457,5 +466,22 @@ public class GraniteFP16FFNLayers
         return useFp16KVCache()
                 ? state.workspace.wrapValueCacheFP16
                 : state.workspace.wrapValueCache;
+    }
+
+    /**
+     * The graph {@code wrapX} is consumed from, or {@code null} for the no-arg form. The batched
+     * prefill/decode plan's decode layers name their predecessor; see {@code
+     * LlamaFP16FFNLayers#predecessorGraphName}.
+     */
+    protected String predecessorGraphName(int layerIndex) {
+        return null;
+    }
+
+    /**
+     * The graph that already uploaded this layer's weights, or {@code null} to upload them here;
+     * see {@code LlamaFP16FFNLayers#weightSourceGraphName}.
+     */
+    protected String weightSourceGraphName(int layerIndex) {
+        return null;
     }
 }

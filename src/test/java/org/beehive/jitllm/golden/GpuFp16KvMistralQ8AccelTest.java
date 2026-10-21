@@ -10,4 +10,9 @@ public class GpuFp16KvMistralQ8AccelTest {
         GpuFp16KvPrecision.check(
                 "Mistral-7B-Instruct-v0.3.Q8_0.gguf", GpuFp16KvPrecision.Mode.SINGLE_TOKEN);
     }
+
+    @Test
+    public void batchedPrefill() throws Exception {
+        GpuFp16KvPrecision.checkBatchedOnMetal("Mistral-7B-Instruct-v0.3.Q8_0.gguf");
+    }
 }

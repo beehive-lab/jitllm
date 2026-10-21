@@ -1,10 +1,15 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import java.util.Optional;
 import java.util.Set;
+import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
+import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
@@ -22,6 +27,23 @@ public interface TornadoPlanProvider {
 
     /** The identity these components implement. Two providers claiming one identity is an error. */
     ArchitectureId architecture();
+
+    /**
+     * This family's layers for a batched decode step over a shared key/value cache (continuous
+     * batching), or empty when it has none.
+     */
+    default Optional<BatchDecodeLayers> batchDecodeLayers(
+            State state, Model model, BatchDecode decode) {
+        return Optional.empty();
+    }
+
+    /**
+     * Whether this family's logits can sample greedily on the device, and its decode loop read the
+     * token from there, for weights in {@code weights}.
+     */
+    default boolean deviceSampling(DataType weights) {
+        return false;
+    }
 
     /**
      * The <b>model-wide</b> weight representations this provider builds plan components for.
@@ -66,4 +88,128 @@ public interface TornadoPlanProvider {
      *     used to live in the central factory
      */
     SingleTokenForwardPlanComponents components(DataType weights, State state, Model model);
+
+    /**
+     * Inner stage boundaries of a model split across devices fall on multiples of this, for a
+     * family whose graphs group layers.
+     */
+    default int stageLayerAlignment() {
+        return 1;
+    }
+
+    /**
+     * Whether a stage's key/value cache holds the stage's layers only, which layers built with a
+     * range address relative to their first. A family whose layers index their caches and recurrent
+     * state by absolute layer answers false: each stage then keeps the whole model's layout and
+     * uses its own layers' part.
+     */
+    default boolean stageCacheHoldsOnlyItsLayers() {
+        return true;
+    }
+
+    /**
+     * A state for one stage of a model split across devices, holding layers {@code [firstLayer,
+     * endLayer)}, with the session's storage options and execution policy: see {@link
+     * #stageCacheHoldsOnlyItsLayers}.
+     */
+    default State stageState(
+            Model model, State session, int firstLayer, int endLayer, int prefillBatchSize) {
+        State stage =
+                State.withStorageOptions(
+                        session.storageOptions(),
+                        () ->
+                                State.withPrefillBatchSize(
+                                        prefillBatchSize,
+                                        () ->
+                                                stageCacheHoldsOnlyItsLayers()
+                                                        ? State.withKeyValueLayers(
+                                                                endLayer - firstLayer,
+                                                                model::createNewState)
+                                                        : model.createNewState()));
+        stage.resolveExecutionPolicy(session.executionPolicy());
+        return stage;
+    }
+
+    // ── What this family's layers can build ───────────────────────────────────
+
+    /**
+     * The weight representations whose batched prefill has a native-library path ({@code
+     * --with-native-libraries}) on a {@code backend} device: on CUDA, projections through cuBLAS
+     * rather than the JIT kernels; on Metal, attention and projections through Apple MLX ({@code
+     * MlxPrefill}). Empty where the family has none, which admission refuses by name.
+     */
+    default Set<DataType> nativeLibraryWeights(BackendId backend) {
+        return Set.of();
+    }
+
+    /**
+     * Why this family's plans cannot run on a {@code backend} device at all — in any mode, with
+     * either key/value cache — or empty when they can. Asked for every plan on a device backend,
+     * and for each stage's device of a model split across devices.
+     */
+    default Optional<String> deviceUnsupported(BackendId backend) {
+        return Optional.empty();
+    }
+
+    /**
+     * Why this family's plan for {@code weights} cannot be split by layers into {@code stages}
+     * stages ({@code --devices}) under {@code policy}, or empty when it can. Asked before any stage
+     * or transport exists, so it answers what building the stages would: a family answers empty
+     * only where its components are {@code StagedForwardPlanComponents} and, for a batched policy,
+     * build the batched layers of a stage. A family is not split unless it says so.
+     */
+    default Optional<String> splitUnsupported(
+            DataType weights, ExecutionPolicy policy, int stages) {
+        return Optional.of(
+                "the " + architecture() + " plan cannot be split across devices; drop --devices");
+    }
+
+    /**
+     * Why this family's plan cannot read projections held in the packed tile layout under {@code
+     * policy}, or empty when it can. Asked of a model whose load packed them, for a policy other
+     * than the one it was loaded with; the width every packed prefill needs is checked apart.
+     */
+    default Optional<String> packedWeightsUnsupported(ExecutionPolicy policy) {
+        return Optional.empty();
+    }
+
+    /**
+     * What one session's batched prefill of this family allocates for its {@code weights}
+     * representation beyond the staging every family has, as the layer class it would build sizes
+     * it — or empty when that class adds nothing the configuration does not already account.
+     */
+    default Optional<org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
+            batchPrefillWorkspace(
+                    DataType weights,
+                    org.beehive.jitllm.model.Configuration config,
+                    int batchSize,
+                    ExecutionPolicy policy,
+                    boolean fp16Cache) {
+        return Optional.empty();
+    }
+
+    /**
+     * Why this family's batched prefill cannot be built for {@code c}, with either key/value cache,
+     * or empty when it can. Asked only for a batched prefill on a device backend.
+     */
+    default Optional<String> batchPrefillUnsupported(Combination c) {
+        return Optional.empty();
+    }
+
+    /**
+     * What a batched prefill of this family needs from {@code policy} that it does not ask for, or
+     * empty when nothing. Asked only for a batched prefill on a device backend.
+     */
+    default Optional<String> batchPrefillNeeds(Combination c, ExecutionPolicy policy) {
+        return Optional.empty();
+    }
+
+    /**
+     * Why this family's layers cannot store and read the key/value cache in half precision for
+     * {@code c}, or empty when they can. Asked on a backend where the FP16 kernels were verified,
+     * once the plan is known to build. A family keeps an FP32 cache unless it says otherwise.
+     */
+    default Optional<String> fp16KeyValueUnsupported(Combination c) {
+        return Optional.of("the " + c.architecture() + " layers keep an FP32 cache");
+    }
 }

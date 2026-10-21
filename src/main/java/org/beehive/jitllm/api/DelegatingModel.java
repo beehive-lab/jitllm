@@ -146,15 +146,18 @@ final class DelegatingModel implements TextGenerationModel {
         this.gpu = gpu;
         this.thinkingMode = thinkingMode;
         this.reasoningEffort = reasoningEffort;
-        this.executionPolicy = executionPolicy;
+        this.executionPolicy =
+                org.beehive.jitllm.backend.tornado.DeviceSamplingSupport.resolve(
+                        delegate, executionPolicy, gpu);
         this.storageOptions = storageOptions;
         this.configuration = new ConfigurationView(delegate.configuration());
         // Before any cache or pool is sized: the model is loaded, so the weight representation
         // and family are known, and the storage and policy are the model's defaults.
+        org.beehive.jitllm.backend.tornado.PlanSupport.require(delegate, this.executionPolicy, gpu);
         org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.require(
-                delegate, executionPolicy, storageOptions, gpu);
+                delegate, this.executionPolicy, storageOptions, gpu);
         org.beehive.jitllm.backend.tornado.NativeLibrarySupport.require(
-                delegate, executionPolicy, gpu);
+                delegate, this.executionPolicy, gpu);
         // One weight representation is all today's Weights can report: it carries a single
         // materialized type for the whole set. Per-tensor descriptors make a genuinely
         // mixed answer possible, and ModelInfo can already express it — see weightTypes().
@@ -387,10 +390,13 @@ final class DelegatingModel implements TextGenerationModel {
             int contextLength = requested > 0 ? requested : modelContext;
             // Resolved once, here, and carried by the session. Nothing reads
             // it per token, and nothing re-reads a system property after this point.
-            ExecutionPolicy policy = options.executionPolicy().applyTo(executionPolicy);
+            ExecutionPolicy policy =
+                    org.beehive.jitllm.backend.tornado.DeviceSamplingSupport.resolve(
+                            delegate, options.executionPolicy().applyTo(executionPolicy), gpu);
             if (!policy.equals(executionPolicy)) {
                 // A session that overrides the execution mode can select layers the model's own
                 // policy did not, so the cache it would share is checked again before the lease.
+                org.beehive.jitllm.backend.tornado.PlanSupport.require(delegate, policy, gpu);
                 org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.require(
                         delegate, policy, storageOptions, gpu);
                 org.beehive.jitllm.backend.tornado.NativeLibrarySupport.require(
@@ -520,13 +526,20 @@ final class DelegatingModel implements TextGenerationModel {
                         () ->
                                 "lowering requested but "
                                         + info.name()
-                                        + " has no shared key/value storage; using the legacy path");
+                                        + " has no shared key/value storage; using the legacy"
+                                        + " path");
                 return new LegacySessionRuntime(delegate, lease, policy, storageOptions);
             }
             // Allocated once per domain. A second lowered session reaches neither of these lines.
+            // Sized for the model's prefill width, which the policy carries and the properties
+            // may not: a default batched prefill is chosen after load.
             loweredWorkspace =
                     org.beehive.jitllm.inference.state.State.withStorageOptions(
-                            storageOptions, () -> delegate.createNewState(lease));
+                            storageOptions,
+                            () ->
+                                    org.beehive.jitllm.inference.state.State.withPrefillBatchSize(
+                                            executionPolicy.prefillBatchSize(),
+                                            () -> delegate.createNewState(lease)));
             // The domain's workspace carries the model's policy: every session that shares it
             // shares that policy, which is why a session that overrode it took the legacy path
             // above rather than reaching this line.

@@ -10,4 +10,9 @@ public class GpuFp16KvGraniteF16AccelTest {
     public void singleToken() throws Exception {
         GpuFp16KvPrecision.check(Fixture.GRANITE_3_2_2B_F16, GpuFp16KvPrecision.Mode.SINGLE_TOKEN);
     }
+
+    @Test
+    public void batchedPrefill() throws Exception {
+        GpuFp16KvPrecision.checkBatchedOnMetal(Fixture.GRANITE_3_2_2B_F16);
+    }
 }

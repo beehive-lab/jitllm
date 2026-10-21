@@ -71,7 +71,7 @@ public class Qwen2MoEState extends Qwen2State {
         this.workspace.wrapSharedGate = TornadoWorkspaces.floats(c.sharedExpertHiddenDim());
         this.workspace.wrapSharedOutput = TornadoWorkspaces.floats(c.dim());
 
-        int gpuBatchSize = Integer.getInteger("jitllm.prefillBatchSize", 1);
+        int gpuBatchSize = prefillBatchWidth;
         if (gpuBatchSize > 1) {
             int assignments = gpuBatchSize * c.numberOfExpertsUsed();
             this.workspace.wrapRouterLogitsBatch =
@@ -88,6 +88,20 @@ public class Qwen2MoEState extends Qwen2State {
             this.workspace.wrapSharedHiddenBatch =
                     TornadoWorkspaces.floats(gpuBatchSize * c.sharedExpertHiddenDim());
             this.workspace.wrapSharedWeightBatch = TornadoWorkspaces.floats(gpuBatchSize);
+            // The tensor-core batched prefill: the normed chunk, its int8 quantization, and the
+            // grouped-expert scratch of the shared expert tasks.
+            this.workspace.wrapNormedBatch = TornadoWorkspaces.floats(gpuBatchSize * c.dim());
+            this.workspace.wrapQ8ActBatch = TornadoWorkspaces.bytes(gpuBatchSize * c.dim());
+            this.workspace.wrapQ8ActScales = TornadoWorkspaces.floats(gpuBatchSize * c.dim() / 32);
+            Qwen35MoeState.allocateBatchExperts(
+                    this.workspace,
+                    c,
+                    new org.beehive.jitllm.model.qwen35moe.Qwen35Experts(
+                            c.numberOfExperts(),
+                            c.numberOfExpertsUsed(),
+                            c.moeHiddenDim(),
+                            c.sharedExpertHiddenDim()),
+                    gpuBatchSize);
         } else {
             this.workspace.wrapRouterLogitsBatch = null;
             this.workspace.activeBatchSizeHolder = null;

@@ -67,11 +67,21 @@ public class Fp16KeyValueSupportTest {
         assertEquals(
                 Optional.empty(),
                 check("llama", DataType.Q4_0, ExecutionMode.STANDARD, BackendId.CUDA, true, false));
+        // The batched prefill decodes the Q4_0 weights for cuBLAS and writes the same cache.
+        assertEquals(
+                Optional.empty(),
+                check(
+                        "llama",
+                        DataType.Q4_0,
+                        ExecutionMode.BATCH_PREFILL_DECODE,
+                        BackendId.CUDA,
+                        true,
+                        true));
         assertTrue(
                 check(
                                 "llama",
                                 DataType.Q4_0,
-                                ExecutionMode.BATCH_PREFILL_DECODE,
+                                ExecutionMode.PREFILL_DECODE,
                                 BackendId.CUDA,
                                 true,
                                 true)
@@ -95,12 +105,9 @@ public class Fp16KeyValueSupportTest {
         assertTrue(
                 check("qwen3", DataType.Q4_0, ExecutionMode.STANDARD, BackendId.CUDA, true, true)
                         .isPresent());
-        assertTrue(
-                check("gemma4", DataType.F16, ExecutionMode.STANDARD, BackendId.CUDA, true, true)
-                        .isPresent());
-        // The quantized gemma4 layers write and read FP16 in both of the family's modes, on CUDA
-        // and on OpenCL on an NVIDIA-class device.
-        for (DataType weights : new DataType[] {DataType.Q8_0, DataType.Q4_0}) {
+        // The gemma4 layers, quantized and F16, write and read FP16 in both of the family's modes,
+        // on CUDA and on OpenCL on an NVIDIA-class device.
+        for (DataType weights : new DataType[] {DataType.Q8_0, DataType.Q4_0, DataType.F16}) {
             for (ExecutionMode mode :
                     new ExecutionMode[] {
                         ExecutionMode.STANDARD, ExecutionMode.BATCH_PREFILL_DECODE
@@ -151,10 +158,64 @@ public class Fp16KeyValueSupportTest {
                                         true,
                                         false))
                         .isPresent());
+    }
+
+    /** The Metal rows measured against FP32 on an M4 Pro, and the ones left refused. */
+    @Test
+    public void metalRowsAreTheMeasuredOnes() {
+        for (ExecutionMode mode : ExecutionMode.values()) {
+            for (String arch : new String[] {"llama", "qwen3"}) {
+                for (DataType weights : new DataType[] {DataType.F16, DataType.Q8_0}) {
+                    assertEquals(
+                            arch + " " + weights + " " + mode,
+                            Optional.empty(),
+                            check(arch, weights, mode, BackendId.METAL, false, false));
+                }
+            }
+            for (DataType weights : new DataType[] {DataType.Q4_0, DataType.Q8_0}) {
+                assertEquals(
+                        "qwen35 " + weights + " " + mode,
+                        Optional.empty(),
+                        check("qwen35", weights, mode, BackendId.METAL, false, false));
+            }
+            assertTrue(
+                    "qwen35 F16 " + mode,
+                    check("qwen35", DataType.F16, mode, BackendId.METAL, false, false).isPresent());
+            assertEquals(
+                    mode.toString(),
+                    mode == ExecutionMode.PREFILL_DECODE,
+                    check("llama", DataType.Q4_0, mode, BackendId.METAL, false, false).isPresent());
+            for (String arch :
+                    new String[] {
+                        "mistral", "qwen2", "deepseek-r1-distill-qwen", "phi3", "granite"
+                    }) {
+                for (DataType weights : new DataType[] {DataType.F16, DataType.Q8_0}) {
+                    assertEquals(
+                            arch + " " + weights + " " + mode,
+                            mode == ExecutionMode.PREFILL_DECODE,
+                            check(arch, weights, mode, BackendId.METAL, false, false).isPresent());
+                }
+            }
+        }
+        for (ExecutionMode mode :
+                new ExecutionMode[] {ExecutionMode.STANDARD, ExecutionMode.BATCH_PREFILL_DECODE}) {
+            assertEquals(
+                    Optional.empty(),
+                    check("gemma4", DataType.Q8_0, mode, BackendId.METAL, false, false));
+            assertTrue(
+                    check("gemma4", DataType.Q4_0, mode, BackendId.METAL, false, false)
+                            .isPresent());
+        }
+        assertTrue(
+                check("qwen3", DataType.Q4_0, ExecutionMode.STANDARD, BackendId.METAL, false, false)
+                        .isPresent());
+        assertTrue(
+                check("gemma4", DataType.F16, ExecutionMode.STANDARD, BackendId.METAL, false, false)
+                        .isPresent());
         assertTrue(
                 check(
-                                "qwen35",
-                                DataType.Q4_0,
+                                "devstral",
+                                DataType.Q8_0,
                                 ExecutionMode.STANDARD,
                                 BackendId.METAL,
                                 false,
@@ -208,6 +269,38 @@ public class Fp16KeyValueSupportTest {
                                     true,
                                     true)
                             .isPresent());
+        }
+    }
+
+    /**
+     * The tensor-core batched prefill of Qwen2, Phi-3 and Granite writes the FP16 cache; their
+     * sequential plans do not.
+     */
+    @Test
+    public void tensorCoreBatchedPrefillTakesTheFp16Cache() {
+        for (String arch : new String[] {"qwen2", "deepseek-r1-distill-qwen", "phi3", "granite"}) {
+            for (DataType weights : new DataType[] {DataType.F16, DataType.Q8_0}) {
+                assertEquals(
+                        arch + " " + weights,
+                        Optional.empty(),
+                        check(
+                                arch,
+                                weights,
+                                ExecutionMode.BATCH_PREFILL_DECODE,
+                                BackendId.CUDA,
+                                true,
+                                true));
+                assertTrue(
+                        arch + " " + weights,
+                        check(
+                                        arch,
+                                        weights,
+                                        ExecutionMode.PREFILL_DECODE,
+                                        BackendId.CUDA,
+                                        true,
+                                        true)
+                                .isPresent());
+            }
         }
     }
 

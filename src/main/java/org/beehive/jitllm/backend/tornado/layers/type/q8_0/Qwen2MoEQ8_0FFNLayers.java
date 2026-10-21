@@ -118,10 +118,7 @@ public class Qwen2MoEQ8_0FFNLayers
 
         configureAttention(layer, layerIndex);
         configureRoutedExperts(layer, layerIndex);
-        layer.persistOnDevice(
-                moeState.workspace.wrapX,
-                moeState.workspace.wrapKeyCache,
-                moeState.workspace.wrapValueCache);
+        layer.persistOnDevice(moeState.workspace.wrapX, keyCache(), valueCache());
         return layer;
     }
 
@@ -196,42 +193,83 @@ public class Qwen2MoEQ8_0FFNLayers
                 config.dim(),
                 config.kvDim());
 
-        layer.task(
-                "rope_and_kv_cache",
-                Qwen3PagedKvKernels::ropeRotationWithCacheCopyPaged,
-                context,
-                moeState.workspace.positionHolder,
-                moeState.workspace.wrapQ,
-                moeState.workspace.wrapK,
-                moeState.workspace.wrapV,
-                moeState.workspace.wrapKeyCache,
-                moeState.workspace.wrapValueCache,
-                config.ropeTheta(),
-                config.numberOfKeyValueHeads(),
-                config.headSize(),
-                config.kvDim(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride);
+        if (useFp16KVCache()) {
+            layer.task(
+                    "rope_and_kv_cache",
+                    Qwen3PagedKvKernels::ropeRotationWithCacheCopyFP16Paged,
+                    context,
+                    moeState.workspace.positionHolder,
+                    moeState.workspace.wrapQ,
+                    moeState.workspace.wrapK,
+                    moeState.workspace.wrapV,
+                    moeState.workspace.wrapKeyCacheFP16,
+                    moeState.workspace.wrapValueCacheFP16,
+                    config.ropeTheta(),
+                    config.numberOfKeyValueHeads(),
+                    config.headSize(),
+                    config.kvDim(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        } else {
+            layer.task(
+                    "rope_and_kv_cache",
+                    Qwen3PagedKvKernels::ropeRotationWithCacheCopyPaged,
+                    context,
+                    moeState.workspace.positionHolder,
+                    moeState.workspace.wrapQ,
+                    moeState.workspace.wrapK,
+                    moeState.workspace.wrapV,
+                    moeState.workspace.wrapKeyCache,
+                    moeState.workspace.wrapValueCache,
+                    config.ropeTheta(),
+                    config.numberOfKeyValueHeads(),
+                    config.headSize(),
+                    config.kvDim(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        }
 
-        layer.task(
-                "attention",
-                Qwen2PagedKvKernels::processHeadsFlashAttentionPaged,
-                context,
-                moeState.workspace.wrapQ,
-                moeState.workspace.wrapKeyCache,
-                moeState.workspace.wrapValueCache,
-                moeState.workspace.wrapXb,
-                config.numberOfHeads(),
-                config.headSize(),
-                config.kvDim(),
-                config.kvMul(),
-                moeState.workspace.positionHolder,
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride);
+        if (useFp16KVCache()) {
+            layer.task(
+                    "attention",
+                    Qwen2PagedKvKernels::processHeadsFlashAttentionFP16Paged,
+                    context,
+                    moeState.workspace.wrapQ,
+                    moeState.workspace.wrapKeyCacheFP16,
+                    moeState.workspace.wrapValueCacheFP16,
+                    moeState.workspace.wrapXb,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    config.kvDim(),
+                    config.kvMul(),
+                    moeState.workspace.positionHolder,
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        } else {
+            layer.task(
+                    "attention",
+                    Qwen2PagedKvKernels::processHeadsFlashAttentionPaged,
+                    context,
+                    moeState.workspace.wrapQ,
+                    moeState.workspace.wrapKeyCache,
+                    moeState.workspace.wrapValueCache,
+                    moeState.workspace.wrapXb,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    config.kvDim(),
+                    config.kvMul(),
+                    moeState.workspace.positionHolder,
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        }
 
         layer.task(
                 "attn_output_proj",
@@ -243,6 +281,20 @@ public class Qwen2MoEQ8_0FFNLayers
                 config.dim(),
                 config.dim(),
                 LOCAL_WORK_GROUP_SIZE_ALLOC);
+    }
+
+    /** The key cache in the representation the state holds: FP16 where it allocated one. */
+    protected Object keyCache() {
+        return useFp16KVCache()
+                ? moeState.workspace.wrapKeyCacheFP16
+                : moeState.workspace.wrapKeyCache;
+    }
+
+    /** The value cache in the representation the state holds. */
+    protected Object valueCache() {
+        return useFp16KVCache()
+                ? moeState.workspace.wrapValueCacheFP16
+                : moeState.workspace.wrapValueCache;
     }
 
     /**
@@ -376,8 +428,8 @@ public class Qwen2MoEQ8_0FFNLayers
                     moeState.workspace.wrapQ,
                     moeState.workspace.wrapK,
                     moeState.workspace.wrapV,
-                    moeState.workspace.wrapKeyCache,
-                    moeState.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     moeState.workspace.wrapAtt,
                     moeState.workspace.wrapRouterLogits,
                     moeState.workspace.wrapSelectedExperts,
@@ -398,8 +450,8 @@ public class Qwen2MoEQ8_0FFNLayers
                     moeState.workspace.wrapQ,
                     moeState.workspace.wrapK,
                     moeState.workspace.wrapV,
-                    moeState.workspace.wrapKeyCache,
-                    moeState.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     moeState.workspace.wrapAtt,
                     moeState.workspace.wrapRouterLogits,
                     moeState.workspace.wrapSelectedExperts,

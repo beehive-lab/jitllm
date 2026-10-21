@@ -36,6 +36,7 @@ public final class Allowlists {
     public static final Set<String> RULE_2 =
             frozen(
                     "org.beehive.jitllm.model.Model",
+                    "org.beehive.jitllm.model.deepseek2.DeepSeek2",
                     "org.beehive.jitllm.model.devstral.Devstral",
                     "org.beehive.jitllm.model.gemma4.Gemma4",
                     "org.beehive.jitllm.model.granite.Granite",
@@ -48,6 +49,7 @@ public final class Allowlists {
                     "org.beehive.jitllm.model.qwen3.Qwen3",
                     "org.beehive.jitllm.model.qwen35.Qwen35",
                     "org.beehive.jitllm.model.loader.AbstractModelLoader",
+                    "org.beehive.jitllm.model.loader.DeepSeek2ModelLoader",
                     "org.beehive.jitllm.model.loader.DevstralModelLoader",
                     "org.beehive.jitllm.model.loader.Gemma4ModelLoader",
                     "org.beehive.jitllm.model.loader.GraniteLoader",
@@ -141,6 +143,7 @@ public final class Allowlists {
                     "org.beehive.jitllm.model.ModelType$11",
                     "org.beehive.jitllm.model.ModelType$12",
                     "org.beehive.jitllm.model.ModelType$13",
+                    "org.beehive.jitllm.model.ModelType$14",
                     "org.beehive.jitllm.tensor.standard.ArrayFloatTensor",
                     "org.beehive.jitllm.tensor.standard.ArrayHalfFloatTensor",
                     "org.beehive.jitllm.tensor.standard.BF16FloatTensor",

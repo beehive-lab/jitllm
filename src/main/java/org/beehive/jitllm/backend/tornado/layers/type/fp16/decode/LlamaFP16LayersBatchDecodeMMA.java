@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.type.fp16.decode;
 import java.util.List;
 import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.LlamaState;
 import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
@@ -39,7 +40,7 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * <p>The KV cache and {@code seqPositions} are supplied by the engine (not State), so the context
  * length can be capped independently to fit B×L×ctx×kvDim in VRAM.
  */
-public class LlamaFP16LayersBatchDecodeMMA {
+public class LlamaFP16LayersBatchDecodeMMA implements BatchDecodeLayers {
 
     static final int RMS_LOCAL_SIZE = 256;
 
@@ -434,6 +435,7 @@ public class LlamaFP16LayersBatchDecodeMMA {
         return grid;
     }
 
+    @Override
     public void updateGridScheduler(GridScheduler scheduler) {
         int dim = config.dim();
         int kvDim = config.kvDim();
@@ -479,10 +481,12 @@ public class LlamaFP16LayersBatchDecodeMMA {
         }
     }
 
+    @Override
     public List<ImmutableTaskGraph> getLayerImmutableTaskGraphs() {
         return layerITGs;
     }
 
+    @Override
     public String getLastLayerTaskGraphID() {
         return lastLayerTaskGraphID;
     }

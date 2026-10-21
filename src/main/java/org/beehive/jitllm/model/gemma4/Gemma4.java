@@ -69,6 +69,9 @@ public class Gemma4 extends AbstractModel {
     @Override
     public void stagePerTokenDeviceInputs(
             org.beehive.jitllm.inference.state.State state, int token) {
+        if (!configuration.hasPerLayerEmbeddings()) {
+            return;
+        }
         gatherPerLayerTokenEmbeddingRow((Gemma4State) state, token);
     }
 
@@ -85,6 +88,9 @@ public class Gemma4 extends AbstractModel {
     @Override
     public void stageBatchDeviceInputs(
             org.beehive.jitllm.inference.state.State state, int[] tokens, int chunkSize) {
+        if (!configuration.hasPerLayerEmbeddings()) {
+            return;
+        }
         Gemma4State gemma4State = (Gemma4State) state;
         int nEmbdPerLayer = configuration.embeddingLengthPerLayer();
         int perLayerTotal = configuration.numberOfLayers() * nEmbdPerLayer;

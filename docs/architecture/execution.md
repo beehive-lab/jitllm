@@ -156,8 +156,12 @@ Policy is resolved **once per generation**, never per token, and reaches the pla
 `ExecutionPolicy` value rather than as process-global system properties. The properties
 remain as defaults for the CLI; they are not read from inside the execution path.
 
-**Batched prefill stays default-off on every backend**, and what keeps it off is
-correctness, not cost. Its per-backend availability is in
+**Batched prefill is the default on every accelerator backend** where the family builds it
+(`BatchPrefillSupport.defaultFor`, resolved once the model is loaded), and native libraries are
+the default where they are implemented and installed (`NativeLibrarySupport.defaultFor`). A
+default the configuration then refuses is dropped, never reported: the caller asked for nothing.
+The CPU path and models split across devices keep single-token prefill. `--no-batch-prefill` and
+`--no-native-libraries` opt out. Per-backend availability is in
 [`models-and-backends.md`](models-and-backends.md).
 
 ### What is settled
@@ -217,8 +221,9 @@ For the Q8_0 accuracy gap:
    have to know.
 4. **Leave it default-off for both.** No new evidence needed, and no gain.
 
-A default flip still needs a deliberate choice from the Q8_0 list above. The row count no longer
-argues against it.
+The default is now on for both formats: Q8_0 models take the batched arithmetic, and
+`--no-batch-prefill` is the way back to the single-token numbers. Options 1 and 2 remain open
+for closing or documenting the gap.
 
 ## The generation loop
 

@@ -46,9 +46,18 @@ public class LlamaFP16FFNLayersPrefillDecode extends LlamaFP16FFNLayers {
      * Layer 0 receives {@code wrapX} from the decode activation graph; layers 1+ receive it from
      * the previous decode layer.
      */
+    /**
+     * One layer per graph: the sequential prefill-decode plan addresses its layer graphs by layer
+     * index, so it cannot run grouped ones.
+     */
+    @Override
+    protected int layersPerGraph() {
+        return 1;
+    }
+
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "decodeActivation" : "layer_" + (layerIndex - 1);
+        return (layerIndex == 0) ? "decodeActivation" : layerGraphName(layerIndex - 1);
     }
 
     /**
@@ -63,7 +72,7 @@ public class LlamaFP16FFNLayersPrefillDecode extends LlamaFP16FFNLayers {
         if (layerIndex == 0) {
             return super.configureLayerDataTransfers(layer, 0);
         }
-        String pred = "layer_" + (layerIndex - 1);
+        String pred = layerGraphName(layerIndex - 1);
         layer.consumeFromDevice(
                 pred,
                 context,

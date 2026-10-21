@@ -38,28 +38,19 @@ public class JitllmApp {
 
     /**
      * On-device greedy sampling ({@code -Djitllm.deviceSample=true}) keeps the logits on the GPU
-     * and returns only the argmax token id. It is only valid on the GPU FP16 greedy path for the
-     * models whose decode loop reads {@code state.workspace.sampledToken} (Llama / Mistral /
-     * Qwen3). For any other configuration the host still needs the full logits row, so the flag is
-     * cleared here.
+     * and returns only the argmax token id, so it is only valid for greedy decoding (temperature
+     * 0): anything else is cleared here. Where the model's GPU plans cannot sample on the device,
+     * the model falls back to the host itself.
      *
-     * <p>Must run after the model is loaded and before a session is opened: the property is read
-     * when the session builds its execution plan.
+     * <p>Must run before the model is loaded: the property is read into the model's execution
+     * policy when it loads.
      */
-    private static void guardDeviceSample(LocalModel model, Options options) {
+    private static void guardDeviceSample(Options options) {
         if (!Boolean.getBoolean("jitllm.deviceSample")) {
             return;
         }
-        boolean greedy = options.temperature() == 0.0f;
-        boolean fp16 = "FP16".equals(model.info().computeType().name());
-        String architecture = model.info().architecture();
-        boolean wiredLoop =
-                architecture.equals("llama")
-                        || architecture.equals("mistral")
-                        || architecture.equals("qwen3");
-        if (!(options.useTornadovm() && greedy && fp16 && wiredLoop)) {
-            System.err.println(
-                    "[deviceSample] ignored — requires GPU + greedy (temperature 0) + FP16 + Llama/Mistral/Qwen3");
+        if (!(options.useTornadovm() && options.temperature() == 0.0f)) {
+            System.err.println("[deviceSample] ignored — requires GPU + greedy (temperature 0)");
             System.clearProperty("jitllm.deviceSample");
         }
     }
@@ -183,6 +174,7 @@ public class JitllmApp {
 
     private static void run(String[] args) throws IOException {
         Options options = Options.parseOptions(args);
+        guardDeviceSample(options);
         long startedNs = System.nanoTime();
         ModelOptions modelOptions =
                 new ModelRunConfig(
@@ -193,7 +185,6 @@ public class JitllmApp {
 
         try (LocalModel model = LocalModels.load(options.modelPath(), modelOptions)) {
             long modelLoadNs = System.nanoTime() - startedNs;
-            guardDeviceSample(model, options);
             try (GenerationSession session = ((TextGenerationModel) model).newSession()) {
                 if (StartupDiagnostics.verbose()) {
                     String sampling =

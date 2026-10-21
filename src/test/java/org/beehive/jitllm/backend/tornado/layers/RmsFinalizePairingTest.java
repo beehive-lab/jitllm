@@ -11,8 +11,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -44,6 +46,11 @@ import org.junit.Test;
  * reduces without {@code rmsReduceKernel()} — {@code Qwen2MoEQ8_0FFNLayers} names {@code
  * reductionOneBlockWithLayerSingleGroup} unconditionally, so no finalize is ever required — is not
  * subject to the rule and is skipped by the same test that enforces it.
+ *
+ * <p>A layer stack is checked together with the superclasses it inherits from under the same tree,
+ * because a shared base can register the reductions' worker grids while each subclass declares the
+ * tasks themselves. An abstract base is not checked on its own; it is covered by the concrete
+ * stacks that extend it.
  */
 public class RmsFinalizePairingTest {
 
@@ -52,18 +59,30 @@ public class RmsFinalizePairingTest {
 
     private static final Pattern REDUCE = Pattern.compile("\"([a-z0-9_]+)_rms_reduce\"");
     private static final Pattern FINALIZE = Pattern.compile("\"([a-z0-9_]+)_rms_finalize\"");
+    private static final Pattern REDUCE_CALL = Pattern.compile("rmsReduceKernel\\(\\)\\s*,");
+    private static final Pattern EXTENDS = Pattern.compile("\\bextends\\s+(\\w+)");
 
     @Test
     public void everyMultiWorkgroupRmsReductionIsFinalized() {
         List<Path> sources = layerSources();
         assertFalse("no layer sources found under " + LAYERS.toAbsolutePath(), sources.isEmpty());
 
+        Map<String, Path> byClass = new HashMap<>();
+        for (Path source : sources) {
+            byClass.put(className(source), source);
+        }
+
         List<String> checked = new ArrayList<>();
         for (Path source : sources) {
-            String body = read(source);
+            Matcher declaration = declaration(source);
+            if (declaration == null || declaration.group(1).contains("abstract")) {
+                continue;
+            }
+            String body = withSuperclasses(source, byClass);
             // Only the stacks that reduce through the shared helper can select the
-            // multi-workgroup kernel, and only those owe a finalize task.
-            if (!body.contains("rmsReduceKernel()")) {
+            // multi-workgroup kernel, and only those owe a finalize task. A call site passes the
+            // helper as a task argument; its definition and the comments that name it do not.
+            if (!REDUCE_CALL.matcher(body).find()) {
                 continue;
             }
             Set<String> reduced = prefixes(REDUCE, body);
@@ -95,6 +114,49 @@ public class RmsFinalizePairingTest {
                         + " matched "
                         + checked,
                 checked.contains("Qwen2Q8_0FFNLayers.java"));
+    }
+
+    /** The source of {@code source} followed by that of each superclass found under the tree. */
+    private static String withSuperclasses(Path source, Map<String, Path> byClass) {
+        StringBuilder body = new StringBuilder();
+        Set<Path> seen = new LinkedHashSet<>();
+        Path current = source;
+        while (current != null && seen.add(current)) {
+            body.append(read(current)).append('\n');
+            Matcher declaration = declaration(current);
+            Matcher parent =
+                    declaration == null
+                            ? null
+                            : EXTENDS.matcher(withoutTypeArguments(declaration.group(2)));
+            current = parent != null && parent.find() ? byClass.get(parent.group(1)) : null;
+        }
+        return body.toString();
+    }
+
+    /** The declaration of the top-level class named after the file, or {@code null}. */
+    private static Matcher declaration(Path source) {
+        Pattern pattern =
+                Pattern.compile(
+                        "((?:\\w+\\s+)*)class\\s+"
+                                + Pattern.quote(className(source))
+                                + "\\b([^{]*)\\{");
+        Matcher matcher = pattern.matcher(read(source));
+        return matcher.find() ? matcher : null;
+    }
+
+    /** Drops {@code <...>} so a type parameter's bound is not read as the superclass. */
+    private static String withoutTypeArguments(String header) {
+        String previous;
+        do {
+            previous = header;
+            header = header.replaceAll("<[^<>]*>", "");
+        } while (!header.equals(previous));
+        return header;
+    }
+
+    private static String className(Path source) {
+        String name = source.getFileName().toString();
+        return name.substring(0, name.length() - ".java".length());
     }
 
     private static Set<String> prefixes(Pattern pattern, String body) {

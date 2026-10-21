@@ -1,6 +1,8 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import java.util.Optional;
 import java.util.Set;
+import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.q8_0.Qwen2MoEQ8_0PlanComponents;
 import org.beehive.jitllm.inference.state.Qwen2MoEState;
@@ -42,5 +44,27 @@ public final class Qwen2MoePlanProvider implements TornadoPlanProvider {
     public SingleTokenForwardPlanComponents components(DataType weights, State state, Model model) {
         Qwen2MoEState typed = PlanStates.expect(Qwen2MoEState.class, state, ID);
         return new Qwen2MoEQ8_0PlanComponents(typed, model);
+    }
+
+    /**
+     * The NVIDIA-class layers write the FP16 cache single-token, and after the tensor-core batched
+     * prefill, which writes it too; the scalar batched prefill keeps FP32.
+     */
+    @Override
+    public Optional<String> fp16KeyValueUnsupported(Combination c) {
+        if (!c.nvidiaScheduler()) {
+            return Optional.of("the non-NVIDIA decode layers keep an FP32 cache");
+        }
+        if (c.weights() != DataType.Q8_0) {
+            return Optional.of("the " + c.weights() + " layers keep an FP32 cache");
+        }
+        return switch (c.mode()) {
+            case STANDARD -> Optional.empty();
+            case BATCH_PREFILL_DECODE ->
+                    c.tensorCores()
+                            ? Optional.empty()
+                            : Optional.of("the scalar batched prefill keeps an FP32 cache");
+            case PREFILL_DECODE -> Optional.of("qwen2-moe has no sequential prefill/decode plan");
+        };
     }
 }

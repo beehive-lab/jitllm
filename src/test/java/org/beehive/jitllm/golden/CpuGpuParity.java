@@ -304,6 +304,26 @@ abstract class CpuGpuParity {
                     "[SKIP] environment absent — " + GoldenFixture.absentMessage(fixture));
             assumeTrue("environment absent: fixture " + fixture.fileName, false);
         }
+        return assertParity(
+                model, fixture.quantization, bounds, prefillBatchSize, separatePrefillPhase);
+    }
+
+    /**
+     * {@link #assertParityBatched} for a model file that is not a pinned fixture, located by the
+     * caller; {@code label} names it in the report.
+     */
+    GoldenCapture.Result assertParityBatched(
+            Path model, String label, Bounds bounds, int prefillBatchSize) throws Exception {
+        return assertParity(model, label, bounds, prefillBatchSize, true);
+    }
+
+    private GoldenCapture.Result assertParity(
+            Path model,
+            String label,
+            Bounds bounds,
+            int prefillBatchSize,
+            boolean separatePrefillPhase)
+            throws Exception {
         if (!TupleInfo.acceleratorPresent()) {
             System.out.println("[SKIP] environment absent — no TornadoVM device");
             assumeTrue("environment absent: no accelerator", false);
@@ -424,8 +444,7 @@ abstract class CpuGpuParity {
         }
 
         int rows = cpu.rows.size();
-        System.out.printf(
-                "[PARITY] %s rows=%d elements=%d%n", fixture.quantization, rows, elements);
+        System.out.printf("[PARITY] %s rows=%d elements=%d%n", label, rows, elements);
         System.out.printf(
                 "[PARITY]   elementwise: violations=%d (%.4g%%, budget %.4g%%) worstRatio=%.4g%n",
                 violations,
@@ -446,7 +465,7 @@ abstract class CpuGpuParity {
                 String.format(
                         "%s: %d/%d elementwise violations (%.4g%%) exceed the %.4g%% budget"
                                 + " at atol=%.3g rtol=%.3g; worst was %.3gx tolerance",
-                        fixture.quantization,
+                        label,
                         violations,
                         elements,
                         100.0 * violations / elements,
@@ -459,26 +478,26 @@ abstract class CpuGpuParity {
         assertTrue(
                 String.format(
                         "%s: max |cpu-gpu|=%.6g exceeds the ceiling %.6g (row %d, token %d)",
-                        fixture.quantization, maxAbs, maxAbsCeiling, maxAbsRow, maxAbsIndex),
+                        label, maxAbs, maxAbsCeiling, maxAbsRow, maxAbsIndex),
                 maxAbs <= maxAbsCeiling);
 
         assertTrue(
                 String.format(
                         "%s: relative L2 %.6g exceeds %.6g at row %d",
-                        fixture.quantization, worstRelL2, bounds.relL2(), worstRelL2Row),
+                        label, worstRelL2, bounds.relL2(), worstRelL2Row),
                 worstRelL2 <= bounds.relL2());
 
         assertTrue(
                 String.format(
                         "%s: cosine similarity %.8f is below %.8f",
-                        fixture.quantization, minCosine, bounds.minCosine()),
+                        label, minCosine, bounds.minCosine()),
                 minCosine >= bounds.minCosine());
 
         assertTrue(
                 String.format(
                         "%s: argmax reversed where the CPU decision was not close"
                                 + " (gap > %.3g): %s",
-                        fixture.quantization, bounds.decisionGap(), wideReversals),
+                        label, bounds.decisionGap(), wideReversals),
                 wideReversals.isEmpty());
         return gpu;
     }

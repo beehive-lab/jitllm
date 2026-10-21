@@ -1013,9 +1013,7 @@ public final class TokenGenerationLoop {
                         : Integer.MAX_VALUE;
 
         if (batched) {
-            var plan =
-                    (org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode)
-                            tornadoVMPlan;
+            var plan = (org.beehive.jitllm.backend.tornado.BatchPrefillDecodePlan) tornadoVMPlan;
             // This branch prefilled all N whenever the seed was the prompt's own first token, then
             // decoded starting from the last prompt token again. The model therefore saw that
             // token twice: once in the key/value cache at position N-1, and once more as the
@@ -1044,24 +1042,16 @@ public final class TokenGenerationLoop {
                 }
             }
 
-            for (int chunkStart = 0;
-                    chunkStart < prefillTokenCount && pos + chunkStart < actualMaxTokens;
-                    chunkStart += batchSize) {
-                int chunkEnd =
-                        Math.min(
-                                Math.min(chunkStart + batchSize, prefillTokenCount),
-                                actualMaxTokens - pos);
-                int chunkSize = chunkEnd - chunkStart;
-                int[] chunk = java.util.Arrays.copyOfRange(prefillSeq, chunkStart, chunkEnd);
-                org.beehive.jitllm.backend.tornado.TornadoBatchPrefillPass.batchPrefill(
-                        model, state, chunk, pos + chunkStart, chunkSize, plan);
-                if (echo) {
-                    for (int b = 0; b < chunkSize; b++) {
-                        int echoed = promptTokens.get(Math.min(chunkStart + b, promptSize - 1));
-                        System.err.print(
-                                Tokenizer.replaceControlCharacters(
-                                        model.tokenizer().decode(List.of(echoed))));
-                    }
+            // As many prompt tokens as fit before the token limit, in chunks of batchSize.
+            int prefillCount = Math.max(0, Math.min(prefillTokenCount, actualMaxTokens - pos));
+            org.beehive.jitllm.backend.tornado.TornadoBatchPrefillPass.batchPrefillAll(
+                    model, state, prefillSeq, pos, prefillCount, batchSize, plan);
+            if (echo) {
+                for (int b = 0; b < prefillCount; b++) {
+                    int echoed = promptTokens.get(Math.min(b, promptSize - 1));
+                    System.err.print(
+                            Tokenizer.replaceControlCharacters(
+                                    model.tokenizer().decode(List.of(echoed))));
                 }
             }
             currentToken = promptTokens.get(promptSize - 1);
@@ -1112,8 +1102,7 @@ public final class TokenGenerationLoop {
                                     state,
                                     currentToken,
                                     pos,
-                                    (org.beehive.jitllm.backend.tornado
-                                                    .TornadoVMMasterPlanBatchPrefillDecode)
+                                    (org.beehive.jitllm.backend.tornado.BatchPrefillDecodePlan)
                                             tornadoVMPlan)
                             : org.beehive.jitllm.backend.tornado.TornadoForwardPass.forward(
                                     model, state, currentToken, pos, tornadoVMPlan);

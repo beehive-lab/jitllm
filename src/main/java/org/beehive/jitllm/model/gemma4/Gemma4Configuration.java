@@ -30,8 +30,87 @@ public record Gemma4Configuration(
         float rmsNormEps,
         float ropeTheta,
         float ropeThetaSwa,
-        float finalLogitSoftcapping)
+        float finalLogitSoftcapping,
+        int[] keyValueHeadsPerLayer)
         implements Configuration {
+
+    /**
+     * Every layer with {@code numberOfKeyValueHeads} key/value heads, as Gemma 4 E2B has. The 31B
+     * states a count per layer — sixteen for the sliding-window layers, four for the global ones —
+     * and is built with {@code keyValueHeadsPerLayer}; {@code numberOfKeyValueHeads} is then the
+     * largest, which is what a buffer shared by every layer has to hold.
+     */
+    public Gemma4Configuration(
+            String quantization,
+            int dim,
+            int numberOfLayers,
+            int numberOfHeads,
+            int numberOfKeyValueHeads,
+            int headDimSwa,
+            int headDimFull,
+            int[] feedForwardLength,
+            boolean[] slidingWindowPattern,
+            int slidingWindowSize,
+            int sharedKvLayers,
+            int embeddingLengthPerLayer,
+            int vocabularySize,
+            int contextLengthModel,
+            int contextLength,
+            float rmsNormEps,
+            float ropeTheta,
+            float ropeThetaSwa,
+            float finalLogitSoftcapping) {
+        this(
+                quantization,
+                dim,
+                numberOfLayers,
+                numberOfHeads,
+                numberOfKeyValueHeads,
+                headDimSwa,
+                headDimFull,
+                feedForwardLength,
+                slidingWindowPattern,
+                slidingWindowSize,
+                sharedKvLayers,
+                embeddingLengthPerLayer,
+                vocabularySize,
+                contextLengthModel,
+                contextLength,
+                rmsNormEps,
+                ropeTheta,
+                ropeThetaSwa,
+                finalLogitSoftcapping,
+                null);
+    }
+
+    /** Key/value heads of layer {@code layer}. */
+    public int keyValueHeads(int layer) {
+        return keyValueHeadsPerLayer == null ? numberOfKeyValueHeads : keyValueHeadsPerLayer[layer];
+    }
+
+    /** Query heads per key/value head in layer {@code layer}. */
+    public int kvMul(int layer) {
+        return numberOfHeads / keyValueHeads(layer);
+    }
+
+    /** Width of layer {@code layer}'s key (and value) projection. */
+    public int keyValueDim(int layer) {
+        return keyValueHeads(layer) * headDim(layer);
+    }
+
+    /** The widest key/value projection of any layer. */
+    public int maxKeyValueDim() {
+        int max = 0;
+        for (int l = 0; l < numberOfLayers; l++) {
+            max = Math.max(max, keyValueDim(l));
+        }
+        return max;
+    }
+
+    /** Whether the model carries per-layer input embeddings (E2B does; the 31B does not). */
+    public boolean hasPerLayerEmbeddings() {
+        return embeddingLengthPerLayer > 0;
+    }
 
     @Override
     public String quantization() {
@@ -138,6 +217,23 @@ public record Gemma4Configuration(
         int byWindow =
                 Math.max(1, Math.min(slidingWindowSize, contextLength) / minPositionsPerSlice);
         return Math.min(bySpread, byWindow);
+    }
+
+    /**
+     * Counted layer by layer: the head and feed-forward widths differ between layers, and a layer
+     * that shares an earlier layer's cache projects no key or value. A layer without a value
+     * projection counts its key projection twice, as the batched prefill multiplies it twice.
+     */
+    @Override
+    public long projectionWeights() {
+        long total = 0;
+        for (int l = 0; l < numberOfLayers; l++) {
+            long qDim = (long) numberOfHeads * headDim(l);
+            long kvDim = keyValueDim(l);
+            long qkv = hasOwnKv(l) ? qDim + 2 * kvDim : qDim;
+            total += dim * qkv + qDim * dim + 3L * dim * feedForwardLength(l);
+        }
+        return total;
     }
 
     /**

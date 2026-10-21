@@ -80,6 +80,13 @@ public class Qwen2State extends State {
         fillKvFields(fields, config, nEmbdGqa, true);
         workspace.wrapAtt =
                 TornadoWorkspaces.floats(config.numberOfHeads() * config.contextLength());
+        workspace.wrapAttSplit =
+                TornadoWorkspaces.floats(
+                        config.numberOfHeads() * SPLIT_KV * (config.headSize() + 2));
+        if ("Q8_0".equals(config.quantization())) {
+            TornadoWorkspaces.packedActivation(
+                    workspace, Math.max(config.dim(), config.hiddenDim()));
+        }
         // [0] = position, [1] = table-local KV slot.
         workspace.positionHolder = TornadoWorkspaces.ints(2);
 

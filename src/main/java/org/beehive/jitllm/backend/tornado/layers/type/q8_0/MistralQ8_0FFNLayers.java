@@ -381,13 +381,14 @@ public class MistralQ8_0FFNLayers
     }
 
     /**
-     * The FP16 cache on CUDA, whatever the scheduler: Mistral keeps the non-NVIDIA scheduler for
-     * its FP32 attention, and its FP16 path uses kernels that need a CUDA device, not that
-     * scheduler.
+     * The FP16 cache on CUDA and Metal, whatever the scheduler: Mistral keeps the non-NVIDIA
+     * scheduler for its FP32 attention, and its FP16 path takes the flash kernel, which runs on
+     * those devices, not that scheduler.
      */
     @Override
     protected boolean useFp16KVCache() {
         return state.usesFp16KeyValueCache()
-                && org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.nvidiaDevice();
+                && (org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.nvidiaDevice()
+                        || metalBackend());
     }
 }

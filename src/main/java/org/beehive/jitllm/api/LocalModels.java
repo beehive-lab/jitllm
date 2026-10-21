@@ -3,6 +3,7 @@ package org.beehive.jitllm.api;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Objects;
+import org.beehive.jitllm.backend.tornado.DeviceDefaultPolicy;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.loader.ModelLoader;
 import org.beehive.jitllm.runtime.backend.BackendId;
@@ -11,6 +12,7 @@ import org.beehive.jitllm.runtime.backend.DeviceResolver;
 import org.beehive.jitllm.runtime.backend.DeviceResolvers;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 import org.beehive.jitllm.runtime.memory.MemoryPlan;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 
 /**
  * Where a caller starts: load a model file, get a {@link LocalModel}.
@@ -51,27 +53,55 @@ public final class LocalModels {
         int contextLength = options.contextLength() > 0 ? options.contextLength() : -1;
         boolean gpu = useGpu(options);
 
+        // Where a batched prefill keeps its decoded weights, settled against the budget the
+        // preflight predicts — refused here when nothing fits — so the layers build what was
+        // accounted.
+        ExecutionPolicy.DecodedProjections decodedProjections =
+                options.executionPolicy().decodedProjections();
         if (gpu) {
             MemoryPreflight.refuseIfOverCapacity(modelFile, contextLength, options);
+            decodedProjections =
+                    MemoryPreflight.resolveDecodedProjections(
+                                    modelFile, contextLength, options, options.executionPolicy())
+                            .decodedProjections();
         }
         Model model;
         try {
-            model = ModelLoader.loadModel(modelFile, contextLength, true, gpu);
+            // Representations are chosen for the policy this model is loaded with, not for the
+            // process's properties.
+            model =
+                    org.beehive.jitllm.backend.tornado.tensor.PackedWeights.loading(
+                            options.executionPolicy(),
+                            () -> ModelLoader.loadModel(modelFile, contextLength, true, gpu));
         } catch (RuntimeException | OutOfMemoryError exhaustion) {
             if (gpu && isDeviceMemoryExhaustion(exhaustion)) {
                 throw deviceMemoryExhausted(modelFile, options, exhaustion);
             }
             throw exhaustion;
         }
+        ExecutionPolicy policy = gpu ? deviceDefault(model, options) : options.executionPolicy();
+        if (gpu) {
+            policy = ExecutionPolicy.from(policy).decodedProjections(decodedProjections).build();
+        }
         return new DelegatingModel(
                 model,
                 modelFile,
                 gpu,
-                options.executionPolicy(),
+                policy,
                 options.storageOptions(),
                 options.thinkingMode(),
                 options.reasoningEffort(),
                 options.maxConcurrentSessions());
+    }
+
+    /** A policy nobody chose takes the device's default, which needs the loaded model. */
+    private static ExecutionPolicy deviceDefault(Model model, ModelOptions options) {
+        return DeviceDefaultPolicy.resolve(
+                model,
+                options.executionPolicy(),
+                options.usesDefaultExecutionPolicy(),
+                options.usesDefaultNativeLibraries(),
+                options.storageOptions());
     }
 
     /**

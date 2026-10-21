@@ -10,6 +10,9 @@ import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.SplitKGemm;
+import org.beehive.jitllm.backend.tornado.layers.TensorCoreBatchAttention;
+import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
@@ -79,7 +82,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     @Override
     public String describeAttention() {
-        return cudnnAttention ? "cuDNN first chunk; JIT for subsequent chunks" : "JIT kernels";
+        return cudnnAttention
+                ? "cuDNN first chunk; tensor-core attention for subsequent chunks"
+                : "JIT kernels";
     }
 
     // Local size for the parallel RMS reductions (one workgroup per token).
@@ -191,6 +196,16 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private Qwen3FP16LayersBatchPrefillMMA fallbackFamily;
 
     /**
+     * The JIT attention as tensor-core GEMMs, or null for the flash-attention kernel. A primary
+     * family on cuDNN has none; its fallback family owns one for the chunks cuDNN cannot take,
+     * whose cost would otherwise grow with the start position on the scalar kernel.
+     */
+    private final TensorCoreBatchAttention tcAttention;
+
+    /** The JIT projections' GEMM, its depth split when the output is too narrow for the device. */
+    private final SplitKGemm splitK;
+
+    /**
      * The batched-prefill graphs only run on the CUDA backend (tensor-core gated), which is the
      * same backend the FP16 KV cache path targets.
      */
@@ -265,6 +280,37 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 true);
     }
 
+    /**
+     * What these layers allocate for one session at {@code batchSize} beyond the native library's
+     * stacked weights and attention staging, which the configuration accounts; see the constructor.
+     */
+    public static BatchPrefillWorkspace workspace(
+            Qwen3Configuration config,
+            int batchSize,
+            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy,
+            boolean fp16Cache) {
+        int padded = (batchSize + 127) & ~127;
+        int headSize = config.numberOfHeadsValue();
+        boolean cudnnAttention =
+                fp16Cache
+                        && NativePrefillSupport.nativeAttention(
+                                policy, sdpaShape(config, batchSize));
+        // With cuDNN on the first chunk the fallback family runs the later chunks on the same
+        // tensor-core attention, so its buffers are part of the session either way.
+        long attention =
+                TensorCoreBatchAttention.applies(fp16Cache, padded, headSize)
+                        ? TensorCoreBatchAttention.bytes(
+                                config.numberOfHeadsKey() * config.numberOfHeads(),
+                                config.numberOfHeadsValue() * config.numberOfKeyValueHeads(),
+                                headSize,
+                                config.numberOfHeads(),
+                                padded,
+                                config.contextLength())
+                        : 0;
+        return BatchPrefillWorkspace.fixed(
+                attention + SplitKGemm.bytes(padded, config.dim(), false));
+    }
+
     public Qwen3FP16LayersBatchPrefillMMA(
             Qwen3State state,
             Qwen3TornadoWeights weights,
@@ -303,6 +349,19 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         logInitialization(
                 "[jitllm] prefill acceleration: %s%n",
                 NativePrefillSupport.describe(state.executionPolicy(), fp16Kv, sdpaShape));
+        this.tcAttention =
+                !cudnnAttention && TensorCoreBatchAttention.applies(fp16Kv, paddedBatch, nEmbdHead)
+                        ? new TensorCoreBatchAttention(
+                                state,
+                                qDim,
+                                kvDim,
+                                nEmbdHead,
+                                config.numberOfHeads(),
+                                gqa,
+                                paddedBatch,
+                                config.contextLength())
+                        : null;
+        this.splitK = new SplitKGemm(context, paddedBatch, config.dim(), false);
         int cudnnElems = cudnnAttention ? qDim * batchSize : 0;
         this.cudnnQ = new HalfFloatArray(cudnnElems);
         this.cudnnK = new HalfFloatArray(cudnnElems);
@@ -317,7 +376,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             cudnnV.init(zero);
             cudnnOut.init(zero);
             logInitialization(
-                    "[jitllm] prefill attention: cuDNN SDPA for the first chunk, batched JIT paged"
+                    "[jitllm] prefill attention: cuDNN SDPA for the first chunk, tensor-core"
                             + " attention for the rest; staging %d MiB, one set shared by every"
                             + " batch-prefill graph%n",
                     4L * cudnnElems * Short.BYTES / (1024 * 1024));
@@ -402,14 +461,16 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     }
 
     /**
-     * The fallback family: the same layer pipeline with the JIT paged attention instead of the
-     * cuDNN call, for a chunk whose queries do not start at position 0.
+     * The fallback family: the same layer pipeline with the tensor-core attention (the JIT paged
+     * attention where that does not apply) instead of the cuDNN call, for a chunk whose queries do
+     * not start at position 0.
      *
      * <p>It shares every array with {@code primary} -- the model's weights, the stacked [q|k|v] and
      * [gate|up] weights, the workspace, the KV cache -- and declares all of them with {@code
      * consumeFromDevice} against the primary's graphs, so nothing is allocated, uploaded or copied
      * a second time. It does not touch the cuDNN staging quartet at all, because it does not call
-     * cuDNN.
+     * cuDNN. The tensor-core attention's scratch is the one thing it owns: the primary, on cuDNN,
+     * has none to share.
      *
      * <p>Only the attention step differs. QKV, gate/up, woProj and w2Proj stay native, with the
      * same stacked weights and the same numerical contracts already validated for them.
@@ -439,6 +500,20 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.cudnnOut = primary.cudnnOut;
         this.gateUpCat = primary.gateUpCat;
         this.qkvCat = primary.qkvCat;
+        this.tcAttention =
+                TensorCoreBatchAttention.applies(
+                                state.usesFp16KeyValueCache(), paddedBatch, nEmbdHead)
+                        ? new TensorCoreBatchAttention(
+                                state,
+                                qDim,
+                                kvDim,
+                                nEmbdHead,
+                                config.numberOfHeads(),
+                                gqa,
+                                paddedBatch,
+                                config.contextLength())
+                        : null;
+        this.splitK = primary.splitK;
         int groups = (config.numberOfLayers() + layersPerGraph - 1) / layersPerGraph;
         this.layerITGs =
                 IntStream.range(0, groups)
@@ -446,9 +521,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         .map(TaskGraph::snapshot)
                         .toList();
         logInitialization(
-                "[jitllm] prefill fallback family: %d graphs, JIT paged attention, all buffers bound"
-                        + " from the primary family%n",
-                groups);
+                "[jitllm] prefill fallback family: %d graphs, %s, all other buffers bound from the"
+                        + " primary family%n",
+                groups, tcAttention != null ? "tensor-core attention" : "JIT paged attention");
     }
 
     /**
@@ -543,6 +618,10 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
                 batchPrefillLayer.consumeFromDevice(
                         "prefillActivation", state.workspace.wrapXBatch);
+                if (tcAttention != null) {
+                    batchPrefillLayer.transferToDevice(
+                            DataTransferMode.FIRST_EXECUTION, tcAttention.buffers());
+                }
             } else {
                 String prev = graphPrefix + (firstLayer - layersPerGraph);
                 batchPrefillLayer.consumeFromDevice(
@@ -563,6 +642,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         state.workspace.wrapHbFP16Batch,
                         state.workspace.w2Out);
                 batchPrefillLayer.consumeFromDevice(prev, state.workspace.wrapBlockTable);
+                if (tcAttention != null) {
+                    batchPrefillLayer.consumeFromDevice(prev, tcAttention.buffers());
+                }
             }
         } else if (firstLayer == 0) {
             batchPrefillLayer.transferToDevice(
@@ -597,6 +679,14 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 batchPrefillLayer.transferToDevice(
                         DataTransferMode.FIRST_EXECUTION, cudnnQ, cudnnK, cudnnV, cudnnOut);
             }
+            if (!nativeProjections) {
+                batchPrefillLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, splitK.partial());
+            }
+            if (tcAttention != null) {
+                batchPrefillLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, tcAttention.buffers());
+            }
         } else {
             String pred = graphPrefix + (firstLayer - layersPerGraph);
             batchPrefillLayer.consumeFromDevice(
@@ -619,6 +709,12 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             batchPrefillLayer.consumeFromDevice(pred, state.workspace.wrapBlockTable);
             if (useCudnnAttention) {
                 batchPrefillLayer.consumeFromDevice(pred, cudnnQ, cudnnK, cudnnV, cudnnOut);
+            }
+            if (!nativeProjections) {
+                batchPrefillLayer.consumeFromDevice(pred, splitK.partial());
+            }
+            if (tcAttention != null) {
+                batchPrefillLayer.consumeFromDevice(pred, tcAttention.buffers());
             }
         }
 
@@ -836,6 +932,8 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         nEmbdHead,
                         batchSize,
                         qDim);
+            } else if (tcAttention != null) {
+                tcAttention.appendTasks(batchPrefillLayer, context, layerIndex, tp);
             } else {
                 batchPrefillLayer.task(
                         tp + "batch_attention",
@@ -923,10 +1021,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.workspace.woOut,
                     dim);
         } else {
-            batchPrefillLayer.task(
+            splitK.gemm(
+                    batchPrefillLayer,
                     tp + "woProj",
-                    TransformerBatchPrefillKernels::gemmMMA,
-                    context,
                     state.workspace.attnOutFP16,
                     weights.woLayered[layerIndex].asHalfFloatArray(),
                     state.workspace.woOut,
@@ -1021,10 +1118,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.workspace.w2Out,
                     dim);
         } else {
-            batchPrefillLayer.task(
+            splitK.gemm(
+                    batchPrefillLayer,
                     tp + "w2Proj",
-                    TransformerBatchPrefillKernels::gemmMMA,
-                    context,
                     state.workspace.wrapHbFP16Batch,
                     weights.w2Layered[layerIndex].asHalfFloatArray(),
                     state.workspace.w2Out,
@@ -1117,6 +1213,11 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 scheduler.addWorkerGrid(p + "cudnn_pack_q", cudnnWorker);
                 scheduler.addWorkerGrid(p + "cudnn_gather_kv", cudnnWorker);
                 scheduler.addWorkerGrid(p + "cudnn_scatter", cudnnWorker);
+            } else if (tcAttention != null) {
+                tcAttention.addGrids(
+                        scheduler,
+                        graphPrefix + (i / layersPerGraph) * layersPerGraph,
+                        taskPrefix(i));
             } else {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }
@@ -1133,6 +1234,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 scheduler.addWorkerGrid(p + "w2Proj", mmaDimWorker);
             }
             scheduler.addWorkerGrid(p + "w2Resid", ewDimWorker);
+        }
+        if (!nativeProjections) {
+            splitK.addGrids(scheduler);
         }
     }
 

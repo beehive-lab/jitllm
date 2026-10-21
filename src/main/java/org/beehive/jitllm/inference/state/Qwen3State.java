@@ -102,6 +102,15 @@ public final class Qwen3State extends State {
         workspace.wrapXbFP16 = TornadoWorkspaces.halfFloats(nEmbdHeadK * config.numberOfHeads());
 
         workspace.wrapXb2 = TornadoWorkspaces.floats(config.dim());
+        // The packed-integer projections' quantized activation, sized for the widest one they
+        // read: the concatenated query heads, which exceed dim here, or the hidden width.
+        if ("Q8_0".equals(config.quantization())) {
+            int widest =
+                    Math.max(
+                            Math.max(config.dim(), config.hiddenDim()),
+                            nEmbdHeadK * config.numberOfHeads());
+            TornadoWorkspaces.packedActivation(workspace, widest);
+        }
         workspace.wrapHb = TornadoWorkspaces.floats(config.hiddenDim());
         workspace.wrapHb2 = TornadoWorkspaces.floats(config.hiddenDim());
         workspace.wrapLogits = TornadoWorkspaces.floats(config.vocabularySize());

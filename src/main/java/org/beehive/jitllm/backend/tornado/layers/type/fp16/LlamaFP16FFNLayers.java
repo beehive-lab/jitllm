@@ -4,8 +4,12 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
+import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
+import org.beehive.jitllm.backend.tornado.scheduling.RmsReductionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.backend.tornado.scheduling.SplitKvAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.LlamaState;
 import org.beehive.jitllm.inference.state.State;
@@ -63,8 +67,14 @@ public class LlamaFP16FFNLayers
         super(taskGraph, state, weights, config, schedulerType);
         this.llamaState = (LlamaState) state;
         var partitions = state.executionPolicy().splitKvPartitions();
-        this.splitKvAttention = partitions.isPresent();
-        int working = partitions.orElse(State.SPLIT_KV);
+        // Split by default where the lane-cooperative kernel runs (CUDA, FP16 cache) and where the
+        // 32-thread split kernel runs (Metal): one workgroup per head leaves most of the device
+        // idle and walks the whole context serially. See SplitKvAttentionPolicy.
+        this.splitKvAttention =
+                partitions.isPresent()
+                        || laneAttention(config.headSize())
+                        || SplitKvAttentionPolicy.narrow();
+        int working = partitions.orElse(SplitKvAttentionPolicy.splits(State.SPLIT_KV));
         if (working > State.SPLIT_KV) {
             // The scratch array was allocated for State.SPLIT_KV partitions. A working value above
             // it would index past the end — silently, since the kernels take the count as an
@@ -79,7 +89,51 @@ public class LlamaFP16FFNLayers
                             + " raise jitllm.attention.splitKv.count, which is the capacity");
         }
         this.attentionSplits = working;
+        this.fp32LaneAttention =
+                splitKvAttentionEnabled()
+                        && !useFp16KVCache()
+                        && LaneAttentionPolicy.laneCooperativeAttentionFp32CacheAnyHead(
+                                config.headSize());
         setupFFNLayers();
+    }
+
+    /**
+     * Whether split-KV attention over the FP32 cache runs the lane-cooperative kernel for this head
+     * width (Metal); see {@link LaneAttentionPolicy#laneCooperativeAttentionFp32CacheAnyHead}. The
+     * FP16-cache lane kernels are chosen by {@code laneAttention(headSize)}.
+     */
+    private final boolean fp32LaneAttention;
+
+    /** Without a separate finalize task on Metal; see {@link RmsReductionPolicy}. */
+    @Override
+    protected boolean shouldUseFinalNormalization() {
+        return super.shouldUseFinalNormalization() && !RmsReductionPolicy.singleWorkgroup();
+    }
+
+    /**
+     * The worker grid of the attention task. The kernel it is for is chosen in {@link
+     * #configureAttention}; the two must agree, since the narrow and lane-cooperative kernels size
+     * their local arrays for their own workgroup.
+     */
+    protected WorkerGrid attentionWorker() {
+        if (!splitKvAttentionEnabled()) {
+            return WorkerGridFactory.createAttentionWorker(
+                    config.numberOfHeads(), config.headSize());
+        }
+        int groups = config.numberOfHeads() * attentionSplits;
+        if (fp32LaneAttention) {
+            return WorkerGridFactory.createLaneAttentionWorker(
+                    groups, LaneAttentionPolicy.WARPS_PER_GROUP);
+        }
+        if (SplitKvAttentionPolicy.narrow() && !useFp16KVCache()) {
+            return WorkerGridFactory.genericWorker(
+                    groups * SplitKvAttentionPolicy.NARROW_GROUP,
+                    SplitKvAttentionPolicy.NARROW_GROUP);
+        }
+        if (laneAttention(config.headSize())) {
+            return LaneAttentionPolicy.worker(groups, config.headSize());
+        }
+        return WorkerGridFactory.createAttentionWorker(groups, config.headSize());
     }
 
     @Override
@@ -98,12 +152,7 @@ public class LlamaFP16FFNLayers
                 WorkerGridFactory.genericWorker(
                         configHiddenDimRowMajor, LOCAL_WORK_GROUP_SIZE_ALLOC);
 
-        int attentionGroups =
-                splitKvAttentionEnabled()
-                        ? config.numberOfHeads() * attentionSplits
-                        : config.numberOfHeads();
-        WorkerGrid parallelAttentionWorker =
-                WorkerGridFactory.createAttentionWorker(attentionGroups, config.headSize());
+        WorkerGrid parallelAttentionWorker = attentionWorker();
         WorkerGrid attentionCombineWorker =
                 WorkerGridFactory.createAttentionWorker(config.numberOfHeads(), config.headSize());
 
@@ -115,29 +164,25 @@ public class LlamaFP16FFNLayers
 
         // Map workers to tasks
         for (int i = 0; i < config.numberOfLayers(); i++) {
+            String l = layerGraphName(i) + "." + layerTaskPrefix(i);
             // === Attention Block ===
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_rms_reduce", rmsReduceWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_rms_apply_fp16", rmsNormWorker);
-            tornadoForwardScheduler.addWorkerGrid("layer_" + i + ".qkv_projection", fusedQKVWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".rope_and_kv_cache", ropeWithCacheWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attention", parallelAttentionWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "attn_rms_reduce", rmsReduceWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "attn_rms_apply_fp16", rmsNormWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "qkv_projection", fusedQKVWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "rope_and_kv_cache", ropeWithCacheWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "attention", parallelAttentionWorker);
             if (splitKvAttentionEnabled()) {
                 tornadoForwardScheduler.addWorkerGrid(
-                        "layer_" + i + ".attention_combine", attentionCombineWorker);
+                        l + "attention_combine", attentionCombineWorker);
             }
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_output_proj", configDimRowMajorGlobalWorker);
+                    l + "attn_output_proj", configDimRowMajorGlobalWorker);
             // === FFN Block ===
+            tornadoForwardScheduler.addWorkerGrid(l + "ffn_rms_reduce", rmsReduceWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".ffn_rms_reduce", rmsReduceWorker);
+                    l + "rms_ffn_gate_up", configHiddenDimRowMajorWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".rms_ffn_gate_up", configHiddenDimRowMajorWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".ffn_down_proj", configDimRowMajorGlobalWorker);
+                    l + "ffn_down_proj", configDimRowMajorGlobalWorker);
         }
         return tornadoForwardScheduler;
     }
@@ -181,8 +226,15 @@ public class LlamaFP16FFNLayers
      */
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        var layerTaskGraphName = "layer_" + layerIndex;
-        TaskGraph unifiedLayer = new TaskGraph(layerTaskGraphName);
+        return appendFFNLayer(null, layerIndex);
+    }
+
+    @Override
+    protected TaskGraph appendFFNLayer(TaskGraph existing, int layerIndex) {
+        boolean firstInGraph = existing == null;
+        String tp = layerTaskPrefix(layerIndex);
+        TaskGraph unifiedLayer =
+                firstInGraph ? new TaskGraph(layerGraphName(layerIndex)) : existing;
 
         // === Data Setup ===
         // consumeFromDevice for wrapX: the no-arg form uses the current graph's own name as the
@@ -190,11 +242,13 @@ public class LlamaFP16FFNLayers
         // mode (updatePersistedObjectState looks up the predecessor's name, not the current name).
         // Subclasses that receive wrapX across a graph boundary override predecessorGraphName() to
         // return the correct predecessor graph name so the XPUBuffer is propagated in both modes.
-        String wrapXSrc = predecessorGraphName(layerIndex);
-        if (wrapXSrc != null) {
-            unifiedLayer.consumeFromDevice(wrapXSrc, state.workspace.wrapX);
-        } else {
-            unifiedLayer.consumeFromDevice(state.workspace.wrapX);
+        if (firstInGraph) {
+            String wrapXSrc = predecessorGraphName(layerIndex);
+            if (wrapXSrc != null) {
+                unifiedLayer.consumeFromDevice(wrapXSrc, state.workspace.wrapX);
+            } else {
+                unifiedLayer.consumeFromDevice(state.workspace.wrapX);
+            }
         }
         Object[] layerWeights = {
             weights.rms_att_weightLayered[layerIndex].asFloatArray(),
@@ -207,18 +261,15 @@ public class LlamaFP16FFNLayers
             weights.w2Layered[layerIndex].asHalfFloatArray(),
             weights.w3Layered[layerIndex].asHalfFloatArray()
         };
-        String weightSrc = weightSourceGraphName(layerIndex);
-        if (weightSrc != null) {
-            unifiedLayer.consumeFromDevice(weightSrc, layerWeights);
-        } else {
-            unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
+        bindLayerWeights(unifiedLayer, weightSourceGraphName(layerIndex), layerIndex, layerWeights);
+        if (firstInGraph) {
+            unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
         }
-        unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
 
         // === Attention Block ===
         // RMS Normalization
         unifiedLayer.task(
-                "attn_rms_reduce",
+                tp + "attn_rms_reduce",
                 rmsReduceKernel(),
                 context,
                 state.workspace.temp,
@@ -229,7 +280,7 @@ public class LlamaFP16FFNLayers
 
         if (shouldUseFinalNormalization()) {
             unifiedLayer.task(
-                    "attn_rms_finalize",
+                    tp + "attn_rms_finalize",
                     TransformerComputeKernelsLayered::reductionFinalNormalization,
                     context,
                     state.workspace.temp,
@@ -238,7 +289,7 @@ public class LlamaFP16FFNLayers
         }
 
         unifiedLayer.task(
-                "attn_rms_apply_fp16",
+                tp + "attn_rms_apply_fp16",
                 TransformerComputeKernels::mapContextWithQuantize,
                 context,
                 state.workspace.wrapXbFP16,
@@ -252,7 +303,7 @@ public class LlamaFP16FFNLayers
         // (LOCAL_WORK_GROUP_SIZE_ALLOC == 32), so no grid-scheduler change is needed here.
         if (useSimd32Reduction) {
             unifiedLayer.task(
-                    "qkv_projection",
+                    tp + "qkv_projection",
                     TransformerComputeKernelsLayered::fusedQKVMatmulXSimd32,
                     context,
                     state.workspace.wrapXbFP16,
@@ -266,7 +317,7 @@ public class LlamaFP16FFNLayers
                     config.kvDim());
         } else {
             unifiedLayer.task(
-                    "qkv_projection",
+                    tp + "qkv_projection",
                     packedHalf2Math
                             ? TransformerComputeKernelsLayered::fusedQKVMatmulX
                             : TransformerComputeKernelsLayered::fusedQKVMatmulXFp32Products,
@@ -287,7 +338,7 @@ public class LlamaFP16FFNLayers
         // the block-table walk replaces layer*contextLength*kvDim + pos*kvDim.
         if (useFp16KVCache()) {
             unifiedLayer.task(
-                    "rope_and_kv_cache",
+                    tp + "rope_and_kv_cache",
                     TransformerPagedKvKernels::ropeRotationWithCacheCopyPrecomputedFP16Paged,
                     context,
                     state.workspace.positionHolder,
@@ -306,7 +357,7 @@ public class LlamaFP16FFNLayers
                     state.kvBlockStride);
         } else {
             unifiedLayer.task(
-                    "rope_and_kv_cache",
+                    tp + "rope_and_kv_cache",
                     TransformerPagedKvKernels::ropeRotationWithCacheCopyPrecomputedPaged,
                     context,
                     state.workspace.positionHolder,
@@ -330,8 +381,12 @@ public class LlamaFP16FFNLayers
         // output contract either way; only the reduction kernel differs, by device capability.
         if (useSimd32Reduction) {
             unifiedLayer.task(
-                    "attn_output_proj",
-                    TransformerComputeKernelsLayered::matrixVectorGenericWithResidualSimd32,
+                    tp + "attn_output_proj",
+                    (Fp16GemvUnrollPolicy.unrolled()
+                            ? TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32Unrolled
+                            : TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32),
                     context,
                     state.workspace.wrapXb,
                     state.workspace.wrapX,
@@ -340,7 +395,7 @@ public class LlamaFP16FFNLayers
                     config.dim());
         } else {
             unifiedLayer.task(
-                    "attn_output_proj",
+                    tp + "attn_output_proj",
                     TransformerComputeKernelsLayered::matrixVectorGenericWithResidual,
                     context,
                     state.workspace.wrapXb,
@@ -354,7 +409,7 @@ public class LlamaFP16FFNLayers
         // === FFN Block ===
         // RMS Normalization
         unifiedLayer.task(
-                "ffn_rms_reduce",
+                tp + "ffn_rms_reduce",
                 rmsReduceKernel(),
                 context,
                 state.workspace.tempFFN,
@@ -365,7 +420,7 @@ public class LlamaFP16FFNLayers
 
         if (shouldUseFinalNormalization()) {
             unifiedLayer.task(
-                    "ffn_rms_finalize",
+                    tp + "ffn_rms_finalize",
                     TransformerComputeKernelsLayered::reductionFinalNormalization,
                     context,
                     state.workspace.tempFFN,
@@ -380,8 +435,10 @@ public class LlamaFP16FFNLayers
         // CUDA and OpenCL selection for Llama is unchanged).
         if (useSimd32Reduction) {
             unifiedLayer.task(
-                    "rms_ffn_gate_up",
-                    TransformerComputeKernelsLayered::fusedRmsNormFFNGateUpWarp,
+                    tp + "rms_ffn_gate_up",
+                    (Fp16GemvUnrollPolicy.unrolled()
+                            ? TransformerComputeKernelsLayered::fusedRmsNormFFNGateUpWarpUnrolled
+                            : TransformerComputeKernelsLayered::fusedRmsNormFFNGateUpWarp),
                     context,
                     state.workspace.wrapX,
                     state.workspace.wrapHb,
@@ -394,7 +451,7 @@ public class LlamaFP16FFNLayers
                     LOCAL_WORK_GROUP_SIZE_ALLOC);
         } else {
             unifiedLayer.task(
-                    "rms_ffn_gate_up",
+                    tp + "rms_ffn_gate_up",
                     TransformerComputeKernelsLayered::fusedRmsNormFFNGateUp,
                     context,
                     state.workspace.wrapX, // raw input (FP32)
@@ -412,8 +469,12 @@ public class LlamaFP16FFNLayers
         // output contract either way; only the reduction kernel differs, by device capability.
         if (useSimd32Reduction) {
             unifiedLayer.task(
-                    "ffn_down_proj",
-                    TransformerComputeKernelsLayered::matrixVectorGenericWithResidualSimd32,
+                    tp + "ffn_down_proj",
+                    (Fp16GemvUnrollPolicy.unrolled()
+                            ? TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32Unrolled
+                            : TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32),
                     context,
                     state.workspace.wrapHb,
                     state.workspace.wrapX,
@@ -422,7 +483,7 @@ public class LlamaFP16FFNLayers
                     config.dim());
         } else {
             unifiedLayer.task(
-                    "ffn_down_proj",
+                    tp + "ffn_down_proj",
                     TransformerComputeKernelsLayered::matrixVectorGenericWithResidual,
                     context,
                     state.workspace.wrapHb,
@@ -493,15 +554,31 @@ public class LlamaFP16FFNLayers
      *
      * <ul>
      *   <li>layer 0: return the activation graph name (e.g. {@code "activationUpdate"})
-     *   <li>layer k &gt; 0: return {@code "layer_" + (k-1)}
+     *   <li>layer k &gt; 0: return {@code layerGraphName(k - 1)}, the graph holding layer k-1
      * </ul>
      */
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "activationUpdate" : "layer_" + (layerIndex - 1);
+        return (layerIndex == 0) ? "activationUpdate" : layerGraphName(layerIndex - 1);
     }
 
+    /** Adjacent decode layers per graph, which removes all but one host round trip per group. */
+    @Override
+    protected int layersPerGraph() {
+        return LAYERS_PER_GRAPH;
+    }
+
+    static final int LAYERS_PER_GRAPH = 8;
+
+    /**
+     * Split-KV on the NVIDIA path, and on Metal where a split kernel fits: the 32-thread FP32-cache
+     * kernels, or the lane-cooperative FP16-cache kernel for its head width. The per-key FP16 split
+     * kernel needs more threadgroup memory than Metal allows.
+     */
     protected boolean splitKvAttentionEnabled() {
-        return splitKvAttention && schedulerType == SchedulerType.NVIDIA;
+        return splitKvAttention
+                && (schedulerType == SchedulerType.NVIDIA
+                        || (SplitKvAttentionPolicy.narrow()
+                                && (!useFp16KVCache() || laneAttention(config.headSize()))));
     }
 
     /** The key cache every graph of this family binds: FP16 when the state holds one. */
@@ -571,7 +648,7 @@ public class LlamaFP16FFNLayers
             // Subsequent layers: consume from the previous layer graph by name.
             // The no-arg consumeFromDevice form uses the current graph's own name as source key,
             // which never matches the predecessor in interpreter mode (no CUDA graphs).
-            String pred = "layer_" + (layerIndex - 1);
+            String pred = layerGraphName(layerIndex - 1);
             unifiedLayer.consumeFromDevice(
                     pred,
                     // Kernel context
@@ -603,15 +680,20 @@ public class LlamaFP16FFNLayers
     }
 
     private TaskGraph configureAttention(TaskGraph unifiedLayer, int layerIndex) {
+        String tp = layerTaskPrefix(layerIndex);
         if (splitKvAttentionEnabled()) {
             if (useFp16KVCache()) {
+                LaneAttentionPolicy.Kernel kernel =
+                        laneAttention(config.headSize())
+                                ? LaneAttentionPolicy.kernel(config.headSize())
+                                : packedHalf2Attention
+                                        ? TransformerPagedKvKernels
+                                                ::processHeadsFlashAttentionSplitKVFP16PackedPaged
+                                        : TransformerPagedKvKernels
+                                                ::processHeadsFlashAttentionSplitKVFP16Paged;
                 unifiedLayer.task(
-                        "attention",
-                        packedHalf2Attention
-                                ? TransformerPagedKvKernels
-                                        ::processHeadsFlashAttentionSplitKVFP16PackedPaged
-                                : TransformerPagedKvKernels
-                                        ::processHeadsFlashAttentionSplitKVFP16Paged,
+                        tp + "attention",
+                        kernel,
                         context,
                         state.workspace.wrapQ,
                         state.workspace.wrapKeyCacheFP16,
@@ -629,8 +711,18 @@ public class LlamaFP16FFNLayers
                         attentionSplits);
             } else {
                 unifiedLayer.task(
-                        "attention",
-                        TransformerPagedKvKernels::processHeadsFlashAttentionSplitKVPaged,
+                        tp + "attention",
+                        fp32LaneAttention
+                                ? config.headSize() == LaneAttentionPolicy.NARROW_HEAD_SIZE
+                                        ? TransformerPagedKvKernels
+                                                ::processHeadsFlashAttentionSplitKVPagedLaneHead64
+                                        : TransformerPagedKvKernels
+                                                ::processHeadsFlashAttentionSplitKVPagedLaneHead128
+                                : SplitKvAttentionPolicy.narrow()
+                                        ? TransformerPagedKvKernels
+                                                ::processHeadsFlashAttentionSplitKVPaged32
+                                        : TransformerPagedKvKernels
+                                                ::processHeadsFlashAttentionSplitKVPaged,
                         context,
                         state.workspace.wrapQ,
                         state.workspace.wrapKeyCache,
@@ -649,7 +741,7 @@ public class LlamaFP16FFNLayers
             }
             // The combine pass reads no KV, so it is the same task on both paths.
             return unifiedLayer.task(
-                    "attention_combine",
+                    tp + "attention_combine",
                     TransformerComputeKernelsLayered::combineSplitKVAttention,
                     context,
                     state.workspace.wrapAttSplit,
@@ -663,7 +755,7 @@ public class LlamaFP16FFNLayers
             // The scalar-read variant is an evaluation aid; the packed variant is the default.
             if (scalarFp16KeyValueReads) {
                 return unifiedLayer.task(
-                        "attention",
+                        tp + "attention",
                         TransformerPagedKvKernels::processHeadsFlashAttentionFP16ScalarPaged,
                         context,
                         state.workspace.wrapQ,
@@ -681,7 +773,7 @@ public class LlamaFP16FFNLayers
                         state.kvBlockStride);
             }
             return unifiedLayer.task(
-                    "attention",
+                    tp + "attention",
                     TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
                     context,
                     state.workspace.wrapQ,
@@ -700,7 +792,7 @@ public class LlamaFP16FFNLayers
         } else if (schedulerType == SchedulerType.NVIDIA) {
             // Flash Attention (optimized for NVIDIA GPUs)
             return unifiedLayer.task(
-                    "attention",
+                    tp + "attention",
                     TransformerPagedKvKernels::processHeadsFlashAttentionPaged,
                     context,
                     state.workspace.wrapQ, // Query
@@ -719,7 +811,7 @@ public class LlamaFP16FFNLayers
         } else {
             // Standard parallel attention (for non-NVIDIA backends)
             return unifiedLayer.task(
-                    "attention",
+                    tp + "attention",
                     TransformerPagedKvKernels::processHeadsParallelPaged,
                     state.workspace.wrapQ, // Query
                     state.workspace.wrapKeyCache, // Key cache

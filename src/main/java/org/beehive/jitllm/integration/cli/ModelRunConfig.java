@@ -39,7 +39,9 @@ public record ModelRunConfig(Path model, int contextLength, boolean gpu) {
                 // run, chat and the serial server each hold exactly one session per model.
                 .maxConcurrentSessions(1)
                 .backend(backend)
-                .executionPolicy(policy)
+                // Left to ModelOptions, which reads the same properties and records that nobody
+                // chose the policy, so that the device's default can apply once the model is
+                // loaded (batched prefill, on native libraries where they are installed).
                 .build();
     }
 }

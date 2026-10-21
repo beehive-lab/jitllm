@@ -5,10 +5,14 @@ import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.type.q8_0.Qwen2Q8_0FFNLayers;
+import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
+import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen2State;
+import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen2TornadoWeights;
 import org.beehive.jitllm.model.qwen2.Qwen2Configuration;
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -120,29 +124,36 @@ public class Qwen2FP16FFNLayers
         fusedQKVBiasWorkerNorm.setLocalWork(32, 1, 1);
 
         // Map workers to tasks
+        boolean lane = laneAttention(config.headSize());
         for (int i = 0; i < config.numberOfLayers(); i++) {
+            String l = layerGraphName(i) + "." + layerTaskPrefix(i);
+            tornadoForwardScheduler.addWorkerGrid(l + "attn_rms_qkv_projection", fusedQKVWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "fused_qkv_bias", fusedQKVBiasWorkerNorm);
+            tornadoForwardScheduler.addWorkerGrid(l + "rope_and_kv_cache", ropeWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "fused_qkv_bias", fusedQKVBiasWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_rms_qkv_projection", fusedQKVWorker);
+                    l + "attn_output_proj", configDimRowMajorGlobalWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".fused_qkv_bias", fusedQKVBiasWorkerNorm);
-            tornadoForwardScheduler.addWorkerGrid("layer_" + i + ".rope_and_kv_cache", ropeWorker);
+                    l + "ffn_down_proj", configDimRowMajorGlobalWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".fused_qkv_bias", fusedQKVBiasWorker);
+                    l + "fused_ffn_w1_w3", configHiddenDimRowMajorWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "attn_rms_reduce", rmsReduceWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "ffn_rms_reduce", rmsReduceWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "mapContextFFN", rmsNormWorker);
+            if (lane) {
+                tornadoForwardScheduler.addWorkerGrid(
+                        l + "attention",
+                        LaneAttentionPolicy.worker(
+                                config.numberOfHeads() * State.SPLIT_KV, config.headSize()));
+                tornadoForwardScheduler.addWorkerGrid(
+                        l + "attention_combine",
+                        WorkerGridFactory.createAttentionWorker(
+                                config.numberOfHeads(), config.headSize()));
+            } else {
+                tornadoForwardScheduler.addWorkerGrid(l + "attention", parallelAttentionWorker);
+            }
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_output_proj", configDimRowMajorGlobalWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".ffn_down_proj", configDimRowMajorGlobalWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".fused_ffn_w1_w3", configHiddenDimRowMajorWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_rms_reduce", rmsReduceWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".ffn_rms_reduce", rmsReduceWorker);
-            tornadoForwardScheduler.addWorkerGrid("layer_" + i + ".mapContextFFN", rmsNormWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attention", parallelAttentionWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".rms_ffn_gate_up", configHiddenDimRowMajorWorker);
+                    l + "rms_ffn_gate_up", configHiddenDimRowMajorWorker);
         }
         return tornadoForwardScheduler;
     }
@@ -191,28 +202,46 @@ public class Qwen2FP16FFNLayers
      */
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        var taskGraphName = "layer_" + layerIndex;
-        TaskGraph unifiedLayer = new TaskGraph(taskGraphName);
+        return appendFFNLayer(null, layerIndex);
+    }
 
-        unifiedLayer.consumeFromDevice(state.workspace.wrapX);
-        unifiedLayer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
-                // Attention weights
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqLayered[layerIndex].asHalfFloatArray(),
-                weights.wkLayered[layerIndex].asHalfFloatArray(),
-                weights.wvLayered[layerIndex].asHalfFloatArray(),
-                weights.woLayered[layerIndex].asHalfFloatArray(),
-                // Qwen2-specific bias terms
-                weights.q_biasLayered[layerIndex].asFloatArray(),
-                weights.k_biasLayered[layerIndex].asFloatArray(),
-                weights.v_biasLayered[layerIndex].asFloatArray(),
-                // FFN weights
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.w1Layered[layerIndex].asHalfFloatArray(),
-                weights.w2Layered[layerIndex].asHalfFloatArray(),
-                weights.w3Layered[layerIndex].asHalfFloatArray());
-        unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
+    @Override
+    protected TaskGraph appendFFNLayer(TaskGraph existing, int layerIndex) {
+        boolean firstInGraph = existing == null;
+        String tp = layerTaskPrefix(layerIndex);
+        TaskGraph unifiedLayer =
+                firstInGraph ? new TaskGraph(layerGraphName(layerIndex)) : existing;
+
+        if (firstInGraph) {
+            String wrapXSrc = predecessorGraphName(layerIndex);
+            if (wrapXSrc != null) {
+                unifiedLayer.consumeFromDevice(wrapXSrc, state.workspace.wrapX);
+            } else {
+                unifiedLayer.consumeFromDevice(state.workspace.wrapX);
+            }
+        }
+        Object[] layerWeights = {
+            // Attention weights
+            weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+            weights.wqLayered[layerIndex].asHalfFloatArray(),
+            weights.wkLayered[layerIndex].asHalfFloatArray(),
+            weights.wvLayered[layerIndex].asHalfFloatArray(),
+            weights.woLayered[layerIndex].asHalfFloatArray(),
+            // Qwen2-specific bias terms
+            weights.q_biasLayered[layerIndex].asFloatArray(),
+            weights.k_biasLayered[layerIndex].asFloatArray(),
+            weights.v_biasLayered[layerIndex].asFloatArray(),
+            // FFN weights
+            weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+            weights.w1Layered[layerIndex].asHalfFloatArray(),
+            weights.w2Layered[layerIndex].asHalfFloatArray(),
+            weights.w3Layered[layerIndex].asHalfFloatArray()
+        };
+        bindLayerWeights(unifiedLayer, weightSourceGraphName(layerIndex), layerIndex, layerWeights);
+        if (firstInGraph) {
+            unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
+            bindDecodeScratch(unifiedLayer, layerIndex);
+        }
 
         // ═══════════════════════════════════════════════════════════════════════
         //                           ATTENTION BLOCK
@@ -220,7 +249,7 @@ public class Qwen2FP16FFNLayers
 
         // RMS Normalization - compute scale factor
         unifiedLayer.task(
-                "attn_rms_reduce",
+                tp + "attn_rms_reduce",
                 rmsReduceKernel(),
                 context,
                 qwen2State.workspace.temp, // output: scale factor
@@ -231,7 +260,7 @@ public class Qwen2FP16FFNLayers
 
         if (shouldUseFinalNormalization()) {
             unifiedLayer.task(
-                    "attn_rms_finalize",
+                    tp + "attn_rms_finalize",
                     TransformerComputeKernelsLayered::reductionFinalNormalization,
                     context,
                     state.workspace.temp,
@@ -244,9 +273,11 @@ public class Qwen2FP16FFNLayers
         // reduction kernel differs, by device capability. Both variants run on the existing 32-wide
         // worker grid (LOCAL_WORK_GROUP_SIZE_ALLOC == 32), so no grid-scheduler change is needed.
         unifiedLayer.task(
-                "attn_rms_qkv_projection",
+                tp + "attn_rms_qkv_projection",
                 useSimd32Reduction
-                        ? Qwen3Kernels::fusedRmsNormQKVMatmulWarp
+                        ? (Fp16GemvUnrollPolicy.unrolled()
+                                ? Qwen3Kernels::fusedRmsNormQKVMatmulWarpUnrolled
+                                : Qwen3Kernels::fusedRmsNormQKVMatmulWarp)
                         : Qwen3Kernels::fusedRmsNormQKVMatmul,
                 context,
                 qwen2State.workspace.wrapX, // input: raw hidden state (FP32)
@@ -265,7 +296,7 @@ public class Qwen2FP16FFNLayers
 
         // Fused Q/K/V Bias Addition (3→1 kernel fusion)
         unifiedLayer.task(
-                "fused_qkv_bias",
+                tp + "fused_qkv_bias",
                 TransformerComputeKernelsLayered::fusedQKvBiasAddition,
                 context,
                 qwen2State.workspace.wrapQ, // Q (in/out)
@@ -280,7 +311,7 @@ public class Qwen2FP16FFNLayers
         // Fused RoPE Rotation + KV Cache Write
         if (useFp16KVCache()) {
             unifiedLayer.task(
-                    "rope_and_kv_cache",
+                    tp + "rope_and_kv_cache",
                     Qwen3PagedKvKernels::ropeRotationWithCacheCopyFP16Paged,
                     context,
                     qwen2State.workspace.positionHolder, // current sequence position
@@ -299,7 +330,7 @@ public class Qwen2FP16FFNLayers
                     state.kvBlockStride); // max sequence length
         } else {
             unifiedLayer.task(
-                    "rope_and_kv_cache",
+                    tp + "rope_and_kv_cache",
                     Qwen3PagedKvKernels::ropeRotationWithCacheCopyPaged,
                     context,
                     qwen2State.workspace.positionHolder, // current sequence position
@@ -319,9 +350,39 @@ public class Qwen2FP16FFNLayers
         }
 
         // Flash Attention
-        if (useFp16KVCache()) {
+        if (laneAttention(config.headSize())) {
+            // Split-KV with the lane-cooperative kernel: more workgroups than heads, and the
+            // partials merged by the combine pass.
             unifiedLayer.task(
-                    "attention",
+                    tp + "attention",
+                    LaneAttentionPolicy.kernel(config.headSize()),
+                    context,
+                    qwen2State.workspace.wrapQ,
+                    qwen2State.workspace.wrapKeyCacheFP16,
+                    qwen2State.workspace.wrapValueCacheFP16,
+                    qwen2State.workspace.wrapAttSplit,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    config.kvDim(),
+                    config.kvMul(),
+                    qwen2State.workspace.positionHolder,
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    State.SPLIT_KV);
+            unifiedLayer.task(
+                    tp + "attention_combine",
+                    TransformerComputeKernelsLayered::combineSplitKVAttention,
+                    context,
+                    qwen2State.workspace.wrapAttSplit,
+                    qwen2State.workspace.wrapXb,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    State.SPLIT_KV);
+        } else if (useFp16KVCache()) {
+            unifiedLayer.task(
+                    tp + "attention",
                     Qwen2PagedKvKernels::processHeadsFlashAttentionFP16Paged,
                     context,
                     qwen2State.workspace.wrapQ, // query vectors
@@ -339,7 +400,7 @@ public class Qwen2FP16FFNLayers
                     state.kvBlockStride); // context length
         } else {
             unifiedLayer.task(
-                    "attention",
+                    tp + "attention",
                     Qwen2PagedKvKernels::processHeadsFlashAttentionPaged,
                     context,
                     qwen2State.workspace.wrapQ, // query vectors
@@ -362,8 +423,12 @@ public class Qwen2FP16FFNLayers
         // if/else rather than a ternary on the method reference.
         if (useSimd32Reduction) {
             unifiedLayer.task(
-                    "attn_output_proj",
-                    TransformerComputeKernelsLayered::matrixVectorGenericWithResidualSimd32,
+                    tp + "attn_output_proj",
+                    (Fp16GemvUnrollPolicy.unrolled()
+                            ? TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32Unrolled
+                            : TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32),
                     context,
                     qwen2State.workspace.wrapXb, // input: attention output
                     qwen2State.workspace.wrapX, // output: wrapX += Wo · wrapXb
@@ -372,7 +437,7 @@ public class Qwen2FP16FFNLayers
                     config.dim()); // output dim
         } else {
             unifiedLayer.task(
-                    "attn_output_proj",
+                    tp + "attn_output_proj",
                     TransformerComputeKernelsLayered::matrixVectorGenericWithResidual,
                     context,
                     qwen2State.workspace.wrapXb, // input: attention output
@@ -389,7 +454,7 @@ public class Qwen2FP16FFNLayers
 
         // RMS Normalization - compute scale factor
         unifiedLayer.task(
-                "ffn_rms_reduce",
+                tp + "ffn_rms_reduce",
                 rmsReduceKernel(),
                 context,
                 qwen2State.workspace.tempFFN, // output: scale factor
@@ -401,7 +466,7 @@ public class Qwen2FP16FFNLayers
         // Final normalization (non-NVIDIA only)
         if (shouldUseFinalNormalization()) {
             unifiedLayer.task(
-                    "ffn_rms_finalize",
+                    tp + "ffn_rms_finalize",
                     TransformerComputeKernelsLayered::reductionFinalNormalization,
                     context,
                     qwen2State.workspace.tempFFN, // scale factor (in/out)
@@ -412,9 +477,12 @@ public class Qwen2FP16FFNLayers
         // Fused RMS Apply + Gate/Up Projection + SiLU + GLU
         // (Replaces mapContextFFN + fusedFeedForwardWithSiLUAndGLUActivation)
         unifiedLayer.task(
-                "rms_ffn_gate_up",
+                tp + "rms_ffn_gate_up",
                 useSimd32Reduction
-                        ? TransformerComputeKernelsLayered::fusedRmsNormFFNGateUpWarp
+                        ? (Fp16GemvUnrollPolicy.unrolled()
+                                ? TransformerComputeKernelsLayered
+                                        ::fusedRmsNormFFNGateUpWarpUnrolled
+                                : TransformerComputeKernelsLayered::fusedRmsNormFFNGateUpWarp)
                         : TransformerComputeKernelsLayered::fusedRmsNormFFNGateUp,
                 context,
                 qwen2State.workspace.wrapX, // input: raw hidden state (FP32)
@@ -431,8 +499,12 @@ public class Qwen2FP16FFNLayers
         if (useSimd32Reduction) {
             unifiedLayer
                     .task(
-                            "ffn_down_proj",
-                            TransformerComputeKernelsLayered::matrixVectorGenericWithResidualSimd32,
+                            tp + "ffn_down_proj",
+                            (Fp16GemvUnrollPolicy.unrolled()
+                                    ? TransformerComputeKernelsLayered
+                                            ::matrixVectorGenericWithResidualSimd32Unrolled
+                                    : TransformerComputeKernelsLayered
+                                            ::matrixVectorGenericWithResidualSimd32),
                             context,
                             qwen2State.workspace.wrapHb, // input: FFN intermediate
                             qwen2State.workspace.wrapX, // output: wrapX += W2 · wrapHb
@@ -443,7 +515,7 @@ public class Qwen2FP16FFNLayers
         } else {
             unifiedLayer
                     .task(
-                            "ffn_down_proj",
+                            tp + "ffn_down_proj",
                             TransformerComputeKernelsLayered::matrixVectorGenericWithResidual,
                             context,
                             qwen2State.workspace.wrapHb, // input: FFN intermediate
@@ -456,6 +528,31 @@ public class Qwen2FP16FFNLayers
         }
 
         return unifiedLayer;
+    }
+
+    /** Adjacent decode layers per graph, which removes all but one host round trip per group. */
+    @Override
+    protected int layersPerGraph() {
+        return Qwen2Q8_0FFNLayers.LAYERS_PER_GRAPH;
+    }
+
+    /**
+     * Binds the split-KV attention scratch: uploaded once by layer 0 and passed along the graph
+     * chain. Called by the graph that opens a group, so subclasses that replace {@link
+     * #configureLayerDataTransfers} keep it.
+     */
+    protected void bindDecodeScratch(TaskGraph unifiedLayer, int layerIndex) {
+        Object[] scratch = {state.workspace.wrapAttSplit};
+        if (layerIndex == 0) {
+            unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, scratch);
+            return;
+        }
+        String source = predecessorGraphName(layerIndex);
+        if (source != null) {
+            unifiedLayer.consumeFromDevice(source, scratch);
+        } else {
+            unifiedLayer.consumeFromDevice(scratch);
+        }
     }
 
     /** Configure data transfers for first and subsequent layers */
@@ -518,5 +615,22 @@ public class Qwen2FP16FFNLayers
         return useFp16KVCache()
                 ? state.workspace.wrapValueCacheFP16
                 : state.workspace.wrapValueCache;
+    }
+
+    /**
+     * The graph {@code wrapX} is consumed from, or {@code null} for the no-arg form. The batched
+     * prefill/decode plan's decode layers name their predecessor; see {@code
+     * LlamaFP16FFNLayers#predecessorGraphName}.
+     */
+    protected String predecessorGraphName(int layerIndex) {
+        return null;
+    }
+
+    /**
+     * The graph that already uploaded this layer's weights, or {@code null} to upload them here;
+     * see {@code LlamaFP16FFNLayers#weightSourceGraphName}.
+     */
+    protected String weightSourceGraphName(int layerIndex) {
+        return null;
     }
 }

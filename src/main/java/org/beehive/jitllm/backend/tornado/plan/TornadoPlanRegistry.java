@@ -98,6 +98,11 @@ public final class TornadoPlanRegistry {
         return provider == null ? java.util.Set.of() : provider.nativeTensorTypes();
     }
 
+    /** The provider registered for {@code architecture}, if any. */
+    public static Optional<TornadoPlanProvider> provider(ArchitectureId architecture) {
+        return Optional.ofNullable(Index.BY_ID.get(architecture));
+    }
+
     /** Which architectures have migrated to a registered plan provider. */
     public static java.util.Set<ArchitectureId> registered() {
         return new java.util.LinkedHashSet<>(Index.BY_ID.keySet());
@@ -118,6 +123,60 @@ public final class TornadoPlanRegistry {
      */
     static Optional<ForwardPlan> create(
             DataType quantization, ExecutionMode mode, State state, Model model) {
+        return components(quantization, mode, state, model)
+                .map(
+                        components ->
+                                switch (mode) {
+                                    case STANDARD -> new SingleTokenForwardPlan(model, components);
+                                    case PREFILL_DECODE ->
+                                            new PrefillDecodeForwardPlan(
+                                                    model,
+                                                    (PrefillDecodeForwardPlanComponents)
+                                                            components);
+                                    case BATCH_PREFILL_DECODE ->
+                                            new BatchPrefillDecodeForwardPlan(
+                                                    model,
+                                                    (BatchPrefillDecodeForwardPlanComponents)
+                                                            components,
+                                                    state.executionPolicy().prefillBatchSize());
+                                });
+    }
+
+    /**
+     * Where a native-library path exists on {@code backend}, for a message that must say so: "llama
+     * Q4_0, ...".
+     */
+    public static String nativeLibraryPaths(org.beehive.jitllm.runtime.backend.BackendId backend) {
+        return Index.BY_ID.values().stream()
+                .filter(provider -> !provider.nativeLibraryWeights(backend).isEmpty())
+                .map(
+                        provider ->
+                                provider.architecture().name()
+                                        + " "
+                                        + provider.nativeLibraryWeights(backend).stream()
+                                                .sorted()
+                                                .map(DataType::name)
+                                                .collect(java.util.stream.Collectors.joining("/")))
+                .sorted()
+                .collect(java.util.stream.Collectors.joining(", "));
+    }
+
+    /** The provider registered for the architecture named {@code architecture}, if any. */
+    public static Optional<TornadoPlanProvider> provider(String architecture) {
+        return Optional.ofNullable(Index.BY_ID.get(ArchitectureId.of(architecture)));
+    }
+
+    /** The provider registered for {@code model}'s architecture, if it has migrated. */
+    static Optional<TornadoPlanProvider> provider(Model model) {
+        return Optional.ofNullable(Index.BY_ID.get(model.architectureId()));
+    }
+
+    /**
+     * The components for a migrated architecture in {@code mode}, admitted as {@link #create}
+     * admits them: an unsupported representation or mode is refused by name.
+     */
+    static Optional<SingleTokenForwardPlanComponents> components(
+            DataType quantization, ExecutionMode mode, State state, Model model) {
         TornadoPlanProvider provider = Index.BY_ID.get(model.architectureId());
         if (provider == null) {
             return Optional.empty();
@@ -135,7 +194,7 @@ public final class TornadoPlanRegistry {
                 provider.components(quantization, state, model);
         // A provider may support a mode for one representation and not for another — Llama has
         // prefill and batch kernels for Q8_0 and F16 but only single-token ones for Q4_0. Without
-        // this the cast below fails with a ClassCastException naming two internal interfaces,
+        // this the plan's cast fails with a ClassCastException naming two internal interfaces,
         // where the contract of this method is that an unsupported combination is refused by name.
         if (mode == ExecutionMode.PREFILL_DECODE
                         && !(components instanceof PrefillDecodeForwardPlanComponents)
@@ -144,17 +203,6 @@ public final class TornadoPlanRegistry {
             throw new UnsupportedOperationException(
                     mode + " not yet supported for " + model.getModelType() + " + " + quantization);
         }
-        return Optional.of(
-                switch (mode) {
-                    case STANDARD -> new SingleTokenForwardPlan(model, components);
-                    case PREFILL_DECODE ->
-                            new PrefillDecodeForwardPlan(
-                                    model, (PrefillDecodeForwardPlanComponents) components);
-                    case BATCH_PREFILL_DECODE ->
-                            new BatchPrefillDecodeForwardPlan(
-                                    model,
-                                    (BatchPrefillDecodeForwardPlanComponents) components,
-                                    state.executionPolicy().prefillBatchSize());
-                });
+        return Optional.of(components);
     }
 }

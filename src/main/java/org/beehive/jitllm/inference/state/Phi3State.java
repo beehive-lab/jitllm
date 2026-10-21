@@ -92,7 +92,11 @@ public class Phi3State extends State {
         // TornadoVM wrapper arrays for GPU acceleration
         switch (config.quantization()) {
             case "FP16" -> TornadoWorkspaces.activationFP16(workspace, config.dim());
-            case "Q8_0" -> TornadoWorkspaces.activationQ8_0(workspace, config.dim());
+            case "Q8_0" -> {
+                TornadoWorkspaces.activationQ8_0(workspace, config.dim());
+                TornadoWorkspaces.packedActivation(
+                        workspace, Math.max(config.dim(), config.hiddenDim()));
+            }
             default ->
                     throw new UnsupportedOperationException(
                             "Unsupported quantization format: " + config.quantization());
@@ -116,6 +120,9 @@ public class Phi3State extends State {
 
         // Attention wrapper
         workspace.wrapAtt = TornadoWorkspaces.floats(nHeads * contextLength);
+        workspace.wrapAttSplit =
+                TornadoWorkspaces.floats(
+                        config.numberOfHeads() * SPLIT_KV * (config.headSize() + 2));
 
         // Position holder for GPU operations
         // [0] = position, [1] = table-local KV slot.

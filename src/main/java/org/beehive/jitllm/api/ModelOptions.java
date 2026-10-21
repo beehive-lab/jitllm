@@ -30,6 +30,19 @@ public final class ModelOptions {
 
     private final int contextLength;
     private final ExecutionPolicy executionPolicy;
+
+    /**
+     * Whether nobody chose the policy: no builder value and no prefill property. Such a policy may
+     * be replaced by the device's default once the model is known.
+     */
+    private final boolean defaultExecutionPolicy;
+
+    /**
+     * Whether nobody chose native libraries: no builder policy and no native-libraries property.
+     * They are then turned on once the model is known, where they are implemented and installed.
+     */
+    private final boolean defaultNativeLibraries;
+
     private final StorageOptions storageOptions;
     private final BackendId backend;
     private final DeviceSelector device;
@@ -50,6 +63,12 @@ public final class ModelOptions {
                 builder.executionPolicy != null
                         ? builder.executionPolicy
                         : ExecutionPolicy.fromSystemProperties();
+        this.defaultExecutionPolicy =
+                builder.executionPolicy == null
+                        && System.getProperty("jitllm.withPrefillDecode") == null
+                        && System.getProperty("jitllm.prefillBatchSize") == null;
+        this.defaultNativeLibraries =
+                builder.executionPolicy == null && !ExecutionPolicy.nativeLibrariesSpecified();
         this.storageOptions =
                 builder.storageOptions != null
                         ? builder.storageOptions
@@ -80,6 +99,16 @@ public final class ModelOptions {
     @Experimental
     public ExecutionPolicy executionPolicy() {
         return executionPolicy;
+    }
+
+    /** Whether {@link #executionPolicy()} is the unchosen default; see {@code LocalModels.load}. */
+    boolean usesDefaultExecutionPolicy() {
+        return defaultExecutionPolicy;
+    }
+
+    /** Whether native libraries are left to the model's default; see {@code LocalModels.load}. */
+    boolean usesDefaultNativeLibraries() {
+        return defaultNativeLibraries;
     }
 
     /**

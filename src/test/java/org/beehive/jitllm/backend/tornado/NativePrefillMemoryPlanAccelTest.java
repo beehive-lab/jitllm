@@ -48,7 +48,10 @@ import org.junit.Test;
  * <p>It is a third layer graph family and it allocates three carriers. Every weight, workspace and
  * cache it touches is bound from the primary family's buffers. A model that charged a copy of the
  * weights per family would add hundreds of megabytes for graphs that share one, which is why the
- * measured delta above is asserted rather than a family count.
+ * measured delta above is asserted rather than a family count. The one buffer set it owns, the
+ * tensor-core attention scratch for the chunks after the first (the table above predates it), is
+ * the same set the primary family allocates when cuDNN is off, so it appears on both sides and
+ * leaves the delta unchanged.
  */
 // @formatter:on
 public class NativePrefillMemoryPlanAccelTest {

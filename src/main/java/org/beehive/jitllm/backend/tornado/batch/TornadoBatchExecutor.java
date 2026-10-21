@@ -7,19 +7,14 @@ import java.util.Set;
 import java.util.function.Consumer;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kv.TornadoKvStore;
-import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.LlamaFP16LayersBatchDecodeMMA;
-import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16LayersBatchDecodeMMA;
+import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
+import org.beehive.jitllm.backend.tornado.plan.BatchDecode;
+import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
-import org.beehive.jitllm.inference.state.LlamaState;
-import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.state.State;
-import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
-import org.beehive.jitllm.model.llama.LlamaConfiguration;
-import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
 import org.beehive.jitllm.runtime.batch.BatchExecutor;
 import org.beehive.jitllm.runtime.batch.BatchSlots;
 import org.beehive.jitllm.runtime.kv.KvStorage;
@@ -104,7 +99,7 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
     }
 
     /**
-     * @param model the model to decode with — FP16 Llama or Qwen3
+     * @param model the model to decode with: a family whose plan provider has batched decode layers
      * @param state a state built against the engine's lease-backed KV, sized for this batch
      * @param store the shared KV store the engine's manager owns; its table is what the kernels
      *     walk
@@ -115,15 +110,10 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
             Model model, State state, KvStorage storage, int batchSize, int blocksPerSlot) {
         Configuration config = model.configuration();
         TornadoWeights weights = (TornadoWeights) model.weights();
-        boolean isQwen3 = config instanceof Qwen3Configuration;
 
         if (!org.beehive.jitllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend()) {
             throw new IllegalArgumentException(
                     "Continuous batching requires a CUDA device with tensor-core MMA support");
-        }
-        if (!(state instanceof LlamaState) && !(state instanceof Qwen3State)) {
-            throw new IllegalArgumentException(
-                    "Continuous batching supports FP16 Llama/Qwen3 only");
         }
         this.batchSize = batchSize;
         this.blocksPerSlot = blocksPerSlot;
@@ -150,44 +140,36 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         BatchPrefillActivation activation =
                 new BatchPrefillActivation(state, config, batchSize, false);
 
-        List<ImmutableTaskGraph> layerGraphs;
-        String lastLayerId;
-        Consumer<GridScheduler> updateLayerSchedule;
-        if (isQwen3) {
-            Qwen3FP16LayersBatchDecodeMMA layers =
-                    new Qwen3FP16LayersBatchDecodeMMA(
-                            (Qwen3State) state,
-                            (Qwen3TornadoWeights) weights,
-                            (Qwen3Configuration) config,
-                            batchSize,
-                            blocksPerSlot * store.blockSizeTokens(),
-                            store.keyPool() != null ? store.keyPool() : store.keyPoolFP16(),
-                            store.valuePool() != null ? store.valuePool() : store.valuePoolFP16(),
-                            seqPositions,
-                            store.blockTable(),
-                            store.blockSizeTokens(),
-                            blocksPerSlot);
-            layerGraphs = layers.getLayerImmutableTaskGraphs();
-            lastLayerId = layers.getLastLayerTaskGraphID();
-            updateLayerSchedule = layers::updateGridScheduler;
-        } else {
-            LlamaFP16LayersBatchDecodeMMA layers =
-                    new LlamaFP16LayersBatchDecodeMMA(
-                            (LlamaState) state,
-                            (LlamaTornadoWeights) weights,
-                            (LlamaConfiguration) config,
-                            batchSize,
-                            blocksPerSlot * store.blockSizeTokens(),
-                            store.keyPool() != null ? store.keyPool() : store.keyPoolFP16(),
-                            store.valuePool() != null ? store.valuePool() : store.valuePoolFP16(),
-                            seqPositions,
-                            store.blockTable(),
-                            store.blockSizeTokens(),
-                            blocksPerSlot);
-            layerGraphs = layers.getLayerImmutableTaskGraphs();
-            lastLayerId = layers.getLastLayerTaskGraphID();
-            updateLayerSchedule = layers::updateGridScheduler;
-        }
+        BatchDecodeLayers layers =
+                TornadoPlanRegistry.provider(model.architectureId())
+                        .flatMap(
+                                provider ->
+                                        provider.batchDecodeLayers(
+                                                state,
+                                                model,
+                                                new BatchDecode(
+                                                        batchSize,
+                                                        blocksPerSlot * store.blockSizeTokens(),
+                                                        store.keyPool() != null
+                                                                ? store.keyPool()
+                                                                : store.keyPoolFP16(),
+                                                        store.valuePool() != null
+                                                                ? store.valuePool()
+                                                                : store.valuePoolFP16(),
+                                                        seqPositions,
+                                                        store.blockTable(),
+                                                        store.blockSizeTokens(),
+                                                        blocksPerSlot)))
+                        .orElseThrow(
+                                () ->
+                                        new IllegalArgumentException(
+                                                "Continuous batching is not implemented for "
+                                                        + model.architectureId()
+                                                        + " / "
+                                                        + model.weights().dataType()));
+        List<ImmutableTaskGraph> layerGraphs = layers.getLayerImmutableTaskGraphs();
+        String lastLayerId = layers.getLastLayerTaskGraphID();
+        Consumer<GridScheduler> updateLayerSchedule = layers::updateGridScheduler;
 
         KernelContext logitsContext = new KernelContext();
         HalfFloatArray wclsHalf = weights.wclsByteArray.asHalfFloatArray();
@@ -257,7 +239,9 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         all.add(logits.snapshot());
         this.layerCount = layerGraphs.size();
         this.logitsGraphIndex = 1 + layerCount;
+        var packedRepack = state.workspace.packedRepack.appendGraphs(all, schedule);
         this.plan = new TornadoExecutionPlan(all.toArray(new ImmutableTaskGraph[0]));
+        org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(plan, packedRepack);
         var roles = new java.util.HashMap<Integer, String>();
         roles.put(0, "batch activation");
         org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.label(

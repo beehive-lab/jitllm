@@ -1,6 +1,8 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import java.util.Optional;
 import java.util.Set;
+import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.fp16.DevstralFP16PlanComponents;
@@ -8,6 +10,7 @@ import org.beehive.jitllm.backend.tornado.plan.components.q8_0.DevstralQ8_0PlanC
 import org.beehive.jitllm.inference.state.DevstralState;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 
@@ -33,7 +36,32 @@ public final class DevstralPlanProvider implements TornadoPlanProvider {
 
     @Override
     public Set<ExecutionMode> supportedModes() {
-        return TornadoSupportSets.STANDARD_ONLY;
+        return TornadoSupportSets.STANDARD_AND_BATCH;
+    }
+
+    /**
+     * The layers write the FP16 cache on the NVIDIA path, single-token and after the tensor-core
+     * batched prefill, which writes it too.
+     */
+    @Override
+    public Optional<String> fp16KeyValueUnsupported(Combination c) {
+        if (!c.nvidiaScheduler()) {
+            return Optional.of("the non-NVIDIA decode layers keep an FP32 cache");
+        }
+        return c.mode() == ExecutionMode.PREFILL_DECODE
+                ? Optional.of("devstral has no sequential prefill/decode plan")
+                : Optional.empty();
+    }
+
+    /**
+     * The batched prefill runs Llama's tensor-core layers: Q8_0 and F16 directly, Q4_K with each
+     * projection decoded into FP16 first.
+     */
+    @Override
+    public Optional<String> batchPrefillUnsupported(Combination c) {
+        return c.tensorCores()
+                ? Optional.empty()
+                : Optional.of("the devstral batched prefill runs on the CUDA tensor cores");
     }
 
     @Override
@@ -49,5 +77,39 @@ public final class DevstralPlanProvider implements TornadoPlanProvider {
                     .DevstralQ4_KPlanComponents(typed, model);
         }
         return new DevstralQ8_0PlanComponents(typed, model);
+    }
+
+    /**
+     * The batched prefill's projections through cuBLAS, quantized weights decoded to FP16 first.
+     */
+    @Override
+    public Set<DataType> nativeLibraryWeights(BackendId backend) {
+        return BackendId.CUDA.equals(backend)
+                ? Set.of(DataType.Q8_0, DataType.Q4_K, DataType.F16)
+                : Set.of();
+    }
+
+    /** Llama's tensor-core layers' attention, split-K and decoded-projection buffers. */
+    @Override
+    public Optional<org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
+            batchPrefillWorkspace(
+                    DataType weights,
+                    org.beehive.jitllm.model.Configuration config,
+                    int batchSize,
+                    org.beehive.jitllm.runtime.policy.ExecutionPolicy policy,
+                    boolean fp16Cache) {
+        if (weights == DataType.F16) {
+            return Optional.of(
+                    org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill
+                            .LlamaFP16LayersBatchPrefillMMA.workspace(
+                            config, batchSize, policy, fp16Cache));
+        }
+        if (weights == DataType.Q8_0) {
+            return Optional.of(
+                    org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill
+                            .LlamaQ8_0LayersBatchPrefillMMA.workspace(
+                            config, batchSize, policy, fp16Cache));
+        }
+        return Optional.empty();
     }
 }

@@ -87,11 +87,14 @@ public class Qwen35 extends AbstractModel {
      */
     private State newState(int batchsize) {
         boolean device = weights instanceof TornadoWeights;
-        State state =
-                Qwen35State.withDeviceArrays(
-                        device, () -> new Qwen35State(configuration(), batchsize));
+        State state = Qwen35State.withDeviceArrays(device, () -> constructState(batchsize));
         state.latestToken = chatFormat.getBeginOfText();
         return state;
+    }
+
+    /** A new state of this model's family; a family built on this one extends it. */
+    protected Qwen35State constructState(int batchsize) {
+        return new Qwen35State(configuration(), batchsize);
     }
 
     @Override

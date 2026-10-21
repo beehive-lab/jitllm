@@ -62,6 +62,20 @@ public final class ExecutionPolicy {
         DEVICE
     }
 
+    /**
+     * Where a batched prefill keeps the weights it decodes to FP16 for its tensor-core GEMMs: a
+     * copy of every projection decoded once and kept, or one projection at a time, decoded again
+     * for each chunk.
+     */
+    public enum DecodedProjections {
+        /** The backend decides: kept while they fit its default allowance. */
+        BACKEND,
+        /** Every projection decoded once and kept on the device. */
+        RESIDENT,
+        /** One scratch the width of the widest projection, decoded again for each chunk. */
+        PER_CHUNK
+    }
+
     private final PhaseStrategy phaseStrategy;
     private final int prefillBatchSize;
     private final SamplingResidency samplingResidency;
@@ -69,6 +83,7 @@ public final class ExecutionPolicy {
     private final boolean packedHalf2Attention;
     private final boolean scalarFp16KeyValueReads;
     private final boolean nativeLibraries;
+    private final DecodedProjections decodedProjections;
 
     private ExecutionPolicy(
             PhaseStrategy phaseStrategy,
@@ -77,8 +92,10 @@ public final class ExecutionPolicy {
             OptionalInt splitKvPartitions,
             boolean packedHalf2Attention,
             boolean scalarFp16KeyValueReads,
-            boolean nativeLibraries) {
+            boolean nativeLibraries,
+            DecodedProjections decodedProjections) {
         this.nativeLibraries = nativeLibraries;
+        this.decodedProjections = Objects.requireNonNull(decodedProjections, "decodedProjections");
         this.packedHalf2Attention = packedHalf2Attention;
         this.scalarFp16KeyValueReads = scalarFp16KeyValueReads;
         this.phaseStrategy = Objects.requireNonNull(phaseStrategy, "phaseStrategy");
@@ -118,7 +135,8 @@ public final class ExecutionPolicy {
                 .splitKvPartitions(base.splitKvPartitions)
                 .packedHalf2Attention(base.packedHalf2Attention)
                 .scalarFp16KeyValueReads(base.scalarFp16KeyValueReads)
-                .nativeLibraries(base.nativeLibraries);
+                .nativeLibraries(base.nativeLibraries)
+                .decodedProjections(base.decodedProjections);
     }
 
     /**
@@ -147,7 +165,31 @@ public final class ExecutionPolicy {
                 .packedHalf2Attention(Boolean.getBoolean("jitllm.attention.deepHalf2"))
                 .scalarFp16KeyValueReads(Boolean.getBoolean("jitllm.kvcache.fp16.scalar"))
                 .nativeLibraries(nativeLibrariesFromProperties())
+                .decodedProjections(decodedProjectionsFromProperties())
                 .build();
+    }
+
+    /**
+     * The property that pins {@link #decodedProjections()}: {@code resident} or {@code per-chunk};
+     * unset, the backend decides.
+     */
+    public static final String DECODED_PROJECTIONS_PROPERTY = "jitllm.prefill.decodedProjections";
+
+    private static DecodedProjections decodedProjectionsFromProperties() {
+        String value = System.getProperty(DECODED_PROJECTIONS_PROPERTY);
+        if (value == null || value.isBlank()) {
+            return DecodedProjections.BACKEND;
+        }
+        return switch (value.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "resident" -> DecodedProjections.RESIDENT;
+            case "per-chunk" -> DecodedProjections.PER_CHUNK;
+            default ->
+                    throw new IllegalArgumentException(
+                            "-D"
+                                    + DECODED_PROJECTIONS_PROPERTY
+                                    + " must be resident or per-chunk: "
+                                    + value);
+        };
     }
 
     /**
@@ -155,11 +197,17 @@ public final class ExecutionPolicy {
      */
     public static final String NATIVE_LIBRARIES_PROPERTY = "jitllm.nativeLibraries";
 
-    /**
-     * The earlier spelling, from when the native prefill libraries were on by default. Honoured
-     * when set; the default is now off.
-     */
+    /** The earlier spelling of {@link #NATIVE_LIBRARIES_PROPERTY}, honoured when set. */
     public static final String LEGACY_NATIVE_PREFILL_PROPERTY = "jitllm.prefill.native";
+
+    /**
+     * Whether native libraries were asked for or declined through a property, rather than left to
+     * the default the loaded model resolves ({@code NativeLibrarySupport.defaultFor}).
+     */
+    public static boolean nativeLibrariesSpecified() {
+        return System.getProperty(NATIVE_LIBRARIES_PROPERTY) != null
+                || System.getProperty(LEGACY_NATIVE_PREFILL_PROPERTY) != null;
+    }
 
     private static boolean nativeLibrariesFromProperties() {
         String current = System.getProperty(NATIVE_LIBRARIES_PROPERTY);
@@ -216,13 +264,21 @@ public final class ExecutionPolicy {
     }
 
     /**
-     * Whether vendor native libraries (cuBLAS, cuDNN) may replace JIT kernels where an
-     * implementation exists. Off by default: the JIT kernels run every supported configuration, and
-     * the native path is experimental, narrower, and needs more device memory (stacked projection
-     * copies beside the weights).
+     * Whether vendor native libraries (cuBLAS and cuDNN on CUDA, Apple MLX on Metal) may replace
+     * JIT kernels where an implementation exists. Off by default: the JIT kernels run every
+     * supported configuration, and the native path is experimental, narrower, and needs more device
+     * memory (stacked projection copies beside the weights).
      */
     public boolean nativeLibraries() {
         return nativeLibraries;
+    }
+
+    /**
+     * Where a batched prefill keeps the weights it decodes to FP16; {@link
+     * DecodedProjections#BACKEND} until a load resolves it against the device's budget.
+     */
+    public DecodedProjections decodedProjections() {
+        return decodedProjections;
     }
 
     @Override
@@ -239,7 +295,8 @@ public final class ExecutionPolicy {
                 && splitKvPartitions.equals(that.splitKvPartitions)
                 && packedHalf2Attention == that.packedHalf2Attention
                 && scalarFp16KeyValueReads == that.scalarFp16KeyValueReads
-                && nativeLibraries == that.nativeLibraries;
+                && nativeLibraries == that.nativeLibraries
+                && decodedProjections == that.decodedProjections;
     }
 
     @Override
@@ -251,7 +308,8 @@ public final class ExecutionPolicy {
                 splitKvPartitions,
                 packedHalf2Attention,
                 scalarFp16KeyValueReads,
-                nativeLibraries);
+                nativeLibraries,
+                decodedProjections);
     }
 
     @Override
@@ -270,6 +328,8 @@ public final class ExecutionPolicy {
                 + scalarFp16KeyValueReads
                 + ", nativeLibraries="
                 + nativeLibraries
+                + ", decodedProjections="
+                + decodedProjections
                 + "]";
     }
 
@@ -282,8 +342,18 @@ public final class ExecutionPolicy {
         private boolean packedHalf2Attention;
         private boolean scalarFp16KeyValueReads;
         private boolean nativeLibraries;
+        private DecodedProjections decodedProjections = DecodedProjections.BACKEND;
 
         private Builder() {}
+
+        /**
+         * Where a batched prefill keeps its decoded FP16 weights; the backend's choice by default.
+         */
+        public Builder decodedProjections(DecodedProjections decodedProjections) {
+            this.decodedProjections =
+                    Objects.requireNonNull(decodedProjections, "decodedProjections");
+            return this;
+        }
 
         /** Allow vendor native libraries where implemented; experimental, off by default. */
         public Builder nativeLibraries(boolean nativeLibraries) {
@@ -333,7 +403,8 @@ public final class ExecutionPolicy {
                     splitKvPartitions,
                     packedHalf2Attention,
                     scalarFp16KeyValueReads,
-                    nativeLibraries);
+                    nativeLibraries,
+                    decodedProjections);
         }
     }
 

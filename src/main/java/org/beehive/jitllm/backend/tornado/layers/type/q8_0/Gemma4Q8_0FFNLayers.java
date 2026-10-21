@@ -94,6 +94,9 @@ public class Gemma4Q8_0FFNLayers
     /** Whether the state holds its key/value cache in half precision; decided at allocation. */
     private final boolean fp16KeyValue;
 
+    /** The graph a later stage's first layer takes its activation from; null on the first stage. */
+    private final String stageInput;
+
     public Gemma4Q8_0FFNLayers(
             String taskGraphName,
             Gemma4State state,
@@ -110,25 +113,50 @@ public class Gemma4Q8_0FFNLayers
             Gemma4Configuration config,
             SchedulerType schedulerType,
             boolean batchedPlan) {
+        this(
+                taskGraphName,
+                state,
+                weights,
+                config,
+                schedulerType,
+                batchedPlan,
+                0,
+                config.numberOfLayers(),
+                null);
+    }
+
+    // @formatter:off
+    /**
+     * The layers {@code [firstLayer, endLayer)} only: one stage of a model split across devices.
+     *
+     * <p>A stage after the first takes its activation from {@code stageInput}, the graph that
+     * received it from the previous stage, and in a batched plan its key/value cache from its own
+     * last batch-prefill graph. The cache keeps the whole model's offsets ({@code
+     * Gemma4State.cacheLayerBaseOffset}), so a stage addresses its layers as on one device. A model
+     * with per-layer input embeddings is not split: layer 0 computes them for every layer.
+     */
+    // @formatter:on
+    public Gemma4Q8_0FFNLayers(
+            String taskGraphName,
+            Gemma4State state,
+            Gemma4TornadoWeights weights,
+            Gemma4Configuration config,
+            SchedulerType schedulerType,
+            boolean batchedPlan,
+            int firstLayer,
+            int endLayer,
+            String stageInput) {
         super(taskGraphName, state, weights, config, schedulerType);
+        if (firstLayer > 0 && config.hasPerLayerEmbeddings()) {
+            throw new UnsupportedOperationException(
+                    "a gemma4 model with per-layer input embeddings is not split across devices:"
+                            + " layer 0 computes them for every layer");
+        }
+        restrictToLayers(firstLayer, endLayer);
+        this.stageInput = stageInput;
         this.batchedPlan = batchedPlan;
         this.gemma4State = state;
         this.fp16KeyValue = state.usesFp16KeyValueCache();
-        if (fp16KeyValue
-                && !Gemma4AttentionKernels.decodeGroupFits(
-                        config.kvMul(), config.headDimSwa(), config.headDimFull())) {
-            throw new UnsupportedOperationException(
-                    "gemma4 FP16 key/value decode attention needs "
-                            + Gemma4AttentionKernels.DECODE_GROUP
-                            + " query heads per key/value head and heads of at most "
-                            + Gemma4AttentionKernels.DECODE_MAX_HEAD
-                            + " in multiples of 32; this model has "
-                            + config.kvMul()
-                            + " and "
-                            + config.headDimSwa()
-                            + "/"
-                            + config.headDimFull());
-        }
         this.nHead = config.numberOfHeads();
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.kvMul = config.kvMul();
@@ -140,6 +168,16 @@ public class Gemma4Q8_0FFNLayers
         this.perLayerProjScale = (float) (1.0 / Math.sqrt(dim));
         this.perLayerInputScale = (float) (1.0 / Math.sqrt(2.0));
         setupFFNLayers();
+    }
+
+    /**
+     * Whether a layer's decode attention takes the grouped kernel over the half-precision cache:
+     * the shape it is written for. Other layers over that cache take the split-window kernel.
+     */
+    private boolean groupDecode(int layerIndex) {
+        return fp16KeyValue
+                && Gemma4AttentionKernels.decodeGroupFits(
+                        config.kvMul(layerIndex), config.headDimSwa(), config.headDimFull());
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
@@ -172,6 +210,12 @@ public class Gemma4Q8_0FFNLayers
      * deliberately), and the weights must be the representation those kernels decode.
      */
     private boolean packedFor(int layerIndex) {
+        DataType type = weights.wqLayered[layerIndex].dataType();
+        return (type == DataType.Q4_0 || type == DataType.Q8_0) && packedIntegerDot();
+    }
+
+    /** Whether this device runs the packed-integer projections at all. */
+    private static boolean packedIntegerDot() {
         // An escape hatch for exact comparison, matching the one qwen35 keeps: the packed path
         // quantizes the activation to eight bits, so a build that needs to be compared against one
         // that does not needs to be able to turn it off. Not a tuning knob.
@@ -179,12 +223,9 @@ public class Gemma4Q8_0FFNLayers
                 .equalsIgnoreCase(System.getProperty("jitllm.gemma4.packedIntegerDot", "true"))) {
             return false;
         }
-        return weights.wqLayered[layerIndex].dataType() == DataType.Q4_0
-                && org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
-                        .capabilities()
-                        .supports(
-                                org.beehive.jitllm.runtime.backend.DeviceCapability
-                                        .PACKED_INTEGER_DOT);
+        return org.beehive.jitllm.backend.tornado.device.TornadoDevices.target()
+                .capabilities()
+                .supports(org.beehive.jitllm.runtime.backend.DeviceCapability.PACKED_INTEGER_DOT);
     }
 
     /** How many slices the window is cut into, or 1 to run the single-pass kernel. */
@@ -198,27 +239,12 @@ public class Gemma4Q8_0FFNLayers
      * <p>Every task graph is one submission, and CUDA graphs do not change that -- they are applied
      * per graph, so thirty-five layer graphs stay thirty-five launches. Grouping divides the
      * submissions without building one graph for the whole trunk.
-     *
-     * <p>Not a tuning knob and not user-settable: the grouping is a property of this family's plan,
-     * and changing it is an experiment with its own measurement.
      */
     private static final int LAYERS_PER_GRAPH = 4;
 
-    /** The graph holding {@code layerIndex}, named for the first layer in it. */
-    private String layerGraphName(int layerIndex) {
-        return "layer_" + (layerIndex - layerIndex % LAYERS_PER_GRAPH);
-    }
-
-    /**
-     * What keeps a graph's layers' tasks apart inside it.
-     *
-     * <p>Grid keys are {@code graphName.taskName}, so without this every layer in a graph would
-     * claim {@code layer_0.attn_norm_reduce}. The first layer of a graph keeps the bare names the
-     * ungrouped family used, so only the later slots' keys are new.
-     */
-    private String layerTaskPrefix(int layerIndex) {
-        int slot = layerIndex % LAYERS_PER_GRAPH;
-        return slot == 0 ? "" : "l" + slot + "_";
+    @Override
+    protected int layersPerGraph() {
+        return LAYERS_PER_GRAPH;
     }
 
     /** A task's name inside its graph. */
@@ -237,17 +263,18 @@ public class Gemma4Q8_0FFNLayers
      */
     // @formatter:on
     private String previousGraphName(int layerIndex) {
-        int first = layerIndex - layerIndex % LAYERS_PER_GRAPH;
-        return first == 0 ? null : layerGraphName(first - LAYERS_PER_GRAPH);
+        int offset = layerIndex - firstLayer;
+        int first = firstLayer + offset - offset % LAYERS_PER_GRAPH;
+        return first == firstLayer ? null : layerGraphName(first - LAYERS_PER_GRAPH);
     }
 
     private boolean firstLayerOfGraph(int layerIndex) {
-        return layerIndex % LAYERS_PER_GRAPH == 0;
+        return (layerIndex - firstLayer) % LAYERS_PER_GRAPH == 0;
     }
 
     private boolean lastLayerOfGraph(int layerIndex) {
-        return layerIndex % LAYERS_PER_GRAPH == LAYERS_PER_GRAPH - 1
-                || layerIndex == config.numberOfLayers() - 1;
+        return (layerIndex - firstLayer) % LAYERS_PER_GRAPH == LAYERS_PER_GRAPH - 1
+                || layerIndex == endLayer(config.numberOfLayers()) - 1;
     }
 
     /**
@@ -258,10 +285,10 @@ public class Gemma4Q8_0FFNLayers
      */
     @Override
     protected void setupFFNLayers() {
-        int layers = config.numberOfLayers();
+        int layers = endLayer(config.numberOfLayers());
         java.util.List<uk.ac.manchester.tornado.api.ImmutableTaskGraph> graphs =
                 new java.util.ArrayList<>();
-        for (int first = 0; first < layers; first += LAYERS_PER_GRAPH) {
+        for (int first = firstLayer; first < layers; first += LAYERS_PER_GRAPH) {
             TaskGraph graph = new TaskGraph(layerGraphName(first));
             java.util.Arrays.fill(ropeBound, false);
             int last = Math.min(first + LAYERS_PER_GRAPH, layers) - 1;
@@ -283,6 +310,10 @@ public class Gemma4Q8_0FFNLayers
     }
 
     protected void appendLayer(TaskGraph unifiedLayer, int layerIndex) {
+        // Key/value heads by layer: the 31B has 16 on its sliding-window layers and 4 on the
+        // global ones, E2B one count everywhere.
+        final int nHeadKv = config.keyValueHeads(layerIndex);
+        final int kvMul = config.kvMul(layerIndex);
         final int headDim = config.headDim(layerIndex);
         final boolean isSwa = config.isSwa(layerIndex);
         final boolean hasOwnKv = config.hasOwnKv(layerIndex);
@@ -298,7 +329,10 @@ public class Gemma4Q8_0FFNLayers
         final int peOffset = layerIndex * nEmbdPerLayer;
 
         if (firstLayerOfGraph(layerIndex)) {
-            String producer = layerIndex == 0 ? activationGraphName() : null;
+            String producer =
+                    layerIndex == 0
+                            ? activationGraphName()
+                            : layerIndex == firstLayer ? stageInput : null;
             if (producer == null) {
                 producer = previousGraphName(layerIndex);
             }
@@ -369,6 +403,18 @@ public class Gemma4Q8_0FFNLayers
                     dim,
                     kvDim,
                     packed);
+            boolean valuesAreKeys = weights.wvLayered[layerIndex] == null;
+            if (valuesAreKeys) {
+                // No value projection (the 31B's global layers): the values are the keys as
+                // projected, before the key norm and RoPE, as llama.cpp takes them.
+                unifiedLayer.task(
+                        tn(layerIndex, "v_from_k"),
+                        Gemma4Kernels::copyValues,
+                        context,
+                        gemma4State.workspace.wrapK,
+                        gemma4State.workspace.wrapV,
+                        kvDim);
+            }
             unifiedLayer.task(
                     tn(layerIndex, "k_norm"),
                     Gemma4Kernels::rmsNormPerHead,
@@ -379,15 +425,17 @@ public class Gemma4Q8_0FFNLayers
                     headDim,
                     HEAD_NORM_LOCAL_SIZE,
                     config.rmsNormEps());
-            addProjection(
-                    unifiedLayer,
-                    tn(layerIndex, "v_proj"),
-                    gemma4State.workspace.wrapXb,
-                    gemma4State.workspace.wrapV,
-                    weights.wvLayered[layerIndex],
-                    dim,
-                    kvDim,
-                    packed);
+            if (!valuesAreKeys) {
+                addProjection(
+                        unifiedLayer,
+                        tn(layerIndex, "v_proj"),
+                        gemma4State.workspace.wrapXb,
+                        gemma4State.workspace.wrapV,
+                        weights.wvLayered[layerIndex],
+                        dim,
+                        kvDim,
+                        packed);
+            }
             unifiedLayer.task(
                     tn(layerIndex, "v_norm"),
                     Gemma4Kernels::rmsNormPerHeadNoWeight,
@@ -445,11 +493,42 @@ public class Gemma4Q8_0FFNLayers
         }
 
         int splits = attentionSplits();
-        if (fp16KeyValue) {
+        if (fp16KeyValue && !groupDecode(layerIndex)) {
+            unifiedLayer.task(
+                    tn(layerIndex, "attention_split"),
+                    Gemma4Kernels::attentionWithSlidingWindowSplitFP16,
+                    context,
+                    gemma4State.workspace.wrapQ,
+                    gemma4State.workspace.wrapKeyCacheFP16,
+                    gemma4State.workspace.wrapValueCacheFP16,
+                    gemma4State.workspace.wrapAtt,
+                    gemma4State.workspace.wrapAttSplit,
+                    nHead,
+                    headDim,
+                    kvDim,
+                    kvMul,
+                    gemma4State.workspace.positionHolder,
+                    cacheBaseOffset,
+                    windowSize,
+                    config.contextLength(),
+                    splits,
+                    ATTENTION_LOCAL_SIZE);
+            unifiedLayer.task(
+                    tn(layerIndex, "attention_combine"),
+                    Gemma4Kernels::combineSplitKVAttentionPerElement,
+                    context,
+                    gemma4State.workspace.wrapAttSplit,
+                    gemma4State.workspace.wrapXb,
+                    nHead,
+                    headDim,
+                    splits);
+        } else if (fp16KeyValue) {
             int slices = decodeSlices(isSwa);
-            // The shuffle kernel where the backend lowers simdShuffleDown; elsewhere its
-            // shared-memory twin, on the same workgroup, grid and partial layout.
-            if (SchedulerDetectionService.isShuffleReducedFp16GemvSupported()) {
+            // The shuffle kernel where the backend lowers simdShuffleDown (CUDA, and Metal's
+            // 32-wide SIMD-group shuffles); elsewhere its shared-memory twin, on the same
+            // workgroup, grid and partial layout.
+            if (SchedulerDetectionService.isShuffleReducedFp16GemvSupported()
+                    || SchedulerDetectionService.isSubgroupShuffle32Supported()) {
                 unifiedLayer.task(
                         tn(layerIndex, "attention_group"),
                         Gemma4AttentionKernels::attentionDecodeGroupFP16,
@@ -601,7 +680,40 @@ public class Gemma4Q8_0FFNLayers
         // Gate and up share one pass over one local array and one tree reduction, so the pair has
         // to be dispatched together rather than tensor by tensor. They are the same representation
         // in every file this family loads -- projectionType() refuses a trunk that disagrees.
-        if (packed) {
+        if (packedQ4(weights.w1Layered[layerIndex]) || packedQ4(weights.w3Layered[layerIndex])) {
+            if (!packed
+                    || !packedQ4(weights.w1Layered[layerIndex])
+                    || !packedQ4(weights.w3Layered[layerIndex])) {
+                throw org.beehive.jitllm.backend.tornado.tensor.PackedWeights.noPackedKernel(
+                        "gemma4 layer " + layerIndex + " fused gate/up");
+            }
+            unifiedLayer.task(
+                    tn(layerIndex, "ffn_gate_up"),
+                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0Packed
+                            ::fusedFFNGateUpGeGLUQ4_0Packed,
+                    context,
+                    gemma4State.workspace.wrapXbQuants,
+                    gemma4State.workspace.wrapXbScales,
+                    gemma4State.workspace.wrapHb,
+                    weights.w1Layered[layerIndex].asByteArray(),
+                    weights.w3Layered[layerIndex].asByteArray(),
+                    dim,
+                    ffnLen);
+        } else if (packed && weights.w1Layered[layerIndex].dataType() == DataType.Q8_0) {
+            unifiedLayer.task(
+                    tn(layerIndex, "ffn_gate_up"),
+                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A
+                            ::fusedFFNGateUpGeGLUQ8_0DP4A,
+                    context,
+                    gemma4State.workspace.wrapXbQuants,
+                    gemma4State.workspace.wrapXbScales,
+                    gemma4State.workspace.wrapHb,
+                    weights.w1Layered[layerIndex].asByteArray(),
+                    weights.w3Layered[layerIndex].asByteArray(),
+                    dim,
+                    ffnLen,
+                    LOCAL_WORK_GROUP_SIZE_ALLOC);
+        } else if (packed && weights.w1Layered[layerIndex].dataType() == DataType.Q4_0) {
             unifiedLayer.task(
                     tn(layerIndex, "ffn_gate_up"),
                     org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0
@@ -676,40 +788,42 @@ public class Gemma4Q8_0FFNLayers
                 true);
 
         // ═══════════════════════════ PER-LAYER EMBEDDING (PLE) ═══════════════════════════
-        addProjection(
-                unifiedLayer,
-                tn(layerIndex, "ple_gate_proj"),
-                gemma4State.workspace.wrapX,
-                gemma4State.workspace.wrapPerLayerGate,
-                weights.perLayerInpGate[layerIndex],
-                dim,
-                nEmbdPerLayer);
-        unifiedLayer.task(
-                tn(layerIndex, "ple_gate_gelu_mul"),
-                Gemma4Kernels::pleGateGeluMul,
-                context,
-                gemma4State.workspace.wrapPerLayerGate,
-                gemma4State.workspace.wrapPerLayerInputs,
-                peOffset,
-                nEmbdPerLayer);
-        addProjection(
-                unifiedLayer,
-                tn(layerIndex, "ple_proj"),
-                gemma4State.workspace.wrapPerLayerGate,
-                gemma4State.workspace.wrapPerLayerOut,
-                weights.perLayerProj[layerIndex],
-                nEmbdPerLayer,
-                dim);
+        if (config.hasPerLayerEmbeddings()) {
+            addProjection(
+                    unifiedLayer,
+                    tn(layerIndex, "ple_gate_proj"),
+                    gemma4State.workspace.wrapX,
+                    gemma4State.workspace.wrapPerLayerGate,
+                    weights.perLayerInpGate[layerIndex],
+                    dim,
+                    nEmbdPerLayer);
+            unifiedLayer.task(
+                    tn(layerIndex, "ple_gate_gelu_mul"),
+                    Gemma4Kernels::pleGateGeluMul,
+                    context,
+                    gemma4State.workspace.wrapPerLayerGate,
+                    gemma4State.workspace.wrapPerLayerInputs,
+                    peOffset,
+                    nEmbdPerLayer);
+            addProjection(
+                    unifiedLayer,
+                    tn(layerIndex, "ple_proj"),
+                    gemma4State.workspace.wrapPerLayerGate,
+                    gemma4State.workspace.wrapPerLayerOut,
+                    weights.perLayerProj[layerIndex],
+                    nEmbdPerLayer,
+                    dim);
 
-        addRmsNorm(
-                unifiedLayer,
-                layerIndex,
-                "ple_post",
-                gemma4State.workspace.tempPostPle,
-                gemma4State.workspace.wrapPerLayerOut,
-                gemma4State.workspace.wrapX,
-                weights.perLayerPostNorm[layerIndex].asFloatArray(),
-                true);
+            addRmsNorm(
+                    unifiedLayer,
+                    layerIndex,
+                    "ple_post",
+                    gemma4State.workspace.tempPostPle,
+                    gemma4State.workspace.wrapPerLayerOut,
+                    gemma4State.workspace.wrapX,
+                    weights.perLayerPostNorm[layerIndex].asFloatArray(),
+                    true);
+        }
 
         if (weights.layerOutputScale[layerIndex] != null) {
             unifiedLayer.task(
@@ -742,6 +856,9 @@ public class Gemma4Q8_0FFNLayers
                 gemma4State.workspace.wrapX,
                 embedScale,
                 dim);
+        if (!config.hasPerLayerEmbeddings()) {
+            return;
+        }
 
         addProjection(
                 unifiedLayer,
@@ -792,39 +909,49 @@ public class Gemma4Q8_0FFNLayers
         shared.add(weights.attnPostNorm[layerIndex].asFloatArray());
         shared.add(weights.rms_ffn_weightLayered[layerIndex].asFloatArray());
         shared.add(weights.ffnPostNorm[layerIndex].asFloatArray());
-        shared.add(weights.perLayerPostNorm[layerIndex].asFloatArray());
+        if (config.hasPerLayerEmbeddings()) {
+            shared.add(weights.perLayerPostNorm[layerIndex].asFloatArray());
+        }
         if (config.hasOwnKv(layerIndex)) {
             shared.add(weights.attnKNorm[layerIndex].asFloatArray());
         }
         if (weights.layerOutputScale[layerIndex] != null) {
             shared.add(weights.layerOutputScale[layerIndex].asFloatArray());
         }
-        // The projections the batch-prefill graph reads itself; with native libraries it reads
-        // FP16 copies instead, so the file's tensors exist only here.
-        boolean[] prefillReads =
-                batchedPlan
-                        ? org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers
-                                .prefillReadsProjections(gemma4State, weights, config, layerIndex)
-                        : new boolean[] {false, false, false, false};
-        java.util.List<Object> qkv = new java.util.ArrayList<>();
-        qkv.add(weightArray(weights.wqLayered[layerIndex]));
+        // The projections: the batch-prefill graph reads them itself, whichever JIT GEMMs it
+        // runs. On MLX it reads its own form of them instead, so they are uploaded here.
+        java.util.List<Object> projections = batchedPlan && mlxPrefill() ? own : shared;
+        projections.add(weights.wqLayered[layerIndex]);
         if (config.hasOwnKv(layerIndex)) {
-            qkv.add(weightArray(weights.wkLayered[layerIndex]));
-            qkv.add(weightArray(weights.wvLayered[layerIndex]));
+            projections.add(weights.wkLayered[layerIndex]);
+            if (weights.wvLayered[layerIndex] != null) {
+                projections.add(weights.wvLayered[layerIndex]);
+            }
         }
-        (prefillReads[0] ? shared : own).addAll(qkv);
-        (prefillReads[1] ? shared : own).add(weightArray(weights.woLayered[layerIndex]));
-        (prefillReads[2] ? shared : own).add(weightArray(weights.w1Layered[layerIndex]));
-        (prefillReads[2] ? shared : own).add(weightArray(weights.w3Layered[layerIndex]));
-        (prefillReads[3] ? shared : own).add(weightArray(weights.w2Layered[layerIndex]));
+        projections.add(weights.woLayered[layerIndex]);
+        projections.add(weights.w1Layered[layerIndex]);
+        projections.add(weights.w3Layered[layerIndex]);
+        projections.add(weights.w2Layered[layerIndex]);
         if (batchedPlan) {
-            unifiedLayer.consumeFromDevice("batchPrefillLayer_" + layerIndex, shared.toArray());
+            unifiedLayer.consumeFromDevice(
+                    "batchPrefillLayer_" + layerIndex,
+                    org.beehive.jitllm.backend.tornado.plan.PackedRepack.deviceArrays(
+                            shared.toArray()));
         } else {
             own.addAll(shared);
         }
-        own.add(weightArray(weights.perLayerInpGate[layerIndex]));
-        own.add(weightArray(weights.perLayerProj[layerIndex]));
-        unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, own.toArray());
+        if (config.hasPerLayerEmbeddings()) {
+            own.add(weights.perLayerInpGate[layerIndex]);
+            own.add(weights.perLayerProj[layerIndex]);
+        }
+        gemma4State.workspace.packedRepack.upload(unifiedLayer, own.toArray());
+    }
+
+    /** Whether the batched prefill multiplies the projections on MLX, in its own form of them. */
+    private boolean mlxPrefill() {
+        return org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers.mlxPrefill(
+                        gemma4State.executionPolicy(), weights.dataType(), config)
+                .isPresent();
     }
 
     /** Which RoPE pairs the graph being built has bound already: sliding, full. */
@@ -870,7 +997,7 @@ public class Gemma4Q8_0FFNLayers
 
     /** The first layer that attends with a sliding window, or the first that attends fully. */
     private int firstLayerOfKind(boolean isSwa) {
-        for (int l = 0; l < config.numberOfLayers(); l++) {
+        for (int l = firstLayer; l < endLayer(config.numberOfLayers()); l++) {
             if (config.isSwa(l) == isSwa) {
                 return l;
             }
@@ -946,7 +1073,7 @@ public class Gemma4Q8_0FFNLayers
         if (!firstLayerOfGraph(layerIndex)) {
             return unifiedLayer;
         }
-        if (layerIndex == 0) {
+        if (layerIndex == firstLayer) {
             unifiedLayer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION,
                     gemma4State.workspace.positionHolder,
@@ -956,15 +1083,18 @@ public class Gemma4Q8_0FFNLayers
                     gemma4State.workspace.tempPostAttn,
                     gemma4State.workspace.tempPostFfn,
                     gemma4State.workspace.tempPostPle);
-            unifiedLayer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION, weightArray(weights.perLayerModelProj));
-            if (batchedPlan) {
-                // Read by the first batch-prefill graph's own setup, which uploaded it.
-                unifiedLayer.consumeFromDevice(
-                        "batchPrefillLayer_0", weights.perLayerProjNorm.asFloatArray());
-            } else {
+            if (config.hasPerLayerEmbeddings()) {
                 unifiedLayer.transferToDevice(
-                        DataTransferMode.FIRST_EXECUTION, weights.perLayerProjNorm.asFloatArray());
+                        DataTransferMode.FIRST_EXECUTION, weightArray(weights.perLayerModelProj));
+                if (batchedPlan) {
+                    // Read by the first batch-prefill graph's own setup, which uploaded it.
+                    unifiedLayer.consumeFromDevice(
+                            "batchPrefillLayer_0", weights.perLayerProjNorm.asFloatArray());
+                } else {
+                    unifiedLayer.transferToDevice(
+                            DataTransferMode.FIRST_EXECUTION,
+                            weights.perLayerProjNorm.asFloatArray());
+                }
             }
             unifiedLayer.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION,
@@ -1004,17 +1134,18 @@ public class Gemma4Q8_0FFNLayers
 
     // @formatter:off
     /**
-     * The graph layer 0 takes its activation from, or {@code null} for the unnamed form.
+     * The graph layer 0 takes its activation from: always named.
      *
-     * <p>The unnamed form is right in the single-token plan, where the activation graph is the one
-     * that ran immediately before. It is not right in the batched plan: there the graph list holds
-     * the batch-prefill layers between the two, and layer 0 that does not name its producer imports
-     * a buffer nobody wrote — measured as an activation of exactly zero out of every decode layer,
-     * with the model still emitting fluent tokens off the resulting logits.
+     * <p>In the batched plan the graph list holds the batch-prefill layers between the activation
+     * and layer 0, and layer 0 that does not name its producer imports a buffer nobody wrote —
+     * measured as an activation of exactly zero out of every decode layer, with the model still
+     * emitting fluent tokens off the resulting logits. In the single-token plan the activation
+     * graph runs just before, but layer 0 also consumes its packed weights by name, and a graph
+     * that consumes anything by name takes nothing through an unnamed consume.
      */
     // @formatter:on
     private String activationGraphName() {
-        return batchedPlan ? "decodeActivation" : null;
+        return batchedPlan ? "decodeActivation" : "activationUpdate";
     }
 
     // @formatter:off
@@ -1030,7 +1161,13 @@ public class Gemma4Q8_0FFNLayers
     // @formatter:on
     private void bindKeyValueCache(TaskGraph unifiedLayer) {
         if (batchedPlan) {
-            unifiedLayer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
+            // A later stage's decode-activation graph only receives the activation; the cache
+            // its prefill filled is in that prefill's last graph on the same device.
+            String source =
+                    firstLayer == 0
+                            ? "decodeActivation"
+                            : "batchPrefillLayer_" + (endLayer(config.numberOfLayers()) - 1);
+            unifiedLayer.consumeFromDevice(source, keyCache(), valueCache());
             return;
         }
         unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, keyCache(), valueCache());
@@ -1101,6 +1238,68 @@ public class Gemma4Q8_0FFNLayers
             int n,
             int d,
             boolean packedActivation) {
+        if (packedQ4(w)) {
+            if (packedActivation) {
+                tg.task(
+                        taskName,
+                        org.beehive.jitllm.backend.tornado.kernels
+                                        .TransformerComputeKernelsQ4_0Packed
+                                ::matrixVectorQ4_0Packed,
+                        context,
+                        gemma4State.workspace.wrapXbQuants,
+                        gemma4State.workspace.wrapXbScales,
+                        out,
+                        w.asByteArray(),
+                        n,
+                        d,
+                        0);
+            } else {
+                tg.task(
+                        taskName,
+                        org.beehive.jitllm.backend.tornado.kernels
+                                        .TransformerComputeKernelsQ4_0Packed
+                                ::matrixVectorQ4_0PackedF32,
+                        context,
+                        in,
+                        out,
+                        w.asByteArray(),
+                        n,
+                        d,
+                        0);
+            }
+            return;
+        }
+        if (packedActivation && w.dataType() == DataType.Q8_0) {
+            tg.task(
+                    taskName,
+                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A
+                            ::matrixVectorGenericQ8_0DP4A,
+                    context,
+                    gemma4State.workspace.wrapXbQuants,
+                    gemma4State.workspace.wrapXbScales,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d,
+                    projectionLocalSize(d));
+            return;
+        }
+        if (packedActivation && w.dataType() == DataType.Q4_1) {
+            tg.task(
+                    taskName,
+                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1
+                            ::matrixVectorGenericQ4_1DP4A,
+                    context,
+                    gemma4State.workspace.wrapXbQuants,
+                    gemma4State.workspace.wrapXbScales,
+                    gemma4State.workspace.wrapXbSums,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d,
+                    projectionLocalSize(d));
+            return;
+        }
         if (packedActivation && w.dataType() == DataType.Q4_0) {
             tg.task(
                     taskName,
@@ -1207,14 +1406,30 @@ public class Gemma4Q8_0FFNLayers
      * every non-NVIDIA device. CUDA holds the capability, so its selection does not change.
      */
     // @formatter:on
+    /** Whether {@code w} holds packed Q4_0 tiles ({@code -Djitllm.q4.packed=true}). */
+    private static boolean packedQ4(TornadoTensor w) {
+        return w != null && w.dataType() == DataType.Q4_0 && w.isPackedQ4();
+    }
+
     private boolean warpProjection(TornadoTensor w) {
+        // A Q8_0 projection takes the packed-integer kernel instead wherever that one runs.
         return w.dataType() == DataType.Q8_0
+                && !packedIntegerDot()
                 && !shouldUseFinalNormalization()
                 && SchedulerDetectionService.isShuffleReducedFp16GemvSupported();
     }
 
     /** The worker grid of a projection of {@code rows} outputs, matching its kernel. */
     private WorkerGrid projectionGrid(TornadoTensor w, int rows) {
+        if (packedQ4(w)) {
+            return WorkerGridFactory.genericWorker(
+                    rows
+                            / 16
+                            * org.beehive.jitllm.backend.tornado.kernels
+                                    .TransformerComputeKernelsQ4_0Packed.LOCAL,
+                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0Packed
+                            .LOCAL);
+        }
         if (warpProjection(w)) {
             int groups =
                     (rows + Gemma4Kernels.WARP_ROWS_PER_GROUP - 1)
@@ -1256,30 +1471,32 @@ public class Gemma4Q8_0FFNLayers
         WorkerGrid woProjWorker =
                 WorkerGridFactory.genericWorker(
                         dim * projectionLocalSize(dim), projectionLocalSize(dim));
+        // Never empty, so a model without per-layer embeddings still gets valid (unused) grids.
+        int pleWidth = Math.max(32, nEmbdPerLayer);
+        int pleTotal = Math.max(32, perLayerTotal);
         WorkerGrid pleGateProjWorker =
                 WorkerGridFactory.genericWorker(
-                        nEmbdPerLayer * projectionLocalSize(nEmbdPerLayer),
-                        projectionLocalSize(nEmbdPerLayer));
+                        pleWidth * projectionLocalSize(pleWidth), projectionLocalSize(pleWidth));
         WorkerGrid pleGateGeluWorker =
-                WorkerGridFactory.genericWorker(nEmbdPerLayer, LOCAL_WORK_GROUP_SIZE_ALLOC);
+                WorkerGridFactory.genericWorker(pleWidth, LOCAL_WORK_GROUP_SIZE_ALLOC);
 
         // === Layer-0 PLE setup ===
         gridScheduler.addWorkerGrid("layer_0.scale_embedding", dimElementWiseWorker);
         gridScheduler.addWorkerGrid(
                 "layer_0.ple_model_proj",
                 WorkerGridFactory.genericWorker(
-                        perLayerTotal * projectionLocalSize(perLayerTotal),
-                        projectionLocalSize(perLayerTotal)));
+                        pleTotal * projectionLocalSize(pleTotal), projectionLocalSize(pleTotal)));
         gridScheduler.addWorkerGrid(
                 "layer_0.ple_proj_scale_norm",
                 WorkerGridFactory.genericWorker(
                         config.numberOfLayers() * HEAD_NORM_LOCAL_SIZE, HEAD_NORM_LOCAL_SIZE));
         gridScheduler.addWorkerGrid(
                 "layer_0.ple_merge",
-                WorkerGridFactory.genericWorker(perLayerTotal, LOCAL_WORK_GROUP_SIZE_ALLOC));
+                WorkerGridFactory.genericWorker(pleTotal, LOCAL_WORK_GROUP_SIZE_ALLOC));
 
-        for (int i = 0; i < config.numberOfLayers(); i++) {
+        for (int i = firstLayer; i < endLayer(config.numberOfLayers()); i++) {
             String prefix = layerGraphName(i) + "." + layerTaskPrefix(i);
+            int nHeadKv = config.keyValueHeads(i);
             int headDim = config.headDim(i);
             boolean hasOwnKv = config.hasOwnKv(i);
             int qDim = nHead * headDim;
@@ -1295,8 +1512,18 @@ public class Gemma4Q8_0FFNLayers
             WorkerGrid ropeWorker = WorkerGridFactory.createRoPEWorker(nHead, headDim);
             WorkerGrid attentionWorker = WorkerGridFactory.createAttentionWorker(nHead, headDim);
             WorkerGrid ffnGateUpWorker =
-                    WorkerGridFactory.genericWorker(
-                            ffnLen * LOCAL_WORK_GROUP_SIZE_ALLOC, LOCAL_WORK_GROUP_SIZE_ALLOC);
+                    packedQ4(weights.w1Layered[i])
+                            ? WorkerGridFactory.genericWorker(
+                                    ffnLen
+                                            / 16
+                                            * org.beehive.jitllm.backend.tornado.kernels
+                                                    .TransformerComputeKernelsQ4_0Packed
+                                                    .FUSED_LOCAL,
+                                    org.beehive.jitllm.backend.tornado.kernels
+                                            .TransformerComputeKernelsQ4_0Packed.FUSED_LOCAL)
+                            : WorkerGridFactory.genericWorker(
+                                    ffnLen * LOCAL_WORK_GROUP_SIZE_ALLOC,
+                                    LOCAL_WORK_GROUP_SIZE_ALLOC);
 
             gridScheduler.addWorkerGrid(prefix + "attn_norm_reduce", rmsReduceWorker);
             gridScheduler.addWorkerGrid(prefix + "attn_norm_apply", normApplyWorker);
@@ -1317,14 +1544,20 @@ public class Gemma4Q8_0FFNLayers
                 gridScheduler.addWorkerGrid(
                         prefix + "k_proj", projectionGrid(weights.wkLayered[i], kvDim));
                 gridScheduler.addWorkerGrid(prefix + "k_norm", kvHeadNormWorker);
-                gridScheduler.addWorkerGrid(
-                        prefix + "v_proj", projectionGrid(weights.wvLayered[i], kvDim));
+                if (weights.wvLayered[i] != null) {
+                    gridScheduler.addWorkerGrid(
+                            prefix + "v_proj", projectionGrid(weights.wvLayered[i], kvDim));
+                } else {
+                    gridScheduler.addWorkerGrid(
+                            prefix + "v_from_k",
+                            WorkerGridFactory.genericWorker(kvDim, LOCAL_WORK_GROUP_SIZE_ALLOC));
+                }
                 gridScheduler.addWorkerGrid(prefix + "v_norm", kvHeadNormWorker);
                 gridScheduler.addWorkerGrid(prefix + "rope_and_cache", ropeWorker);
             } else {
                 gridScheduler.addWorkerGrid(prefix + "rope_q_only", ropeWorker);
             }
-            if (fp16KeyValue) {
+            if (groupDecode(i)) {
                 gridScheduler.addWorkerGrid(
                         prefix + "attention_group",
                         WorkerGridFactory.genericWorker(
@@ -1335,7 +1568,7 @@ public class Gemma4Q8_0FFNLayers
                 gridScheduler.addWorkerGrid(
                         prefix + "attention_combine",
                         WorkerGridFactory.genericWorker(nHead * headDim, 128));
-            } else if (attentionSplits() > 1) {
+            } else if (fp16KeyValue || attentionSplits() > 1) {
                 gridScheduler.addWorkerGrid(
                         prefix + "attention_split",
                         WorkerGridFactory.genericWorker(

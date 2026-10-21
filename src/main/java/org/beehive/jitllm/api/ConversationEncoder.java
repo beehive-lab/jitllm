@@ -80,7 +80,7 @@ final class ConversationEncoder {
 
         List<Integer> tokens = new ArrayList<>();
         if (model.shouldAddBeginOfText()) {
-            tokens.add(chatFormat.getBeginOfText());
+            tokens.addAll(chatFormat.beginOfTextTokens());
         }
 
         boolean injectInUserMessage = toolsJson != null && chatFormat.injectsToolsInUserMessage();

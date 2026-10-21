@@ -80,18 +80,18 @@ public class Qwen35DeltaRuleGeometryTest {
     }
 
     /**
-     * CUDA keeps its full limit and the eight-part kernel; OpenCL, whose per-kernel limit is fixed
-     * only when the driver compiles the kernel, is capped at the two-part kernel's 256 lanes — the
-     * 1024-lane launch was refused there with CL_OUT_OF_RESOURCES.
+     * Every backend is capped at the two-part kernel's 256 lanes: a kernel's own limit is fixed
+     * only when the driver compiles it, and the 1024-lane launch was refused on OpenCL
+     * (CL_OUT_OF_RESOURCES) and on CUDA (CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES).
      */
     @Test
-    public void onlyCudaIsGivenTheFullDeviceLimit() {
+    public void everyBackendIsCappedAtTheTwoPartKernel() {
         var cuda = device(org.beehive.jitllm.runtime.backend.BackendId.CUDA, 1024);
         var opencl = device(org.beehive.jitllm.runtime.backend.BackendId.OPENCL, 1024);
-        assertEquals(1024, Qwen35FFNLayers.deltaRuleWorkGroupLimit(cuda));
+        assertEquals(256, Qwen35FFNLayers.deltaRuleWorkGroupLimit(cuda));
         assertEquals(256, Qwen35FFNLayers.deltaRuleWorkGroupLimit(opencl));
         assertEquals(
-                DeltaRuleGeometry.SPLIT8,
+                DeltaRuleGeometry.SPLIT2,
                 Qwen35FFNLayers.selectDeltaRuleGeometry(
                         HEAD, Qwen35FFNLayers.deltaRuleWorkGroupLimit(cuda)));
         assertEquals(

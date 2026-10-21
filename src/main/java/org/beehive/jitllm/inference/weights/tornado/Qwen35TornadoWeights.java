@@ -36,7 +36,7 @@ import org.beehive.jitllm.runtime.tensor.DataType;
  * claim that every tensor here is that type — this model is mixed by construction, with Q5_K
  * recurrent outputs and a Q6_K vocabulary projection — and a layer graph dispatches per tensor.
  */
-public final class Qwen35TornadoWeights extends TornadoWeights {
+public class Qwen35TornadoWeights extends TornadoWeights {
 
     /** Trunk layers plus MTP blocks; the length of every per-layer array here. */
     public final int blockCount;
@@ -132,5 +132,49 @@ public final class Qwen35TornadoWeights extends TornadoWeights {
         this.ssmNorm = ssmNorm;
         this.ssmOut = ssmOut;
     }
+
+    /** The trunk of {@code other}, for a family built on this one that adds its own tensors. */
+    protected Qwen35TornadoWeights(Qwen35TornadoWeights other) {
+        this(
+                other.blockCount,
+                other.tokenEmbeddingTable,
+                other.rms_att_weightLayered,
+                other.rms_ffn_weightLayered,
+                other.w1Layered,
+                other.w2Layered,
+                other.w3Layered,
+                other.rms_final_weight_as_floatArray,
+                other.wclsByteArray,
+                other.freq_cis_realFlat,
+                other.freq_cis_imagFlat,
+                other.wqLayered,
+                other.wkLayered,
+                other.wvLayered,
+                other.woLayered,
+                other.attnQNorm,
+                other.attnKNorm,
+                other.ssmQkv,
+                other.ssmGate,
+                other.ssmConv1d,
+                other.ssmAlpha,
+                other.ssmBeta,
+                other.ssmDtBias,
+                other.ssmA,
+                other.ssmNorm,
+                other.ssmOut,
+                other.weightType);
+    }
+
     // @formatter:on
+
+    /** The trunk projections, and the linear-attention input, gate and output projections. */
+    @Override
+    protected java.util.List<TornadoTensor[]> projections() {
+        java.util.List<TornadoTensor[]> projections =
+                new java.util.ArrayList<>(super.projections());
+        projections.add(ssmQkv);
+        projections.add(ssmGate);
+        projections.add(ssmOut);
+        return projections;
+    }
 }

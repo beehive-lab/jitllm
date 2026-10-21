@@ -39,7 +39,7 @@ public class LlamaFP16FFNLayersDecode extends LlamaFP16FFNLayers {
      */
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "decodeActivation" : "layer_" + (layerIndex - 1);
+        return (layerIndex == 0) ? "decodeActivation" : layerGraphName(layerIndex - 1);
     }
 
     /**
@@ -92,7 +92,7 @@ public class LlamaFP16FFNLayersDecode extends LlamaFP16FFNLayers {
             // Layers 1+: use explicit predecessor name for ALL consumed objects.
             // Calling super here would use the no-arg form (source key = own graph name),
             // which silently fails in interpreter mode and causes re-upload from host.
-            String pred = "layer_" + (layerIndex - 1);
+            String pred = layerGraphName(layerIndex - 1);
             layer.consumeFromDevice(
                     pred,
                     context,

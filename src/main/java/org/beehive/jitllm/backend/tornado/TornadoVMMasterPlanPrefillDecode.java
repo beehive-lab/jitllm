@@ -96,6 +96,7 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
         executionPlan.withPreCompilation();
         long warmupTime = System.nanoTime();
 
+        org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(executionPlan, packedRepack);
         forceCopyInReadOnlyData();
         long copyTime = System.nanoTime();
 
@@ -141,9 +142,16 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
         this.prefillDecodeForwardPlan =
                 ForwardPlanFactory.createPrefillDecode(weightType, state, model);
         this.taskGraphLayout = prefillDecodeForwardPlan.getTaskGraphLayout();
-        var taskGraphs = prefillDecodeForwardPlan.getImmutableTaskGraphs();
+        var taskGraphs =
+                new java.util.ArrayList<>(prefillDecodeForwardPlan.getImmutableTaskGraphs());
+        packedRepack =
+                state.workspace.packedRepack.appendGraphs(
+                        taskGraphs, prefillDecodeForwardPlan.getGridScheduler());
         return new TornadoExecutionPlan(taskGraphs.toArray(new ImmutableTaskGraph[0]));
     }
+
+    /** The graphs that repack the packed weights on the GPU before the warm-up, or null. */
+    private org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs packedRepack;
 
     // ── Initialisation ────────────────────────────────────────────────────────
 
@@ -243,7 +251,7 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
         }
 
         state.workspace.tempLogits.clear();
-        state.workspace.wrapLogits.clear();
+        // Not wrapLogits: the logits graph uploads it once and overwrites all of it every token.
         var logits =
                 executionPlan
                         .withGraph(taskGraphLayout.logitsIdx())

@@ -13,6 +13,7 @@ compiler and runtime.
 | [`api.md`](api.md) | the stable facade, options, conversations, tools, streaming, lifecycle |
 | [`memory-and-concurrency.md`](memory-and-concurrency.md) | ownership, close semantics, KV storage, shared workspaces, what serializes |
 | [`models-and-backends.md`](models-and-backends.md) | adding a family, dtypes and materialization, per-backend capability and limitations |
+| [`multi-gpu.md`](multi-gpu.md) | splitting a model across several GPUs: flags, requirements, supported families, how the pipeline works |
 | [`verification.md`](verification.md) | gates, numerical references, the CI matrix, performance methodology, known limitations |
 | [`development.md`](development.md) | JDK 21/25 builds, TornadoVM setup, adding a family or capability, release and integrations |
 

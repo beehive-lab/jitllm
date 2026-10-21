@@ -94,6 +94,11 @@ public class NativeAttentionCapabilityAccelTest {
                             + " must exist for the rest: "
                             + selected.describe(),
                     selected.batchedFallbackFamily());
+            assertTrue(
+                    "the chunks after the first must run the tensor-core attention, not the scalar"
+                            + " kernel whose cost grows with the start position: "
+                            + selected.describe(),
+                    selected.tensorCoreAttentionInFallback());
 
             // ── the same session, with the capability answered no ────────────
             previousProbe = NativePrefillSupport.setSdpaProbeForTesting(shape -> false);

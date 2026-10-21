@@ -74,7 +74,7 @@ public final class ModelGeneration {
         TornadoVMMasterPlan tornadoVMPlan = null;
 
         if (model.shouldAddBeginOfText()) {
-            conversationTokens.add(chatFormat.getBeginOfText());
+            conversationTokens.addAll(chatFormat.beginOfTextTokens());
         }
 
         if (model.shouldAddSystemPrompt() && options.systemPrompt() != null) {
@@ -223,7 +223,7 @@ public final class ModelGeneration {
         List<Integer> promptTokens = new ArrayList<>();
 
         if (model.shouldAddBeginOfText()) {
-            promptTokens.add(chatFormat.getBeginOfText());
+            promptTokens.addAll(chatFormat.beginOfTextTokens());
         }
 
         if (model.shouldAddSystemPrompt() && options.systemPrompt() != null) {
@@ -329,7 +329,7 @@ public final class ModelGeneration {
         List<Integer> promptTokens = new ArrayList<>();
 
         if (model.shouldAddBeginOfText()) {
-            promptTokens.add(chatFormat.getBeginOfText());
+            promptTokens.addAll(chatFormat.beginOfTextTokens());
         }
 
         if (model.shouldAddSystemPrompt() && options.systemPrompt() != null) {

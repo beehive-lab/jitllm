@@ -8,7 +8,7 @@ public enum GGMLType {
     Q4_1(2 * GGMLType.FLOAT16_BYTES + 16 * Byte.BYTES, 32),
     UNSUPPORTED_Q4_2(Integer.MAX_VALUE), // support has been removed
     UNSUPPORTED_Q4_3(Integer.MAX_VALUE), // support has been removed
-    Q5_0(Integer.MAX_VALUE),
+    Q5_0(GGMLType.FLOAT16_BYTES + 4 * Byte.BYTES + 16 * Byte.BYTES, 32),
     Q5_1(Integer.MAX_VALUE),
     Q8_0(GGMLType.FLOAT16_BYTES + 32 * Byte.BYTES, 32),
     Q8_1(32 * Byte.BYTES + 2 * Float.BYTES, 32),

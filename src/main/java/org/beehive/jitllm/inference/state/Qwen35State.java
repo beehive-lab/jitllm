@@ -32,7 +32,7 @@ import org.beehive.jitllm.tensor.standard.FloatTensor;
  * current position; a recurrent state has no such mask, and a stale one silently conditions the new
  * sequence on the old one.
  */
-public final class Qwen35State extends State {
+public class Qwen35State extends State {
 
     /**
      * Rolling convolution history per recurrent layer, {@code convDim * (kernel - 1)} elements,
@@ -338,9 +338,7 @@ public final class Qwen35State extends State {
         // reads -- the feed-forward's hidden width -- and used as a prefix by the narrower ones,
         // so the three arrays serve every projection rather than one set per width.
         int widest = Math.max(config.dim(), config.hiddenDim());
-        workspace.wrapXbQuants = TornadoWorkspaces.ints(widest / 4);
-        workspace.wrapXbScales = TornadoWorkspaces.floats(widest / 32);
-        workspace.wrapXbSums = TornadoWorkspaces.ints(widest / 32);
+        TornadoWorkspaces.packedActivation(workspace, widest);
         workspace.wrapHb = TornadoWorkspaces.floats(config.hiddenDim());
         workspace.wrapHb2 = TornadoWorkspaces.floats(config.hiddenDim());
         workspace.wrapLogits = TornadoWorkspaces.floats(config.vocabularySize());
@@ -461,21 +459,14 @@ public final class Qwen35State extends State {
                             Math.toIntExact((long) config.hiddenDim() * config.dim()));
         }
         if (Qwen35Configuration.dequantGemmWidth(batch)) {
-            // The int8 pair's scratch, at the same widths: the activations of the widest input
-            // (hiddenDim) as bytes with a scale per 32, and one decoded Q4_0 matrix (the largest,
-            // hiddenDim x dim) with its FP32 block scales. Allocated like the FP16 scratch above,
-            // whatever the device; the layer builder dispatches to it only on the tensor cores.
+            // The int8 GEMMs' activations, at the same widths: those of the widest input
+            // (hiddenDim) as bytes with a scale per 32. Allocated like the FP16 scratch above,
+            // whatever the device; the layer builder dispatches to them only on the tensor cores.
             workspace.wrapQ8ActBatch =
                     TornadoWorkspaces.bytes(Math.toIntExact((long) batch * config.hiddenDim()));
             workspace.wrapQ8ActScales =
                     TornadoWorkspaces.floats(
                             Math.toIntExact((long) batch * config.hiddenDim() / 32));
-            workspace.wrapInt8WeightScratch =
-                    TornadoWorkspaces.bytes(
-                            Math.toIntExact((long) config.hiddenDim() * config.dim()));
-            workspace.wrapInt8WeightScales =
-                    TornadoWorkspaces.floats(
-                            Math.toIntExact((long) config.hiddenDim() * config.dim() / 32));
         }
         if (storageOptions().usesFp16KeyValueCache()) {
             // The capacity rounded up to whole 32-key tiles: the tensor-core kernels' transposed

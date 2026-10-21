@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -214,7 +215,11 @@ public class MistralFP16FFNLayers
         if (useSimd32Reduction) {
             unifiedLayer.task(
                     "attn_output_proj",
-                    TransformerComputeKernelsLayered::matrixVectorGenericWithResidualSimd32,
+                    (Fp16GemvUnrollPolicy.unrolled()
+                            ? TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32Unrolled
+                            : TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32),
                     context,
                     state.workspace.wrapXb,
                     state.workspace.wrapX,
@@ -258,7 +263,9 @@ public class MistralFP16FFNLayers
         if (useSimd32Reduction) {
             unifiedLayer.task(
                     "rms_ffn_gate_up",
-                    TransformerComputeKernelsLayered::fusedRmsNormFFNGateUpWarp,
+                    (Fp16GemvUnrollPolicy.unrolled()
+                            ? TransformerComputeKernelsLayered::fusedRmsNormFFNGateUpWarpUnrolled
+                            : TransformerComputeKernelsLayered::fusedRmsNormFFNGateUpWarp),
                     context,
                     state.workspace.wrapX,
                     state.workspace.wrapHb,
@@ -288,7 +295,11 @@ public class MistralFP16FFNLayers
         if (useSimd32Reduction) {
             unifiedLayer.task(
                     "ffn_down_proj",
-                    TransformerComputeKernelsLayered::matrixVectorGenericWithResidualSimd32,
+                    (Fp16GemvUnrollPolicy.unrolled()
+                            ? TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32Unrolled
+                            : TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32),
                     context,
                     state.workspace.wrapHb,
                     state.workspace.wrapX,
@@ -441,13 +452,14 @@ public class MistralFP16FFNLayers
     }
 
     /**
-     * The FP16 cache on CUDA, whatever the scheduler: Mistral keeps the non-NVIDIA scheduler for
-     * its FP32 attention, and its FP16 path uses kernels that need a CUDA device, not that
-     * scheduler.
+     * The FP16 cache on CUDA and Metal, whatever the scheduler: Mistral keeps the non-NVIDIA
+     * scheduler for its FP32 attention, and its FP16 path takes the flash kernel, which runs on
+     * those devices, not that scheduler.
      */
     @Override
     protected boolean useFp16KVCache() {
         return state.usesFp16KeyValueCache()
-                && org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.nvidiaDevice();
+                && (org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.nvidiaDevice()
+                        || metalBackend());
     }
 }

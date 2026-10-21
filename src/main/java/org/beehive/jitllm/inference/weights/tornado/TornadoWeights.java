@@ -89,4 +89,33 @@ public abstract class TornadoWeights implements Weights {
     public DataType dataType() {
         return weightType;
     }
+
+    /** Lanes per workgroup for the RMS norm in front of the logits. */
+    public int logitsRmsLocalSize() {
+        return 256;
+    }
+
+    /**
+     * Whether any projection is held in the packed tile layout, which only the packed kernels read;
+     * a load decides it once (see {@code PackedWeights}).
+     */
+    public final boolean holdsPackedProjections() {
+        for (TornadoTensor[] layers : projections()) {
+            if (layers == null) {
+                continue;
+            }
+            for (TornadoTensor tensor : layers) {
+                if (tensor != null && tensor.isPacked()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** The per-layer projections a load may pack; a family with more of its own adds them. */
+    protected java.util.List<TornadoTensor[]> projections() {
+        return java.util.Arrays.asList(
+                wqLayered, wkLayered, wvLayered, woLayered, w1Layered, w2Layered, w3Layered);
+    }
 }

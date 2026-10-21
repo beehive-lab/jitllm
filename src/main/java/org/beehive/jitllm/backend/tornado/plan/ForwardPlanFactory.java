@@ -1,5 +1,7 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.components.StagedForwardPlanComponents;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -57,6 +59,59 @@ public class ForwardPlanFactory {
         throw new IllegalStateException(
                 "Expected BatchPrefillDecodeForwardPlan for BATCH_PREFILL_DECODE mode but got "
                         + plan.getClass().getSimpleName());
+    }
+
+    // ── Pipeline stages ───────────────────────────────────────────────────────
+
+    /**
+     * The multiple {@code model}'s inner stage boundaries fall on: see {@link TornadoPlanProvider}.
+     */
+    public static int stageLayerAlignment(Model model) {
+        return TornadoPlanRegistry.provider(model)
+                .orElseThrow(() -> notSplit(model))
+                .stageLayerAlignment();
+    }
+
+    /**
+     * The state of one stage of {@code model} split across devices, built by the family's provider:
+     * see {@link TornadoPlanProvider#stageState}.
+     */
+    public static State stageState(
+            Model model, State session, int firstLayer, int endLayer, int prefillBatchSize) {
+        return TornadoPlanRegistry.provider(model)
+                .orElseThrow(() -> notSplit(model))
+                .stageState(model, session, firstLayer, endLayer, prefillBatchSize);
+    }
+
+    /**
+     * The components that build one stage of {@code model} in {@code mode}, bound to the stage's
+     * state, under the same admission as a whole-model plan.
+     *
+     * @throws UnsupportedOperationException when the family cannot be split, or cannot be split in
+     *     this mode
+     */
+    public static StagedForwardPlanComponents stageComponents(
+            ExecutionMode mode, State stage, Model model) {
+        if (mode == ExecutionMode.PREFILL_DECODE) {
+            throw new UnsupportedOperationException(
+                    "a model split across devices runs single-token or with batched prefill"
+                            + " (--batch-prefill-size), not sequential prefill/decode");
+        }
+        DataType quantization = model.weights().dataType();
+        SingleTokenForwardPlanComponents components =
+                TornadoPlanRegistry.components(quantization, mode, stage, model)
+                        .orElseThrow(() -> notSplit(model));
+        if (!(components instanceof StagedForwardPlanComponents staged)) {
+            throw notSplit(model);
+        }
+        return staged;
+    }
+
+    private static UnsupportedOperationException notSplit(Model model) {
+        return new UnsupportedOperationException(
+                "the "
+                        + model.architectureId()
+                        + " plan cannot be split across devices; drop --devices");
     }
 
     // ── Generic dispatch ──────────────────────────────────────────────────────

@@ -2,8 +2,10 @@ package org.beehive.jitllm.backend.tornado.kernels;
 
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.math.TornadoMath;
+import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 import uk.ac.manchester.tornado.api.utils.QuantizationUtils;
 
@@ -74,6 +76,84 @@ public final class TransformerComputeKernelsQ4_0 {
         int packed = w.get(blockByteOffset + QS_OFFSET + byteIndex) & 0xFF;
         int q = (half == 0) ? (packed & 0xF) : ((packed >> 4) & 0xF);
         return d * (q - 8);
+    }
+
+    /**
+     * Decodes a Q4_0 weight into FP16 at {@code destOffset} of {@code out}, for a GEMM that reads
+     * FP16 operands. One thread per element of the {@code n}.
+     */
+    public static void dequantizeQ4_0ToFP16(
+            KernelContext context, ByteArray w, HalfFloatArray out, int destOffset, int n) {
+        int gid = context.globalIdx;
+        if (gid < n) {
+            // decode(...) written out in place: called through the helper, the CUDA backend cannot
+            // lower the FP16 store's HalfFloat allocation.
+            int block = gid / QK;
+            int blockByteOffset = block * BLOCK_BYTES;
+            int withinBlock = gid - block * QK;
+            int half = withinBlock / 16;
+            int packed = w.get(blockByteOffset + QS_OFFSET + withinBlock - half * 16) & 0xFF;
+            int q = (packed >> (half * 4)) & 0xF;
+            out.set(
+                    destOffset + gid,
+                    new HalfFloat(w.getHalfFloat(blockByteOffset).getFloat32() * (q - 8)));
+        }
+    }
+
+    /**
+     * {@link #dequantizeQ4_0ToFP16} over a weight in the int8 GEMM's packed tiles ({@code
+     * PackedTilePacker.packQ4_0}), written back in the file's row-major order. Element {@code (r,
+     * c)} of the {@code n / cols} by {@code cols} weight lies in the 4608-byte tile of column tile
+     * {@code r / 128} and round {@code c / 64}: its nibble in the 64-bit word of GEMM thread {@code
+     * ((r % 64) / 2) * 16 + q / 2}, 16-bit group {@code 2b + (r % 128) / 64}, byte {@code r & 1},
+     * half {@code q & 1}, for block {@code b} and quant {@code q} within the round; its scale the
+     * round's {@code (b * 128 + r % 128)}-th after the 4096 bytes of nibbles.
+     */
+    public static void dequantizeQ4_0PackedToFP16(
+            KernelContext context,
+            ByteArray w,
+            HalfFloatArray out,
+            int destOffset,
+            int n,
+            int cols) {
+        int gid = context.globalIdx;
+        if (gid < n) {
+            int r = gid / cols;
+            int c = gid - r * cols;
+            int rLocal = r & 127;
+            int round = c >> 6;
+            int kk = c & 63;
+            int b = kk >> 5;
+            int q = kk & 31;
+            int tileBase = ((r >> 7) * (cols >> 6) + round) * 4608;
+            int t = (((rLocal & 63) >> 1) << 4) | (q >> 1);
+            int s = (b << 1) | (rLocal >> 6);
+            int packed = w.get(tileBase + (t << 3) + (s << 1) + (rLocal & 1)) & 0xFF;
+            int nibble = (packed >> ((q & 1) << 2)) & 0xF;
+            float d = w.getHalfFloat(tileBase + 4096 + (((b << 7) + rLocal) << 1)).getFloat32();
+            out.set(destOffset + gid, new HalfFloat(d * (nibble - 8)));
+        }
+    }
+
+    /**
+     * The Q4_1 twin of {@link #dequantizeQ4_0ToFP16}: 20-byte blocks, an FP16 scale and minimum
+     * then the same sixteen packed bytes, decoded as {@code scale * q + minimum}. Q4_0 files keep
+     * some {@code ffn_down} tensors in Q4_1.
+     */
+    public static void dequantizeQ4_1ToFP16(
+            KernelContext context, ByteArray w, HalfFloatArray out, int destOffset, int n) {
+        int gid = context.globalIdx;
+        if (gid < n) {
+            int block = gid / QK;
+            int blockByteOffset = block * 20;
+            int withinBlock = gid - block * QK;
+            int half = withinBlock / 16;
+            int packed = w.get(blockByteOffset + 4 + withinBlock - half * 16) & 0xFF;
+            int q = (packed >> (half * 4)) & 0xF;
+            float d = w.getHalfFloat(blockByteOffset).getFloat32();
+            float m = w.getHalfFloat(blockByteOffset + 2).getFloat32();
+            out.set(destOffset + gid, new HalfFloat(d * q + m));
+        }
     }
 
     /**

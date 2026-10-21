@@ -129,8 +129,18 @@ public class Qwen2 extends AbstractModel {
             TornadoVMMasterPlan tornadoVMPlan) {
         if (state.executionPolicy().phaseStrategy() == PhaseStrategy.PREFILL_DECODE
                 && state.executionPolicy().prefillBatchSize() > 1) {
-            throw new UnsupportedOperationException(
-                    "Batch prefill/decode on GPU not yet implemented for Qwen2/Deepseek-R1-Distill-Qwen");
+            // Batched prefill, then this family's decode loop; charged like Qwen3's.
+            return TokenGenerationLoop.generateTokensGPUPrefillDecode(
+                    this,
+                    state,
+                    startPosition,
+                    promptTokens,
+                    stopTokens,
+                    maxTokens,
+                    sampler,
+                    echo,
+                    onTokenGenerated,
+                    tornadoVMPlan);
         }
         if (state.executionPolicy().phaseStrategy() == PhaseStrategy.PREFILL_DECODE) {
             throw new UnsupportedOperationException(

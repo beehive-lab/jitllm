@@ -73,12 +73,23 @@ public final class DevstralState extends State {
         workspace.wrapK = TornadoWorkspaces.floats(kvDim);
         workspace.wrapV = TornadoWorkspaces.floats(kvDim);
 
+        // The packed-integer projections' quantized activation, sized for the widest one they
+        // read: the FFN down projection's hidden width, or the model width (qDim is narrower).
+        int widest = Math.max(Math.max(dc.dim(), dc.hiddenDim()), qDim);
+        TornadoWorkspaces.packedActivation(workspace, widest);
+
         workspace.wrapXFP16 = TornadoWorkspaces.halfFloats(dc.dim());
         workspace.wrapXbFP16 = TornadoWorkspaces.halfFloats(dc.dim());
         // KV cache: leased from the manager's pool when this state holds a lease, otherwise
         // allocated here, block-major when paged and contiguous when not.
-        fillKvFields(fields, dc, kvDim, false);
+        // Half precision for the quantized weights, whose decode layers and batched prefill read
+        // and write the FP16 cache; the F16-weight layers keep the FP32 cache they always had.
+        fillKvFields(fields, dc, kvDim, !"FP16".equals(dc.quantization()));
         workspace.wrapAtt = TornadoWorkspaces.floats(dc.numberOfHeads() * dc.contextLength());
+        // Split-KV decode attention's partial outputs: per head and partition, the head's
+        // weighted values plus its running max and sum.
+        workspace.wrapAttSplit =
+                TornadoWorkspaces.floats(dc.numberOfHeads() * SPLIT_KV * (dc.headSize() + 2));
         // [0] = position, [1] = table-local KV slot.
         workspace.positionHolder = TornadoWorkspaces.ints(2);
 

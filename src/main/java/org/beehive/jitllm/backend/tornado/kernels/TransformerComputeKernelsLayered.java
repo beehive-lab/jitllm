@@ -176,6 +176,84 @@ public class TransformerComputeKernelsLayered {
     }
 
     /**
+     * {@link #fusedRmsNormFFNGateUpWarp} with four independent loads in flight per lane, then the
+     * tail of a row that is not a multiple of 128 wide. Selected on Metal by {@code
+     * Fp16GemvUnrollPolicy}; the other backends keep {@link #fusedRmsNormFFNGateUpWarp}.
+     */
+    public static void fusedRmsNormFFNGateUpWarpUnrolled(
+            KernelContext context,
+            FloatArray x,
+            FloatArray hb,
+            FloatArray rmsWeights,
+            FloatArray rmsScale,
+            HalfFloatArray w1,
+            HalfFloatArray w3,
+            int dim,
+            int hiddenDim,
+            int localWorkGroupSize) {
+
+        int rowId = context.groupIdx;
+        int localId = context.localIdx;
+
+        if (rowId >= hiddenDim) {
+            return;
+        }
+
+        float scale = rmsScale.get(0);
+        int rowOffset = rowId * dim;
+
+        float sum1a = 0.0f;
+        float sum1b = 0.0f;
+        float sum1c = 0.0f;
+        float sum1d = 0.0f;
+        float sum3a = 0.0f;
+        float sum3b = 0.0f;
+        float sum3c = 0.0f;
+        float sum3d = 0.0f;
+        // Four independent loads per matrix in flight per lane, then the tail of a row that is not
+        // a multiple of 128 wide.
+        int j = localId;
+        for (; j + 96 < dim; j += 128) {
+            float na = rmsWeights.get(j) * scale * x.get(j);
+            float nb = rmsWeights.get(j + 32) * scale * x.get(j + 32);
+            float nc = rmsWeights.get(j + 64) * scale * x.get(j + 64);
+            float nd = rmsWeights.get(j + 96) * scale * x.get(j + 96);
+            sum1a += w1.get(rowOffset + j).getFloat32() * na;
+            sum1b += w1.get(rowOffset + j + 32).getFloat32() * nb;
+            sum1c += w1.get(rowOffset + j + 64).getFloat32() * nc;
+            sum1d += w1.get(rowOffset + j + 96).getFloat32() * nd;
+            sum3a += w3.get(rowOffset + j).getFloat32() * na;
+            sum3b += w3.get(rowOffset + j + 32).getFloat32() * nb;
+            sum3c += w3.get(rowOffset + j + 64).getFloat32() * nc;
+            sum3d += w3.get(rowOffset + j + 96).getFloat32() * nd;
+        }
+        for (; j < dim; j += 32) {
+            float normalized = rmsWeights.get(j) * scale * x.get(j);
+            sum1a += w1.get(rowOffset + j).getFloat32() * normalized;
+            sum3a += w3.get(rowOffset + j).getFloat32() * normalized;
+        }
+        float sum1 = (sum1a + sum1b) + (sum1c + sum1d);
+        float sum3 = (sum3a + sum3b) + (sum3c + sum3d);
+
+        sum1 += context.simdShuffleDown(sum1, 16);
+        sum1 += context.simdShuffleDown(sum1, 8);
+        sum1 += context.simdShuffleDown(sum1, 4);
+        sum1 += context.simdShuffleDown(sum1, 2);
+        sum1 += context.simdShuffleDown(sum1, 1);
+
+        sum3 += context.simdShuffleDown(sum3, 16);
+        sum3 += context.simdShuffleDown(sum3, 8);
+        sum3 += context.simdShuffleDown(sum3, 4);
+        sum3 += context.simdShuffleDown(sum3, 2);
+        sum3 += context.simdShuffleDown(sum3, 1);
+
+        if (localId == 0) {
+            float silu = sum1 / (1.0f + TornadoMath.exp(-sum1));
+            hb.set(rowId, silu * sum3);
+        }
+    }
+
+    /**
      * Warp-shuffle variant of {@link #fusedRmsNormFFNGateUpQ8_0}: one 32-lane warp per hidden row,
      * two independent {@code simdShuffleDown} reductions (gate W1 and up W3), no shared-memory
      * tree. Q8_0 byte layout (34-byte blocks: 2-byte half scale + 32 int8 quants).
@@ -1126,6 +1204,55 @@ public class TransformerComputeKernelsLayered {
     }
 
     /**
+     * {@link #matrixVectorGenericSimd32} with four independent loads in flight per lane, then the
+     * tail of a row that is not a multiple of 128 wide. Selected on Metal by {@code
+     * Fp16GemvUnrollPolicy}; the other backends keep {@link #matrixVectorGenericSimd32}.
+     */
+    public static void matrixVectorGenericSimd32Unrolled(
+            KernelContext context,
+            HalfFloatArray x,
+            FloatArray hb,
+            HalfFloatArray w,
+            int n,
+            int d) {
+        int rowId = context.groupIdx;
+        int localId = context.localIdx;
+
+        if (rowId >= d) {
+            return;
+        }
+
+        int rowOffset = rowId * n;
+        float partialSum0 = 0.0f;
+        float partialSum1 = 0.0f;
+        float partialSum2 = 0.0f;
+        float partialSum3 = 0.0f;
+        // Four independent loads in flight per lane, then the tail of a row that is not a
+        // multiple of 128 wide.
+        int j = localId;
+        for (; j + 96 < n; j += 128) {
+            partialSum0 += w.get(rowOffset + j).getFloat32() * x.get(j).getFloat32();
+            partialSum1 += w.get(rowOffset + j + 32).getFloat32() * x.get(j + 32).getFloat32();
+            partialSum2 += w.get(rowOffset + j + 64).getFloat32() * x.get(j + 64).getFloat32();
+            partialSum3 += w.get(rowOffset + j + 96).getFloat32() * x.get(j + 96).getFloat32();
+        }
+        for (; j < n; j += 32) {
+            partialSum0 += w.get(rowOffset + j).getFloat32() * x.get(j).getFloat32();
+        }
+        float partialSum = (partialSum0 + partialSum1) + (partialSum2 + partialSum3);
+
+        partialSum += context.simdShuffleDown(partialSum, 16);
+        partialSum += context.simdShuffleDown(partialSum, 8);
+        partialSum += context.simdShuffleDown(partialSum, 4);
+        partialSum += context.simdShuffleDown(partialSum, 2);
+        partialSum += context.simdShuffleDown(partialSum, 1);
+
+        if (localId == 0) {
+            hb.set(rowId, partialSum);
+        }
+    }
+
+    /**
      * Matrix-vector multiplication with residual connection. Combines regular matrix multiplication
      * with addition of existing values.
      *
@@ -1184,6 +1311,51 @@ public class TransformerComputeKernelsLayered {
         for (int j = localId; j < n; j += 32) {
             partialSum += w.get(rowOffset + j).getFloat32() * x.get(j);
         }
+
+        partialSum += context.simdShuffleDown(partialSum, 16);
+        partialSum += context.simdShuffleDown(partialSum, 8);
+        partialSum += context.simdShuffleDown(partialSum, 4);
+        partialSum += context.simdShuffleDown(partialSum, 2);
+        partialSum += context.simdShuffleDown(partialSum, 1);
+
+        if (localId == 0) {
+            hb.set(rowId, hb.get(rowId) + partialSum);
+        }
+    }
+
+    /**
+     * {@link #matrixVectorGenericWithResidualSimd32} with four independent loads in flight per
+     * lane, then the tail of a row that is not a multiple of 128 wide. Selected on Metal by {@code
+     * Fp16GemvUnrollPolicy}; the other backends keep {@link
+     * #matrixVectorGenericWithResidualSimd32}.
+     */
+    public static void matrixVectorGenericWithResidualSimd32Unrolled(
+            KernelContext context, FloatArray x, FloatArray hb, HalfFloatArray w, int n, int d) {
+        int rowId = context.groupIdx;
+        int localId = context.localIdx;
+
+        if (rowId >= d) {
+            return;
+        }
+
+        int rowOffset = rowId * n;
+        float partialSum0 = 0.0f;
+        float partialSum1 = 0.0f;
+        float partialSum2 = 0.0f;
+        float partialSum3 = 0.0f;
+        // Four independent loads in flight per lane, then the tail of a row that is not a
+        // multiple of 128 wide.
+        int j = localId;
+        for (; j + 96 < n; j += 128) {
+            partialSum0 += w.get(rowOffset + j).getFloat32() * x.get(j);
+            partialSum1 += w.get(rowOffset + j + 32).getFloat32() * x.get(j + 32);
+            partialSum2 += w.get(rowOffset + j + 64).getFloat32() * x.get(j + 64);
+            partialSum3 += w.get(rowOffset + j + 96).getFloat32() * x.get(j + 96);
+        }
+        for (; j < n; j += 32) {
+            partialSum0 += w.get(rowOffset + j).getFloat32() * x.get(j);
+        }
+        float partialSum = (partialSum0 + partialSum1) + (partialSum2 + partialSum3);
 
         partialSum += context.simdShuffleDown(partialSum, 16);
         partialSum += context.simdShuffleDown(partialSum, 8);
@@ -1331,7 +1503,10 @@ public class TransformerComputeKernelsLayered {
      */
     public static float geluActivation(float x) {
         float x3 = x * x * x;
-        return 0.5f * x * (1.0f + TornadoMath.tanh((0.797885f * (x + 0.044715f * x3))));
+        // tanh is exactly +-1.0f in float beyond |a| ~ 9, so the clamp changes no result; it keeps
+        // Metal's fast-math tanh, which returns NaN for large arguments, in range.
+        float a = TornadoMath.min(TornadoMath.max(0.797885f * (x + 0.044715f * x3), -10.0f), 10.0f);
+        return 0.5f * x * (1.0f + TornadoMath.tanh(a));
     }
 
     /**

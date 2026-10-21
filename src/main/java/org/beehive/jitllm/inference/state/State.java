@@ -227,6 +227,41 @@ public abstract class State {
         }
     }
 
+    private static final ThreadLocal<Integer> KV_LAYERS_FOR_CONSTRUCTION = new ThreadLocal<>();
+
+    /**
+     * How many layers the key/value cache of the state under construction holds: what was handed
+     * in, or every layer of the model.
+     *
+     * <p>A pipeline stage runs a contiguous range of layers and only those write to its cache, so
+     * its state is sized for the range and the layers address it by their index within the range.
+     */
+    protected static int keyValueLayersForConstruction(int allLayers) {
+        Integer handedIn = KV_LAYERS_FOR_CONSTRUCTION.get();
+        return handedIn != null ? handedIn : allLayers;
+    }
+
+    /**
+     * Builds a state whose key/value cache holds {@code layers} layers, restoring the previous
+     * default after.
+     *
+     * @param layers how many layers the cache holds
+     * @param build the construction, typically a {@code new LlamaState(..)}
+     */
+    public static <T> T withKeyValueLayers(int layers, java.util.function.Supplier<T> build) {
+        Integer previous = KV_LAYERS_FOR_CONSTRUCTION.get();
+        KV_LAYERS_FOR_CONSTRUCTION.set(layers);
+        try {
+            return build.get();
+        } finally {
+            if (previous == null) {
+                KV_LAYERS_FOR_CONSTRUCTION.remove();
+            } else {
+                KV_LAYERS_FOR_CONSTRUCTION.set(previous);
+            }
+        }
+    }
+
     protected State(Configuration config, int batchsize) {
         this(config, batchsize, null);
     }
@@ -435,7 +470,12 @@ public abstract class State {
      */
     protected boolean fillKvFields(
             StateFields fields, Configuration config, int kvDim, boolean useFp16) {
-        return fillKvFields(fields, config, kvDim, config.numberOfLayers(), useFp16);
+        return fillKvFields(
+                fields,
+                config,
+                kvDim,
+                keyValueLayersForConstruction(config.numberOfLayers()),
+                useFp16);
     }
 
     /**

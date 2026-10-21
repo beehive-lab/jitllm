@@ -630,6 +630,50 @@ public final class Qwen35MMAKernels {
     /** Ints in one B tile: {@code GEMM_BK * GEMM_BN / 2}. */
     private static final int GEMM_B_TILE_INTS = GEMM_BK * GEMM_BN / 2;
 
+    /** Lanes of {@link #dequantizeQ8_0ToFP16Tiled}'s fixed grid, which strides over the weight. */
+    public static final int TILED_DECODE_LANES = 1024 * 256;
+
+    // @formatter:off
+    /**
+     * A {@code Q8_0} matrix of {@code n} elements ({@code n / k} rows by {@code k}) decoded into
+     * the tile order {@link #gemmMMATiledB} reads (the layout of {@link
+     * #dequantizeQ4_0ToFP16TiledPairs}), at half {@code destOffset} of {@code out}: lane {@code h}
+     * writes half position {@code h} from its row and k. Skipped once {@code done[flag]} is set,
+     * for a decoded copy that outlives the chunk.
+     *
+     * <p>A matrix stacked under others starts at a whole 128-row block, so {@code destOffset} is
+     * its first row times {@code k} and its tiles follow theirs. Requires {@code n / k % 128 == 0}
+     * and {@code k % 32 == 0}. Worker: {@code min(n, TILED_DECODE_LANES)} lanes, striding.
+     */
+    // @formatter:on
+    public static void dequantizeQ8_0ToFP16Tiled(
+            KernelContext ctx,
+            ByteArray w,
+            HalfFloatArray out,
+            int destOffset,
+            int n,
+            int k,
+            IntArray done,
+            int flag) {
+        int lane = ctx.globalIdx;
+        if (lane < TILED_DECODE_LANES && done.get(flag) == 0) {
+            int kSteps = k / GEMM_BK;
+            int blocksPerRow = k >>> 5;
+            for (int h = lane; h < n; h += TILED_DECODE_LANES) {
+                int tile = h >>> 11;
+                int idx = (h >>> 1) & 1023;
+                int rowBlock = tile / kSteps;
+                int row = rowBlock * GEMM_BN + ((idx >>> 6) << 3) + ((idx & 3) << 1) + (h & 1);
+                int kk = (tile - rowBlock * kSteps) * GEMM_BK + ((idx & 63) >>> 2);
+                int off = (row * blocksPerRow + (kk >>> 5)) * 34;
+                out.set(
+                        destOffset + h,
+                        new HalfFloat(
+                                w.getHalfFloat(off).getFloat32() * w.get(off + 2 + (kk & 31))));
+            }
+        }
+    }
+
     // @formatter:off
     /**
      * {@code out = fp16(scale * (q - 8))} for a whole {@code Q4_0} matrix, written not row-major

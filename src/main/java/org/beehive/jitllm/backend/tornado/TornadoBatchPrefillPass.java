@@ -55,10 +55,7 @@ public final class TornadoBatchPrefillPass {
             int[] tokens,
             int startPos,
             int chunkSize,
-            TornadoVMMasterPlanBatchPrefillDecode plan) {
-        final Configuration config = model.configuration();
-        final TornadoWeights weights = (TornadoWeights) model.weights();
-
+            BatchPrefillDecodePlan plan) {
         // Which prefill family takes this chunk.
         //
         // cuDNN's causal mask aligns query i to key i, which is the right mask only when the
@@ -76,6 +73,63 @@ public final class TornadoBatchPrefillPass {
         // The plan only builds that family when the primary uses cuDNN attention; where it does
         // not, the primary already handles every chunk itself.
         boolean useFallbackFamily = startPos != 0 && plan.hasBatchPrefillFallback();
+        stage(model, state, tokens, startPos, chunkSize);
+        if (useFallbackFamily) {
+            plan.tornadoVMForwardBatchPrefillFallback();
+        } else {
+            plan.tornadoVMForwardBatchPrefill();
+        }
+    }
+
+    /**
+     * Prefills {@code count} tokens from position {@code startPos} in chunks of {@code batch}. A
+     * plan that overlaps chunks ({@link BatchPrefillDecodePlan#overlapsPrefillChunks}) is handed
+     * them all at once and stages each through {@link #stage} as it gets to it; any other plan
+     * takes them one {@link #batchPrefill} at a time.
+     */
+    public static void batchPrefillAll(
+            Model model,
+            State state,
+            int[] tokens,
+            int startPos,
+            int count,
+            int batch,
+            BatchPrefillDecodePlan plan) {
+        int chunks = (count + batch - 1) / batch;
+        if (chunks > 1 && plan.overlapsPrefillChunks() && !plan.hasBatchPrefillFallback()) {
+            plan.tornadoVMForwardBatchPrefillChunks(
+                    chunks,
+                    c -> {
+                        int off = c * batch;
+                        int size = Math.min(batch, count - off);
+                        stage(
+                                model,
+                                state,
+                                java.util.Arrays.copyOfRange(tokens, off, off + size),
+                                startPos + off,
+                                size);
+                    });
+            return;
+        }
+        for (int off = 0; off < count; off += batch) {
+            int size = Math.min(batch, count - off);
+            batchPrefill(
+                    model,
+                    state,
+                    java.util.Arrays.copyOfRange(tokens, off, off + size),
+                    startPos + off,
+                    size,
+                    plan);
+        }
+    }
+
+    /**
+     * Stages one chunk in the session state: its start position, active rows and KV slot in {@code
+     * batchStartPosHolder}, and its token embeddings in the device batch carrier.
+     */
+    private static void stage(Model model, State state, int[] tokens, int startPos, int chunkSize) {
+        final Configuration config = model.configuration();
+        final TornadoWeights weights = (TornadoWeights) model.weights();
 
         state.workspace.batchStartPosHolder.set(0, startPos);
         // The kernels launch a fixed batchSize rows; this tells them how many are real, so the
@@ -113,6 +167,18 @@ public final class TornadoBatchPrefillPass {
                 var embTable = weights.getTokenEmbeddingTable().asByteArray();
                 int dim = config.dim();
                 int blocksPerRow = (dim + Q8_0_BLOCK_SIZE - 1) / Q8_0_BLOCK_SIZE;
+                if (state.workspace.embeddingQ8Batch != null) {
+                    // The activation decodes on the device: copy each token's raw row, which is
+                    // a bulk copy even before the JIT has compiled anything here.
+                    long rowBytes = (long) blocksPerRow * Q8_0_BLOCK_BYTES;
+                    MemorySegment table = embTable.getSegment();
+                    MemorySegment rows = state.workspace.embeddingQ8Batch.getSegment();
+                    for (int b = 0; b < chunkSize; b++) {
+                        MemorySegment.copy(
+                                table, tokens[b] * rowBytes, rows, b * rowBytes, rowBytes);
+                    }
+                    break;
+                }
                 // Rows in parallel: each row decodes its own token into its own span of the
                 // batch carrier, element by element as before.
                 IntStream.range(0, chunkSize)
@@ -134,6 +200,20 @@ public final class TornadoBatchPrefillPass {
                                 });
             }
             case Q4_0 -> {
+                if (state.workspace.embeddingQ8Batch != null) {
+                    // The activation decodes on the device: copy each token's raw Q4_0 row.
+                    long rowBytes =
+                            (long) ((config.dim() + Q4_0_BLOCK_SIZE - 1) / Q4_0_BLOCK_SIZE)
+                                    * Q4_0_BLOCK_BYTES;
+                    MemorySegment table =
+                            weights.getTokenEmbeddingTable().asByteArray().getSegment();
+                    MemorySegment rows = state.workspace.embeddingQ8Batch.getSegment();
+                    for (int b = 0; b < chunkSize; b++) {
+                        MemorySegment.copy(
+                                table, tokens[b] * rowBytes, rows, b * rowBytes, rowBytes);
+                    }
+                    break;
+                }
                 // Retained: 18 bytes per 32 weights, an unsigned nibble recentred by eight. Decoded
                 // here into the FP32 batch carrier, as the Q8_0 branch above decodes its own — the
                 // batch activation graph then passes it through rather than converting. Rows in
@@ -194,12 +274,6 @@ public final class TornadoBatchPrefillPass {
                     chunkSize,
                     (System.nanoTime() - stageStart) / 1e6);
         }
-
-        if (useFallbackFamily) {
-            plan.tornadoVMForwardBatchPrefillFallback();
-        } else {
-            plan.tornadoVMForwardBatchPrefill();
-        }
     }
 
     /**
@@ -218,11 +292,7 @@ public final class TornadoBatchPrefillPass {
      * @return the logits this invocation produced, for sampling
      */
     public static Logits decode(
-            Model model,
-            State state,
-            int token,
-            int position,
-            TornadoVMMasterPlanBatchPrefillDecode plan) {
+            Model model, State state, int token, int position, BatchPrefillDecodePlan plan) {
         final Configuration config = model.configuration();
         final TornadoWeights weights = (TornadoWeights) model.weights();
 

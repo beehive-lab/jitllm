@@ -29,13 +29,36 @@ public final class Qwen35Forward {
 
     private Qwen35Forward() {}
 
+    /**
+     * One layer's feed-forward, from the normalized {@code xb} into {@code xb2}. {@link #DENSE} for
+     * this family; a family built on it that replaces the feed-forward passes its own.
+     */
+    @FunctionalInterface
+    public interface FeedForward {
+        void apply(
+                Qwen35Configuration config,
+                Qwen35StandardWeights weights,
+                Qwen35State state,
+                int layer);
+    }
+
+    /** The dense SwiGLU feed-forward every {@code qwen35} layer carries. */
+    public static final FeedForward DENSE = Qwen35Forward::feedForward;
+
     public static FloatTensor forward(Model model, State state, int token, int position) {
+        return forward(model, state, token, position, DENSE);
+    }
+
+    /** {@link #forward(Model, State, int, int)} with the feed-forward {@code feedForward}. */
+    public static FloatTensor forward(
+            Model model, State state, int token, int position, FeedForward feedForward) {
         return forward(
                 (Qwen35Configuration) model.configuration(),
                 (Qwen35StandardWeights) model.weights(),
                 (Qwen35State) state,
                 token,
-                position);
+                position,
+                feedForward);
     }
 
     // @formatter:off
@@ -58,6 +81,16 @@ public final class Qwen35Forward {
             Qwen35State state,
             int token,
             int position) {
+        return forward(config, weights, state, token, position, DENSE);
+    }
+
+    private static FloatTensor forward(
+            Qwen35Configuration config,
+            Qwen35StandardWeights weights,
+            Qwen35State state,
+            int token,
+            int position,
+            FeedForward feedForward) {
 
         final int dim = config.dim();
         final float eps = config.rmsNormEps();
@@ -75,7 +108,7 @@ public final class Qwen35Forward {
             CpuOperations.residualAdd(state.x, state.xb2);
 
             CpuOperations.rmsNorm(state.xb, state.x, weights.ffnNorm[l], 0, dim, eps);
-            feedForward(config, weights, state, l);
+            feedForward.apply(config, weights, state, l);
             CpuOperations.residualAdd(state.x, state.xb2);
         }
 

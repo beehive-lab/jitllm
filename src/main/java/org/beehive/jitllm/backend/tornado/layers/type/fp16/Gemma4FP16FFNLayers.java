@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 
+import org.beehive.jitllm.backend.tornado.kernels.Gemma4AttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
@@ -66,6 +67,8 @@ public class Gemma4FP16FFNLayers
     private final float perLayerTokEmbedScale;
     private final float perLayerProjScale;
     private final float perLayerInputScale;
+    private final boolean batchedPlan;
+    private final boolean fp16KeyValue;
 
     public Gemma4FP16FFNLayers(
             String taskGraphName,
@@ -73,8 +76,26 @@ public class Gemma4FP16FFNLayers
             Gemma4TornadoWeights weights,
             Gemma4Configuration config,
             SchedulerType schedulerType) {
+        this(taskGraphName, state, weights, config, schedulerType, false);
+    }
+
+    /**
+     * @param batchedPlan whether these are the decode layers of the batched prefill/decode plan:
+     *     layer 0 then reads its activation and the key/value caches from {@code decodeActivation},
+     *     and every layer the projections, RoPE tables and per-layer projection norm the
+     *     batch-prefill graphs already uploaded
+     */
+    public Gemma4FP16FFNLayers(
+            String taskGraphName,
+            Gemma4State state,
+            Gemma4TornadoWeights weights,
+            Gemma4Configuration config,
+            SchedulerType schedulerType,
+            boolean batchedPlan) {
         super(taskGraphName, state, weights, config, schedulerType);
+        this.batchedPlan = batchedPlan;
         this.gemma4State = state;
+        this.fp16KeyValue = state.usesFp16KeyValueCache();
         this.nHead = config.numberOfHeads();
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.kvMul = config.kvMul();
@@ -115,21 +136,48 @@ public class Gemma4FP16FFNLayers
         final int peOffset = layerIndex * nEmbdPerLayer;
 
         var unifiedLayer = new TaskGraph(taskGraphName);
-        unifiedLayer.consumeFromDevice(gemma4State.workspace.wrapX);
+        if (batchedPlan) {
+            // A graph that consumes anything by name takes nothing through an unnamed consume.
+            unifiedLayer.consumeFromDevice(
+                    layerIndex == 0 ? "decodeActivation" : "layer_" + (layerIndex - 1),
+                    gemma4State.workspace.wrapX);
+            // The projections the batch-prefill graph of this layer already uploaded; K and V
+            // only where the layer has its own, as there.
+            java.util.List<Object> shared = new java.util.ArrayList<>();
+            shared.add(weights.wqLayered[layerIndex].asHalfFloatArray());
+            shared.add(weights.woLayered[layerIndex].asHalfFloatArray());
+            shared.add(weights.w1Layered[layerIndex].asHalfFloatArray());
+            shared.add(weights.w3Layered[layerIndex].asHalfFloatArray());
+            shared.add(weights.w2Layered[layerIndex].asHalfFloatArray());
+            if (hasOwnKv) {
+                shared.add(weights.wkLayered[layerIndex].asHalfFloatArray());
+                shared.add(weights.wvLayered[layerIndex].asHalfFloatArray());
+            } else {
+                unifiedLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION,
+                        weights.wkLayered[layerIndex].asHalfFloatArray(),
+                        weights.wvLayered[layerIndex].asHalfFloatArray());
+            }
+            unifiedLayer.consumeFromDevice("batchPrefillLayer_" + layerIndex, shared.toArray());
+        } else {
+            unifiedLayer.consumeFromDevice(gemma4State.workspace.wrapX);
+            unifiedLayer.transferToDevice(
+                    DataTransferMode.FIRST_EXECUTION,
+                    weights.wqLayered[layerIndex].asHalfFloatArray(),
+                    weights.wkLayered[layerIndex].asHalfFloatArray(),
+                    weights.wvLayered[layerIndex].asHalfFloatArray(),
+                    weights.woLayered[layerIndex].asHalfFloatArray(),
+                    weights.w1Layered[layerIndex].asHalfFloatArray(),
+                    weights.w3Layered[layerIndex].asHalfFloatArray(),
+                    weights.w2Layered[layerIndex].asHalfFloatArray());
+        }
         unifiedLayer.transferToDevice(
                 DataTransferMode.FIRST_EXECUTION,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqLayered[layerIndex].asHalfFloatArray(),
-                weights.wkLayered[layerIndex].asHalfFloatArray(),
-                weights.wvLayered[layerIndex].asHalfFloatArray(),
-                weights.woLayered[layerIndex].asHalfFloatArray(),
                 weights.attnQNorm[layerIndex].asFloatArray(),
                 weights.attnKNorm[layerIndex].asFloatArray(),
                 weights.attnPostNorm[layerIndex].asFloatArray(),
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.w1Layered[layerIndex].asHalfFloatArray(),
-                weights.w3Layered[layerIndex].asHalfFloatArray(),
-                weights.w2Layered[layerIndex].asHalfFloatArray(),
                 weights.ffnPostNorm[layerIndex].asFloatArray(),
                 weights.perLayerInpGate[layerIndex].asHalfFloatArray(),
                 weights.perLayerProj[layerIndex].asHalfFloatArray(),
@@ -235,22 +283,41 @@ public class Gemma4FP16FFNLayers
                     headDim,
                     HEAD_NORM_LOCAL_SIZE,
                     config.rmsNormEps());
-            unifiedLayer.task(
-                    "rope_and_cache",
-                    Gemma4Kernels::ropeNeoxRotateAndCacheCopy,
-                    context,
-                    gemma4State.workspace.positionHolder,
-                    gemma4State.workspace.wrapQ,
-                    gemma4State.workspace.wrapK,
-                    gemma4State.workspace.wrapV,
-                    gemma4State.workspace.wrapKeyCache,
-                    gemma4State.workspace.wrapValueCache,
-                    freqCisReal,
-                    freqCisImag,
-                    nHeadKv,
-                    headDim,
-                    kvDim,
-                    cacheBaseOffset);
+            if (fp16KeyValue) {
+                unifiedLayer.task(
+                        "rope_and_cache",
+                        Gemma4AttentionKernels::ropeNeoxRotateAndCacheCopyFP16,
+                        context,
+                        gemma4State.workspace.positionHolder,
+                        gemma4State.workspace.wrapQ,
+                        gemma4State.workspace.wrapK,
+                        gemma4State.workspace.wrapV,
+                        gemma4State.workspace.wrapKeyCacheFP16,
+                        gemma4State.workspace.wrapValueCacheFP16,
+                        freqCisReal,
+                        freqCisImag,
+                        nHeadKv,
+                        headDim,
+                        kvDim,
+                        cacheBaseOffset);
+            } else {
+                unifiedLayer.task(
+                        "rope_and_cache",
+                        Gemma4Kernels::ropeNeoxRotateAndCacheCopy,
+                        context,
+                        gemma4State.workspace.positionHolder,
+                        gemma4State.workspace.wrapQ,
+                        gemma4State.workspace.wrapK,
+                        gemma4State.workspace.wrapV,
+                        gemma4State.workspace.wrapKeyCache,
+                        gemma4State.workspace.wrapValueCache,
+                        freqCisReal,
+                        freqCisImag,
+                        nHeadKv,
+                        headDim,
+                        kvDim,
+                        cacheBaseOffset);
+            }
         } else {
             unifiedLayer.task(
                     "rope_q_only",
@@ -264,7 +331,36 @@ public class Gemma4FP16FFNLayers
         }
 
         int splits = attentionSplits();
-        if (splits > 1) {
+        if (fp16KeyValue) {
+            unifiedLayer.task(
+                    "attention_split",
+                    Gemma4Kernels::attentionWithSlidingWindowSplitFP16,
+                    context,
+                    gemma4State.workspace.wrapQ,
+                    gemma4State.workspace.wrapKeyCacheFP16,
+                    gemma4State.workspace.wrapValueCacheFP16,
+                    gemma4State.workspace.wrapAtt,
+                    gemma4State.workspace.wrapAttSplit,
+                    nHead,
+                    headDim,
+                    kvDim,
+                    kvMul,
+                    gemma4State.workspace.positionHolder,
+                    cacheBaseOffset,
+                    windowSize,
+                    config.contextLength(),
+                    splits,
+                    ATTENTION_LOCAL_SIZE);
+            unifiedLayer.task(
+                    "attention_combine",
+                    Gemma4Kernels::combineSplitKVAttentionPerElement,
+                    context,
+                    gemma4State.workspace.wrapAttSplit,
+                    gemma4State.workspace.wrapXb,
+                    nHead,
+                    headDim,
+                    splits);
+        } else if (splits > 1) {
             unifiedLayer.task(
                     "attention_split",
                     Gemma4Kernels::attentionWithSlidingWindowSplit,
@@ -552,6 +648,30 @@ public class Gemma4FP16FFNLayers
                 perLayerTotal);
     }
 
+    /** The key cache in the representation the state allocated. */
+    private Object keyCache() {
+        return fp16KeyValue
+                ? gemma4State.workspace.wrapKeyCacheFP16
+                : gemma4State.workspace.wrapKeyCache;
+    }
+
+    /** The value cache in the representation the state allocated. */
+    private Object valueCache() {
+        return fp16KeyValue
+                ? gemma4State.workspace.wrapValueCacheFP16
+                : gemma4State.workspace.wrapValueCache;
+    }
+
+    /** The first layer that attends with a sliding window, or the first that attends fully. */
+    private int firstLayerOfKind(boolean isSwa) {
+        for (int l = 0; l < config.numberOfLayers(); l++) {
+            if (config.isSwa(l) == isSwa) {
+                return l;
+            }
+        }
+        throw new IllegalStateException("no layer attends with isSwa=" + isSwa);
+    }
+
     /** Configure data transfers for first and subsequent layers. */
     protected TaskGraph configureLayerDataTransfers(TaskGraph unifiedLayer, int layerIndex) {
         if (layerIndex == 0) {
@@ -565,13 +685,33 @@ public class Gemma4FP16FFNLayers
                     gemma4State.workspace.tempPostFfn,
                     gemma4State.workspace.tempPostPle);
             unifiedLayer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION,
-                    weights.perLayerModelProj.asHalfFloatArray(),
-                    weights.perLayerProjNorm.asFloatArray(),
-                    weights.freqCisRealSwa.asFloatArray(),
-                    weights.freqCisImagSwa.asFloatArray(),
-                    weights.freqCisRealFull.asFloatArray(),
-                    weights.freqCisImagFull.asFloatArray());
+                    DataTransferMode.FIRST_EXECUTION, weights.perLayerModelProj.asHalfFloatArray());
+            if (batchedPlan) {
+                // Uploaded by the batch-prefill graphs: the norm by the first, each RoPE pair by
+                // the first layer of its kind; the cache the prefill filled, relayed by the
+                // decode activation.
+                unifiedLayer.consumeFromDevice(
+                        "batchPrefillLayer_0", weights.perLayerProjNorm.asFloatArray());
+                unifiedLayer.consumeFromDevice(
+                        "batchPrefillLayer_" + firstLayerOfKind(true),
+                        weights.freqCisRealSwa.asFloatArray(),
+                        weights.freqCisImagSwa.asFloatArray());
+                unifiedLayer.consumeFromDevice(
+                        "batchPrefillLayer_" + firstLayerOfKind(false),
+                        weights.freqCisRealFull.asFloatArray(),
+                        weights.freqCisImagFull.asFloatArray());
+                unifiedLayer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
+            } else {
+                unifiedLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION,
+                        weights.perLayerProjNorm.asFloatArray(),
+                        weights.freqCisRealSwa.asFloatArray(),
+                        weights.freqCisImagSwa.asFloatArray(),
+                        weights.freqCisRealFull.asFloatArray(),
+                        weights.freqCisImagFull.asFloatArray());
+                unifiedLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, keyCache(), valueCache());
+            }
             unifiedLayer.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION,
                     context,
@@ -580,14 +720,29 @@ public class Gemma4FP16FFNLayers
                     gemma4State.workspace.wrapQ,
                     gemma4State.workspace.wrapK,
                     gemma4State.workspace.wrapV,
-                    gemma4State.workspace.wrapKeyCache,
-                    gemma4State.workspace.wrapValueCache,
                     gemma4State.workspace.wrapAtt,
                     gemma4State.workspace.wrapHb,
                     gemma4State.workspace.wrapPerLayerInputs,
                     gemma4State.workspace.wrapPerLayerProjScratch,
                     gemma4State.workspace.wrapPerLayerGate,
                     gemma4State.workspace.wrapPerLayerOut);
+        } else if (batchedPlan) {
+            unifiedLayer.consumeFromDevice(
+                    "layer_" + (layerIndex - 1),
+                    context,
+                    gemma4State.workspace.wrapXb,
+                    gemma4State.workspace.wrapXb2,
+                    gemma4State.workspace.wrapQ,
+                    gemma4State.workspace.wrapK,
+                    gemma4State.workspace.wrapV,
+                    keyCache(),
+                    valueCache(),
+                    gemma4State.workspace.wrapAtt,
+                    gemma4State.workspace.wrapHb,
+                    gemma4State.workspace.wrapPerLayerInputs,
+                    gemma4State.workspace.wrapPerLayerGate,
+                    gemma4State.workspace.wrapPerLayerOut,
+                    gemma4State.workspace.positionHolder);
         } else {
             unifiedLayer.consumeFromDevice(
                     context,
@@ -596,8 +751,8 @@ public class Gemma4FP16FFNLayers
                     gemma4State.workspace.wrapQ,
                     gemma4State.workspace.wrapK,
                     gemma4State.workspace.wrapV,
-                    gemma4State.workspace.wrapKeyCache,
-                    gemma4State.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     gemma4State.workspace.wrapAtt,
                     gemma4State.workspace.wrapHb,
                     gemma4State.workspace.wrapPerLayerInputs,
@@ -682,7 +837,7 @@ public class Gemma4FP16FFNLayers
             } else {
                 gridScheduler.addWorkerGrid(prefix + "rope_q_only", ropeWorker);
             }
-            if (attentionSplits() > 1) {
+            if (fp16KeyValue || attentionSplits() > 1) {
                 gridScheduler.addWorkerGrid(
                         prefix + "attention_split",
                         WorkerGridFactory.genericWorker(

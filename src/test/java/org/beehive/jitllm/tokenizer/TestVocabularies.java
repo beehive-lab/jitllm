@@ -95,6 +95,37 @@ public final class TestVocabularies {
                 new Vocabulary(qwenTokens(toolMarkers), null));
     }
 
+    private static final List<String> GLM4_SPECIAL =
+            List.of(
+                    "<|endoftext|>",
+                    "[gMASK]",
+                    "<sop>",
+                    "<|system|>",
+                    "<|user|>",
+                    "<|assistant|>",
+                    "<|observation|>",
+                    "<think>",
+                    "</think>");
+
+    /**
+     * The bytes, then {@code <|endoftext|>}, the GLM-4 prompt and role tokens and the think pair.
+     */
+    public static Vocabulary glm4Vocabulary() {
+        List<String> tokens = new ArrayList<>(bytes(Glm4Tokenizer.BYTE_ENCODER));
+        tokens.addAll(GLM4_SPECIAL);
+        return new Vocabulary(tokens.toArray(String[]::new), null);
+    }
+
+    /** The GLM-4 tokenizer over {@code vocabulary}, a {@link #glm4Vocabulary()}. */
+    public static Glm4Tokenizer glm4(Vocabulary vocabulary) {
+        int[] types = new int[vocabulary.size()];
+        Arrays.fill(types, 1);
+        Arrays.fill(types, types.length - GLM4_SPECIAL.size(), types.length, 3);
+        return new Glm4Tokenizer(
+                Map.of("tokenizer.ggml.merges", new String[0], "tokenizer.ggml.token_type", types),
+                vocabulary);
+    }
+
     /** Llama's special tokens start at id 128000, so the bytes are padded up to it. */
     public static LlamaTokenizer llama() {
         List<String> tokens = new ArrayList<>(bytes(LlamaTokenizer.BYTE_ENCODER));

@@ -201,7 +201,7 @@ class PomCoordinateSelection(unittest.TestCase):
         self.assertEqual(self._prop(rel, "tornadovm.sdk.check.skip"), "true")
         deps = self._tornado_deps(rel)
         self.assertEqual(sorted(d.find("m:artifactId", self.ns).text for d in deps),
-                         ["tornado-api", "tornado-cublas", "tornado-cudnn", "tornado-runtime"])
+                         ["tornado-api", "tornado-cublas", "tornado-cudnn", "tornado-mlx", "tornado-runtime"])
         for d in deps:
             self.assertEqual(d.find("m:version", self.ns).text, "${tornadovm.version}")
             self.assertEqual(d.find("m:scope", self.ns).text, "provided")

@@ -4,12 +4,12 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
+import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
-import org.beehive.jitllm.inference.weights.tornado.Qwen2TornadoWeights;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -181,7 +181,9 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
             vocabularyProjectionReducesWithShuffle = true;
             logits.task(
                     "vocab_proj",
-                    TransformerComputeKernelsLayered::matrixVectorGenericSimd32,
+                    (Fp16GemvUnrollPolicy.unrolled()
+                            ? TransformerComputeKernelsLayered::matrixVectorGenericSimd32Unrolled
+                            : TransformerComputeKernelsLayered::matrixVectorGenericSimd32),
                     context,
                     state.workspace.wrapXbFP16,
                     state.workspace.wrapLogits,
@@ -266,8 +268,8 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
         return tornadoForwardScheduler;
     }
 
-    /** Local workgroup size for RMS norm. Qwen2 requires a smaller group (32 vs 256). */
+    /** Local workgroup size for RMS norm: the weights' own ({@code Qwen2} needs a smaller one). */
     protected int rmsLocalSize() {
-        return weights instanceof Qwen2TornadoWeights ? 32 : 256;
+        return ((TornadoWeights) weights).logitsRmsLocalSize();
     }
 }

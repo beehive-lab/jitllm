@@ -31,7 +31,7 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * </pre>
  */
 // @formatter:on
-public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPlan {
+public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecodePlan {
 
     /**
      * Rule 16: library code routes its output through the platform logger, so an embedder can
@@ -114,6 +114,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
         executionPlan.withPreCompilation();
         long warmupTime = System.nanoTime();
 
+        org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(executionPlan, packedRepack);
         forceCopyInReadOnlyData();
         long copyTime = System.nanoTime();
 
@@ -197,9 +198,16 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
         this.batchPrefillDecodeForwardPlan =
                 ForwardPlanFactory.createBatchPrefillDecode(weightType, state, model);
         this.taskGraphLayout = batchPrefillDecodeForwardPlan.getTaskGraphLayout();
-        var taskGraphs = batchPrefillDecodeForwardPlan.getImmutableTaskGraphs();
+        var taskGraphs =
+                new java.util.ArrayList<>(batchPrefillDecodeForwardPlan.getImmutableTaskGraphs());
+        packedRepack =
+                state.workspace.packedRepack.appendGraphs(
+                        taskGraphs, batchPrefillDecodeForwardPlan.getGridScheduler());
         return new TornadoExecutionPlan(taskGraphs.toArray(new ImmutableTaskGraph[0]));
     }
+
+    /** The graphs that repack the packed weights on the GPU before the warm-up, or null. */
+    private org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs packedRepack;
 
     // ── Initialisation ────────────────────────────────────────────────────────
 
@@ -241,6 +249,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
      * for copying batch embeddings into state before calling this.
      */
     // @formatter:off
+    @Override
     public void tornadoVMForwardBatchPrefill() {
         var batchAct =
                 executionPlan
@@ -267,6 +276,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
     }
 
     /** Whether this plan carries a fallback batch-prefill family. */
+    @Override
     public boolean hasBatchPrefillFallback() {
         return taskGraphLayout.fallbackLayerGraphs() > 0;
     }
@@ -277,6 +287,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
      * this chunk's embeddings and its start position into state, exactly as for the primary path.
      */
     // @formatter:off
+    @Override
     public void tornadoVMForwardBatchPrefillFallback() {
         var batchAct =
                 executionPlan
@@ -339,7 +350,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements TornadoVMMasterPla
         }
 
         state.workspace.tempLogits.clear();
-        state.workspace.wrapLogits.clear();
+        // Not wrapLogits: the logits graph uploads it once and overwrites all of it every token.
 
         var logits =
                 executionPlan

@@ -2,8 +2,10 @@ package org.beehive.jitllm.backend.tornado.kernels;
 
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.math.TornadoMath;
+import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 import uk.ac.manchester.tornado.api.utils.QuantizationUtils;
 
@@ -92,6 +94,39 @@ public final class TransformerComputeKernelsQ6_K {
             return -magnitude;
         }
         return magnitude;
+    }
+
+    /**
+     * Decodes a Q6_K weight into FP16 at {@code destOffset} of {@code out}, for a GEMM that reads
+     * FP16 operands. One thread per element of the {@code n}; the row width a multiple of 256, so
+     * element {@code i} lies in super-block {@code i / 256}.
+     */
+    public static void dequantizeQ6_KToFP16(
+            KernelContext context, ByteArray w, HalfFloatArray out, int destOffset, int n) {
+        int gid = context.globalIdx;
+        if (gid < n) {
+            // decode(...) copied in with its branches as selects: called through the helper, the
+            // CUDA backend fails the FrameState dominance check on the FP16 store.
+            int block = gid / QK_K;
+            int blockByteOffset = block * BLOCK_BYTES;
+            int withinBlock = gid - block * QK_K;
+            float d = w.getHalfFloat(blockByteOffset + D_OFFSET).getFloat32();
+            int halfIndex = withinBlock / 128;
+            int posInHalf = withinBlock - halfIndex * 128;
+            int groupInHalf = posInHalf / 32;
+            int posInGroup = posInHalf - groupInHalf * 32;
+            int qlBase = blockByteOffset + halfIndex * 64;
+            int qhBase = blockByteOffset + QH_OFFSET + halfIndex * 32;
+            int scBase = blockByteOffset + SCALES_OFFSET + halfIndex * 8;
+            int is = posInGroup / 16;
+            int qh = w.get(qhBase + posInGroup) & 0xFF;
+            int ql = w.get(qlBase + (groupInHalf & 1) * 32 + posInGroup) & 0xFF;
+            int lowBits = (ql >> ((groupInHalf >> 1) * 4)) & 0xF;
+            int highPair = (qh >> (groupInHalf * 2)) & 3;
+            int qValue = (lowBits | (highPair << 4)) - 32;
+            int scale = w.get(scBase + is + groupInHalf * 2);
+            out.set(destOffset + gid, new HalfFloat(d * scale * qValue));
+        }
     }
 
     /**
@@ -217,13 +252,95 @@ public final class TransformerComputeKernelsQ6_K {
             int d,
             int localWorkGroupSize) {
         int rowId = context.groupIdx;
-        if (rowId >= d) {
-            return;
+        float[] warpSums = context.allocateFloatLocalArray(localWorkGroupSize / 32);
+        if (rowId < d) {
+            int localId = context.localIdx;
+            float partial =
+                    warpPartialDP4A(context, xQuants, xScales, w, n, rowId, localWorkGroupSize);
+            if ((localId & 31) == 0) {
+                warpSums[localId >> 5] = partial;
+            }
+            context.localBarrier();
+            if (localId == 0) {
+                float total = 0.0f;
+                for (int warp = 0; warp < localWorkGroupSize / 32; warp++) {
+                    total += warpSums[warp];
+                }
+                output.set(rowId, total);
+            }
         }
-        int localId = context.localIdx;
-        int warpCount = localWorkGroupSize / 32;
-        float[] warpSums = context.allocateFloatLocalArray(warpCount);
+    }
 
+    /**
+     * {@code hb[row] += w[row]·x}, the packed-integer form of {@link
+     * #matrixVectorGenericWithResidualQ6_K}: the residual projections a Q4_K_M file stores as Q6_K
+     * ({@code ffn_down} in half of Devstral's layers). Same mapping and reduction as {@link
+     * #matrixVectorGenericQ6_KDP4A}; {@code xSums} is not read, since Q6_K recentres on the weight
+     * side, and is taken so every packed K-quant projection has one signature.
+     */
+    public static void matrixVectorGenericWithResidualQ6_KDP4A(
+            KernelContext context,
+            IntArray xQuants,
+            FloatArray xScales,
+            IntArray xSums,
+            FloatArray hb,
+            ByteArray w,
+            int n,
+            int d,
+            int localWorkGroupSize) {
+        int rowId = context.groupIdx;
+        float[] warpSums = context.allocateFloatLocalArray(localWorkGroupSize / 32);
+        if (rowId < d) {
+            int localId = context.localIdx;
+            float partial =
+                    warpPartialDP4A(context, xQuants, xScales, w, n, rowId, localWorkGroupSize);
+            if ((localId & 31) == 0) {
+                warpSums[localId >> 5] = partial;
+            }
+            context.localBarrier();
+            if (localId == 0) {
+                float total = 0.0f;
+                for (int warp = 0; warp < localWorkGroupSize / 32; warp++) {
+                    total += warpSums[warp];
+                }
+                hb.set(rowId, hb.get(rowId) + total);
+            }
+        }
+    }
+
+    /**
+     * This lane's share of row {@code rowId}'s dot product, folded across its warp with shuffles:
+     * valid in the warp's lane 0. The cross-warp combine stays in the kernel, which owns the local
+     * array it goes through.
+     */
+    private static float warpPartialDP4A(
+            KernelContext context,
+            IntArray xQuants,
+            FloatArray xScales,
+            ByteArray w,
+            int n,
+            int rowId,
+            int localWorkGroupSize) {
+        float partialSum =
+                rowPartialDP4A(context, xQuants, xScales, w, n, rowId, localWorkGroupSize);
+        partialSum += context.simdShuffleDown(partialSum, 16);
+        partialSum += context.simdShuffleDown(partialSum, 8);
+        partialSum += context.simdShuffleDown(partialSum, 4);
+        partialSum += context.simdShuffleDown(partialSum, 2);
+        partialSum += context.simdShuffleDown(partialSum, 1);
+        return partialSum;
+    }
+
+    /** This lane's share of row {@code rowId}'s dot product, one scale run of sixteen per step. */
+    private static float rowPartialDP4A(
+            KernelContext context,
+            IntArray xQuants,
+            FloatArray xScales,
+            ByteArray w,
+            int n,
+            int rowId,
+            int localWorkGroupSize) {
+        int localId = context.localIdx;
         int superBlocksPerRow = n / QK_K;
         int rowByteOffset = rowId * superBlocksPerRow * BLOCK_BYTES;
 
@@ -288,24 +405,7 @@ public final class TransformerComputeKernelsQ6_K {
             partialSum += d6 * scale * xScales.get(run / 2) * dot;
         }
 
-        partialSum += context.simdShuffleDown(partialSum, 16);
-        partialSum += context.simdShuffleDown(partialSum, 8);
-        partialSum += context.simdShuffleDown(partialSum, 4);
-        partialSum += context.simdShuffleDown(partialSum, 2);
-        partialSum += context.simdShuffleDown(partialSum, 1);
-
-        if ((localId & 31) == 0) {
-            warpSums[localId >> 5] = partialSum;
-        }
-        context.localBarrier();
-
-        if (localId == 0) {
-            float total = 0.0f;
-            for (int warp = 0; warp < warpCount; warp++) {
-                total += warpSums[warp];
-            }
-            output.set(rowId, total);
-        }
+        return partialSum;
     }
 
     /** {@code output[row] = w[row]·x}. */

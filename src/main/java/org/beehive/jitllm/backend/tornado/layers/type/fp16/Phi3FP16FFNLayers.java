@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.kernels.Phi3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -147,17 +148,23 @@ public class Phi3FP16FFNLayers
         var taskGraphName = "layer_" + layerIndex;
         var unifiedLayer = new TaskGraph(taskGraphName);
 
-        unifiedLayer.consumeFromDevice(phi3State.workspace.wrapX);
-        unifiedLayer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
-                // Attention weights
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqkvLayered[layerIndex].asHalfFloatArray(),
-                weights.woLayered[layerIndex].asHalfFloatArray(),
-                // FFN weights
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.wUpLayered[layerIndex].asHalfFloatArray(),
-                weights.wDownLayered[layerIndex].asHalfFloatArray());
+        String wrapXSrc = predecessorGraphName(layerIndex);
+        if (wrapXSrc != null) {
+            unifiedLayer.consumeFromDevice(wrapXSrc, phi3State.workspace.wrapX);
+        } else {
+            unifiedLayer.consumeFromDevice(phi3State.workspace.wrapX);
+        }
+        Object[] layerWeights = {
+            // Attention weights
+            weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+            weights.wqkvLayered[layerIndex].asHalfFloatArray(),
+            weights.woLayered[layerIndex].asHalfFloatArray(),
+            // FFN weights
+            weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+            weights.wUpLayered[layerIndex].asHalfFloatArray(),
+            weights.wDownLayered[layerIndex].asHalfFloatArray()
+        };
+        bindLayerWeights(unifiedLayer, weightSourceGraphName(layerIndex), layerIndex, layerWeights);
         unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -284,7 +291,11 @@ public class Phi3FP16FFNLayers
         if (useSimd32) {
             unifiedLayer.task(
                     "attn_output_proj",
-                    TransformerComputeKernelsLayered::matrixVectorGenericWithResidualSimd32,
+                    (Fp16GemvUnrollPolicy.unrolled()
+                            ? TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32Unrolled
+                            : TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32),
                     context,
                     phi3State.workspace.wrapXb,
                     phi3State.workspace.wrapX,
@@ -349,7 +360,11 @@ public class Phi3FP16FFNLayers
         if (useSimd32) {
             unifiedLayer.task(
                     "ffn_down_proj",
-                    TransformerComputeKernelsLayered::matrixVectorGenericWithResidualSimd32,
+                    (Fp16GemvUnrollPolicy.unrolled()
+                            ? TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32Unrolled
+                            : TransformerComputeKernelsLayered
+                                    ::matrixVectorGenericWithResidualSimd32),
                     context,
                     phi3State.workspace.wrapHbU,
                     phi3State.workspace.wrapX,
@@ -438,5 +453,30 @@ public class Phi3FP16FFNLayers
         return useFp16KVCache()
                 ? state.workspace.wrapValueCacheFP16
                 : state.workspace.wrapValueCache;
+    }
+
+    /**
+     * The graph {@code wrapX} is consumed from, or {@code null} for the no-arg form. The batched
+     * prefill/decode plan's decode layers name their predecessor; see {@code
+     * LlamaFP16FFNLayers#predecessorGraphName}.
+     */
+    protected String predecessorGraphName(int layerIndex) {
+        return null;
+    }
+
+    /**
+     * The graph that already uploaded this layer's weights, or {@code null} to upload them here;
+     * see {@code LlamaFP16FFNLayers#weightSourceGraphName}.
+     */
+    protected String weightSourceGraphName(int layerIndex) {
+        return null;
+    }
+
+    /** Phi-3's fused QKV and gate/up tensors, which the MLX prefill multiplies as they are. */
+    @Override
+    protected org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections.LayerWeights
+            mlxLayerWeights(int layerIndex) {
+        return org.beehive.jitllm.backend.tornado.layers.phi3.Phi3MlxLayerWeights.of(
+                (Phi3TornadoWeights) weights, layerIndex);
     }
 }

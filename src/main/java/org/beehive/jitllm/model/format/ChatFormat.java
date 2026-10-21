@@ -25,6 +25,14 @@ public interface ChatFormat {
 
     int getBeginOfText();
 
+    /**
+     * The tokens a prompt opens with: {@link #getBeginOfText()} alone, unless the family's template
+     * opens with more than one (GLM writes {@code [gMASK]<sop>}).
+     */
+    default List<Integer> beginOfTextTokens() {
+        return List.of(getBeginOfText());
+    }
+
     Set<Integer> getStopTokens();
 
     /**

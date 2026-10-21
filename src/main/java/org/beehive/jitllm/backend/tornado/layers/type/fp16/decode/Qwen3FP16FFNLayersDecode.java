@@ -64,11 +64,6 @@ public class Qwen3FP16FFNLayersDecode extends Qwen3FP16FFNLayers {
     // @formatter:on
     public static final int LAYERS_PER_GRAPH = 10;
 
-    @Override
-    protected int layersPerGraph() {
-        return LAYERS_PER_GRAPH;
-    }
-
     /**
      * The graph that ran before this one: the decode activation for the first group, the previous
      * group's graph otherwise. Only the layer that opens a graph asks — the rest are already in the

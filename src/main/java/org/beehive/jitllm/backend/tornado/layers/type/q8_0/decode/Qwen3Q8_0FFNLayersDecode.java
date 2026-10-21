@@ -27,7 +27,7 @@ public class Qwen3Q8_0FFNLayersDecode extends Qwen3Q8_0FFNLayers {
 
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "decodeActivation" : "layer_" + (layerIndex - 1);
+        return (layerIndex == 0) ? "decodeActivation" : layerGraphName(layerIndex - 1);
     }
 
     @Override
@@ -57,7 +57,7 @@ public class Qwen3Q8_0FFNLayersDecode extends Qwen3Q8_0FFNLayers {
             layer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
             layer.consumeFromDevice("decodeActivation", state.workspace.wrapBlockTable);
         } else {
-            String pred = "layer_" + (layerIndex - 1);
+            String pred = layerGraphName(layerIndex - 1);
             layer.consumeFromDevice(
                     pred,
                     context,

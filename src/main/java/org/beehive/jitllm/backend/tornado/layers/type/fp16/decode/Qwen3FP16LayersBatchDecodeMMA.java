@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
@@ -35,7 +36,7 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  *       TransformerBatchPrefillKernels#batchedDecodeAttentionFP16Out}
  * </ul>
  */
-public class Qwen3FP16LayersBatchDecodeMMA {
+public class Qwen3FP16LayersBatchDecodeMMA implements BatchDecodeLayers {
 
     static final int RMS_LOCAL_SIZE = 256;
 
@@ -453,6 +454,7 @@ public class Qwen3FP16LayersBatchDecodeMMA {
         return grid;
     }
 
+    @Override
     public void updateGridScheduler(GridScheduler scheduler) {
         int dim = config.dim();
         int hidDim = config.hiddenDim();
@@ -501,10 +503,12 @@ public class Qwen3FP16LayersBatchDecodeMMA {
         }
     }
 
+    @Override
     public List<ImmutableTaskGraph> getLayerImmutableTaskGraphs() {
         return layerITGs;
     }
 
+    @Override
     public String getLastLayerTaskGraphID() {
         return lastLayerTaskGraphID;
     }

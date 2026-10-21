@@ -20,7 +20,7 @@ import org.beehive.jitllm.tensor.standard.FloatTensor;
  * <p>The arrays are sized for {@link #blockCount} blocks: the trunk plus its MTP blocks, so an MTP
  * block's attention and feed-forward weights sit at their own index alongside the trunk's.
  */
-public final class Qwen35StandardWeights implements Weights {
+public class Qwen35StandardWeights implements Weights {
 
     /** Trunk layers plus MTP blocks; the length of every per-layer array here. */
     public final int blockCount;
@@ -170,6 +170,42 @@ public final class Qwen35StandardWeights implements Weights {
         this.nextnEhProj = nextnEhProj;
         this.nextnSharedHeadNorm = nextnSharedHeadNorm;
         this.weightType = weightType;
+    }
+
+    /** The trunk of {@code other}, for a family built on this one that adds its own tensors. */
+    protected Qwen35StandardWeights(Qwen35StandardWeights other) {
+        this(
+                other.blockCount,
+                other.tokenEmbeddingTable,
+                other.attnNorm,
+                other.ffnNorm,
+                other.ffnGate,
+                other.ffnDown,
+                other.ffnUp,
+                other.outputNorm,
+                other.output,
+                other.freqCisReal,
+                other.freqCisImag,
+                other.wq,
+                other.wk,
+                other.wv,
+                other.wo,
+                other.attnQNorm,
+                other.attnKNorm,
+                other.ssmQkv,
+                other.ssmGate,
+                other.ssmConv1d,
+                other.ssmAlpha,
+                other.ssmBeta,
+                other.ssmDtBias,
+                other.ssmA,
+                other.ssmNorm,
+                other.ssmOut,
+                other.nextnENorm,
+                other.nextnHNorm,
+                other.nextnEhProj,
+                other.nextnSharedHeadNorm,
+                other.weightType);
     }
 
     // @formatter:on

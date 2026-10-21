@@ -471,6 +471,138 @@ public class Gemma4Kernels {
     }
 
     /**
+     * {@link #attentionWithSlidingWindowSplit} over a half-precision cache, for the layers whose
+     * shape the grouped decode kernel is not written for: the 31B's sliding-window layers have two
+     * query heads per key/value head. FP32 after the cache read; same partial layout and worker.
+     */
+    public static void attentionWithSlidingWindowSplitFP16(
+            KernelContext context,
+            FloatArray q,
+            HalfFloatArray keyCache,
+            HalfFloatArray valueCache,
+            FloatArray wrapAtt,
+            FloatArray attSplit,
+            int nHeads,
+            int headDim,
+            int kvDim,
+            int kvMul,
+            IntArray positionHolder,
+            int cacheBaseOffset,
+            int windowSize,
+            int contextLength,
+            int nSplits,
+            int localMemSize) {
+
+        int tid = context.localIdx;
+        int group = context.groupIdx;
+        int localSize = context.localGroupSizeX;
+
+        int h = group / nSplits;
+        int split = group - h * nSplits;
+        if (h >= nHeads) {
+            return;
+        }
+
+        int pos = positionHolder.get(0);
+        int windowStart = Math.max(0, pos - windowSize + 1);
+        int hOff = h * contextLength;
+        int kvHeadIdx = h / kvMul;
+        int qOffset = h * headDim;
+
+        int total = pos - windowStart + 1;
+        int chunk = (total + nSplits - 1) / nSplits;
+        int from = windowStart + split * chunk;
+        int to = Math.min(pos, from + chunk - 1);
+
+        int headBase = h * nSplits * (headDim + 2);
+        int mBase = headBase + nSplits * headDim;
+        int lBase = mBase + nSplits;
+
+        float[] qShared = context.allocateFloatLocalArray(headDim);
+        float[] reduce = context.allocateFloatLocalArray(localMemSize);
+
+        // An empty slice still has to write its state, or the combine reads whatever was there.
+        if (from > to) {
+            for (int d = tid; d < headDim; d += localSize) {
+                attSplit.set(headBase + split * headDim + d, 0.0f);
+            }
+            if (tid == 0) {
+                attSplit.set(mBase + split, Float.NEGATIVE_INFINITY);
+                attSplit.set(lBase + split, 0.0f);
+            }
+            return;
+        }
+
+        for (int i = tid; i < headDim; i += localSize) {
+            qShared[i] = q.get(qOffset + i);
+        }
+        context.localBarrier();
+
+        for (int t = from + tid; t <= to; t += localSize) {
+            int keyOffset = cacheBaseOffset + t * kvDim + kvHeadIdx * headDim;
+            float score = 0.0f;
+            for (int i = 0; i < headDim; i++) {
+                score += qShared[i] * keyCache.get(keyOffset + i).getFloat32();
+            }
+            // Gemma4 attention scaling = 1.0 (no 1/sqrt(headDim))
+            wrapAtt.set(hOff + t, score);
+        }
+        context.localBarrier();
+
+        float localMax = Float.NEGATIVE_INFINITY;
+        for (int t = from + tid; t <= to; t += localSize) {
+            float v = wrapAtt.get(hOff + t);
+            if (v > localMax) {
+                localMax = v;
+            }
+        }
+        reduce[tid] = localMax;
+        context.localBarrier();
+        for (int stride = localSize / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                float other = reduce[tid + stride];
+                if (other > reduce[tid]) {
+                    reduce[tid] = other;
+                }
+            }
+            context.localBarrier();
+        }
+        float sliceMax = reduce[0];
+        context.localBarrier();
+
+        float localSum = 0.0f;
+        for (int t = from + tid; t <= to; t += localSize) {
+            float e = TornadoMath.exp(wrapAtt.get(hOff + t) - sliceMax);
+            wrapAtt.set(hOff + t, e);
+            localSum += e;
+        }
+        reduce[tid] = localSum;
+        context.localBarrier();
+        for (int stride = localSize / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                reduce[tid] += reduce[tid + stride];
+            }
+            context.localBarrier();
+        }
+        float sliceSum = reduce[0];
+        context.localBarrier();
+
+        // Unnormalised numerators: the combine divides by the merged denominator.
+        for (int d = tid; d < headDim; d += localSize) {
+            float acc = 0.0f;
+            for (int t = from; t <= to; t++) {
+                int valueOffset = cacheBaseOffset + t * kvDim + kvHeadIdx * headDim;
+                acc += wrapAtt.get(hOff + t) * valueCache.get(valueOffset + d).getFloat32();
+            }
+            attSplit.set(headBase + split * headDim + d, acc);
+        }
+        if (tid == 0) {
+            attSplit.set(mBase + split, sliceMax);
+            attSplit.set(lBase + split, sliceSum);
+        }
+    }
+
+    /**
      * Sliding-window attention, one workgroup per head, lanes parallel within it.
      *
      * <p>Replaces a {@code @Parallel} loop over heads. That loop was launched on {@code
@@ -869,6 +1001,17 @@ public class Gemma4Kernels {
         sum += context.simdShuffleDown(sum, 1);
         if (lane == 0) {
             out.set(row, sum);
+        }
+    }
+
+    /**
+     * {@code dst[0, n) = src[0, n)}: the values of a layer without a value projection, which are
+     * its keys as projected. Worker: {@code n} lanes rounded up to the local size.
+     */
+    public static void copyValues(KernelContext context, FloatArray src, FloatArray dst, int n) {
+        int i = context.globalIdx;
+        if (i < n) {
+            dst.set(i, src.get(i));
         }
     }
 }

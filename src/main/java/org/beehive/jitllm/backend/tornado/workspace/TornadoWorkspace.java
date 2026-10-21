@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado.workspace;
 
 import org.beehive.jitllm.inference.Logits;
+import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
@@ -23,6 +24,13 @@ import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
  * gain a call.
  */
 public final class TornadoWorkspace {
+
+    /**
+     * The repack of this session's packed projections, collected from the layer graphs as they are
+     * built and appended to the plan as graphs of its own.
+     */
+    public final org.beehive.jitllm.backend.tornado.plan.PackedRepack packedRepack =
+            new org.beehive.jitllm.backend.tornado.plan.PackedRepack();
 
     public FloatArray wrapAttSplit;
     public FloatArray
@@ -89,6 +97,14 @@ public final class TornadoWorkspace {
     // workgroup size.
     public HalfFloatArray wrapXFP16;
     public HalfFloatArray embeddingXBatch; // B × dim  (FP16 input)
+
+    /**
+     * B rows of a Q8_0 embedding as the file stores them, for a batch activation that decodes them
+     * on the device. Null unless such an activation allocated it: the host then bulk-copies raw
+     * rows here instead of decoding them element by element in Java.
+     */
+    public ByteArray embeddingQ8Batch;
+
     public FloatArray wrapXBatch; // B × dim  (live activations / Q8_0 dequant)
     public HalfFloatArray wrapXbFP16Batch; // B × dim  (RMSNorm output, FP16)
     public FloatArray wrapQBatch; // B × qDim (Q projection)
@@ -173,6 +189,36 @@ public final class TornadoWorkspace {
     /** The query half of an attention layer's fused query/gate projection, de-interleaved. */
     public FloatArray wrapAttnQ;
 
+    /** A {@code deepseek2} token's compressed query, before its norm and {@code attn_q_b}. */
+    public FloatArray wrapQueryLatent;
+
+    /** {@code attn_kv_a_mqa}'s output: the latent, then the rotated key. */
+    public FloatArray wrapCompressedKv;
+
+    /** Every head's query absorbed into the latent space, then its rotated part. */
+    public FloatArray wrapAbsorbedQuery;
+
+    /** Every head's attended latent, before {@code attn_v_b}. */
+    public FloatArray wrapLatentOut;
+
+    // A deepseek2 chunk's buffers (see DeepSeek2BatchKernels): the projections' outputs, the
+    // latent attention's (token, head) rows and their FP16 copies, and the dense feed-forward's.
+    public FloatArray queryLatentBatch;
+    public FloatArray compressedKvBatch;
+    public FloatArray queryBatch;
+    public HalfFloatArray queryF16Batch;
+    public FloatArray absorbedBatch;
+    public HalfFloatArray absorbedF16Batch;
+    public HalfFloatArray keysF16;
+    public HalfFloatArray latentTF16;
+    public FloatArray scoresBatch;
+    public HalfFloatArray probsF16Batch;
+    public FloatArray latentBatch;
+    public HalfFloatArray latentF16Batch;
+    public FloatArray attnOutBatch;
+    public FloatArray gateBatch;
+    public FloatArray hiddenBatch;
+
     /** Its gate half, applied through a logistic to the attention result. */
     public FloatArray wrapAttnGate;
 
@@ -227,6 +273,19 @@ public final class TornadoWorkspace {
     public HalfFloatArray wrapDequantScratchFP16;
 
     /**
+     * One projection's weights decoded to FP32, for a batched projection run by cuBLAS on a
+     * representation it cannot read (Q8_0). Allocated by the batch prefill that needs it.
+     */
+    public FloatArray wrapDequantScratchF32;
+
+    /**
+     * The partial sums of a batched Q8_0 projection whose int8 GEMM is split along K, one output
+     * matrix per split, before they are added together. Allocated by the batch prefill that needs
+     * it.
+     */
+    public FloatArray wrapQ8SplitPartial;
+
+    /**
      * The int8 pair's scratch: the chunk's activations quantized to int8 with a scale per 32 (one
      * buffer, requantized before each group of consumers in graph order), and one Q4_0 matrix
      * decoded to int8 in the B-operand word layout with its FP32 block scales.
@@ -234,8 +293,6 @@ public final class TornadoWorkspace {
     public uk.ac.manchester.tornado.api.types.arrays.ByteArray wrapQ8ActBatch;
 
     public FloatArray wrapQ8ActScales;
-    public uk.ac.manchester.tornado.api.types.arrays.ByteArray wrapInt8WeightScratch;
-    public FloatArray wrapInt8WeightScales;
 
     public FloatArray wrapSsmQkvBatch;
     public FloatArray wrapSsmConvOutBatch;
@@ -250,6 +307,37 @@ public final class TornadoWorkspace {
     public FloatArray wrapExpertGate;
     public FloatArray wrapSharedGate;
     public FloatArray wrapSharedOutput;
+
+    /**
+     * A {@code qwen35moe} token's expert activations: every selected expert's hidden rows, then the
+     * shared expert's.
+     */
+    public FloatArray wrapMoeHidden;
+
+    /** {@link #wrapMoeHidden} quantized per 32-block, for the packed-integer down projection. */
+    public IntArray wrapMoeHiddenQuants;
+
+    public FloatArray wrapMoeHiddenQScales;
+    public IntArray wrapMoeHiddenQSums;
+
+    // A qwen35moe chunk's routing and expert activations (see Qwen35MoeBatchKernels).
+    public FloatArray wrapMoeLogitsBatch;
+    public IntArray wrapMoeIdsBatch;
+    public FloatArray wrapMoeWeightsBatch;
+    public FloatArray wrapMoeSharedGateBatch;
+    public IntArray wrapMoeSortedToken;
+    public IntArray wrapMoePosition;
+    public IntArray wrapMoeTiles;
+    public FloatArray wrapMoeHiddenBatch;
+    public ByteArray wrapMoeHiddenQ8;
+    public FloatArray wrapMoeHiddenScales;
+    public FloatArray wrapMoeOutBatch;
+    public FloatArray wrapMoeSharedGateUp;
+    public FloatArray wrapMoeSharedHidden;
+    public ByteArray wrapMoeSharedQ8;
+    public FloatArray wrapMoeSharedScales;
+    public FloatArray wrapMoeSharedOut;
+
     public FloatArray wrapRouterLogitsBatch;
     public IntArray activeBatchSizeHolder;
     public IntArray wrapSelectedExpertsBatch;

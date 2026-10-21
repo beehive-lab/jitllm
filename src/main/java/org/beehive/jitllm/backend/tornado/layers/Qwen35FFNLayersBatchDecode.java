@@ -1,12 +1,9 @@
 package org.beehive.jitllm.backend.tornado.layers;
 
-import java.util.ArrayList;
-import java.util.List;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.Qwen35State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
 import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
-import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 
@@ -43,62 +40,57 @@ public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
     }
 
     /**
-     * Adjacent layers to a graph.
-     *
-     * <p>Four: decode submissions fall to a quarter without building one graph for the whole trunk.
-     * Not a tuning knob and not user-settable — the grouping is a property of this family's plan,
-     * and changing it is an experiment with its own measurement.
+     * The layers {@code [firstLayer, endLayer)} only: one stage of a model split across devices.
+     * Graphs group layers counted from the stage's first one.
      */
-    private static final int LAYERS_PER_GRAPH = 4;
+    public Qwen35FFNLayersBatchDecode(
+            String taskGraphName,
+            Qwen35State state,
+            Qwen35TornadoWeights weights,
+            Qwen35Configuration config,
+            SchedulerType schedulerType,
+            int firstLayer,
+            int endLayer) {
+        this(taskGraphName, state, weights, config, schedulerType, firstLayer, endLayer, null);
+    }
+
+    /**
+     * The layers {@code [firstLayer, endLayer)} with the feed-forward of a family built on this
+     * one.
+     */
+    public Qwen35FFNLayersBatchDecode(
+            String taskGraphName,
+            Qwen35State state,
+            Qwen35TornadoWeights weights,
+            Qwen35Configuration config,
+            SchedulerType schedulerType,
+            int firstLayer,
+            int endLayer,
+            Qwen35FeedForward feedForward) {
+        super(
+                taskGraphName,
+                state,
+                weights,
+                config,
+                schedulerType,
+                "decodeActivation",
+                firstLayer,
+                endLayer,
+                feedForward);
+    }
+
+    /**
+     * Adjacent layers to a graph: the whole stage by default, as for the single-token stages
+     * ({@link Qwen35FFNLayersGrouped#LAYERS_PER_GRAPH}). Every graph is a launch and a stream
+     * synchronization per token, which is most of the time between kernels for a model whose layers
+     * are as short as a mixture of experts' are.
+     */
+    private static final int LAYERS_PER_GRAPH = Qwen35FFNLayersGrouped.LAYERS_PER_GRAPH;
 
     /** How many layers this family puts in one decode graph. Read by the topology tests. */
+    @Override
     protected int layersPerGraph() {
         return LAYERS_PER_GRAPH;
-    }
-
-    // @formatter:off
-    /**
-     * One graph per group of layers, in order, with a smaller graph for any remainder.
-     *
-     * <p>Overrides the one-graph-per-layer construction rather than generalising it: the grouping
-     * is this family's, and every other family keeps the loop it had.
-     */
-    // @formatter:on
-    @Override
-    protected void setupFFNLayers() {
-        int layers = config.numberOfLayers();
-        List<ImmutableTaskGraph> graphs = new ArrayList<>();
-        for (int first = 0; first < layers; first += LAYERS_PER_GRAPH) {
-            TaskGraph graph = new TaskGraph(layerGraphName(first));
-            int last = Math.min(first + LAYERS_PER_GRAPH, layers) - 1;
-            for (int layer = first; layer <= last; layer++) {
-                appendLayer(graph, layer);
-            }
-            lastFFNLayerTaskGraphID = graph.getTaskGraphName();
-            graphs.add(graph.snapshot());
-        }
-        ffnLayerITGs = List.copyOf(graphs);
-    }
-
-    /** The graph holding {@code layerIndex}: named for the first layer in it. */
-    @Override
-    protected String layerGraphName(int layerIndex) {
-        return "layer_" + (layerIndex - layerIndex % LAYERS_PER_GRAPH);
-    }
-
-    // @formatter:off
-    /**
-     * What keeps a graph's layers' tasks apart inside it.
-     *
-     * <p>Grid keys are {@code graphName.taskName}, so without this every layer in a graph would
-     * claim {@code layer_0.attn_rms_reduce}. The first layer of a graph keeps the bare names the
-     * ungrouped family used, so only the later slots' keys are new.
-     */
-    // @formatter:on
-    @Override
-    protected String layerTaskPrefix(int layerIndex) {
-        int slot = layerIndex % LAYERS_PER_GRAPH;
-        return slot == 0 ? "" : "l" + slot + "_";
     }
 
     /** The batch-prefill graph for the same block already uploaded these weights. */
@@ -109,7 +101,7 @@ public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
 
     @Override
     protected TaskGraph configureLayerDataTransfers(TaskGraph layer, int layerIndex) {
-        if (layerIndex != 0) {
+        if (layerIndex != firstLayer) {
             return super.configureLayerDataTransfers(layer, layerIndex);
         }
         Qwen35State state = (Qwen35State) this.state;
@@ -141,11 +133,27 @@ public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
                 state.workspace.wrapSsmK,
                 state.workspace.wrapSsmV,
                 state.workspace.wrapSsmOut);
+        if (feedForward != null) {
+            layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, feedForward.scratch());
+        }
         // What prefill left behind: the caches, the table that addresses them, and the recurrence.
-        layer.consumeFromDevice("decodeActivation", keyStore(), valueStore());
-        layer.consumeFromDevice("decodeActivation", state.workspace.wrapBlockTable);
+        String source = cacheSource();
+        layer.consumeFromDevice(source, keyStore(), valueStore());
+        layer.consumeFromDevice(source, state.workspace.wrapBlockTable);
         layer.consumeFromDevice(
-                "decodeActivation", state.workspace.wrapConvState, state.workspace.wrapDeltaState);
+                source, state.workspace.wrapConvState, state.workspace.wrapDeltaState);
         return layer;
+    }
+
+    /**
+     * The graph the first layer takes the caches and recurrent state from. On the whole model it is
+     * the decode activation, which relays them from the last prefill layer. A later pipeline stage
+     * starts with a graph that only receives the hidden state, so its first layer takes them
+     * straight from the stage's own last prefill layer.
+     */
+    private String cacheSource() {
+        return firstLayer == 0
+                ? "decodeActivation"
+                : "batchLayer_" + (endLayer(config.numberOfLayers()) - 1);
     }
 }

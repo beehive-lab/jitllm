@@ -137,6 +137,32 @@ under-predicts by roughly the size of the model, and an under-prediction admits 
 then dies part-allocated. `GraphTopologyConsistencyTest` pins each layout's declared family
 count against its graph indices.
 
+The tensor-core batched prefill layers add a per-session workspace — tensor-core attention
+operands, split-K partial products, and the FP16 projections a Q8_0 (or native F16) prefill
+decodes — which each layer class sizes with the arithmetic its constructor allocates by
+(`TornadoPlanProvider.batchPrefillWorkspace`). Each session builds its own plan, so the
+workspace is charged once per session. Whether the decoded projections stay resident is
+decided against the budget at load (`MemoryPreflight.resolveDecodedProjections`) and carried
+to the layers in the execution policy, so the plan builds what was predicted; when not even
+the per-chunk scratch fits beside an exactly predicted remainder, the load is refused. These
+components are not bisected against measurement, so a plan that carries them is
+`CONSERVATIVE`.
+
+The MLX prefill on Metal is accounted the same way (`MlxPrefill.workspace`, through each
+provider's `batchPrefillWorkspace`): the stacked F16 copies, or the resident FP16 copies or
+affine repack of Q8_0 and Q4_0 projections, the FP16 GEMM staging, and the attention's
+contiguous key/value buffers sized for the whole context. The model's projection weights are
+not charged twice: the prefill graphs stop binding the ones MLX replaced and the decode graphs
+upload those themselves, binding the rest from the prefill graphs. Measured on Qwen3-0.6B at
+width 128 and context 4096, the prediction is within 2 MiB above the allocation in every
+representation.
+
+A `CONSERVATIVE` plan is report-only, with one exception: when its **logical** bytes — every
+buffer counted once, no duplication or headers — already exceed the configured budget, the
+load is refused before the first device buffer (`MemoryPlan.exceedsConfiguredBudgetAtLowerBound`).
+That is a lower bound, so it cannot refuse a load that would have run. It is what refuses
+Mistral-7B Q8_0 with an MLX prefill of 2048 under 14 GB, which otherwise died part-allocated.
+
 ## A note on device memory and test forks
 
 Device memory a closed session frees returns to TornadoVM's buffer provider but not to the

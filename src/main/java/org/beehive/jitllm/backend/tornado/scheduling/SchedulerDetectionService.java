@@ -15,7 +15,7 @@ public class SchedulerDetectionService {
      * holds (elsewhere the shared-memory GEMVs are used).
      */
     public static boolean isWarpShuffleSupported() {
-        return TornadoDevices.current().capabilities().supports(DeviceCapability.WARP_SHUFFLE);
+        return TornadoDevices.target().capabilities().supports(DeviceCapability.WARP_SHUFFLE);
     }
 
     /**
@@ -27,7 +27,7 @@ public class SchedulerDetectionService {
      */
     /** Whether packed FP16 pair arithmetic holds CPU parity here. */
     public static boolean isPackedHalf2MathSupported() {
-        return TornadoDevices.current().capabilities().supports(DeviceCapability.PACKED_HALF2_MATH);
+        return TornadoDevices.target().capabilities().supports(DeviceCapability.PACKED_HALF2_MATH);
     }
 
     /**
@@ -37,27 +37,25 @@ public class SchedulerDetectionService {
      * which is what the layers branch on.
      */
     public static boolean isShuffleReducedFp16GemvSupported() {
-        return TornadoDevices.current()
+        return TornadoDevices.target()
                 .capabilities()
                 .supports(DeviceCapability.SHUFFLE_REDUCED_FP16_GEMV);
     }
 
     public static boolean isSubgroupShuffle32Supported() {
-        return TornadoDevices.current()
+        return TornadoDevices.target()
                 .capabilities()
                 .supports(DeviceCapability.SUBGROUP_SHUFFLE_32);
     }
 
     /**
-     * Whether the multi-workgroup split-KV flash-decoding attention kernel ({@code
-     * processHeadsFlashAttentionSplitKV}) fails to JIT — true on Metal, where Qwen3 layers fall
-     * back to the single-workgroup-per-head online-softmax kernel.
-     *
-     * <p>Kept under its old name because ~10 call sites read it as a flag; what it now asks is the
-     * capability rather than the backend's identity.
+     * Whether the device lacks the multi-workgroup split-KV flash-decoding attention kernels, in
+     * which case Qwen3 layers fall back to the single-workgroup-per-head online-softmax kernel.
+     * Every backend grants {@link DeviceCapability#SPLIT_KV_ATTENTION} today; Metal runs the
+     * 32-thread kernel that {@link SplitKvAttentionPolicy} selects.
      */
-    public static boolean isMetalBackend() {
-        return !TornadoDevices.current()
+    public static boolean lacksSplitKvAttention() {
+        return !TornadoDevices.target()
                 .capabilities()
                 .supports(DeviceCapability.SPLIT_KV_ATTENTION);
     }
@@ -70,8 +68,20 @@ public class SchedulerDetectionService {
      */
     public static SchedulerType determineSchedulerType(Model model) {
         boolean singlePassRms =
-                TornadoDevices.current().capabilities().supports(DeviceCapability.SINGLE_PASS_RMS);
+                TornadoDevices.target().capabilities().supports(DeviceCapability.SINGLE_PASS_RMS);
         boolean isNotMistral = model.getModelType() != ModelType.MISTRAL;
         return (singlePassRms && isNotMistral) ? SchedulerType.NVIDIA : SchedulerType.NON_NVIDIA;
+    }
+
+    /**
+     * The scheduler of Llama's layer graphs, whichever model's weights they run: the device half of
+     * {@link #determineSchedulerType} alone. Mistral's batched plans run Llama's layers, and those
+     * layers do not carry the attention that keeps Mistral's own single-token layers off the NVIDIA
+     * scheduler.
+     */
+    public static SchedulerType llamaLayerSchedulerType() {
+        return TornadoDevices.target().capabilities().supports(DeviceCapability.SINGLE_PASS_RMS)
+                ? SchedulerType.NVIDIA
+                : SchedulerType.NON_NVIDIA;
     }
 }

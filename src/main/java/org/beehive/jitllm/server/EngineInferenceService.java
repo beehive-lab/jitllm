@@ -199,7 +199,7 @@ public final class EngineInferenceService implements AutoCloseable {
         ChatFormat chatFormat = model.chatFormat();
         List<Integer> tokens = new ArrayList<>();
         if (model.shouldAddBeginOfText()) {
-            tokens.add(chatFormat.getBeginOfText());
+            tokens.addAll(chatFormat.beginOfTextTokens());
         }
         for (org.beehive.jitllm.api.ChatMessage message : request.messages()) {
             tokens.addAll(chatFormat.encodeMessage(asFormatMessage(message)));

@@ -325,6 +325,13 @@ public class Qwen3PagedKvKernels {
         int batchIdx = globalIdx / halfQDim;
         int pairIdx = globalIdx % halfQDim;
 
+        // Padded rows are not tokens, and their positions can lie past the context the block table
+        // maps, so they must not write the cache. No barriers here, so an early return is safe per
+        // lane.
+        if (batchIdx >= batchStartPosHolder.get(1)) {
+            return;
+        }
+
         int pos = batchStartPosHolder.get(0) + batchIdx;
         int slot = batchStartPosHolder.get(2);
 
@@ -398,6 +405,13 @@ public class Qwen3PagedKvKernels {
         int halfQDim = qDim / 2;
         int batchIdx = globalIdx / halfQDim;
         int pairIdx = globalIdx % halfQDim;
+
+        // Padded rows are not tokens, and their positions can lie past the context the block table
+        // maps, so they must not write the cache. No barriers here, so an early return is safe per
+        // lane.
+        if (batchIdx >= batchStartPosHolder.get(1)) {
+            return;
+        }
 
         int pos = batchStartPosHolder.get(0) + batchIdx;
         int slot = batchStartPosHolder.get(2);

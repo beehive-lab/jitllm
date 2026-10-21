@@ -149,14 +149,12 @@ public class TornadoDevicesTest {
     }
 
     @Test
-    public void theMetalPredicateIsTheAbsenceOfSplitKvAttention() {
-        // It reads as a backend question and is a capability question: Metal is where the split-KV
-        // kernel fails to JIT, and that is what every call site actually branches on.
+    public void theFallbackPredicateIsTheAbsenceOfSplitKvAttention() {
         assertEquals(
                 !TornadoDevices.current()
                         .capabilities()
                         .supports(DeviceCapability.SPLIT_KV_ATTENTION),
-                SchedulerDetectionService.isMetalBackend());
+                SchedulerDetectionService.lacksSplitKvAttention());
     }
 
     @Test

@@ -24,6 +24,15 @@ public class Qwen3Q8_0FFNLayersPrefillDecode extends Qwen3Q8_0FFNLayers {
         super(taskGraph, state, weights, config, schedulerType);
     }
 
+    /**
+     * One layer per graph: the sequential prefill-decode plan addresses its layer graphs by layer
+     * index, so it cannot run grouped ones.
+     */
+    @Override
+    protected int layersPerGraph() {
+        return 1;
+    }
+
     @Override
     protected String predecessorGraphName(int layerIndex) {
         return (layerIndex == 0) ? "decodeActivation" : "layer_" + (layerIndex - 1);

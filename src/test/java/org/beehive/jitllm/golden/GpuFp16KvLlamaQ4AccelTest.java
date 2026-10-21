@@ -10,4 +10,9 @@ public class GpuFp16KvLlamaQ4AccelTest {
     public void singleToken() throws Exception {
         GpuFp16KvPrecision.check(Fixture.LLAMA_3_2_1B_Q4_0, GpuFp16KvPrecision.Mode.SINGLE_TOKEN);
     }
+
+    @Test
+    public void batchedPrefill() throws Exception {
+        GpuFp16KvPrecision.checkBatchedOnMetal(Fixture.LLAMA_3_2_1B_Q4_0);
+    }
 }

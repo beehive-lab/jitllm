@@ -634,6 +634,19 @@ public final class Gemma4BatchPrefillKernels {
 
     // @formatter:off
     /**
+     * Copies an F16 weight into the shared FP16 scratch at {@code destOffset}: the F16 twin of
+     * {@link #dequantizeQ8ToFP16}, for a model held in F16. One thread per element of the {@code
+     * n}.
+     */
+    public static void copyF16(
+            KernelContext context, HalfFloatArray w, HalfFloatArray out, int destOffset, int n) {
+        int gid = context.globalIdx;
+        if (gid < n) {
+            out.set(destOffset + gid, w.get(gid));
+        }
+    }
+
+    /**
      * A Q8_0 weight matrix decoded into FP16, one element per thread.
      *
      * <p><b>Why this exists.</b> The Q8_0 tensor-core GEMMs decode their weights inside the K-loop,

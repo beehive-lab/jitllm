@@ -22,6 +22,16 @@ public record DevstralConfiguration(
         float ropeTheta)
         implements Configuration {
 
+    /**
+     * One: batched prefill lays out a prefill and a decode family of per-layer graphs, but the
+     * decode graphs consume the weights the prefill graphs uploaded (their {@code
+     * weightSourceGraphName}), so the plan holds the weights once, as Llama's does.
+     */
+    @Override
+    public int weightBindingFamilies(int layerGraphFamilies) {
+        return 1;
+    }
+
     @Override
     public String quantization() {
         return quantization;

@@ -125,7 +125,17 @@ public record Options(
         out.println(
                 "  --with-prefill-decode         enable prefill/decode separation (skip logits during prefill)");
         out.println(
-                "  --batch-prefill-size <int>    batched prefill chunk size; requires --with-prefill-decode, must be > 1, enables batched CPU/GPU prefill");
+                "  --batch-prefill-size <int>    batched prefill chunk size; requires --with-prefill-decode, must be > 1, enables batched CPU/GPU prefill"
+                        + " (default on GPU: 512, where the model supports it)");
+        out.println("  --no-batch-prefill            read the prompt one token at a time on GPU");
+        out.println(
+                "  --no-native-libraries         keep the JIT kernels where cuBLAS/cuDNN or MLX would run (GPU default)");
+        out.println(
+                "  --devices <list>              split the model's layers across these TornadoVM devices, one pipeline stage each, e.g. 0:0,0:1");
+        out.println(
+                "  --tensor-split <list>         share of layers per --devices entry, e.g. 41,39, default equal");
+        out.println(
+                "  --split-transport <name>      nccl (default, needs a -Pnccl build) or host: how the hidden state moves between devices");
         out.println(
                 "  --print-taskgraph-chain       print every TaskGraph of the GPU plan and when it runs (stderr)");
         out.println();
@@ -186,6 +196,7 @@ public record Options(
         Boolean useTornadovm = null; // null means not specified via command line
         boolean withPrefillDecode = false;
         int batchPrefillSize = 1;
+        boolean noBatchPrefill = false;
 
         for (int i = firstArg; i < args.length; i++) {
             String optionName = args[i];
@@ -207,6 +218,12 @@ public record Options(
                                 org.beehive.jitllm.runtime.policy.ExecutionPolicy
                                         .NATIVE_LIBRARIES_PROPERTY,
                                 "true");
+                case "--no-native-libraries" ->
+                        System.setProperty(
+                                org.beehive.jitllm.runtime.policy.ExecutionPolicy
+                                        .NATIVE_LIBRARIES_PROPERTY,
+                                "false");
+                case "--no-batch-prefill" -> noBatchPrefill = true;
                 case "--verbose", "-v" -> System.setProperty("jitllm.verbose", "true");
                 case "--with-prefill-decode" -> withPrefillDecode = true;
                 case "--help", "-h" -> {
@@ -248,6 +265,21 @@ public record Options(
                         case "--echo" -> echo = Boolean.parseBoolean(nextArg);
                         case "--use-tornadovm" -> useTornadovm = Boolean.parseBoolean(nextArg);
                         case "--batch-prefill-size" -> batchPrefillSize = Integer.parseInt(nextArg);
+                        case "--devices" ->
+                                System.setProperty(
+                                        org.beehive.jitllm.runtime.backend.DeviceSplit
+                                                .DEVICES_PROPERTY,
+                                        nextArg);
+                        case "--tensor-split" ->
+                                System.setProperty(
+                                        org.beehive.jitllm.runtime.backend.DeviceSplit
+                                                .SHARES_PROPERTY,
+                                        nextArg);
+                        case "--split-transport" ->
+                                System.setProperty(
+                                        org.beehive.jitllm.runtime.backend.DeviceSplit
+                                                .TRANSPORT_PROPERTY,
+                                        nextArg);
                         default -> require(false, "Unknown option: %s", optionName);
                     }
                 }
@@ -261,6 +293,12 @@ public record Options(
 
         if (useTornadovm == null) {
             useTornadovm = getDefaultTornadoVM();
+        }
+        if (noBatchPrefill) {
+            require(
+                    !withPrefillDecode && batchPrefillSize == 1,
+                    "--no-batch-prefill conflicts with --with-prefill-decode and --batch-prefill-size");
+            System.setProperty("jitllm.withPrefillDecode", "false");
         }
 
         return new Options(

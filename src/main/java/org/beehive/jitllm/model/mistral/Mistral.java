@@ -99,12 +99,10 @@ public class Mistral extends AbstractModel {
             boolean echo,
             IntConsumer onTokenGenerated,
             TornadoVMMasterPlan tornadoVMPlan) {
+        // Batched prefill runs Llama's layer graphs (see MistralFP16PlanComponents) through the
+        // shared GPU loop; the sequential prefill/decode plan is not offered.
         if (state.executionPolicy().phaseStrategy() == PhaseStrategy.PREFILL_DECODE
-                && state.executionPolicy().prefillBatchSize() > 1) {
-            throw new UnsupportedOperationException(
-                    "Batch prefill/decode on GPU not yet implemented for Mistral");
-        }
-        if (state.executionPolicy().phaseStrategy() == PhaseStrategy.PREFILL_DECODE) {
+                && state.executionPolicy().prefillBatchSize() <= 1) {
             throw new UnsupportedOperationException(
                     "Prefill/decode on GPU not yet implemented for Mistral");
         }

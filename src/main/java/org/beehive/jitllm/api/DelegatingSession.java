@@ -387,7 +387,7 @@ final class DelegatingSession implements GenerationSession {
             tokens.addAll(assistantTurnTerminator(chatFormat));
         } else {
             if (model.shouldAddBeginOfText()) {
-                tokens.add(chatFormat.getBeginOfText());
+                tokens.addAll(chatFormat.beginOfTextTokens());
             }
             if (model.shouldAddSystemPrompt() && request.systemPrompt() != null) {
                 tokens.addAll(

@@ -108,8 +108,19 @@ public class Phi3 extends AbstractModel {
             TornadoVMMasterPlan tornadoVMPlan) {
         if (state.executionPolicy().phaseStrategy() == PhaseStrategy.PREFILL_DECODE
                 && state.executionPolicy().prefillBatchSize() > 1) {
-            throw new UnsupportedOperationException(
-                    "Batch prefill/decode on GPU not yet implemented for Phi3");
+            // Batched prefill, then decode; the prompt is charged against the budget as this
+            // family's single-token loop does.
+            return TokenGenerationLoop.generateTokensGPUPrefillDecode(
+                    this,
+                    state,
+                    startPosition,
+                    promptTokens,
+                    stopTokens,
+                    maxTokens,
+                    sampler,
+                    echo,
+                    onTokenGenerated,
+                    tornadoVMPlan);
         }
         if (state.executionPolicy().phaseStrategy() == PhaseStrategy.PREFILL_DECODE) {
             throw new UnsupportedOperationException(

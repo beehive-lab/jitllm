@@ -492,4 +492,78 @@ public final class TransformerComputeKernelsQ4_1 {
             }
         }
     }
+
+    // @formatter:off
+    /**
+     * {@code output[row] = w[row]·x} as packed integer dot products, the activation quantized by
+     * {@link TransformerComputeKernelsQ4_0#quantizeActivationQ8Blocks}. A Q4_1 weight is {@code d *
+     * q + m} with {@code q} in {@code [0, 15]}, so a block contributes {@code xScale * (d * dot(q,
+     * xq) + m * sum(xq))}: the quants' products by {@code dp4a}, the minimum by the activation
+     * block's own sum of quants. Layout and reduction as the Q4_0 kernel: one workgroup per row,
+     * lanes walk blocks, warps reduce by shuffle; {@code localWorkGroupSize} a multiple of 32.
+     */
+    // @formatter:on
+    public static void matrixVectorGenericQ4_1DP4A(
+            KernelContext context,
+            IntArray xQuants,
+            FloatArray xScales,
+            IntArray xSums,
+            FloatArray output,
+            ByteArray w,
+            int n,
+            int d,
+            int localWorkGroupSize) {
+        int rowId = context.groupIdx;
+        if (rowId >= d) {
+            return;
+        }
+        int localId = context.localIdx;
+        int warpCount = localWorkGroupSize / 32;
+        float[] warpSums = context.allocateFloatLocalArray(warpCount);
+
+        int blocksPerRow = (n + QK - 1) / QK;
+        int rowBlockOffset = rowId * blocksPerRow;
+
+        float partialSum = 0.0f;
+        for (int block = localId; block < blocksPerRow; block += localWorkGroupSize) {
+            int blockByteOffset = (rowBlockOffset + block) * BLOCK_BYTES;
+            float scale = w.getHalfFloat(blockByteOffset).getFloat32();
+            float min = w.getHalfFloat(blockByteOffset + 2).getFloat32();
+            int quantBase = block * (QK / 4);
+            int dot = 0;
+            for (int g = 0; g < 4; g++) {
+                int quantOffset = blockByteOffset + 4 + g * 4;
+                int packed =
+                        (w.getHalfFloat(quantOffset).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(quantOffset + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                dot =
+                        QuantizationUtils.dp4a_packed(
+                                packed & 0x0F0F0F0F, xQuants.get(quantBase + g), dot);
+                dot =
+                        QuantizationUtils.dp4a_packed(
+                                (packed >>> 4) & 0x0F0F0F0F, xQuants.get(quantBase + 4 + g), dot);
+            }
+            partialSum += xScales.get(block) * (scale * dot + min * xSums.get(block));
+        }
+
+        partialSum += context.simdShuffleDown(partialSum, 16);
+        partialSum += context.simdShuffleDown(partialSum, 8);
+        partialSum += context.simdShuffleDown(partialSum, 4);
+        partialSum += context.simdShuffleDown(partialSum, 2);
+        partialSum += context.simdShuffleDown(partialSum, 1);
+
+        if ((localId & 31) == 0) {
+            warpSums[localId >> 5] = partialSum;
+        }
+        context.localBarrier();
+
+        if (localId == 0) {
+            float total = 0.0f;
+            for (int warp = 0; warp < warpCount; warp++) {
+                total += warpSums[warp];
+            }
+            output.set(rowId, total);
+        }
+    }
 }

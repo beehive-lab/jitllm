@@ -87,6 +87,17 @@ public final class TornadoWorkspaces {
      * in this class is here: naming a TornadoVM type outside the backend is Rule 1, and its
      * allowlist is empty. A family says how large; the backend says what with.
      */
+    /**
+     * The Q8-block activation the packed-integer projections read, four quants per int with one
+     * scale and one sum of quants per block of 32, sized for the widest activation any of them
+     * reads; the narrower ones use a prefix, so one set serves every projection of a layer.
+     */
+    public static void packedActivation(TornadoWorkspace workspace, int widest) {
+        workspace.wrapXbQuants = ints(widest / 4);
+        workspace.wrapXbScales = floats(widest / 32);
+        workspace.wrapXbSums = ints(widest / 32);
+    }
+
     public static FloatArray zeroedFloats(int size) {
         FloatArray array = new FloatArray(size);
         array.init(0.f);

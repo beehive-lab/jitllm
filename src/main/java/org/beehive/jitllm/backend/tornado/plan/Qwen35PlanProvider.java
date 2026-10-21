@@ -1,12 +1,16 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import java.util.Optional;
 import java.util.Set;
+import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.plan.components.Qwen35PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.inference.state.Qwen35State;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
 
 // @formatter:off
@@ -41,7 +45,8 @@ public final class Qwen35PlanProvider implements TornadoPlanProvider {
 
     @Override
     public Set<DataType> supportedDataTypes() {
-        return Set.of(DataType.Q4_0);
+        // Q8_0: the decode layers read it directly, and the batched prefill decodes it for cuBLAS.
+        return Set.of(DataType.Q4_0, DataType.Q8_0);
     }
 
     @Override
@@ -66,5 +71,57 @@ public final class Qwen35PlanProvider implements TornadoPlanProvider {
     public SingleTokenForwardPlanComponents components(DataType weights, State state, Model model) {
         Qwen35State typed = PlanStates.expect(Qwen35State.class, state, ID);
         return new Qwen35PlanComponents(typed, model);
+    }
+
+    /** The layers index the caches and recurrent state by absolute layer. */
+    @Override
+    public boolean stageCacheHoldsOnlyItsLayers() {
+        return false;
+    }
+
+    /** Every stage's layers are built from a range, single-token and batched alike. */
+    @Override
+    public Optional<String> splitUnsupported(DataType weights, ExecutionPolicy policy, int stages) {
+        return Optional.empty();
+    }
+
+    // @formatter:off
+    /**
+     * Refused on OpenCL: the scalar batched projections ({@code matrixVectorTiledBatchQ4_0} and its
+     * Q4_1/Q5_K siblings) do not compile on TornadoVM's OpenCL backend. A guard the compiler can
+     * prove true after the kernel's early return becomes a {@code LogicConstantNode} once a
+     * constant-trip loop is unrolled, and the OpenCL LIR builder has no rule for it ({@code
+     * OCLNodeLIRBuilder.emitLogicNode}). That is a compiler defect, reproduced by a ten-line
+     * kernel, and it is refused here until TornadoVM fixes it rather than worked around in kernels
+     * CUDA shares.
+     */
+    // @formatter:on
+    @Override
+    public Optional<String> batchPrefillUnsupported(Combination c) {
+        return batchPrefillOn(c);
+    }
+
+    static Optional<String> batchPrefillOn(Combination c) {
+        return BackendId.OPENCL.equals(c.backend())
+                ? Optional.of(
+                        "the qwen35 batched prefill projections do not compile on the"
+                                + " OpenCL backend (TornadoVM OpenCL code generation"
+                                + " fails with 'logic node (LogicConstantNode)')")
+                : Optional.empty();
+    }
+
+    /**
+     * FP16 writers and readers in every mode, including batched prefill. On CUDA the split-KV and
+     * tensor-core attention read it; on OpenCL (an NVIDIA-class device) the single-workgroup FP16
+     * kernel does.
+     */
+    @Override
+    public Optional<String> fp16KeyValueUnsupported(Combination c) {
+        return Optional.empty();
+    }
+
+    @Override
+    public Set<DataType> nativeLibraryWeights(BackendId backend) {
+        return BackendId.CUDA.equals(backend) ? Set.of(DataType.Q8_0) : Set.of();
     }
 }

@@ -1,10 +1,12 @@
 package org.beehive.jitllm.backend.tornado.plan.components.q8_0;
 
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.qwen2moe.Qwen2MoEQ8_0LayersBatchPrefillMMA;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LogitsQ8_0Layer;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.Qwen2MoEQ8_0FFNLayers;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode.LogitsQ8_0LayerDecode;
@@ -72,6 +74,9 @@ public final class Qwen2MoEQ8_0PlanComponents implements BatchPrefillDecodeForwa
 
     @Override
     public BatchPrefillTransformerLayerTaskGraphs batchPrefillTransformerLayers(int batchSize) {
+        if (TensorCoreSupport.isTensorCoreCapableBackend()) {
+            return new Qwen2MoEQ8_0LayersBatchPrefillMMA(state, weights, config, batchSize);
+        }
         return new Qwen2MoEQ8_0LayersBatchPrefill(state, weights, config, batchSize);
     }
 

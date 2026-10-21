@@ -85,6 +85,15 @@ public class InsufficientDeviceMemoryException extends RuntimeException {
                             ". A configuration with fewer graph families needs less;"
                                     + " batched prefill binds the per-layer weights twice.\n");
         }
+        if (plan.confidence() != MemoryPlan.Confidence.EXACT) {
+            message.append("  The buffers alone, each counted once, need ")
+                    .append(mib(plan.logicalBytes()))
+                    .append(
+                            ": more than the budget whatever the duplication, so the load is refused"
+                                    + " although this backend's plan is ")
+                    .append(plan.confidence())
+                    .append(".\n");
+        }
         message.append(
                         "  Raise -Dtornado.device.memory, reduce the context length, or select a"
                                 + " smaller quantization.\n")

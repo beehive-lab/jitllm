@@ -359,6 +359,70 @@ public final class PlanDispatchEvidence {
         return seen;
     }
 
+    // @formatter:off
+    /**
+     * Asserts that every batched Q8_0 projection of a {@code qwen35} plan built on Metal runs on a
+     * SIMD-group GEMM, and returns how many tasks it checked.
+     *
+     * <p>Per task named in {@code outputs} (task name to output width), in every layer graph that
+     * holds it: the stored projections compile {@code batchedGemmQKVQ8} (the Q/K/V kernel with no
+     * key/value rows) and the residual ones {@code batchedGemmQ8WithResidual}, read off the task
+     * graphs by name; and the grid is {@code ceil(d / 64) * ceil(batchSize / 64)} workgroups of
+     * {@code THREADS} lanes. Then, over every task of every batched layer graph, the
+     * warp-per-output Q8_0 kernel may remain only on the tasks in {@code warpAllowed}.
+     */
+    // @formatter:on
+    public static int assertQwen35Q8ProjectionsOnSimdgroup(
+            TornadoVMMasterPlan plan,
+            GridScheduler scheduler,
+            int batchSize,
+            java.util.Map<String, Integer> outputs,
+            java.util.Set<String> residual,
+            java.util.Set<String> warpAllowed) {
+        assertNotNull("no grid scheduler for the plan this run built", scheduler);
+        int threads =
+                org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels
+                        .THREADS;
+        int checked = 0;
+        for (var entry : outputs.entrySet()) {
+            String task = entry.getKey();
+            int d = entry.getValue();
+            String kernel =
+                    residual.contains(task) ? "batchedGemmQ8WithResidual" : "batchedGemmQKVQ8";
+            java.util.Map<String, String> byGraph = batchedTaskKernelsByGraph(plan, task);
+            assertTrue("no batched layer graph holds " + task, !byGraph.isEmpty());
+            for (var graph : byGraph.entrySet()) {
+                String key = graph.getKey() + "." + task;
+                assertEquals(key + " kernel", kernel, graph.getValue());
+                WorkerGrid grid = scheduler.get(key);
+                assertNotNull(key + " has no worker grid", grid);
+                assertEquals(
+                        key + " global",
+                        (long) ((d + 63) / 64) * ((batchSize + 63) / 64) * threads,
+                        grid.getGlobalWork()[0]);
+                assertEquals(key + " local", (long) threads, grid.getLocalWork()[0]);
+                checked++;
+            }
+        }
+        java.util.Set<String> tasks = new TreeSet<>();
+        for (String key : scheduler.keySet()) {
+            if (key.startsWith("batchLayer_")) {
+                tasks.add(key.substring(key.indexOf('.') + 1));
+            }
+        }
+        for (String task : tasks) {
+            if (warpAllowed.contains(task)) {
+                continue;
+            }
+            for (var graph : batchedTaskKernelsByGraph(plan, task).entrySet()) {
+                assertTrue(
+                        graph.getKey() + "." + task + " still runs " + graph.getValue(),
+                        !"batchedMatVecQ8_0Warp".equals(graph.getValue()));
+            }
+        }
+        return checked;
+    }
+
     /**
      * Asserts that the batched F32 alpha and beta projections of every recurrent layer run as the
      * warp-per-tile kernel: {@code batchedMatVecF32WarpTile} by name off the task graphs, and a
@@ -490,13 +554,21 @@ public final class PlanDispatchEvidence {
     // @formatter:on
     /**
      * The decode attention this backend is meant to select for a {@code qwen35} FP16 cache:
-     * split-KV on CUDA ({@link #assertQwen35SplitKvAttention}), the single-workgroup per-head
-     * kernel (an attention task and no combine) everywhere else.
+     * split-KV on CUDA ({@link #assertQwen35SplitKvAttention}), the lane-cooperative 256-wide
+     * split-KV kernels on Metal ({@link #assertQwen35LaneHead256Attention}), the single-workgroup
+     * per-head kernel (an attention task and no combine) everywhere else.
      */
     public static void assertQwen35DecodeAttentionForBackend(GridScheduler scheduler) {
         if (org.beehive.jitllm.runtime.backend.BackendId.CUDA.equals(
                 org.beehive.jitllm.backend.tornado.device.TornadoDevices.current().backend())) {
             assertQwen35SplitKvAttention(scheduler);
+            return;
+        }
+        if (org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy
+                .laneCooperativeAttentionHead256(
+                        org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy
+                                .WIDE_HEAD_SIZE)) {
+            assertQwen35DecodeSplitPairs(scheduler);
             return;
         }
         assertNotNull(
@@ -534,15 +606,87 @@ public final class PlanDispatchEvidence {
 
     // @formatter:off
     /**
+     * Asserts that this plan's {@code qwen35} decode attention is the lane-cooperative 256-wide
+     * split-KV pair, on the grid that kernel is written for, in every one of {@code
+     * attentionLayers} layers.
+     *
+     * <p>The kernel strides a split's positions by warp and folds whole warps, so it must launch
+     * {@code LaneAttentionPolicy.HEAD256_WARPS_PER_GROUP} warps per (head, split) and {@code heads
+     * * splits} groups; the combine one group per head. A plan with the right task names on a
+     * per-head grid would read past its splits without failing, so the geometry is asserted as well
+     * as the names.
+     *
+     * @return the decode attention task names that were checked
+     */
+    // @formatter:on
+    public static List<String> assertQwen35LaneHead256Attention(
+            GridScheduler scheduler, int heads, int splits, int attentionLayers) {
+        List<String> checked = assertQwen35DecodeSplitPairs(scheduler);
+        long local =
+                org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy
+                                .HEAD256_WARPS_PER_GROUP
+                        * 32L;
+        for (String task : checked) {
+            WorkerGrid grid = scheduler.get(task);
+            assertEquals(task + ": threads per (head, split)", local, grid.getLocalWork()[0]);
+            assertEquals(
+                    task + ": one group per (head, split)",
+                    (long) heads * splits * local,
+                    grid.getGlobalWork()[0]);
+            WorkerGrid combine = scheduler.get(task + "_combine");
+            assertEquals(
+                    task + "_combine: one group per head",
+                    (long) heads,
+                    combine.getGlobalWork()[0] / combine.getLocalWork()[0]);
+        }
+        assertEquals(
+                "decode attention tasks, one per attention layer: " + checked,
+                attentionLayers,
+                checked.size());
+        return checked;
+    }
+
+    private static final Pattern QWEN35_DECODE_ATTENTION =
+            Pattern.compile("^layer_\\d+\\.(?:l\\d+_)?attention$");
+
+    /**
+     * Asserts that every single-token decode attention task ({@code layer_<g>.[l<n>_]attention},
+     * not a batched prefill's {@code batchLayer_<n>.attention}) has its combine, and returns them.
+     */
+    public static List<String> assertQwen35DecodeSplitPairs(GridScheduler scheduler) {
+        assertNotNull(
+                "no grid scheduler for the plan this run built, so its dispatch cannot be checked",
+                scheduler);
+        List<String> attention = new ArrayList<>();
+        for (String task : new TreeSet<>(scheduler.keySet())) {
+            if (QWEN35_DECODE_ATTENTION.matcher(task).matches()) {
+                attention.add(task);
+            }
+        }
+        assertTrue(
+                "this plan has no decode attention task at all: "
+                        + new TreeSet<>(scheduler.keySet()),
+                !attention.isEmpty());
+        for (String task : attention) {
+            assertTrue(
+                    task + " has no combine, so it is the per-head kernel",
+                    scheduler.keySet().contains(task + "_combine"));
+        }
+        return attention;
+    }
+
+    // @formatter:off
+    /**
      * Which batch-prefill implementation a Qwen3 FP16 plan was built with, read off its own grid
      * scheduler.
      *
      * <p>The scheduler registers a worker grid for every JIT task the plan contains and for none of
      * its library tasks, because a cuBLAS or cuDNN call has no grid to launch. That asymmetry is
      * the evidence: a native projection is present as the <b>absence</b> of a {@code qkvProj} grid,
-     * and cuDNN attention as the presence of its three adapter grids where {@code batch_attention}
-     * would otherwise be. A system property cannot say this — it says what was asked for, and the
-     * capability probe may have answered no.
+     * and cuDNN attention as the presence of its three adapter grids where the generated attention
+     * would otherwise be: {@code batch_attention}, or {@code attn_gather} and the GEMM grids that
+     * follow it when that attention runs on the tensor cores. A system property cannot say this —
+     * it says what was asked for, and the capability probe may have answered no.
      */
     // @formatter:on
     public record NativePrefillEvidence(
@@ -550,7 +694,8 @@ public final class PlanDispatchEvidence {
             boolean nativeProjections,
             boolean cudnnAttention,
             boolean jitAttentionInPrimary,
-            boolean batchedFallbackFamily) {
+            boolean batchedFallbackFamily,
+            boolean tensorCoreAttentionInFallback) {
 
         /** Every native component this plan selected, for a message that names what it built. */
         public String describe() {
@@ -563,7 +708,9 @@ public final class PlanDispatchEvidence {
                     + " jitAttentionInPrimary="
                     + jitAttentionInPrimary
                     + " batchedFallbackFamily="
-                    + batchedFallbackFamily;
+                    + batchedFallbackFamily
+                    + " tensorCoreAttentionInFallback="
+                    + tensorCoreAttentionInFallback;
         }
     }
 
@@ -580,9 +727,11 @@ public final class PlanDispatchEvidence {
         boolean jitAttention = false;
         boolean jitProjection = false;
         boolean fallbackFamily = false;
+        boolean fallbackTensorCoreAttention = false;
         for (String task : keys) {
             if (task.startsWith("batchPrefillFallbackLayer_")) {
                 fallbackFamily = true;
+                fallbackTensorCoreAttention |= task.endsWith("attn_gather");
                 continue;
             }
             Matcher matcher = PRIMARY_GRAPH.matcher(task);
@@ -592,7 +741,7 @@ public final class PlanDispatchEvidence {
             primaryGraphs.add(Integer.parseInt(matcher.group(1)));
             if (task.endsWith("cudnn_pack_q")) {
                 cudnn = true;
-            } else if (task.endsWith("batch_attention")) {
+            } else if (task.endsWith("batch_attention") || task.endsWith("attn_gather")) {
                 jitAttention = true;
             } else if (task.endsWith("qkvProj")
                     || task.endsWith("gateUpProj")
@@ -605,7 +754,12 @@ public final class PlanDispatchEvidence {
                 "this plan has no batch-prefill layer graph at all: " + keys,
                 !primaryGraphs.isEmpty());
         return new NativePrefillEvidence(
-                primaryGraphs.size(), !jitProjection, cudnn, jitAttention, fallbackFamily);
+                primaryGraphs.size(),
+                !jitProjection,
+                cudnn,
+                jitAttention,
+                fallbackFamily,
+                fallbackTensorCoreAttention);
     }
 
     // @formatter:off

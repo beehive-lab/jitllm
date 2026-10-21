@@ -3,8 +3,9 @@ package org.beehive.jitllm.backend.tornado.layers.type.q4_k;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
-import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
-import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
+import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
+import org.beehive.jitllm.backend.tornado.layers.devstral.DevstralLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -32,9 +33,13 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * {@code reductionOneBlock2WithLayer} task, exactly as the attention block already does, and the
  * Q4_K gate/up reads the normalized activation. That reuses a verified kernel rather than restating
  * the normalization inside a new one, at the cost of one extra task per layer.
+ *
+ * <p>Where the device runs packed integer dot products ({@link PackedActivationTasks#enabled()})
+ * each projection instead reads the activation quantized once to Q8 blocks, with the {@code dp4a}
+ * kernel of its own representation (Q4_K, Q6_K or Q8_0), and gate and up run as one fused SwiGLU
+ * launch when both are Q4_K.
  */
-public class DevstralQ4_KFFNLayers
-        extends AbstractTransformerLayerTaskGraphs<LlamaTornadoWeights, DevstralConfiguration> {
+public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
 
     public DevstralQ4_KFFNLayers(
             String taskGraphName,
@@ -52,19 +57,32 @@ public class DevstralQ4_KFFNLayers
         var layerTaskGraphName = "layer_" + layerIndex;
         TaskGraph unifiedLayer = new TaskGraph(layerTaskGraphName);
 
-        unifiedLayer.consumeFromDevice(state.workspace.wrapX);
-        unifiedLayer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqLayered[layerIndex].asByteArray(),
-                weights.wkLayered[layerIndex].asByteArray(),
-                weights.wvLayered[layerIndex].asByteArray(),
-                weights.woLayered[layerIndex].asByteArray(),
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.w1Layered[layerIndex].asByteArray(),
-                weights.w2Layered[layerIndex].asByteArray(),
-                weights.w3Layered[layerIndex].asByteArray());
+        String wrapXSrc = predecessorGraphName(layerIndex);
+        if (wrapXSrc != null) {
+            unifiedLayer.consumeFromDevice(wrapXSrc, state.workspace.wrapX);
+        } else {
+            unifiedLayer.consumeFromDevice(state.workspace.wrapX);
+        }
+        Object[] layerWeights = {
+            weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+            weights.wqLayered[layerIndex].asByteArray(),
+            weights.wkLayered[layerIndex].asByteArray(),
+            weights.wvLayered[layerIndex].asByteArray(),
+            weights.woLayered[layerIndex].asByteArray(),
+            weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+            weights.w1Layered[layerIndex].asByteArray(),
+            weights.w2Layered[layerIndex].asByteArray(),
+            weights.w3Layered[layerIndex].asByteArray()
+        };
+        String weightSrc = weightSourceGraphName(layerIndex);
+        if (weightSrc != null) {
+            unifiedLayer.consumeFromDevice(weightSrc, layerWeights);
+        } else {
+            unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
+        }
         unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
+        bindSharedScratch(unifiedLayer, layerIndex);
+        boolean packed = packed();
 
         unifiedLayer.task(
                 "attn_rms_reduce",
@@ -86,14 +104,24 @@ public class DevstralQ4_KFFNLayers
                     config.rmsNormEps());
         }
 
-        unifiedLayer.task(
-                "attn_rms_apply",
-                TransformerComputeKernelsLayered::reductionOneBlock2WithLayer,
-                context,
-                state.workspace.wrapXb,
-                state.workspace.wrapX,
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                state.workspace.temp);
+        if (packed) {
+            PackedActivationTasks.rmsApplyAndQuantize(
+                    unifiedLayer,
+                    "attn_rms_apply",
+                    context,
+                    state.workspace,
+                    weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                    state.workspace.temp);
+        } else {
+            unifiedLayer.task(
+                    "attn_rms_apply",
+                    TransformerComputeKernelsLayered::reductionOneBlock2WithLayer,
+                    context,
+                    state.workspace.wrapXb,
+                    state.workspace.wrapX,
+                    weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                    state.workspace.temp);
+        }
 
         // Three projections rather than one fused kernel: a K-quant file's wq, wk and wv can be
         // different representations in the same layer, and one kernel cannot decode two block
@@ -123,29 +151,21 @@ public class DevstralQ4_KFFNLayers
                 config.dim(),
                 config.kvDim());
 
-        // Use precomputed RoPE frequencies (YaRN-scaled)
-        unifiedLayer.task(
-                "rope_and_kv_cache",
-                TransformerPagedKvKernels::ropeRotationWithCacheCopyPrecomputedPaged,
-                context,
-                state.workspace.positionHolder,
-                state.workspace.wrapQ,
-                state.workspace.wrapK,
-                state.workspace.wrapV,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                weights.freq_cis_realFlat.asFloatArray(),
-                weights.freq_cis_imagFlat.asFloatArray(),
-                config.kvDim(),
-                config.headSize(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride);
+        // Precomputed RoPE frequencies (YaRN-scaled)
+        ropeAndKeyValueCache(unifiedLayer, layerIndex);
 
         configureAttention(unifiedLayer, layerIndex);
 
         // O projection: n=qDim (input), d=dim (output)
+        if (packed) {
+            // The attention output is a new activation: quantized fresh for the projection.
+            PackedActivationTasks.quantize(
+                    unifiedLayer,
+                    "attn_out_quantize",
+                    context,
+                    state.workspace,
+                    state.workspace.wrapXb);
+        }
         residualMatvec(
                 unifiedLayer,
                 "attn_output_proj",
@@ -175,40 +195,76 @@ public class DevstralQ4_KFFNLayers
                     config.rmsNormEps());
         }
 
-        unifiedLayer.task(
-                "ffn_rms_apply",
-                TransformerComputeKernelsLayered::reductionOneBlock2WithLayer,
-                context,
-                state.workspace.wrapXb,
-                state.workspace.wrapX,
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                state.workspace.tempFFN);
+        if (packed) {
+            PackedActivationTasks.rmsApplyAndQuantize(
+                    unifiedLayer,
+                    "ffn_rms_apply",
+                    context,
+                    state.workspace,
+                    weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                    state.workspace.tempFFN);
+        } else {
+            unifiedLayer.task(
+                    "ffn_rms_apply",
+                    TransformerComputeKernelsLayered::reductionOneBlock2WithLayer,
+                    context,
+                    state.workspace.wrapXb,
+                    state.workspace.wrapX,
+                    weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                    state.workspace.tempFFN);
+        }
 
-        // Gate and up separately, for the same reason as q/k/v, then SwiGLU as its own task.
-        matvec(
-                unifiedLayer,
-                "ffn_gate",
-                state.workspace.wrapXb,
-                state.workspace.wrapHb,
-                weights.w1Layered[layerIndex],
-                config.dim(),
-                config.hiddenDim());
-        matvec(
-                unifiedLayer,
-                "ffn_up",
-                state.workspace.wrapXb,
-                state.workspace.wrapHb2,
-                weights.w3Layered[layerIndex],
-                config.dim(),
-                config.hiddenDim());
-        unifiedLayer.task(
-                "ffn_silu",
-                TransformerComputeKernelsQ6_K::siluAndMultiply,
-                context,
-                state.workspace.wrapHb,
-                state.workspace.wrapHb2,
-                config.hiddenDim());
+        if (fusedGateUp(layerIndex)) {
+            // Both Q4_K: gate, up and SwiGLU in one launch over the quantized activation.
+            unifiedLayer.task(
+                    "ffn_gate_up",
+                    TransformerComputeKernelsQ4_K::fusedFFNGateUpSiLUQ4_KDP4A,
+                    context,
+                    state.workspace.wrapXbQuants,
+                    state.workspace.wrapXbScales,
+                    state.workspace.wrapXbSums,
+                    state.workspace.wrapHb,
+                    weights.w1Layered[layerIndex].asByteArray(),
+                    weights.w3Layered[layerIndex].asByteArray(),
+                    config.dim(),
+                    config.hiddenDim(),
+                    PACKED_LOCAL);
+        } else {
+            // Gate and up separately, for the same reason as q/k/v, then SwiGLU as its own task.
+            matvec(
+                    unifiedLayer,
+                    "ffn_gate",
+                    state.workspace.wrapXb,
+                    state.workspace.wrapHb,
+                    weights.w1Layered[layerIndex],
+                    config.dim(),
+                    config.hiddenDim());
+            matvec(
+                    unifiedLayer,
+                    "ffn_up",
+                    state.workspace.wrapXb,
+                    state.workspace.wrapHb2,
+                    weights.w3Layered[layerIndex],
+                    config.dim(),
+                    config.hiddenDim());
+            unifiedLayer.task(
+                    "ffn_silu",
+                    TransformerComputeKernelsQ6_K::siluAndMultiply,
+                    context,
+                    state.workspace.wrapHb,
+                    state.workspace.wrapHb2,
+                    config.hiddenDim());
+        }
 
+        if (packed) {
+            // SwiGLU's output, quantized fresh for the down projection.
+            PackedActivationTasks.quantize(
+                    unifiedLayer,
+                    "ffn_down_quantize",
+                    context,
+                    state.workspace,
+                    state.workspace.wrapHb);
+        }
         residualMatvec(
                 unifiedLayer,
                 "ffn_down_proj",
@@ -223,6 +279,14 @@ public class DevstralQ4_KFFNLayers
         return unifiedLayer;
     }
 
+    /** Whether gate, up and SwiGLU run as one packed launch: both projections Q4_K. */
+    private boolean fusedGateUp(int layerIndex) {
+        return packed()
+                && weights.w1Layered[layerIndex].dataType() == DataType.Q4_K
+                && weights.w3Layered[layerIndex].dataType() == DataType.Q4_K;
+    }
+
+    @Override
     protected TaskGraph configureLayerDataTransfers(TaskGraph unifiedLayer, int layerIndex) {
         if (layerIndex == 0) {
             unifiedLayer.transferToDevice(
@@ -238,8 +302,8 @@ public class DevstralQ4_KFFNLayers
                     state.workspace.wrapQ,
                     state.workspace.wrapK,
                     state.workspace.wrapV,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.wrapAtt,
                     state.workspace.wrapHb,
                     state.workspace.wrapHb2,
@@ -258,8 +322,8 @@ public class DevstralQ4_KFFNLayers
                     state.workspace.wrapQ,
                     state.workspace.wrapK,
                     state.workspace.wrapV,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.wrapAtt,
                     state.workspace.wrapHb,
                     state.workspace.wrapHb2,
@@ -274,58 +338,48 @@ public class DevstralQ4_KFFNLayers
 
     @Override
     public GridScheduler updateGridScheduler(GridScheduler tornadoForwardScheduler) {
-        WorkerGrid rmsNormWorker = WorkerGridFactory.createRmsNormWorker(config.dim(), 256);
-        // Race-free single-workgroup reduction on the NVIDIA path; see rmsReduceKernel().
-        WorkerGrid rmsReduceWorker = rmsReduceWorker(rmsNormWorker);
+        addSharedWorkerGrids(tornadoForwardScheduler);
 
-        int configDimRowMajorGlobal = config.dim() * LOCAL_WORK_GROUP_SIZE_ALLOC;
-        WorkerGrid configDimRowMajorGlobalWorker =
-                WorkerGridFactory.genericWorker(
-                        configDimRowMajorGlobal, LOCAL_WORK_GROUP_SIZE_ALLOC);
-
-        int configHiddenDimRowMajor = config.hiddenDim() * LOCAL_WORK_GROUP_SIZE_ALLOC;
-        WorkerGrid configHiddenDimRowMajorWorker =
-                WorkerGridFactory.genericWorker(
-                        configHiddenDimRowMajor, LOCAL_WORK_GROUP_SIZE_ALLOC);
-
-        WorkerGrid qProjWorker =
-                WorkerGridFactory.genericWorker(
-                        config.qDim() * LOCAL_WORK_GROUP_SIZE_ALLOC, LOCAL_WORK_GROUP_SIZE_ALLOC);
-        WorkerGrid kvProjWorker =
-                WorkerGridFactory.genericWorker(
-                        config.kvDim() * LOCAL_WORK_GROUP_SIZE_ALLOC, LOCAL_WORK_GROUP_SIZE_ALLOC);
+        boolean packed = packed();
+        int local = packed ? PACKED_LOCAL : LOCAL_WORK_GROUP_SIZE_ALLOC;
+        WorkerGrid rmsApplyWorker =
+                packed
+                        ? PackedActivationTasks.quantizeWorker(config.dim())
+                        : WorkerGridFactory.createRmsNormWorker(config.dim(), 256);
+        WorkerGrid dimRowsWorker = WorkerGridFactory.genericWorker(config.dim() * local, local);
+        WorkerGrid hiddenRowsWorker =
+                WorkerGridFactory.genericWorker(config.hiddenDim() * local, local);
+        WorkerGrid qProjWorker = WorkerGridFactory.genericWorker(config.qDim() * local, local);
+        WorkerGrid kvProjWorker = WorkerGridFactory.genericWorker(config.kvDim() * local, local);
         // SwiGLU is elementwise over the hidden dimension, one thread per element.
         WorkerGrid siluWorker = WorkerGridFactory.genericWorker(config.hiddenDim(), 256);
 
-        WorkerGrid ropeWithCacheWorker = WorkerGridFactory.genericWorker(config.qDim() / 2, 512);
-        WorkerGrid parallelAttentionWorker =
-                WorkerGridFactory.createAttentionWorker(config.numberOfHeads(), config.headSize());
-
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_rms_reduce", rmsReduceWorker);
-            tornadoForwardScheduler.addWorkerGrid("layer_" + i + ".attn_rms_apply", rmsNormWorker);
-            tornadoForwardScheduler.addWorkerGrid("layer_" + i + ".q_proj", qProjWorker);
-            tornadoForwardScheduler.addWorkerGrid("layer_" + i + ".k_proj", kvProjWorker);
-            tornadoForwardScheduler.addWorkerGrid("layer_" + i + ".v_proj", kvProjWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".rope_and_kv_cache", ropeWithCacheWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attention", parallelAttentionWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_output_proj", configDimRowMajorGlobalWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".ffn_rms_reduce", rmsReduceWorker);
+            String l = "layer_" + i + ".";
+            tornadoForwardScheduler.addWorkerGrid(l + "attn_rms_apply", rmsApplyWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "q_proj", qProjWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "k_proj", kvProjWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "v_proj", kvProjWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "attn_output_proj", dimRowsWorker);
             // This path applies the FFN norm as its own task rather than folding it into the
             // gate/up kernel, so it needs its own worker grid — the same one attn_rms_apply uses.
-            tornadoForwardScheduler.addWorkerGrid("layer_" + i + ".ffn_rms_apply", rmsNormWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".ffn_gate", configHiddenDimRowMajorWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".ffn_up", configHiddenDimRowMajorWorker);
-            tornadoForwardScheduler.addWorkerGrid("layer_" + i + ".ffn_silu", siluWorker);
-            tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".ffn_down_proj", configDimRowMajorGlobalWorker);
+            tornadoForwardScheduler.addWorkerGrid(l + "ffn_rms_apply", rmsApplyWorker);
+            if (fusedGateUp(i)) {
+                tornadoForwardScheduler.addWorkerGrid(l + "ffn_gate_up", hiddenRowsWorker);
+            } else {
+                tornadoForwardScheduler.addWorkerGrid(l + "ffn_gate", hiddenRowsWorker);
+                tornadoForwardScheduler.addWorkerGrid(l + "ffn_up", hiddenRowsWorker);
+                tornadoForwardScheduler.addWorkerGrid(l + "ffn_silu", siluWorker);
+            }
+            tornadoForwardScheduler.addWorkerGrid(l + "ffn_down_proj", dimRowsWorker);
+            if (packed) {
+                tornadoForwardScheduler.addWorkerGrid(
+                        l + "attn_out_quantize",
+                        PackedActivationTasks.quantizeWorker(config.qDim()));
+                tornadoForwardScheduler.addWorkerGrid(
+                        l + "ffn_down_quantize",
+                        PackedActivationTasks.quantizeWorker(config.hiddenDim()));
+            }
         }
 
         return tornadoForwardScheduler;
@@ -349,6 +403,50 @@ public class DevstralQ4_KFFNLayers
             int n,
             int d) {
         DataType type = w.dataType();
+        if (packed()) {
+            // The activation was quantized by the task before this one, from x.
+            switch (type) {
+                case Q4_K ->
+                        graph.task(
+                                name,
+                                TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_KDP4A,
+                                context,
+                                state.workspace.wrapXbQuants,
+                                state.workspace.wrapXbScales,
+                                state.workspace.wrapXbSums,
+                                out,
+                                w.asByteArray(),
+                                n,
+                                d,
+                                PACKED_LOCAL);
+                case Q6_K ->
+                        graph.task(
+                                name,
+                                TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_KDP4A,
+                                context,
+                                state.workspace.wrapXbQuants,
+                                state.workspace.wrapXbScales,
+                                state.workspace.wrapXbSums,
+                                out,
+                                w.asByteArray(),
+                                n,
+                                d,
+                                PACKED_LOCAL);
+                default ->
+                        graph.task(
+                                name,
+                                TransformerComputeKernelsQ8_0DP4A::matrixVectorGenericQ8_0DP4A,
+                                context,
+                                state.workspace.wrapXbQuants,
+                                state.workspace.wrapXbScales,
+                                out,
+                                w.asByteArray(),
+                                n,
+                                d,
+                                PACKED_LOCAL);
+            }
+            return;
+        }
         if (type == DataType.Q4_K) {
             graph.task(
                     name,
@@ -395,6 +493,52 @@ public class DevstralQ4_KFFNLayers
             int n,
             int d) {
         DataType type = w.dataType();
+        if (packed()) {
+            switch (type) {
+                case Q4_K ->
+                        graph.task(
+                                name,
+                                TransformerComputeKernelsQ4_K
+                                        ::matrixVectorGenericWithResidualQ4_KDP4A,
+                                context,
+                                state.workspace.wrapXbQuants,
+                                state.workspace.wrapXbScales,
+                                state.workspace.wrapXbSums,
+                                out,
+                                w.asByteArray(),
+                                n,
+                                d,
+                                PACKED_LOCAL);
+                case Q6_K ->
+                        graph.task(
+                                name,
+                                TransformerComputeKernelsQ6_K
+                                        ::matrixVectorGenericWithResidualQ6_KDP4A,
+                                context,
+                                state.workspace.wrapXbQuants,
+                                state.workspace.wrapXbScales,
+                                state.workspace.wrapXbSums,
+                                out,
+                                w.asByteArray(),
+                                n,
+                                d,
+                                PACKED_LOCAL);
+                default ->
+                        graph.task(
+                                name,
+                                TransformerComputeKernelsQ8_0DP4A
+                                        ::matrixVectorGenericWithResidualQ8_0DP4A,
+                                context,
+                                state.workspace.wrapXbQuants,
+                                state.workspace.wrapXbScales,
+                                out,
+                                w.asByteArray(),
+                                n,
+                                d,
+                                PACKED_LOCAL);
+            }
+            return;
+        }
         if (type == DataType.Q4_K) {
             graph.task(
                     name,
@@ -431,46 +575,6 @@ public class DevstralQ4_KFFNLayers
         }
     }
 
-    private TaskGraph configureAttention(TaskGraph unifiedLayer, int layerIndex) {
-        if (schedulerType == SchedulerType.NVIDIA) {
-            return unifiedLayer.task(
-                    "attention",
-                    TransformerPagedKvKernels::processHeadsFlashAttentionPaged,
-                    context,
-                    state.workspace.wrapQ,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
-                    state.workspace.wrapXb,
-                    config.numberOfHeads(),
-                    config.headSize(),
-                    config.kvDim(),
-                    config.kvMul(),
-                    state.workspace.positionHolder,
-                    layerIndex,
-                    state.workspace.wrapBlockTable,
-                    state.kvBlockCfg,
-                    state.kvBlockStride);
-        } else {
-            return unifiedLayer.task(
-                    "attention",
-                    TransformerPagedKvKernels::processHeadsParallelPaged,
-                    state.workspace.wrapQ,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
-                    state.workspace.wrapXb,
-                    config.numberOfHeads(),
-                    config.headSize(),
-                    config.kvDim(),
-                    config.kvMul(),
-                    config.contextLength(),
-                    state.workspace.positionHolder,
-                    state.workspace.wrapAtt,
-                    layerIndex,
-                    state.workspace.wrapBlockTable,
-                    state.kvBlockCfg,
-                    state.kvBlockStride);
-        }
-    }
     // @formatter:on
 
 }

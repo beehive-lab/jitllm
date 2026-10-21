@@ -2,6 +2,7 @@ package org.beehive.jitllm.model;
 
 import java.nio.channels.FileChannel;
 import org.beehive.jitllm.format.GGUF;
+import org.beehive.jitllm.model.loader.DeepSeek2ModelLoader;
 import org.beehive.jitllm.model.loader.DevstralModelLoader;
 import org.beehive.jitllm.model.loader.Gemma4ModelLoader;
 import org.beehive.jitllm.model.loader.GraniteLoader;
@@ -115,6 +116,15 @@ public enum ModelType {
         public Model loadModel(
                 FileChannel fileChannel, GGUF gguf, int contextLength, boolean useTornadovm) {
             return new Gemma4ModelLoader(fileChannel, gguf, contextLength, useTornadovm)
+                    .loadModel();
+        }
+    },
+
+    DEEPSEEK_2 {
+        @Override
+        public Model loadModel(
+                FileChannel fileChannel, GGUF gguf, int contextLength, boolean useTornadovm) {
+            return new DeepSeek2ModelLoader(fileChannel, gguf, contextLength, useTornadovm)
                     .loadModel();
         }
     },

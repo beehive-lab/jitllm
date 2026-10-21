@@ -3,11 +3,13 @@ package org.beehive.jitllm.backend.tornado.device;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import java.util.function.Supplier;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.backend.Device;
 import org.beehive.jitllm.runtime.backend.DeviceCapabilities;
 import org.beehive.jitllm.runtime.backend.DeviceCapability;
 import org.beehive.jitllm.runtime.backend.DeviceId;
+import uk.ac.manchester.tornado.api.common.TornadoDevice;
 import uk.ac.manchester.tornado.api.enums.TornadoVMBackendType;
 import uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider;
 import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
@@ -47,30 +49,76 @@ public final class TornadoDevices {
         return Holder.DEVICE;
     }
 
+    // @formatter:off
+    /**
+     * The device a plan is being built for: the one {@link #building} names, or {@link #current()}
+     * outside it.
+     *
+     * <p>What a layer or plan component asks when it chooses a kernel or a launch shape. A model
+     * split across devices builds each stage's plan for that stage's device, so a stage on a device
+     * without tensor cores takes the scalar kernels even when the first device has them. {@link
+     * #current()} stays the process's identity, which is what a cache key or a log line names.
+     */
+    // @formatter:on
+    public static Device target() {
+        Device device = TARGET.get();
+        return device != null ? device : current();
+    }
+
+    /** Builds with {@link #target()} answering {@code device}. */
+    public static <T> T building(Device device, Supplier<T> build) {
+        Device previous = TARGET.get();
+        TARGET.set(device);
+        try {
+            return build.get();
+        } finally {
+            if (previous == null) {
+                TARGET.remove();
+            } else {
+                TARGET.set(previous);
+            }
+        }
+    }
+
+    private static final ThreadLocal<Device> TARGET = new ThreadLocal<>();
+
+    /** A TornadoVM device as a resolved device: what a pipeline stage builds for. */
+    public static Device of(TornadoDevice device) {
+        return describe(device.getTornadoVMBackend(), device);
+    }
+
+    private static Device describe(TornadoVMBackendType type, TornadoDevice device) {
+        String platformName = device.getPlatformName();
+        String deviceInfo = "";
+        long maxWorkGroup = 0L;
+        int computeUnits = 0;
+        long localMemory = 0L;
+        try {
+            deviceInfo = device.getPhysicalDevice().getDeviceInfo();
+            maxWorkGroup = maxWorkGroupOf(device.getPhysicalDevice());
+            computeUnits = device.getPhysicalDevice().getDeviceMaxComputeUnits();
+            localMemory = Math.max(0L, device.getPhysicalDevice().getDeviceLocalMemorySize());
+        } catch (RuntimeException | LinkageError e) {
+            // A device that cannot describe itself gets no architecture-gated grants, no known
+            // workgroup or local-memory limit and no compute-unit count.
+        }
+        return new ResolvedDevice(
+                DeviceId.of(backendId(type), platformName),
+                platformName,
+                capabilitiesOf(type, platformName, deviceInfo),
+                TornadoNativeArray.ARRAY_HEADER,
+                maxWorkGroup,
+                computeUnits,
+                localMemory);
+    }
+
     private static final class Holder {
         private static final Device DEVICE = resolve();
 
         private static Device resolve() {
             try {
                 var backend = TornadoRuntimeProvider.getTornadoRuntime().getBackend(0);
-                TornadoVMBackendType type = backend.getBackendType();
-                var device = backend.getDefaultDevice();
-                String platformName = device.getPlatformName();
-                String deviceInfo = "";
-                long maxWorkGroup = 0L;
-                try {
-                    deviceInfo = device.getPhysicalDevice().getDeviceInfo();
-                    maxWorkGroup = maxWorkGroupOf(device.getPhysicalDevice());
-                } catch (RuntimeException e) {
-                    // A device that cannot describe itself gets no architecture-gated grants
-                    // and no known workgroup limit.
-                }
-                return new ResolvedDevice(
-                        backendId(type),
-                        platformName,
-                        capabilitiesOf(type, platformName, deviceInfo),
-                        TornadoNativeArray.ARRAY_HEADER,
-                        maxWorkGroup);
+                return describe(backend.getBackendType(), backend.getDefaultDevice());
             } catch (RuntimeException | LinkageError e) {
                 // No accelerator present. The identity still has to be stable and comparable.
                 // No accelerator: no native-array header either, which is what a caller mapping
@@ -116,8 +164,10 @@ public final class TornadoDevices {
      *       lowered on the other backends as well and its Java body is correct everywhere, so that
      *       half withholds a preference rather than a result; the reduction half does not, and is
      *       why this must never be granted on OpenCL.
-     *   <li><b>split-KV attention</b> — everywhere except Metal, which fails to JIT {@code
-     *       processHeadsFlashAttentionSplitKV}.
+     *   <li><b>split-KV attention</b> — everywhere. Metal used to be left out because the 64-thread
+     *       kernel needs about 33 KB of threadgroup memory and Apple GPUs allow 32 KB, so Metal
+     *       refused to build its pipeline; {@code SplitKvAttentionPolicy} now picks the 32-thread
+     *       kernel on such devices.
      *   <li><b>single-pass RMS</b> — the device half of the scheduler type: an NVIDIA platform.
      *       Elsewhere lowering emits an extra {@code *_rms_finalize} task per block. The model half
      *       of that decision is not a device fact and stays in {@code SchedulerDetectionService}.
@@ -161,9 +211,7 @@ public final class TornadoDevices {
                 capabilities.add(DeviceCapability.PACKED_INTEGER_DOT);
             }
         }
-        if (type != TornadoVMBackendType.METAL) {
-            capabilities.add(DeviceCapability.SPLIT_KV_ATTENTION);
-        }
+        capabilities.add(DeviceCapability.SPLIT_KV_ATTENTION);
         if (name.contains("nvidia") || name.contains("cuda")) {
             capabilities.add(DeviceCapability.SINGLE_PASS_RMS);
         }
@@ -221,7 +269,9 @@ public final class TornadoDevices {
             String displayName,
             DeviceCapabilities capabilities,
             long nativeArrayHeaderBytes,
-            long maxWorkGroupSize)
+            long maxWorkGroupSize,
+            int computeUnits,
+            long localMemoryBytes)
             implements Device {
 
         ResolvedDevice(
@@ -234,21 +284,9 @@ public final class TornadoDevices {
                     platformName,
                     capabilities,
                     nativeArrayHeaderBytes,
+                    0L,
+                    0,
                     0L);
-        }
-
-        ResolvedDevice(
-                BackendId backend,
-                String platformName,
-                DeviceCapabilities capabilities,
-                long nativeArrayHeaderBytes,
-                long maxWorkGroupSize) {
-            this(
-                    DeviceId.of(backend, platformName),
-                    platformName,
-                    capabilities,
-                    nativeArrayHeaderBytes,
-                    maxWorkGroupSize);
         }
     }
 }

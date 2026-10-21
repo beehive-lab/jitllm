@@ -5,10 +5,10 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.PackedQ8_0LogitsLayer;
+import org.beehive.jitllm.backend.tornado.layers.PackedQ8_0LogitsLayerDecode;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
-import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LogitsQ8_0Layer;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.Qwen3Q8_0FFNLayers;
-import org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode.LogitsQ8_0LayerDecode;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode.Qwen3Q8_0FFNLayersDecode;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode.Qwen3Q8_0FFNLayersPrefillDecode;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill.Qwen3Q8_0LayersBatchPrefill;
@@ -88,13 +88,17 @@ public class Qwen3Q8_0PlanComponents implements BatchPrefillDecodeForwardPlanCom
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsQ8_0Layer(
+        // The packed path's own conditions (device, escape hatch, the state's Q8 triple) are
+        // checked by the layer, so a build without it computes logits as before.
+        return new PackedQ8_0LogitsLayer(
                 "logits", state, weights, config, previousGraphId, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
-        return new LogitsQ8_0LayerDecode(
+        // The packed path's own conditions (device, escape hatch, the state's Q8 triple) are
+        // checked by the layer, so a build without it computes logits as before.
+        return new PackedQ8_0LogitsLayerDecode(
                 "logits", state, weights, config, previousGraphId, schedulerType);
     }
 }

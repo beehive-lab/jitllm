@@ -33,30 +33,25 @@ public class TornadoPlanRegistryTest {
                 Set.of(DataType.F16, DataType.Q8_0),
                 mistral.supportedDataTypes());
         assertEquals(
-                "STANDARD only, as the factory has always enforced",
-                Set.of(ExecutionMode.STANDARD),
+                "single-token and batched prefill/decode (Llama's layer graphs)",
+                Set.of(ExecutionMode.STANDARD, ExecutionMode.BATCH_PREFILL_DECODE),
                 mistral.supportedModes());
     }
 
-    /**
-     * A STANDARD-only family declares exactly that, for every such family rather than one of them.
-     *
-     * <p>Devstral's {@code PREFILL_DECODE not yet supported for DEVSTRAL_2 + Q4_K} was read as a
-     * possible policy-resolution or diagnostic defect — a request for PREFILL_DECODE coming back
-     * labelled BATCH_PREFILL_DECODE. It is not: each mode reaches the registry through its own
-     * factory entry point and the refusal names the mode that was actually requested. This pins
-     * that, so a future change cannot quietly make one mode answer for another.
-     *
-     * <p>It also pins the scope. STANDARD_ONLY is a family-level declaration shared by Devstral,
-     * Qwen2 and Mistral; it is not specific to Devstral, and not specific to Q4_K — the dtype
-     * appears in the message text only because the message names the whole tuple.
-     */
+    /** Families with batched prefill but no sequential prefill/decode plan. */
     @Test
-    public void everyStandardOnlyFamilyDeclaresStandardOnly() {
-        for (String architecture : Set.of("devstral", "qwen2", "mistral")) {
+    public void batchedFamiliesDeclareStandardAndBatch() {
+        for (String architecture :
+                Set.of(
+                        "qwen2",
+                        "deepseek-r1-distill-qwen",
+                        "mistral",
+                        "phi3",
+                        "granite",
+                        "devstral")) {
             assertEquals(
-                    architecture + " is STANDARD-only",
-                    Set.of(ExecutionMode.STANDARD),
+                    architecture + " is STANDARD and BATCH_PREFILL_DECODE",
+                    Set.of(ExecutionMode.STANDARD, ExecutionMode.BATCH_PREFILL_DECODE),
                     provider(architecture).supportedModes());
         }
     }
@@ -78,6 +73,8 @@ public class TornadoPlanRegistryTest {
                     "phi3",
                     "granite",
                     "qwen35",
+                    "qwen35moe",
+                    "deepseek2",
                     "lfm2moe"
                 }) {
             assertTrue(
@@ -86,7 +83,7 @@ public class TornadoPlanRegistryTest {
                             + " switches are gone",
                     registered.contains(ArchitectureId.of(architecture)));
         }
-        assertEquals("the matrix has twelve architectures", 12, registered.size());
+        assertEquals("the matrix has fourteen architectures", 14, registered.size());
     }
 
     /**
@@ -215,7 +212,7 @@ public class TornadoPlanRegistryTest {
                 qwen35.supportedModes());
         assertEquals(
                 "admitted on the representation its trunk projections share",
-                Set.of(DataType.Q4_0),
+                Set.of(DataType.Q4_0, DataType.Q8_0),
                 qwen35.supportedDataTypes());
         assertTrue(
                 "and reads five block layouts and F32 per tensor without materializing any",

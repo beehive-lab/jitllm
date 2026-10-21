@@ -138,6 +138,32 @@ public final class TornadoMemoryModel {
             Device device,
             long configuredBudgetBytes,
             KeyValueReservation keyValue) {
+        return predict(
+                weights,
+                config,
+                policy,
+                device,
+                configuredBudgetBytes,
+                keyValue,
+                java.util.Optional.empty());
+    }
+
+    /**
+     * {@link #predict(WeightFootprint, Configuration, ExecutionPolicy, Device, long,
+     * KeyValueReservation)} with what the family's batched prefill layers allocate per session
+     * ({@code TornadoPlanProvider.batchPrefillWorkspace}), charged once per session — each session
+     * builds its own plan, and with it its own layer buffers.
+     *
+     * @param prefill the family's batched-prefill workspace, empty when it adds nothing
+     */
+    public static MemoryPlan predict(
+            WeightFootprint weights,
+            Configuration config,
+            ExecutionPolicy policy,
+            Device device,
+            long configuredBudgetBytes,
+            KeyValueReservation keyValue,
+            java.util.Optional<BatchPrefillWorkspace> prefill) {
         long header = device.nativeArrayHeaderBytes();
         int layoutFamilies = layerGraphFamilies(policy, config.numberOfLayers());
         // How many of those families upload the weights, which is what costs memory. A family
@@ -274,6 +300,41 @@ public final class TornadoMemoryModel {
                         1,
                         2 * header));
 
+        // ── what the family's batched prefill layers add, per session ────────
+        // Tensor-core attention operands, split-K partial products and the FP16 projections a
+        // Q8_0 (or native F16) prefill decodes: a resident copy of every one, or one scratch
+        // decoded again for each chunk, whichever the residency resolves to.
+        boolean batched = executionMode(policy) == ExecutionMode.BATCH_PREFILL_DECODE;
+        java.util.Optional<BatchPrefillWorkspace> workspace =
+                batched ? prefill : java.util.Optional.empty();
+        if (workspace.isPresent()) {
+            long others = 0;
+            for (MemoryComponent component : components) {
+                others += component.predictedBytes();
+            }
+            boolean resident =
+                    residentDecodedProjections(
+                            policy,
+                            workspace.get(),
+                            others,
+                            configuredBudgetBytes,
+                            keyValue.sessions());
+            BatchPrefillWorkspace ws = workspace.get();
+            components.add(
+                    new MemoryComponent(
+                            ws.decodesProjections()
+                                    ? (resident
+                                            ? "batched prefill workspace (decoded projections"
+                                                    + " resident)"
+                                            : "batched prefill workspace (decoded projections"
+                                                    + " per chunk)")
+                                    : "batched prefill workspace",
+                            BufferClass.BATCH_STAGING,
+                            ws.bytes(resident),
+                            keyValue.sessions(),
+                            8L * keyValue.sessions() * header));
+        }
+
         // EXACT only when the topology agrees with its own layout arithmetic. A layout that grew
         // a layer family without saying so downgrades the plan instead of keeping a stale EXACT,
         // and admission does not enforce on anything but EXACT.
@@ -289,9 +350,12 @@ public final class TornadoMemoryModel {
         // is added to over-counts a family whose decode graphs consume rather than upload. Both
         // errors are in the safe direction, and an over-prediction that kept EXACT would be
         // enforced: only EXACT refuses a load. So this path reports what it is -- conservative.
+        // The tensor-core layers' workspace is sized from their own allocation arithmetic, not
+        // bisected against measurement, so a plan carrying it is conservative as well.
         MemoryPlan.Confidence confidence =
                 (measuredOnThisBackend
                                 && !nativePrefill
+                                && workspace.isEmpty()
                                 && TornadoGraphTopology.verify(
                                         executionMode(policy), config.numberOfLayers()))
                         ? MemoryPlan.Confidence.EXACT
@@ -403,5 +467,31 @@ public final class TornadoMemoryModel {
                                 + dim * Short.BYTES // embeddings (FP16)
                                 + 2 * Float.BYTES); // attention and FFN scales
         return paddedBytes + rowBytes;
+    }
+
+    /**
+     * Whether a batched prefill keeps every decoded projection resident: what the policy pins, or
+     * where the backend decides, its allowance ({@code FP16Projections.resident}) and — with a
+     * known budget — room for one resident copy per session beside everything else predicted.
+     *
+     * @param others the bytes predicted for everything but the workspace
+     */
+    public static boolean residentDecodedProjections(
+            ExecutionPolicy policy,
+            BatchPrefillWorkspace workspace,
+            long others,
+            long configuredBudgetBytes,
+            int sessions) {
+        if (!workspace.decodesProjections()) {
+            return false;
+        }
+        boolean allowed =
+                org.beehive.jitllm.backend.tornado.layers.FP16Projections.resident(
+                        policy, workspace.decodedWeights());
+        if (!allowed || policy.decodedProjections() != ExecutionPolicy.DecodedProjections.BACKEND) {
+            return allowed;
+        }
+        return configuredBudgetBytes <= 0
+                || others + workspace.residentBytes() * sessions <= configuredBudgetBytes;
     }
 }

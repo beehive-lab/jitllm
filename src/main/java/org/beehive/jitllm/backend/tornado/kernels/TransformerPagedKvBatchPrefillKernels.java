@@ -958,4 +958,137 @@ public class TransformerPagedKvBatchPrefillKernels {
             attnOutFP16.set(outOffset + d1, new HalfFloat(acc1 * norm));
         }
     }
+
+    // @formatter:off
+    /**
+     * {@link #batchedFlashAttentionPaged} with the lane-cooperative work distribution of {@code
+     * TransformerPagedKvKernels.processHeadsFlashAttentionSplitKVPagedLaneHead128}: one workgroup
+     * per (query token, head), lane {@code L} owning head dimensions {@code 2L}, {@code 2L+1},
+     * {@code 64+2L}, {@code 64+2L+1}, each warp streaming its own keys up to the token's position
+     * with the accumulators in registers, and the warps folded once at the end. The kernel it
+     * replaces gives every thread a private 128-float accumulator and has every thread of the
+     * workgroup recompute the whole weighted sum of values. A 128-wide head only; selected by
+     * {@code LaneAttentionPolicy.laneCooperativeAttentionFp32Cache}.
+     */
+    // @formatter:on
+    public static void batchedFlashAttentionPagedLaneHead128(
+            KernelContext context,
+            IntArray batchStartPosHolder,
+            FloatArray wrapQBatch,
+            FloatArray wrapKeyCache,
+            FloatArray wrapValueCache,
+            FloatArray wrapXbBatch,
+            int nHeads,
+            int headSize,
+            int kvDim,
+            int kvMul,
+            int layerIndex,
+            IntArray blockTable,
+            int blockCfg,
+            int blockStride,
+            int dim) {
+        final int MAX_WARPS = 16;
+        final int HEAD = 128;
+
+        int tid = context.localIdx;
+        int blockSize = context.localGroupSizeX;
+        int lane = tid & 31;
+        int warp = tid >> 5;
+        int nWarps = blockSize >> 5;
+
+        int groupId = context.groupIdx;
+        int batchIdx = groupId / nHeads;
+        int h = groupId % nHeads;
+        if (batchIdx >= batchStartPosHolder.get(1)) {
+            return; // padding row: the whole workgroup leaves together
+        }
+        int pos = batchStartPosHolder.get(0) + batchIdx;
+        int slot = batchStartPosHolder.get(2);
+        int layerOff = KvBlockAddress.layerOffset(layerIndex, kvDim, blockCfg);
+        int kvHeadIdx = h / kvMul;
+        float invSqrt = 1.0f / TornadoMath.sqrt(headSize);
+
+        int dA = lane * 2;
+        int dB = 64 + lane * 2;
+        int qBase = batchIdx * dim + h * headSize;
+        float q0 = wrapQBatch.get(qBase + dA);
+        float q1 = wrapQBatch.get(qBase + dA + 1);
+        float q2 = wrapQBatch.get(qBase + dB);
+        float q3 = wrapQBatch.get(qBase + dB + 1);
+
+        float[] partial = context.allocateFloatLocalArray(MAX_WARPS * HEAD);
+        float[] mShared = context.allocateFloatLocalArray(MAX_WARPS);
+        float[] lShared = context.allocateFloatLocalArray(MAX_WARPS);
+
+        float acc0 = 0.0f;
+        float acc1 = 0.0f;
+        float acc2 = 0.0f;
+        float acc3 = 0.0f;
+        float m = Float.NEGATIVE_INFINITY;
+        float l = 0.0f;
+
+        for (int p = warp; p <= pos; p += nWarps) {
+            int base =
+                    KvBlockAddress.offset(
+                                    blockTable, slot, p, layerOff, kvDim, blockCfg, blockStride)
+                            + kvHeadIdx * headSize;
+            float part =
+                    q0 * wrapKeyCache.get(base + dA)
+                            + q1 * wrapKeyCache.get(base + dA + 1)
+                            + q2 * wrapKeyCache.get(base + dB)
+                            + q3 * wrapKeyCache.get(base + dB + 1);
+            part += context.simdShuffleDown(part, 16);
+            part += context.simdShuffleDown(part, 8);
+            part += context.simdShuffleDown(part, 4);
+            part += context.simdShuffleDown(part, 2);
+            part += context.simdShuffleDown(part, 1);
+            float score = context.simdBroadcastFirst(part) * invSqrt;
+
+            float newM = Math.max(m, score);
+            float corr = (m == Float.NEGATIVE_INFINITY) ? 0.0f : TornadoMath.exp(m - newM);
+            float e = TornadoMath.exp(score - newM);
+            acc0 = acc0 * corr + e * wrapValueCache.get(base + dA);
+            acc1 = acc1 * corr + e * wrapValueCache.get(base + dA + 1);
+            acc2 = acc2 * corr + e * wrapValueCache.get(base + dB);
+            acc3 = acc3 * corr + e * wrapValueCache.get(base + dB + 1);
+            l = l * corr + e;
+            m = newM;
+        }
+
+        int warpBase = warp * HEAD;
+        partial[warpBase + dA] = acc0;
+        partial[warpBase + dA + 1] = acc1;
+        partial[warpBase + dB] = acc2;
+        partial[warpBase + dB + 1] = acc3;
+        if (lane == 0) {
+            mShared[warp] = m;
+            lShared[warp] = l;
+        }
+        context.localBarrier();
+
+        float blockMax = Float.NEGATIVE_INFINITY;
+        for (int w = 0; w < nWarps; w++) {
+            float mw = mShared[w];
+            if (mw > blockMax) {
+                blockMax = mw;
+            }
+        }
+        float denom = 0.0f;
+        for (int w = 0; w < nWarps; w++) {
+            float mw = mShared[w];
+            float f = (mw == Float.NEGATIVE_INFINITY) ? 0.0f : TornadoMath.exp(mw - blockMax);
+            denom += f * lShared[w];
+        }
+        float norm = (denom > 0.0f) ? (1.0f / denom) : 0.0f;
+        int xbOffset = batchIdx * dim + h * headSize;
+        for (int d = tid; d < headSize; d += blockSize) {
+            float sum = 0.0f;
+            for (int w = 0; w < nWarps; w++) {
+                float mw = mShared[w];
+                float f = (mw == Float.NEGATIVE_INFINITY) ? 0.0f : TornadoMath.exp(mw - blockMax);
+                sum += f * partial[w * HEAD + d];
+            }
+            wrapXbBatch.set(xbOffset + d, sum * norm);
+        }
+    }
 }

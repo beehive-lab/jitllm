@@ -23,4 +23,8 @@
 # so the job reports the one thing that is broken rather than going red wholesale; the Metal
 # slowdown itself is still open, as is the Mistral-7B-on-Metal row already held out of the
 # matrix for a timeout of its own.
+#
+# Phi-3-mini-4k-instruct Q8_0 now times out the same way, on main as well: run 37305547475
+# (2026-10-05) is main and fails this row with this cause and nothing else.
 metal	Phi-3-mini-4k-instruct	F16	standard	timed out after 15 minutes
+metal	Phi-3-mini-4k-instruct	Q8_0	standard	timed out after 15 minutes

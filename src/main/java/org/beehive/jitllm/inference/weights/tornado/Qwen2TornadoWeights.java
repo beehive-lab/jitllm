@@ -51,5 +51,12 @@ public class Qwen2TornadoWeights extends TornadoWeights {
         this.k_biasLayered = k_biasLayered;
         this.v_biasLayered = v_biasLayered;
     }
+
     // @formatter:on
+
+    /** Qwen2 requires a smaller group for the logits' RMS norm (32 vs 256). */
+    @Override
+    public int logitsRmsLocalSize() {
+        return 32;
+    }
 }

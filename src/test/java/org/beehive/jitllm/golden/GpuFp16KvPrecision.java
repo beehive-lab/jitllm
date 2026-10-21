@@ -59,6 +59,32 @@ public final class GpuFp16KvPrecision {
         check(file, fileName, mode);
     }
 
+    // @formatter:off
+    /**
+     * The batched row of a family whose batched prefill runs on the Metal SIMD-group kernels only:
+     * qwen2, deepseek-r1-distill-qwen, mistral, phi3, granite and llama Q4_0. Elsewhere the plan is
+     * refused ({@code BatchPrefillSupport}) or keeps its FP16 refusal ({@code
+     * Fp16KeyValueSupport}), which are those classes' tests, not this comparison.
+     */
+    // @formatter:on
+    public static void checkBatchedOnMetal(Fixture fixture) throws Exception {
+        assumeTrue("batched FP16 prefill of this family runs on Metal only", metal());
+        check(fixture, Mode.BATCHED);
+    }
+
+    /** {@link #checkBatchedOnMetal(Fixture)} for a model without a pinned fixture. */
+    public static void checkBatchedOnMetal(String fileName) throws Exception {
+        assumeTrue("batched FP16 prefill of this family runs on Metal only", metal());
+        check(fileName, Mode.BATCHED);
+    }
+
+    private static boolean metal() {
+        return TupleInfo.acceleratorPresent()
+                && org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
+                        .backend()
+                        .equals(org.beehive.jitllm.runtime.backend.BackendId.METAL);
+    }
+
     private static void check(Path file, String fixture, Mode mode) throws Exception {
         assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
         String[] keys = {"use.tornadovm", "jitllm.withPrefillDecode", "jitllm.prefillBatchSize"};

@@ -9,8 +9,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
-import org.beehive.jitllm.backend.tornado.kernels.Qwen35Int8Kernels;
+import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
 import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.PackedTiles;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_1TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q5_KTornadoTensor;
@@ -117,8 +118,23 @@ public class Qwen35Int8TopologyAccelTest {
         };
     }
 
-    /** Q4_0 everywhere but block 0's down projection, which is Q4_1 as on the 27B's first eight. */
-    private static Qwen35TornadoWeights weights(Qwen35Configuration config) {
+    /**
+     * A Q4_0 projection of {@code rows} outputs over {@code cols} inputs, in packed tiles when
+     * {@code packed} is set and the shape packs, as the loader decides.
+     */
+    private static TornadoTensor q40(int rows, int cols, boolean packed) {
+        if (packed && PackedTiles.fits(rows, cols)) {
+            return new Q4_0TornadoTensor(
+                    new ByteArray(rows * cols / 32 * 18), new PackedTiles(rows, cols));
+        }
+        return blocked(DataType.Q4_0, rows * cols);
+    }
+
+    /**
+     * Q4_0 everywhere but block 0's down projection, which is Q4_1 as on the 27B's first eight; the
+     * Q4_0 projections whose shape packs are packed when {@code packed} is set.
+     */
+    private static Qwen35TornadoWeights weights(Qwen35Configuration config, boolean packed) {
         final int DIM = config.dim();
         final int HIDDEN = config.hiddenDim();
         final int BLOCKS = TRUNK_LAYERS + NEXTN_LAYERS;
@@ -148,12 +164,12 @@ public class Qwen35Int8TopologyAccelTest {
         for (int l = 0; l < BLOCKS; l++) {
             attnNorm[l] = f32(DIM);
             ffnNorm[l] = f32(DIM);
-            ffnGate[l] = blocked(DataType.Q4_0, DIM * HIDDEN);
-            ffnUp[l] = blocked(DataType.Q4_0, DIM * HIDDEN);
-            ffnDown[l] = blocked(l == 0 ? DataType.Q4_1 : DataType.Q4_0, HIDDEN * DIM);
+            ffnGate[l] = q40(HIDDEN, DIM, packed);
+            ffnUp[l] = q40(HIDDEN, DIM, packed);
+            ffnDown[l] = l == 0 ? blocked(DataType.Q4_1, HIDDEN * DIM) : q40(DIM, HIDDEN, packed);
             if (l < TRUNK_LAYERS && config.isRecurrentLayer(l)) {
-                ssmQkv[l] = blocked(DataType.Q4_0, DIM * config.deltaNetConvDim());
-                ssmGate[l] = blocked(DataType.Q4_0, DIM * config.deltaNetValueDim());
+                ssmQkv[l] = q40(config.deltaNetConvDim(), DIM, packed);
+                ssmGate[l] = q40(config.deltaNetValueDim(), DIM, packed);
                 ssmConv[l] = f32(config.deltaNetConvDim() * CONV_KERNEL);
                 ssmAlpha[l] = f32(DIM * VALUE_HEADS);
                 ssmBeta[l] = f32(DIM * VALUE_HEADS);
@@ -162,10 +178,10 @@ public class Qwen35Int8TopologyAccelTest {
                 ssmNorm[l] = f32(config.headValueDim());
                 ssmOut[l] = blocked(DataType.Q5_K, config.deltaNetValueDim() * DIM);
             } else {
-                wq[l] = blocked(DataType.Q4_0, DIM * queryGate);
-                wk[l] = blocked(DataType.Q4_0, DIM * kvDim);
-                wv[l] = blocked(DataType.Q4_0, DIM * kvDim);
-                wo[l] = blocked(DataType.Q4_0, attnDim * DIM);
+                wq[l] = q40(queryGate, DIM, packed);
+                wk[l] = q40(kvDim, DIM, packed);
+                wv[l] = q40(kvDim, DIM, packed);
+                wo[l] = q40(DIM, attnDim, packed);
                 qNorm[l] = f32(HEAD_DIM);
                 kNorm[l] = f32(HEAD_DIM);
             }
@@ -201,11 +217,15 @@ public class Qwen35Int8TopologyAccelTest {
     }
 
     private static Qwen35BatchPrefillLayers build(Qwen35Configuration config) {
+        return build(config, false);
+    }
+
+    private static Qwen35BatchPrefillLayers build(Qwen35Configuration config, boolean packed) {
         System.setProperty("use.tornadovm", "true");
         System.setProperty("jitllm.qwen35.tensorCores", "true");
         Qwen35State state =
                 (Qwen35State) State.withPrefillBatchSize(WIDTH, () -> new Qwen35State(config, -1));
-        return new Qwen35BatchPrefillLayers(state, weights(config), config, WIDTH);
+        return new Qwen35BatchPrefillLayers(state, weights(config, packed), config, WIDTH);
     }
 
     /** Task name to kernel method name, for the tasks of one batched layer graph. */
@@ -362,6 +382,68 @@ public class Qwen35Int8TopologyAccelTest {
             assertTrue(order.indexOf("ffn_up_proj") < order.indexOf("ffn_down_q8"));
             assertTrue(order.indexOf("ffn_down_q8") < order.indexOf("ffn_down_proj"));
         }
-        assertEquals(64, Qwen35Int8Kernels.I8_BK);
+        assertEquals(64, Int8GemmKernels.I8_BK);
+    }
+
+    // @formatter:off
+    /**
+     * Packed Q4_0 at the 0.8B's widths (dim 1024, FFN 3584), every output width below the FP16
+     * pair's threshold: a packed weight has only the int8 GEMM, so each packed projection's input
+     * must be quantized even where an unpacked one of that shape would take the direct FP16 kernel,
+     * and it stores rather than adds, so its residual pass needs a grid of its own. The attention
+     * output and the down projection once read whatever the scratch held from the previous
+     * quantization, their residual passes ran without a grid, and the model generated garbage at
+     * prefill width 128.
+     */
+    // @formatter:on
+    @Test
+    public void packedProjectionsBelowThePairThresholdQuantizeTheirInputsAndAddTheirResiduals()
+            throws Exception {
+        assumeInt8();
+        Qwen35Configuration config = config(1024, 3584);
+        Qwen35BatchPrefillLayers layers = build(config, true);
+        GridScheduler scheduler = new GridScheduler();
+        layers.updateGridScheduler(scheduler);
+        for (int layer = 0; layer < TRUNK_LAYERS; layer++) {
+            List<String> grids = names(scheduler, layer);
+            for (String task : kernels(layers, layer).keySet()) {
+                assertTrue("layer " + layer + " " + task + " has no grid", grids.contains(task));
+            }
+        }
+        for (int layer = 1; layer < TRUNK_LAYERS; layer++) { // layer 0's down is Q4_1
+            LinkedHashMap<String, String> k = kernels(layers, layer);
+            List<String> order = new ArrayList<>(k.keySet());
+            assertEquals("layer " + layer, "gemmInt8Q4_0Packed", k.get("ffn_gate_proj"));
+            assertEquals("layer " + layer, "gemmInt8Q4_0Packed", k.get("ffn_up_proj"));
+            assertEquals("layer " + layer, "gemmInt8Q4_0Packed", k.get("ffn_down_proj"));
+            assertFalse("layer " + layer + " kept a SwiGLU task", k.containsKey("ffn_swiglu"));
+            assertFalse(
+                    "layer " + layer + " converted for an FP16 down",
+                    k.containsKey("ffn_down_fp16"));
+            assertEquals(
+                    "layer " + layer + " quantizes SwiGLU's output for the packed down",
+                    "quantizeActivationsQ8Warp",
+                    k.get("ffn_down_q8"));
+            assertTrue(order.indexOf("ffn_up_proj") < order.indexOf("ffn_down_q8"));
+            assertTrue(order.indexOf("ffn_down_q8") < order.indexOf("ffn_down_proj"));
+            assertTrue(order.indexOf("ffn_down_proj") < order.indexOf("ffn_down_residual"));
+            assertEquals(
+                    "layer " + layer + " hb quantization lanes",
+                    (long) WIDTH * 3584,
+                    scheduler.get("batchLayer_" + layer + ".ffn_down_q8").getGlobalWork()[0]);
+        }
+        int attention = ATTENTION_INTERVAL - 1;
+        assertFalse(config.isRecurrentLayer(attention));
+        LinkedHashMap<String, String> k = kernels(layers, attention);
+        List<String> order = new ArrayList<>(k.keySet());
+        assertEquals("gemmInt8Q4_0Packed", k.get("attn_output_proj"));
+        assertEquals(
+                "the gated attention output is quantized for the packed projection",
+                "quantizeActivationsQ8Warp",
+                k.get("attn_output_q8"));
+        assertFalse(k.containsKey("attn_output_fp16"));
+        assertTrue(order.indexOf("attn_output_gate") < order.indexOf("attn_output_q8"));
+        assertTrue(order.indexOf("attn_output_q8") < order.indexOf("attn_output_proj"));
+        assertTrue(order.indexOf("attn_output_proj") < order.indexOf("attn_output_residual"));
     }
 }

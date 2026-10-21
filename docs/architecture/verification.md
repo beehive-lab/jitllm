@@ -413,8 +413,20 @@ the shape resembles the earlier Qwen FP16 Metal defect: capability-gated kernel 
 choosing a reduction that is wrong on that device. Confirming that needs the Mac; nothing
 here claims to have reproduced it from Linux.
 
-**Batched prefill on Metal, and Q8_0 batched prefill on CUDA.** TornadoVM toolchain gaps,
-with named causes, in [`models-and-backends.md`](models-and-backends.md).
+**Q8_0 batched prefill on CUDA.** A TornadoVM toolchain gap, with its named cause, in
+[`models-and-backends.md`](models-and-backends.md).
+
+**Batched prefill on Metal** is verified on an Apple M4 Pro for every family it is enabled for:
+greedy text identical to single-token prefill for Qwen3, Llama (F16, Q8_0, Q4_0), Qwen2.5,
+DeepSeek-R1-Distill-Qwen, Mistral, Phi-3, Granite 3.2 / 4.0, Qwen3.5 Q4_0 and Gemma 4 Q8_0;
+`LlamaBatchedPrefillParityAccelTest`, `Qwen3BatchedPrefillParityAccelTest` and
+`Gemma4Q8_0BatchedPrefillParityAccelTest` pass. The SIMD-group kernels are checked against host
+references: `TransformerBatchPrefillSimdgroupKernelsAccelTest` (projections, exact or within
+1e-4), `TransformerPagedKvBatchPrefillSimdgroupKernelsAccelTest` and
+`Gemma4BatchPrefillSimdgroupAttentionKernelsAccelTest` (attention, with NaN in unwritten cache
+rows and padding queries so that reading either fails). These kernel tests live in the kernels
+package, which surefire's class scan cannot load, so they run under the `tornado` launcher with
+`org.junit.runner.JUnitCore`.
 
 **Devstral.** The `mistral3` fixture loads and generates correct text on Metal in
 `STANDARD`. `PREFILL_DECODE` and `BATCH_PREFILL_DECODE` are unsupported for the family,

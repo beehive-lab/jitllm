@@ -4,12 +4,16 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
+import java.util.List;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
+import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 import uk.ac.manchester.tornado.api.types.HalfFloat;
@@ -19,8 +23,9 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 // @formatter:off
 /**
- * The lane-cooperative 128-wide attention kernel against a host reference, before any model runs
- * it.
+ * The lane-cooperative attention kernels, at every head width {@link LaneAttentionPolicy} has one
+ * for, against a host reference, before any model runs them. The kernel and its grid are the ones
+ * the policy hands the layers.
  *
  * <p>The reference is computed on the CPU in FP32 from the <b>same FP16 values the cache holds</b>,
  * so the only differences left are summation order and the transcendental, not quantisation. It is
@@ -41,13 +46,25 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * uniform input does not pass.
  */
 // @formatter:on
-public class LaneAttentionHead128AccelTest {
+@RunWith(Parameterized.class)
+public class LaneAttentionAccelTest {
 
-    private static final int HEAD_SIZE = 128;
+    @Parameterized.Parameters(name = "head {0}")
+    public static List<Integer> headSizes() {
+        return List.of(64, 96, 128);
+    }
+
+    private final int headSize;
+    private final int kvDim;
+
+    public LaneAttentionAccelTest(int headSize) {
+        this.headSize = headSize;
+        this.kvDim = KV_HEADS * headSize;
+    }
+
     private static final int HEADS = 4;
     private static final int KV_HEADS = 2;
     private static final int KV_MUL = HEADS / KV_HEADS;
-    private static final int KV_DIM = KV_HEADS * HEAD_SIZE;
     private static final int SPLITS = 8;
     private static final int PAGE = 64;
     private static final int SLOT = 1;
@@ -72,7 +89,7 @@ public class LaneAttentionHead128AccelTest {
     public void theLaneKernelAgreesWithAHostReferenceAtEveryBoundary() throws Exception {
         assumeTrue(
                 "this device does not select the lane-cooperative attention kernel",
-                LaneAttentionPolicy.laneCooperativeAttention(HEAD_SIZE));
+                LaneAttentionPolicy.laneCooperativeAttention(headSize));
 
         int[] lengths = {
             1, 2, 5, 16, 31, 32, 33, 63, 64, 65, 127, 128, 129, 257, 511, 512, 513, 2048
@@ -85,7 +102,7 @@ public class LaneAttentionHead128AccelTest {
     private void check(int seqLen) throws Exception {
         int blocksPerSlot = (seqLen + PAGE - 1) / PAGE + 1;
         int blockCfg = PAGE | (blocksPerSlot << 16);
-        int blockStride = PAGE * KV_DIM;
+        int blockStride = PAGE * kvDim;
 
         // A reversed mapping, so logical order is not physical order anywhere.
         IntArray blockTable = new IntArray(SLOTS * blocksPerSlot);
@@ -103,17 +120,17 @@ public class LaneAttentionHead128AccelTest {
 
         // Only the slot under test is filled; the other holds zeros, so reading the wrong slot
         // produces a visibly wrong answer rather than a plausible one.
-        float[][][] kHost = new float[seqLen][KV_HEADS][HEAD_SIZE];
-        float[][][] vHost = new float[seqLen][KV_HEADS][HEAD_SIZE];
+        float[][][] kHost = new float[seqLen][KV_HEADS][headSize];
+        float[][][] vHost = new float[seqLen][KV_HEADS][headSize];
         for (int p = 0; p < seqLen; p++) {
             int phys = blockTable.get(SLOT * blocksPerSlot + p / PAGE);
-            int base = phys * blockStride + (p % PAGE) * KV_DIM;
+            int base = phys * blockStride + (p % PAGE) * kvDim;
             for (int kv = 0; kv < KV_HEADS; kv++) {
-                for (int d = 0; d < HEAD_SIZE; d++) {
+                for (int d = 0; d < headSize; d++) {
                     HalfFloat kh = new HalfFloat(k(p, kv, d));
                     HalfFloat vh = new HalfFloat(v(p, kv, d));
-                    keyCache.set(base + kv * HEAD_SIZE + d, kh);
-                    valueCache.set(base + kv * HEAD_SIZE + d, vh);
+                    keyCache.set(base + kv * headSize + d, kh);
+                    valueCache.set(base + kv * headSize + d, vh);
                     // The reference reads back what was stored, so FP16 rounding is common to both.
                     kHost[p][kv][d] = kh.getFloat32();
                     vHost[p][kv][d] = vh.getFloat32();
@@ -121,20 +138,20 @@ public class LaneAttentionHead128AccelTest {
             }
         }
 
-        FloatArray query = new FloatArray(HEADS * HEAD_SIZE);
+        FloatArray query = new FloatArray(HEADS * headSize);
         for (int h = 0; h < HEADS; h++) {
-            for (int d = 0; d < HEAD_SIZE; d++) {
-                query.set(h * HEAD_SIZE + d, q(h, d));
+            for (int d = 0; d < headSize; d++) {
+                query.set(h * headSize + d, q(h, d));
             }
         }
         IntArray position = new IntArray(2);
         position.set(0, seqLen - 1);
         position.set(1, SLOT);
 
-        int attSize = HEADS * SPLITS * (HEAD_SIZE + 2);
+        int attSize = HEADS * SPLITS * (headSize + 2);
         FloatArray att = new FloatArray(attSize);
         att.init(Float.NaN);
-        FloatArray xb = new FloatArray(HEADS * HEAD_SIZE);
+        FloatArray xb = new FloatArray(HEADS * headSize);
         xb.init(Float.NaN);
 
         run(
@@ -151,10 +168,10 @@ public class LaneAttentionHead128AccelTest {
 
         // --- shape and finiteness, before any metric ---------------------------------------
         assertEquals("partial buffer size", attSize, att.getSize());
-        assertEquals("output size", HEADS * HEAD_SIZE, xb.getSize());
+        assertEquals("output size", HEADS * headSize, xb.getSize());
         for (int h = 0; h < HEADS; h++) {
-            int headBase = h * SPLITS * (HEAD_SIZE + 2);
-            int mBase = headBase + SPLITS * HEAD_SIZE;
+            int headBase = h * SPLITS * (headSize + 2);
+            int mBase = headBase + SPLITS * headSize;
             int lBase = mBase + SPLITS;
             int chunk = (seqLen + SPLITS - 1) / SPLITS;
             for (int s = 0; s < SPLITS; s++) {
@@ -215,8 +232,8 @@ public class LaneAttentionHead128AccelTest {
                                     + ls,
                             ls > 0.0f);
                 }
-                for (int d = 0; d < HEAD_SIZE; d++) {
-                    float n = att.get(headBase + s * HEAD_SIZE + d);
+                for (int d = 0; d < headSize; d++) {
+                    float n = att.get(headBase + s * headSize + d);
                     assertTrue(
                             "seqLen "
                                     + seqLen
@@ -259,11 +276,11 @@ public class LaneAttentionHead128AccelTest {
             int kv = h / KV_MUL;
             double[] scores = new double[seqLen];
             double max = Double.NEGATIVE_INFINITY;
-            double inv = 1.0 / Math.sqrt(HEAD_SIZE);
+            double inv = 1.0 / Math.sqrt(headSize);
             for (int p = 0; p < seqLen; p++) {
                 double dot = 0;
-                for (int d = 0; d < HEAD_SIZE; d++) {
-                    dot += (double) query.get(h * HEAD_SIZE + d) * kHost[p][kv][d];
+                for (int d = 0; d < headSize; d++) {
+                    dot += (double) query.get(h * headSize + d) * kHost[p][kv][d];
                 }
                 scores[p] = dot * inv;
                 max = Math.max(max, scores[p]);
@@ -273,20 +290,20 @@ public class LaneAttentionHead128AccelTest {
                 scores[p] = Math.exp(scores[p] - max);
                 denom += scores[p];
             }
-            for (int d = 0; d < HEAD_SIZE; d++) {
+            for (int d = 0; d < headSize; d++) {
                 double acc = 0;
                 for (int p = 0; p < seqLen; p++) {
                     acc += scores[p] * vHost[p][kv][d];
                 }
                 double ref = acc / denom;
-                double got = xb.get(h * HEAD_SIZE + d);
+                double got = xb.get(h * headSize + d);
                 largest = Math.max(largest, Math.abs(ref));
                 double rel = Math.abs(ref - got) / Math.max(1e-3, Math.abs(ref));
                 sumSqDiff += (ref - got) * (ref - got);
                 sumSqRef += ref * ref;
                 if (rel > worstRel) {
                     worstRel = rel;
-                    worstAt = h * HEAD_SIZE + d;
+                    worstAt = h * headSize + d;
                 }
             }
         }
@@ -307,7 +324,7 @@ public class LaneAttentionHead128AccelTest {
         assertTrue("seqLen " + seqLen + ": relative L2 " + relL2, relL2 <= 1e-4);
     }
 
-    private static void run(
+    private void run(
             FloatArray query,
             HalfFloatArray keyCache,
             HalfFloatArray valueCache,
@@ -333,16 +350,15 @@ public class LaneAttentionHead128AccelTest {
                                 xb)
                         .task(
                                 "split",
-                                TransformerPagedKvKernels
-                                        ::processHeadsFlashAttentionSplitKVFP16PagedLaneHead128,
+                                LaneAttentionPolicy.kernel(headSize),
                                 new KernelContext(),
                                 query,
                                 keyCache,
                                 valueCache,
                                 att,
                                 HEADS,
-                                HEAD_SIZE,
-                                KV_DIM,
+                                headSize,
+                                kvDim,
                                 KV_MUL,
                                 position,
                                 0,
@@ -357,13 +373,11 @@ public class LaneAttentionHead128AccelTest {
                                 att,
                                 xb,
                                 HEADS,
-                                HEAD_SIZE,
+                                headSize,
                                 SPLITS)
                         .transferToHost(DataTransferMode.EVERY_EXECUTION, att, xb);
 
-        int local = LaneAttentionPolicy.WARPS_PER_GROUP * 32;
-        WorkerGrid1D split = new WorkerGrid1D(HEADS * SPLITS * local);
-        split.setLocalWork(local, 1, 1);
+        WorkerGrid split = LaneAttentionPolicy.worker(HEADS * SPLITS, headSize);
         WorkerGrid1D combine = new WorkerGrid1D(HEADS * 64);
         combine.setLocalWork(64, 1, 1);
         GridScheduler scheduler = new GridScheduler();

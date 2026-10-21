@@ -3,10 +3,16 @@ package org.beehive.jitllm.backend.tornado.plan.components.q4_k;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.PackedQ8_0LogitsLayer;
+import org.beehive.jitllm.backend.tornado.layers.PackedQ8_0LogitsLayerDecode;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.type.q4_k.DevstralQ4_KFFNLayers;
-import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LogitsQ8_0Layer;
-import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.layers.type.q4_k.decode.DevstralQ4_KFFNLayersDecode;
+import org.beehive.jitllm.backend.tornado.layers.type.q4_k.prefill.DevstralQ4_KLayersBatchPrefillMMA;
+import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation;
+import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.DevstralState;
@@ -23,7 +29,7 @@ import org.beehive.jitllm.model.devstral.DevstralConfiguration;
  * Q8_0 one — each reading what its own tensors actually hold, which is why this needs no per-tensor
  * dispatch.
  */
-public class DevstralQ4_KPlanComponents implements SingleTokenForwardPlanComponents {
+public class DevstralQ4_KPlanComponents implements BatchPrefillDecodeForwardPlanComponents {
 
     private final DevstralState state;
     private final LlamaTornadoWeights weights;
@@ -49,7 +55,48 @@ public class DevstralQ4_KPlanComponents implements SingleTokenForwardPlanCompone
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsQ8_0Layer(
+        return new PackedQ8_0LogitsLayer(
                 "logits", state, weights, config, previousGraphId, schedulerType);
+    }
+
+    // ── Batched prefill/decode ───────────────────────────────────────────────
+
+    /** the F16 tensor-core layers, each Q4_K (or Q6_K) projection decoded into FP16 first. */
+    @Override
+    public BatchPrefillTransformerLayerTaskGraphs batchPrefillTransformerLayers(int batchSize) {
+        return new DevstralQ4_KLayersBatchPrefillMMA(state, weights, config, batchSize);
+    }
+
+    /** The embedding is materialized as Q8_0; the host writes the FP32 batch directly. */
+    @Override
+    public ActivationTaskGraph batchPrefillActivation(int batchSize) {
+        return new BatchPrefillActivation(state, config, batchSize, true);
+    }
+
+    @Override
+    public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
+        return new BatchDecodeActivation(state, config, lastBatchLayerId, true);
+    }
+
+    @Override
+    public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
+        return new DevstralQ4_KFFNLayersDecode("decode", state, weights, config, schedulerType);
+    }
+
+    @Override
+    public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
+        return new PackedQ8_0LogitsLayerDecode(
+                "logits", state, weights, config, previousGraphId, schedulerType);
+    }
+
+    /** Devstral has no sequential prefill/decode plan; its provider refuses the mode. */
+    @Override
+    public ActivationTaskGraph prefillDecodeActivation() {
+        throw new UnsupportedOperationException("devstral has no sequential prefill/decode plan");
+    }
+
+    @Override
+    public TransformerLayerTaskGraphs prefillDecodeTransformerLayers() {
+        throw new UnsupportedOperationException("devstral has no sequential prefill/decode plan");
     }
 }

@@ -7,6 +7,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -92,15 +93,6 @@ public class Qwen3Tokenizer implements Tokenizer {
             String splitPattern) {
         int[] tokenTypes = (int[]) metadata.get("tokenizer.ggml.token_type");
         String[] mergeLines = (String[]) metadata.get("tokenizer.ggml.merges");
-        List<Pair<Integer, Integer>> merges =
-                Arrays.stream(mergeLines)
-                        .map(line -> line.split(" "))
-                        .map(
-                                parts ->
-                                        new Pair<>(
-                                                vocabulary.getIndex(parts[0]).orElseThrow(),
-                                                vocabulary.getIndex(parts[1]).orElseThrow()))
-                        .toList();
 
         int allTokens = vocabulary.size();
         int baseTokens =
@@ -129,16 +121,19 @@ public class Qwen3Tokenizer implements Tokenizer {
         this.vocabulary = vocabulary;
         this.compiledPattern = Pattern.compile(splitPattern);
         this.specialTokens = new HashMap<>(specialTokens);
-        this.merges = new HashMap<>();
         this.tokenTypes = tokenTypes;
-        for (Pair<Integer, Integer> pair : merges) {
-            int firstIndex = pair.first();
-            int secondIndex = pair.second();
-            int mergeIndex =
-                    vocabulary
-                            .getIndex(vocabulary.get(firstIndex) + vocabulary.get(secondIndex))
-                            .orElseThrow();
-            this.merges.put(pair, mergeIndex);
+        // A merge line is "first second", and the merged token is the two halves joined. A
+        // vocabulary has ~150k of them, so this runs as one plain loop at start-up.
+        this.merges = HashMap.newHashMap(mergeLines.length);
+        for (String line : mergeLines) {
+            int space = line.indexOf(' ');
+            String first = line.substring(0, space);
+            String second = line.substring(space + 1);
+            Pair<Integer, Integer> pair =
+                    new Pair<>(
+                            vocabulary.getIndex(first).orElseThrow(),
+                            vocabulary.getIndex(second).orElseThrow());
+            this.merges.put(pair, vocabulary.getIndex(first + second).orElseThrow());
         }
     }
 
@@ -261,10 +256,25 @@ public class Qwen3Tokenizer implements Tokenizer {
         // all chunks of text are encoded separately, then results are joined
         List<Integer> ids = new ArrayList<>();
         for (String chunk : textChunks) {
-            List<Integer> chunkIds = encodeChunk(byteLevel(chunk));
-            ids.addAll(chunkIds);
+            String bytes = byteLevel(chunk);
+            if (ignoreMerges()) {
+                OptionalInt whole = vocabulary.getIndex(bytes);
+                if (whole.isPresent()) {
+                    ids.add(whole.getAsInt());
+                    continue;
+                }
+            }
+            ids.addAll(encodeChunk(bytes));
         }
         return ids;
+    }
+
+    /**
+     * Whether a pre-tokenizer chunk that is itself a vocabulary entry is emitted as that entry
+     * without running the merges, as llama.cpp does for the vocabularies that declare it (GLM-4).
+     */
+    protected boolean ignoreMerges() {
+        return false;
     }
 
     /**

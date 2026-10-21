@@ -43,14 +43,31 @@ public class BatchDecodeActivation implements ActivationTaskGraph {
 
     public BatchDecodeActivation(
             State state, Configuration config, String lastBatchLayerId, boolean isQ8) {
+        this(state, config, lastBatchLayerId, isQ8, false);
+    }
+
+    /**
+     * @param q4Embeddings the token embeddings are retained Q4_0 (18-byte blocks), staged into
+     *     {@code embeddingX} as they are and converted on the device
+     */
+    public BatchDecodeActivation(
+            State state,
+            Configuration config,
+            String lastBatchLayerId,
+            boolean isQ8,
+            boolean q4Embeddings) {
         this.dim = config.dim();
         KernelContext ctx = new KernelContext();
-        this.itg = buildGraph(ctx, state, lastBatchLayerId, isQ8).snapshot();
+        this.itg = buildGraph(ctx, state, lastBatchLayerId, isQ8, q4Embeddings).snapshot();
     }
 
     // @formatter:off
     private TaskGraph buildGraph(
-            KernelContext ctx, State state, String lastBatchLayerId, boolean isQ8) {
+            KernelContext ctx,
+            State state,
+            String lastBatchLayerId,
+            boolean isQ8,
+            boolean q4Embeddings) {
         boolean fp16KV = state.usesFp16KeyValueCache();
         Object keyCache = fp16KV ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
         Object valueCache =
@@ -63,7 +80,14 @@ public class BatchDecodeActivation implements ActivationTaskGraph {
         // The block table travels the same chain as the caches it addresses: the batch-prefill
         // graphs allocate it, this graph passes it through, decode layer 0 consumes it.
         tg.consumeFromDevice(lastBatchLayerId, state.workspace.wrapBlockTable);
-        if (isQ8) {
+        if (q4Embeddings) {
+            tg.task(
+                    "updateX",
+                    TransformerComputeKernels::convertQ4_0toFP32,
+                    ctx,
+                    (ByteArray) state.workspace.embeddingX,
+                    state.workspace.wrapX);
+        } else if (isQ8) {
             tg.task(
                     "updateX",
                     TransformerComputeKernels::convertQ8_0toFP32,

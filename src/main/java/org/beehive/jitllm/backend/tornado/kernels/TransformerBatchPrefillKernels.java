@@ -2131,6 +2131,78 @@ public final class TransformerBatchPrefillKernels {
     }
 
     /**
+     * Decodes {@code n} Q8_0 weights into FP16 at {@code destOffset} of {@code out}, in the file's
+     * row-major order, for {@link #gemmMMA}: one thread per weight.
+     */
+    public static void dequantizeQ8_0ToFP16(
+            KernelContext context, ByteArray w, HalfFloatArray out, int destOffset, int n) {
+        int gid = context.globalIdx;
+        if (gid < n) {
+            int off = (gid >>> 5) * 34;
+            out.set(
+                    destOffset + gid,
+                    new HalfFloat(w.getHalfFloat(off).getFloat32() * w.get(off + 2 + (gid & 31))));
+        }
+    }
+
+    /** Lanes of {@link #dequantizeQ8_0ToFP16Once}'s fixed grid, which strides over the weight. */
+    public static final int DECODE_ONCE_LANES = 1024 * 256;
+
+    /**
+     * {@link #dequantizeQ8_0ToFP16} into a weight's resident FP16 copy, skipped once {@code
+     * done[flag]} is set: the copy outlives the chunk, so it is decoded on the first one only. A
+     * fixed grid of {@link #DECODE_ONCE_LANES} lanes strides over the {@code n} weights, so the
+     * skipped launches of every later chunk stay small.
+     */
+    public static void dequantizeQ8_0ToFP16Once(
+            KernelContext context,
+            ByteArray w,
+            HalfFloatArray out,
+            int destOffset,
+            int n,
+            IntArray done,
+            int flag) {
+        int gid = context.globalIdx;
+        if (gid < DECODE_ONCE_LANES && done.get(flag) == 0) {
+            for (int i = gid; i < n; i += DECODE_ONCE_LANES) {
+                int off = (i >>> 5) * 34;
+                out.set(
+                        destOffset + i,
+                        new HalfFloat(
+                                w.getHalfFloat(off).getFloat32() * w.get(off + 2 + (i & 31))));
+            }
+        }
+    }
+
+    /**
+     * {@code out[destOffset + i] = src[i]} for {@code n} halves, skipped once {@code done[flag]} is
+     * set: an FP16 weight copied into a buffer it shares with the other weights of one GEMM. Same
+     * striding grid as {@link #dequantizeQ8_0ToFP16Once}.
+     */
+    public static void copyFP16Once(
+            KernelContext context,
+            HalfFloatArray src,
+            HalfFloatArray out,
+            int destOffset,
+            int n,
+            IntArray done,
+            int flag) {
+        int gid = context.globalIdx;
+        if (gid < DECODE_ONCE_LANES && done.get(flag) == 0) {
+            for (int i = gid; i < n; i += DECODE_ONCE_LANES) {
+                out.set(destOffset + i, src.get(i));
+            }
+        }
+    }
+
+    /** Sets {@code done[flag]}, after the decodes it guards have run. One thread. */
+    public static void markDecoded(KernelContext context, IntArray done, int flag) {
+        if (context.globalIdx == 0) {
+            done.set(flag, 1);
+        }
+    }
+
+    /**
      * Tensor-core GEMM with Q8_0 weights: C[M,N] (FP32) = A[M,K] (FP16) × B[N,K] (Q8_0 blocks,
      * row-major). Same tiling, pipeline, and constraints as {@link #gemmMMA}.
      */
@@ -2774,6 +2846,50 @@ public final class TransformerBatchPrefillKernels {
         }
     }
 
+    /**
+     * {@code out[b][row] (+)= w[row] · x[b]} over Q8_0 weights, one warp per (batch row, output
+     * row). The warp walks the row's blocks together, lane {@code l} taking element {@code l} of
+     * each, so every load of the activation and of the quants is one coalesced 128- or 32-byte
+     * line, and the block's FP16 scale is a broadcast. For the projections too narrow for the int8
+     * GEMM's 128-column tiles.
+     *
+     * <p>Worker: {@code activeRows * d * 32} lanes, local 128 (four outputs per block).
+     */
+    public static void batchedMatVecQ8_0Warp(
+            KernelContext context,
+            FloatArray inputBatch,
+            FloatArray outputBatch,
+            ByteArray w,
+            int n,
+            int d,
+            int activeRows,
+            int accumulate) {
+        int lane = context.localIdx & 31;
+        int output = (context.groupIdx << 2) + (context.localIdx >> 5);
+        int batchIdx = output / d;
+        int rowIdx = output - batchIdx * d;
+        if (batchIdx < activeRows) {
+            int inputOff = batchIdx * n + lane;
+            int blocks = n >> 5;
+            int rowOff = rowIdx * blocks * 34;
+            float partial = 0.0f;
+            for (int b = 0; b < blocks; b++) {
+                int blockOff = rowOff + b * 34;
+                float scale = w.getHalfFloat(blockOff).getFloat32();
+                partial += scale * w.get(blockOff + 2 + lane) * inputBatch.get(inputOff + (b << 5));
+            }
+            partial += context.simdShuffleDown(partial, 16);
+            partial += context.simdShuffleDown(partial, 8);
+            partial += context.simdShuffleDown(partial, 4);
+            partial += context.simdShuffleDown(partial, 2);
+            partial += context.simdShuffleDown(partial, 1);
+            if (lane == 0) {
+                int out = batchIdx * d + rowIdx;
+                outputBatch.set(out, accumulate != 0 ? outputBatch.get(out) + partial : partial);
+            }
+        }
+    }
+
     /** Rows and outputs of one warp's tile in {@link #batchedMatVecF32WarpTile}. */
     public static final int MATVEC_TILE = 4;
 
@@ -3003,5 +3119,1209 @@ public final class TransformerBatchPrefillKernels {
         combined += context.simdShuffleDown(combined, 2);
         combined += context.simdShuffleDown(combined, 1);
         return combined;
+    }
+
+    // @formatter:off
+    /**
+     * {@link #batchedMatVecWithResidual} as a tiled matrix multiplication: {@code out[b, r] +=
+     * sum_k x[b, k] * w[r, k]} for every token {@code b} of the batch at once. A workgroup of 256
+     * threads computes a 64-row by 64-token tile, stages a 32-wide slice of the weight rows and of
+     * the activations in threadgroup memory per step, and each thread accumulates a 4x4 block, so a
+     * weight is read once per 64 tokens instead of once per token. Grid: {@code ceil(d / 64) *
+     * ceil(batch / 64)} workgroups of 256 threads; rows and tokens past the ends are skipped.
+     */
+    // @formatter:on
+    public static void batchedGemmFP16WithResidual(
+            KernelContext context,
+            FloatArray inputBatch,
+            FloatArray outputBatch,
+            HalfFloatArray w,
+            int n,
+            int d,
+            int batch) {
+        float[] ws = context.allocateFloatLocalArray(64 * 33);
+        float[] xs = context.allocateFloatLocalArray(64 * 33);
+        int tid = context.localIdx;
+        int tx = tid & 15;
+        int ty = tid >> 4;
+        int rowTiles = (d + 63) >> 6;
+        int g = context.groupIdx;
+        int r0 = (g % rowTiles) << 6;
+        int b0 = (g / rowTiles) << 6;
+        float a00 = 0.0f;
+        float a01 = 0.0f;
+        float a02 = 0.0f;
+        float a03 = 0.0f;
+        float a10 = 0.0f;
+        float a11 = 0.0f;
+        float a12 = 0.0f;
+        float a13 = 0.0f;
+        float a20 = 0.0f;
+        float a21 = 0.0f;
+        float a22 = 0.0f;
+        float a23 = 0.0f;
+        float a30 = 0.0f;
+        float a31 = 0.0f;
+        float a32 = 0.0f;
+        float a33 = 0.0f;
+        for (int k0 = 0; k0 < n; k0 += 32) {
+            for (int e = tid; e < 2048; e += 256) {
+                int rr = e >> 5;
+                int kk = e & 31;
+                int k = k0 + kk;
+                float wv = 0.0f;
+                if (r0 + rr < d && k < n) {
+                    wv = w.get((r0 + rr) * n + k).getFloat32();
+                }
+                ws[rr * 33 + kk] = wv;
+                float xv = 0.0f;
+                if (b0 + rr < batch && k < n) {
+                    xv = inputBatch.get((b0 + rr) * n + k);
+                }
+                xs[rr * 33 + kk] = xv;
+            }
+            context.localBarrier();
+            int wr = (ty << 2) * 33;
+            int xr = (tx << 2) * 33;
+            for (int kk = 0; kk < 32; kk++) {
+                float w0 = ws[wr + 0 + kk];
+                float w1 = ws[wr + 33 + kk];
+                float w2 = ws[wr + 66 + kk];
+                float w3 = ws[wr + 99 + kk];
+                float x0 = xs[xr + 0 + kk];
+                float x1 = xs[xr + 33 + kk];
+                float x2 = xs[xr + 66 + kk];
+                float x3 = xs[xr + 99 + kk];
+                a00 += w0 * x0;
+                a01 += w0 * x1;
+                a02 += w0 * x2;
+                a03 += w0 * x3;
+                a10 += w1 * x0;
+                a11 += w1 * x1;
+                a12 += w1 * x2;
+                a13 += w1 * x3;
+                a20 += w2 * x0;
+                a21 += w2 * x1;
+                a22 += w2 * x2;
+                a23 += w2 * x3;
+                a30 += w3 * x0;
+                a31 += w3 * x1;
+                a32 += w3 * x2;
+                a33 += w3 * x3;
+            }
+            context.localBarrier();
+        }
+        int r = r0 + (ty << 2);
+        int b = b0 + (tx << 2);
+        if (r + 0 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 0, outputBatch.get((b + 0) * d + r + 0) + a00);
+        }
+        if (r + 0 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 0, outputBatch.get((b + 1) * d + r + 0) + a01);
+        }
+        if (r + 0 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 0, outputBatch.get((b + 2) * d + r + 0) + a02);
+        }
+        if (r + 0 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 0, outputBatch.get((b + 3) * d + r + 0) + a03);
+        }
+        if (r + 1 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 1, outputBatch.get((b + 0) * d + r + 1) + a10);
+        }
+        if (r + 1 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 1, outputBatch.get((b + 1) * d + r + 1) + a11);
+        }
+        if (r + 1 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 1, outputBatch.get((b + 2) * d + r + 1) + a12);
+        }
+        if (r + 1 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 1, outputBatch.get((b + 3) * d + r + 1) + a13);
+        }
+        if (r + 2 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 2, outputBatch.get((b + 0) * d + r + 2) + a20);
+        }
+        if (r + 2 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 2, outputBatch.get((b + 1) * d + r + 2) + a21);
+        }
+        if (r + 2 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 2, outputBatch.get((b + 2) * d + r + 2) + a22);
+        }
+        if (r + 2 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 2, outputBatch.get((b + 3) * d + r + 2) + a23);
+        }
+        if (r + 3 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 3, outputBatch.get((b + 0) * d + r + 3) + a30);
+        }
+        if (r + 3 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 3, outputBatch.get((b + 1) * d + r + 3) + a31);
+        }
+        if (r + 3 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 3, outputBatch.get((b + 2) * d + r + 3) + a32);
+        }
+        if (r + 3 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 3, outputBatch.get((b + 3) * d + r + 3) + a33);
+        }
+    }
+
+    // @formatter:off
+    /**
+     * {@link #batchedFusedRmsNormFFNGateUp} as a tiled matrix multiplication: the RMS scaling is
+     * applied as the activations are staged, both projections accumulate from the same staged
+     * activations, and {@code SiLU(gate) * up} is written per element. 64-row by 64-token tiles,
+     * 256 threads, a 4x4 block per thread per projection. Grid: {@code ceil(hiddenDim / 64) *
+     * ceil(batch / 64)} workgroups of 256 threads.
+     */
+    // @formatter:on
+    public static void batchedGemmRmsNormFFNGateUpFP16(
+            KernelContext context,
+            FloatArray x,
+            FloatArray hb,
+            FloatArray rmsWeights,
+            FloatArray scaleBatch,
+            HalfFloatArray w1,
+            HalfFloatArray w3,
+            int dim,
+            int hiddenDim,
+            int batch) {
+        float[] gs = context.allocateFloatLocalArray(64 * 33);
+        float[] us = context.allocateFloatLocalArray(64 * 33);
+        float[] xs = context.allocateFloatLocalArray(64 * 33);
+        int tid = context.localIdx;
+        int tx = tid & 15;
+        int ty = tid >> 4;
+        int rowTiles = (hiddenDim + 63) >> 6;
+        int grp = context.groupIdx;
+        int r0 = (grp % rowTiles) << 6;
+        int b0 = (grp / rowTiles) << 6;
+        float g00 = 0.0f;
+        float g01 = 0.0f;
+        float g02 = 0.0f;
+        float g03 = 0.0f;
+        float g10 = 0.0f;
+        float g11 = 0.0f;
+        float g12 = 0.0f;
+        float g13 = 0.0f;
+        float g20 = 0.0f;
+        float g21 = 0.0f;
+        float g22 = 0.0f;
+        float g23 = 0.0f;
+        float g30 = 0.0f;
+        float g31 = 0.0f;
+        float g32 = 0.0f;
+        float g33 = 0.0f;
+        float u00 = 0.0f;
+        float u01 = 0.0f;
+        float u02 = 0.0f;
+        float u03 = 0.0f;
+        float u10 = 0.0f;
+        float u11 = 0.0f;
+        float u12 = 0.0f;
+        float u13 = 0.0f;
+        float u20 = 0.0f;
+        float u21 = 0.0f;
+        float u22 = 0.0f;
+        float u23 = 0.0f;
+        float u30 = 0.0f;
+        float u31 = 0.0f;
+        float u32 = 0.0f;
+        float u33 = 0.0f;
+        for (int k0 = 0; k0 < dim; k0 += 32) {
+            for (int e = tid; e < 2048; e += 256) {
+                int rr = e >> 5;
+                int kk = e & 31;
+                int k = k0 + kk;
+                float gv = 0.0f;
+                float uv = 0.0f;
+                if (r0 + rr < hiddenDim && k < dim) {
+                    gv = w1.get((r0 + rr) * dim + k).getFloat32();
+                    uv = w3.get((r0 + rr) * dim + k).getFloat32();
+                }
+                gs[rr * 33 + kk] = gv;
+                us[rr * 33 + kk] = uv;
+                float xv = 0.0f;
+                if (b0 + rr < batch && k < dim) {
+                    xv = rmsWeights.get(k) * scaleBatch.get(b0 + rr) * x.get((b0 + rr) * dim + k);
+                }
+                xs[rr * 33 + kk] = xv;
+            }
+            context.localBarrier();
+            int wr = (ty << 2) * 33;
+            int xr = (tx << 2) * 33;
+            for (int kk = 0; kk < 32; kk++) {
+                float x0 = xs[xr + 0 + kk];
+                float x1 = xs[xr + 33 + kk];
+                float x2 = xs[xr + 66 + kk];
+                float x3 = xs[xr + 99 + kk];
+                float g0 = gs[wr + 0 + kk];
+                float g1 = gs[wr + 33 + kk];
+                float g2 = gs[wr + 66 + kk];
+                float g3 = gs[wr + 99 + kk];
+                g00 += g0 * x0;
+                g01 += g0 * x1;
+                g02 += g0 * x2;
+                g03 += g0 * x3;
+                g10 += g1 * x0;
+                g11 += g1 * x1;
+                g12 += g1 * x2;
+                g13 += g1 * x3;
+                g20 += g2 * x0;
+                g21 += g2 * x1;
+                g22 += g2 * x2;
+                g23 += g2 * x3;
+                g30 += g3 * x0;
+                g31 += g3 * x1;
+                g32 += g3 * x2;
+                g33 += g3 * x3;
+                float u0 = us[wr + 0 + kk];
+                float u1 = us[wr + 33 + kk];
+                float u2 = us[wr + 66 + kk];
+                float u3 = us[wr + 99 + kk];
+                u00 += u0 * x0;
+                u01 += u0 * x1;
+                u02 += u0 * x2;
+                u03 += u0 * x3;
+                u10 += u1 * x0;
+                u11 += u1 * x1;
+                u12 += u1 * x2;
+                u13 += u1 * x3;
+                u20 += u2 * x0;
+                u21 += u2 * x1;
+                u22 += u2 * x2;
+                u23 += u2 * x3;
+                u30 += u3 * x0;
+                u31 += u3 * x1;
+                u32 += u3 * x2;
+                u33 += u3 * x3;
+            }
+            context.localBarrier();
+        }
+        int r = r0 + (ty << 2);
+        int b = b0 + (tx << 2);
+        if (r + 0 < hiddenDim && b + 0 < batch) {
+            hb.set((b + 0) * hiddenDim + r + 0, (g00 / (1.0f + TornadoMath.exp(-g00))) * u00);
+        }
+        if (r + 0 < hiddenDim && b + 1 < batch) {
+            hb.set((b + 1) * hiddenDim + r + 0, (g01 / (1.0f + TornadoMath.exp(-g01))) * u01);
+        }
+        if (r + 0 < hiddenDim && b + 2 < batch) {
+            hb.set((b + 2) * hiddenDim + r + 0, (g02 / (1.0f + TornadoMath.exp(-g02))) * u02);
+        }
+        if (r + 0 < hiddenDim && b + 3 < batch) {
+            hb.set((b + 3) * hiddenDim + r + 0, (g03 / (1.0f + TornadoMath.exp(-g03))) * u03);
+        }
+        if (r + 1 < hiddenDim && b + 0 < batch) {
+            hb.set((b + 0) * hiddenDim + r + 1, (g10 / (1.0f + TornadoMath.exp(-g10))) * u10);
+        }
+        if (r + 1 < hiddenDim && b + 1 < batch) {
+            hb.set((b + 1) * hiddenDim + r + 1, (g11 / (1.0f + TornadoMath.exp(-g11))) * u11);
+        }
+        if (r + 1 < hiddenDim && b + 2 < batch) {
+            hb.set((b + 2) * hiddenDim + r + 1, (g12 / (1.0f + TornadoMath.exp(-g12))) * u12);
+        }
+        if (r + 1 < hiddenDim && b + 3 < batch) {
+            hb.set((b + 3) * hiddenDim + r + 1, (g13 / (1.0f + TornadoMath.exp(-g13))) * u13);
+        }
+        if (r + 2 < hiddenDim && b + 0 < batch) {
+            hb.set((b + 0) * hiddenDim + r + 2, (g20 / (1.0f + TornadoMath.exp(-g20))) * u20);
+        }
+        if (r + 2 < hiddenDim && b + 1 < batch) {
+            hb.set((b + 1) * hiddenDim + r + 2, (g21 / (1.0f + TornadoMath.exp(-g21))) * u21);
+        }
+        if (r + 2 < hiddenDim && b + 2 < batch) {
+            hb.set((b + 2) * hiddenDim + r + 2, (g22 / (1.0f + TornadoMath.exp(-g22))) * u22);
+        }
+        if (r + 2 < hiddenDim && b + 3 < batch) {
+            hb.set((b + 3) * hiddenDim + r + 2, (g23 / (1.0f + TornadoMath.exp(-g23))) * u23);
+        }
+        if (r + 3 < hiddenDim && b + 0 < batch) {
+            hb.set((b + 0) * hiddenDim + r + 3, (g30 / (1.0f + TornadoMath.exp(-g30))) * u30);
+        }
+        if (r + 3 < hiddenDim && b + 1 < batch) {
+            hb.set((b + 1) * hiddenDim + r + 3, (g31 / (1.0f + TornadoMath.exp(-g31))) * u31);
+        }
+        if (r + 3 < hiddenDim && b + 2 < batch) {
+            hb.set((b + 2) * hiddenDim + r + 3, (g32 / (1.0f + TornadoMath.exp(-g32))) * u32);
+        }
+        if (r + 3 < hiddenDim && b + 3 < batch) {
+            hb.set((b + 3) * hiddenDim + r + 3, (g33 / (1.0f + TornadoMath.exp(-g33))) * u33);
+        }
+    }
+
+    // @formatter:off
+    /**
+     * {@code Qwen3Kernels.batchedFusedQKVMatmulFP16} as a tiled matrix multiplication over the Q, K
+     * and V rows taken as one {@code qDim + 2 * kvDim}-row matrix. Each 64-row tile lies in one of
+     * the three (both sizes are multiples of 64, which the caller checks) and writes to that
+     * projection's output. 64-row by 64-token tiles, 256 threads, a 4x4 block per thread. Grid:
+     * {@code ((qDim + 2 * kvDim) / 64) * ceil(batch / 64)} workgroups of 256 threads.
+     */
+    // @formatter:on
+    public static void batchedGemmQKVFP16(
+            KernelContext context,
+            HalfFloatArray x,
+            FloatArray q,
+            FloatArray k,
+            FloatArray v,
+            HalfFloatArray wq,
+            HalfFloatArray wk,
+            HalfFloatArray wv,
+            int dim,
+            int qDim,
+            int kvDim,
+            int batch) {
+        float[] ws = context.allocateFloatLocalArray(64 * 33);
+        float[] xs = context.allocateFloatLocalArray(64 * 33);
+        int tid = context.localIdx;
+        int tx = tid & 15;
+        int ty = tid >> 4;
+        int rowTiles = (qDim + 2 * kvDim) >> 6;
+        int grp = context.groupIdx;
+        int r0 = (grp % rowTiles) << 6;
+        int b0 = (grp / rowTiles) << 6;
+        int which = r0 < qDim ? 0 : (r0 < qDim + kvDim ? 1 : 2);
+        int local0 = which == 0 ? r0 : (which == 1 ? r0 - qDim : r0 - qDim - kvDim);
+        float a00 = 0.0f;
+        float a01 = 0.0f;
+        float a02 = 0.0f;
+        float a03 = 0.0f;
+        float a10 = 0.0f;
+        float a11 = 0.0f;
+        float a12 = 0.0f;
+        float a13 = 0.0f;
+        float a20 = 0.0f;
+        float a21 = 0.0f;
+        float a22 = 0.0f;
+        float a23 = 0.0f;
+        float a30 = 0.0f;
+        float a31 = 0.0f;
+        float a32 = 0.0f;
+        float a33 = 0.0f;
+        for (int k0 = 0; k0 < dim; k0 += 32) {
+            for (int e = tid; e < 2048; e += 256) {
+                int rr = e >> 5;
+                int kk = e & 31;
+                int kc = k0 + kk;
+                int off = (local0 + rr) * dim + kc;
+                float wvl;
+                if (which == 0) {
+                    wvl = wq.get(off).getFloat32();
+                } else if (which == 1) {
+                    wvl = wk.get(off).getFloat32();
+                } else {
+                    wvl = wv.get(off).getFloat32();
+                }
+                ws[rr * 33 + kk] = wvl;
+                float xv = 0.0f;
+                if (b0 + rr < batch) {
+                    xv = x.get((b0 + rr) * dim + kc).getFloat32();
+                }
+                xs[rr * 33 + kk] = xv;
+            }
+            context.localBarrier();
+            int wr = (ty << 2) * 33;
+            int xr = (tx << 2) * 33;
+            for (int kk = 0; kk < 32; kk++) {
+                float x0 = xs[xr + 0 + kk];
+                float x1 = xs[xr + 33 + kk];
+                float x2 = xs[xr + 66 + kk];
+                float x3 = xs[xr + 99 + kk];
+                float w0 = ws[wr + 0 + kk];
+                float w1 = ws[wr + 33 + kk];
+                float w2 = ws[wr + 66 + kk];
+                float w3 = ws[wr + 99 + kk];
+                a00 += w0 * x0;
+                a01 += w0 * x1;
+                a02 += w0 * x2;
+                a03 += w0 * x3;
+                a10 += w1 * x0;
+                a11 += w1 * x1;
+                a12 += w1 * x2;
+                a13 += w1 * x3;
+                a20 += w2 * x0;
+                a21 += w2 * x1;
+                a22 += w2 * x2;
+                a23 += w2 * x3;
+                a30 += w3 * x0;
+                a31 += w3 * x1;
+                a32 += w3 * x2;
+                a33 += w3 * x3;
+            }
+            context.localBarrier();
+        }
+        int rl = local0 + (ty << 2);
+        int b = b0 + (tx << 2);
+        if (which == 0) {
+            if (b + 0 < batch) {
+                q.set((b + 0) * qDim + rl + 0, a00);
+            }
+            if (b + 1 < batch) {
+                q.set((b + 1) * qDim + rl + 0, a01);
+            }
+            if (b + 2 < batch) {
+                q.set((b + 2) * qDim + rl + 0, a02);
+            }
+            if (b + 3 < batch) {
+                q.set((b + 3) * qDim + rl + 0, a03);
+            }
+            if (b + 0 < batch) {
+                q.set((b + 0) * qDim + rl + 1, a10);
+            }
+            if (b + 1 < batch) {
+                q.set((b + 1) * qDim + rl + 1, a11);
+            }
+            if (b + 2 < batch) {
+                q.set((b + 2) * qDim + rl + 1, a12);
+            }
+            if (b + 3 < batch) {
+                q.set((b + 3) * qDim + rl + 1, a13);
+            }
+            if (b + 0 < batch) {
+                q.set((b + 0) * qDim + rl + 2, a20);
+            }
+            if (b + 1 < batch) {
+                q.set((b + 1) * qDim + rl + 2, a21);
+            }
+            if (b + 2 < batch) {
+                q.set((b + 2) * qDim + rl + 2, a22);
+            }
+            if (b + 3 < batch) {
+                q.set((b + 3) * qDim + rl + 2, a23);
+            }
+            if (b + 0 < batch) {
+                q.set((b + 0) * qDim + rl + 3, a30);
+            }
+            if (b + 1 < batch) {
+                q.set((b + 1) * qDim + rl + 3, a31);
+            }
+            if (b + 2 < batch) {
+                q.set((b + 2) * qDim + rl + 3, a32);
+            }
+            if (b + 3 < batch) {
+                q.set((b + 3) * qDim + rl + 3, a33);
+            }
+        } else if (which == 1) {
+            if (b + 0 < batch) {
+                k.set((b + 0) * kvDim + rl + 0, a00);
+            }
+            if (b + 1 < batch) {
+                k.set((b + 1) * kvDim + rl + 0, a01);
+            }
+            if (b + 2 < batch) {
+                k.set((b + 2) * kvDim + rl + 0, a02);
+            }
+            if (b + 3 < batch) {
+                k.set((b + 3) * kvDim + rl + 0, a03);
+            }
+            if (b + 0 < batch) {
+                k.set((b + 0) * kvDim + rl + 1, a10);
+            }
+            if (b + 1 < batch) {
+                k.set((b + 1) * kvDim + rl + 1, a11);
+            }
+            if (b + 2 < batch) {
+                k.set((b + 2) * kvDim + rl + 1, a12);
+            }
+            if (b + 3 < batch) {
+                k.set((b + 3) * kvDim + rl + 1, a13);
+            }
+            if (b + 0 < batch) {
+                k.set((b + 0) * kvDim + rl + 2, a20);
+            }
+            if (b + 1 < batch) {
+                k.set((b + 1) * kvDim + rl + 2, a21);
+            }
+            if (b + 2 < batch) {
+                k.set((b + 2) * kvDim + rl + 2, a22);
+            }
+            if (b + 3 < batch) {
+                k.set((b + 3) * kvDim + rl + 2, a23);
+            }
+            if (b + 0 < batch) {
+                k.set((b + 0) * kvDim + rl + 3, a30);
+            }
+            if (b + 1 < batch) {
+                k.set((b + 1) * kvDim + rl + 3, a31);
+            }
+            if (b + 2 < batch) {
+                k.set((b + 2) * kvDim + rl + 3, a32);
+            }
+            if (b + 3 < batch) {
+                k.set((b + 3) * kvDim + rl + 3, a33);
+            }
+        } else {
+            if (b + 0 < batch) {
+                v.set((b + 0) * kvDim + rl + 0, a00);
+            }
+            if (b + 1 < batch) {
+                v.set((b + 1) * kvDim + rl + 0, a01);
+            }
+            if (b + 2 < batch) {
+                v.set((b + 2) * kvDim + rl + 0, a02);
+            }
+            if (b + 3 < batch) {
+                v.set((b + 3) * kvDim + rl + 0, a03);
+            }
+            if (b + 0 < batch) {
+                v.set((b + 0) * kvDim + rl + 1, a10);
+            }
+            if (b + 1 < batch) {
+                v.set((b + 1) * kvDim + rl + 1, a11);
+            }
+            if (b + 2 < batch) {
+                v.set((b + 2) * kvDim + rl + 1, a12);
+            }
+            if (b + 3 < batch) {
+                v.set((b + 3) * kvDim + rl + 1, a13);
+            }
+            if (b + 0 < batch) {
+                v.set((b + 0) * kvDim + rl + 2, a20);
+            }
+            if (b + 1 < batch) {
+                v.set((b + 1) * kvDim + rl + 2, a21);
+            }
+            if (b + 2 < batch) {
+                v.set((b + 2) * kvDim + rl + 2, a22);
+            }
+            if (b + 3 < batch) {
+                v.set((b + 3) * kvDim + rl + 2, a23);
+            }
+            if (b + 0 < batch) {
+                v.set((b + 0) * kvDim + rl + 3, a30);
+            }
+            if (b + 1 < batch) {
+                v.set((b + 1) * kvDim + rl + 3, a31);
+            }
+            if (b + 2 < batch) {
+                v.set((b + 2) * kvDim + rl + 3, a32);
+            }
+            if (b + 3 < batch) {
+                v.set((b + 3) * kvDim + rl + 3, a33);
+            }
+        }
+    }
+
+    // @formatter:off
+    /**
+     * {@link #batchedMatVecWithResidualQ8} as a tiled matrix multiplication: {@code out[b, r] +=
+     * sum_k x[b, k] * w[r, k]} for every token {@code b} of the batch at once. A workgroup of 256
+     * threads computes a 64-row by 64-token tile, stages a 32-wide slice of the weight rows and of
+     * the activations in threadgroup memory per step, and each thread accumulates a 4x4 block, so a
+     * Q8_0 weight is dequantized once per 64 tokens as it is staged; a 32-wide slice is one Q8_0
+     * block per row, so {@code n} must be a multiple of 32, as Q8_0 rows always are. A weight is
+     * read once per 64 tokens instead of once per token. Grid: {@code ceil(d / 64) * ceil(batch /
+     * 64)} workgroups of 256 threads; rows and tokens past the ends are skipped.
+     */
+    // @formatter:on
+    public static void batchedGemmQ8WithResidual(
+            KernelContext context,
+            FloatArray inputBatch,
+            FloatArray outputBatch,
+            ByteArray w,
+            int n,
+            int d,
+            int batch) {
+        float[] ws = context.allocateFloatLocalArray(64 * 33);
+        float[] xs = context.allocateFloatLocalArray(64 * 33);
+        int tid = context.localIdx;
+        int tx = tid & 15;
+        int ty = tid >> 4;
+        int rowTiles = (d + 63) >> 6;
+        int g = context.groupIdx;
+        int r0 = (g % rowTiles) << 6;
+        int b0 = (g / rowTiles) << 6;
+        float a00 = 0.0f;
+        float a01 = 0.0f;
+        float a02 = 0.0f;
+        float a03 = 0.0f;
+        float a10 = 0.0f;
+        float a11 = 0.0f;
+        float a12 = 0.0f;
+        float a13 = 0.0f;
+        float a20 = 0.0f;
+        float a21 = 0.0f;
+        float a22 = 0.0f;
+        float a23 = 0.0f;
+        float a30 = 0.0f;
+        float a31 = 0.0f;
+        float a32 = 0.0f;
+        float a33 = 0.0f;
+        for (int k0 = 0; k0 < n; k0 += 32) {
+            for (int e = tid; e < 2048; e += 256) {
+                int rr = e >> 5;
+                int kk = e & 31;
+                int k = k0 + kk;
+                float wv = 0.0f;
+                if (r0 + rr < d && k < n) {
+                    wv =
+                            ((float)
+                                            w.get(
+                                                    ((r0 + rr) * (n >> 5) + ((k) >> 5)) * 34
+                                                            + 2
+                                                            + ((k) & 31)))
+                                    * w.getHalfFloat(((r0 + rr) * (n >> 5) + ((k) >> 5)) * 34)
+                                            .getFloat32();
+                }
+                ws[rr * 33 + kk] = wv;
+                float xv = 0.0f;
+                if (b0 + rr < batch && k < n) {
+                    xv = inputBatch.get((b0 + rr) * n + k);
+                }
+                xs[rr * 33 + kk] = xv;
+            }
+            context.localBarrier();
+            int wr = (ty << 2) * 33;
+            int xr = (tx << 2) * 33;
+            for (int kk = 0; kk < 32; kk++) {
+                float w0 = ws[wr + 0 + kk];
+                float w1 = ws[wr + 33 + kk];
+                float w2 = ws[wr + 66 + kk];
+                float w3 = ws[wr + 99 + kk];
+                float x0 = xs[xr + 0 + kk];
+                float x1 = xs[xr + 33 + kk];
+                float x2 = xs[xr + 66 + kk];
+                float x3 = xs[xr + 99 + kk];
+                a00 += w0 * x0;
+                a01 += w0 * x1;
+                a02 += w0 * x2;
+                a03 += w0 * x3;
+                a10 += w1 * x0;
+                a11 += w1 * x1;
+                a12 += w1 * x2;
+                a13 += w1 * x3;
+                a20 += w2 * x0;
+                a21 += w2 * x1;
+                a22 += w2 * x2;
+                a23 += w2 * x3;
+                a30 += w3 * x0;
+                a31 += w3 * x1;
+                a32 += w3 * x2;
+                a33 += w3 * x3;
+            }
+            context.localBarrier();
+        }
+        int r = r0 + (ty << 2);
+        int b = b0 + (tx << 2);
+        if (r + 0 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 0, outputBatch.get((b + 0) * d + r + 0) + a00);
+        }
+        if (r + 0 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 0, outputBatch.get((b + 1) * d + r + 0) + a01);
+        }
+        if (r + 0 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 0, outputBatch.get((b + 2) * d + r + 0) + a02);
+        }
+        if (r + 0 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 0, outputBatch.get((b + 3) * d + r + 0) + a03);
+        }
+        if (r + 1 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 1, outputBatch.get((b + 0) * d + r + 1) + a10);
+        }
+        if (r + 1 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 1, outputBatch.get((b + 1) * d + r + 1) + a11);
+        }
+        if (r + 1 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 1, outputBatch.get((b + 2) * d + r + 1) + a12);
+        }
+        if (r + 1 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 1, outputBatch.get((b + 3) * d + r + 1) + a13);
+        }
+        if (r + 2 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 2, outputBatch.get((b + 0) * d + r + 2) + a20);
+        }
+        if (r + 2 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 2, outputBatch.get((b + 1) * d + r + 2) + a21);
+        }
+        if (r + 2 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 2, outputBatch.get((b + 2) * d + r + 2) + a22);
+        }
+        if (r + 2 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 2, outputBatch.get((b + 3) * d + r + 2) + a23);
+        }
+        if (r + 3 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 3, outputBatch.get((b + 0) * d + r + 3) + a30);
+        }
+        if (r + 3 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 3, outputBatch.get((b + 1) * d + r + 3) + a31);
+        }
+        if (r + 3 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 3, outputBatch.get((b + 2) * d + r + 3) + a32);
+        }
+        if (r + 3 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 3, outputBatch.get((b + 3) * d + r + 3) + a33);
+        }
+    }
+
+    // @formatter:off
+    /**
+     * {@link #batchedFusedRmsNormFFNGateUpQ8} as a tiled matrix multiplication: the RMS scaling is
+     * applied as the activations are staged, both projections accumulate from the same staged
+     * activations, and {@code SiLU(gate) * up} is written per element. 64-row by 64-token tiles,
+     * 256 threads, a 4x4 block per thread per projection. Grid: {@code ceil(hiddenDim / 64) *
+     * ceil(batch / 64)} workgroups of 256 threads.
+     */
+    // @formatter:on
+    public static void batchedGemmRmsNormFFNGateUpQ8(
+            KernelContext context,
+            FloatArray x,
+            FloatArray hb,
+            FloatArray rmsWeights,
+            FloatArray scaleBatch,
+            ByteArray w1,
+            ByteArray w3,
+            int dim,
+            int hiddenDim,
+            int batch) {
+        float[] gs = context.allocateFloatLocalArray(64 * 33);
+        float[] us = context.allocateFloatLocalArray(64 * 33);
+        float[] xs = context.allocateFloatLocalArray(64 * 33);
+        int tid = context.localIdx;
+        int tx = tid & 15;
+        int ty = tid >> 4;
+        int rowTiles = (hiddenDim + 63) >> 6;
+        int grp = context.groupIdx;
+        int r0 = (grp % rowTiles) << 6;
+        int b0 = (grp / rowTiles) << 6;
+        float g00 = 0.0f;
+        float g01 = 0.0f;
+        float g02 = 0.0f;
+        float g03 = 0.0f;
+        float g10 = 0.0f;
+        float g11 = 0.0f;
+        float g12 = 0.0f;
+        float g13 = 0.0f;
+        float g20 = 0.0f;
+        float g21 = 0.0f;
+        float g22 = 0.0f;
+        float g23 = 0.0f;
+        float g30 = 0.0f;
+        float g31 = 0.0f;
+        float g32 = 0.0f;
+        float g33 = 0.0f;
+        float u00 = 0.0f;
+        float u01 = 0.0f;
+        float u02 = 0.0f;
+        float u03 = 0.0f;
+        float u10 = 0.0f;
+        float u11 = 0.0f;
+        float u12 = 0.0f;
+        float u13 = 0.0f;
+        float u20 = 0.0f;
+        float u21 = 0.0f;
+        float u22 = 0.0f;
+        float u23 = 0.0f;
+        float u30 = 0.0f;
+        float u31 = 0.0f;
+        float u32 = 0.0f;
+        float u33 = 0.0f;
+        for (int k0 = 0; k0 < dim; k0 += 32) {
+            for (int e = tid; e < 2048; e += 256) {
+                int rr = e >> 5;
+                int kk = e & 31;
+                int k = k0 + kk;
+                float gv = 0.0f;
+                float uv = 0.0f;
+                if (r0 + rr < hiddenDim && k < dim) {
+                    gv =
+                            ((float)
+                                            w1.get(
+                                                    ((r0 + rr) * (dim >> 5) + ((k) >> 5)) * 34
+                                                            + 2
+                                                            + ((k) & 31)))
+                                    * w1.getHalfFloat(((r0 + rr) * (dim >> 5) + ((k) >> 5)) * 34)
+                                            .getFloat32();
+                    uv =
+                            ((float)
+                                            w3.get(
+                                                    ((r0 + rr) * (dim >> 5) + ((k) >> 5)) * 34
+                                                            + 2
+                                                            + ((k) & 31)))
+                                    * w3.getHalfFloat(((r0 + rr) * (dim >> 5) + ((k) >> 5)) * 34)
+                                            .getFloat32();
+                }
+                gs[rr * 33 + kk] = gv;
+                us[rr * 33 + kk] = uv;
+                float xv = 0.0f;
+                if (b0 + rr < batch && k < dim) {
+                    xv = rmsWeights.get(k) * scaleBatch.get(b0 + rr) * x.get((b0 + rr) * dim + k);
+                }
+                xs[rr * 33 + kk] = xv;
+            }
+            context.localBarrier();
+            int wr = (ty << 2) * 33;
+            int xr = (tx << 2) * 33;
+            for (int kk = 0; kk < 32; kk++) {
+                float x0 = xs[xr + 0 + kk];
+                float x1 = xs[xr + 33 + kk];
+                float x2 = xs[xr + 66 + kk];
+                float x3 = xs[xr + 99 + kk];
+                float g0 = gs[wr + 0 + kk];
+                float g1 = gs[wr + 33 + kk];
+                float g2 = gs[wr + 66 + kk];
+                float g3 = gs[wr + 99 + kk];
+                g00 += g0 * x0;
+                g01 += g0 * x1;
+                g02 += g0 * x2;
+                g03 += g0 * x3;
+                g10 += g1 * x0;
+                g11 += g1 * x1;
+                g12 += g1 * x2;
+                g13 += g1 * x3;
+                g20 += g2 * x0;
+                g21 += g2 * x1;
+                g22 += g2 * x2;
+                g23 += g2 * x3;
+                g30 += g3 * x0;
+                g31 += g3 * x1;
+                g32 += g3 * x2;
+                g33 += g3 * x3;
+                float u0 = us[wr + 0 + kk];
+                float u1 = us[wr + 33 + kk];
+                float u2 = us[wr + 66 + kk];
+                float u3 = us[wr + 99 + kk];
+                u00 += u0 * x0;
+                u01 += u0 * x1;
+                u02 += u0 * x2;
+                u03 += u0 * x3;
+                u10 += u1 * x0;
+                u11 += u1 * x1;
+                u12 += u1 * x2;
+                u13 += u1 * x3;
+                u20 += u2 * x0;
+                u21 += u2 * x1;
+                u22 += u2 * x2;
+                u23 += u2 * x3;
+                u30 += u3 * x0;
+                u31 += u3 * x1;
+                u32 += u3 * x2;
+                u33 += u3 * x3;
+            }
+            context.localBarrier();
+        }
+        int r = r0 + (ty << 2);
+        int b = b0 + (tx << 2);
+        if (r + 0 < hiddenDim && b + 0 < batch) {
+            hb.set((b + 0) * hiddenDim + r + 0, (g00 / (1.0f + TornadoMath.exp(-g00))) * u00);
+        }
+        if (r + 0 < hiddenDim && b + 1 < batch) {
+            hb.set((b + 1) * hiddenDim + r + 0, (g01 / (1.0f + TornadoMath.exp(-g01))) * u01);
+        }
+        if (r + 0 < hiddenDim && b + 2 < batch) {
+            hb.set((b + 2) * hiddenDim + r + 0, (g02 / (1.0f + TornadoMath.exp(-g02))) * u02);
+        }
+        if (r + 0 < hiddenDim && b + 3 < batch) {
+            hb.set((b + 3) * hiddenDim + r + 0, (g03 / (1.0f + TornadoMath.exp(-g03))) * u03);
+        }
+        if (r + 1 < hiddenDim && b + 0 < batch) {
+            hb.set((b + 0) * hiddenDim + r + 1, (g10 / (1.0f + TornadoMath.exp(-g10))) * u10);
+        }
+        if (r + 1 < hiddenDim && b + 1 < batch) {
+            hb.set((b + 1) * hiddenDim + r + 1, (g11 / (1.0f + TornadoMath.exp(-g11))) * u11);
+        }
+        if (r + 1 < hiddenDim && b + 2 < batch) {
+            hb.set((b + 2) * hiddenDim + r + 1, (g12 / (1.0f + TornadoMath.exp(-g12))) * u12);
+        }
+        if (r + 1 < hiddenDim && b + 3 < batch) {
+            hb.set((b + 3) * hiddenDim + r + 1, (g13 / (1.0f + TornadoMath.exp(-g13))) * u13);
+        }
+        if (r + 2 < hiddenDim && b + 0 < batch) {
+            hb.set((b + 0) * hiddenDim + r + 2, (g20 / (1.0f + TornadoMath.exp(-g20))) * u20);
+        }
+        if (r + 2 < hiddenDim && b + 1 < batch) {
+            hb.set((b + 1) * hiddenDim + r + 2, (g21 / (1.0f + TornadoMath.exp(-g21))) * u21);
+        }
+        if (r + 2 < hiddenDim && b + 2 < batch) {
+            hb.set((b + 2) * hiddenDim + r + 2, (g22 / (1.0f + TornadoMath.exp(-g22))) * u22);
+        }
+        if (r + 2 < hiddenDim && b + 3 < batch) {
+            hb.set((b + 3) * hiddenDim + r + 2, (g23 / (1.0f + TornadoMath.exp(-g23))) * u23);
+        }
+        if (r + 3 < hiddenDim && b + 0 < batch) {
+            hb.set((b + 0) * hiddenDim + r + 3, (g30 / (1.0f + TornadoMath.exp(-g30))) * u30);
+        }
+        if (r + 3 < hiddenDim && b + 1 < batch) {
+            hb.set((b + 1) * hiddenDim + r + 3, (g31 / (1.0f + TornadoMath.exp(-g31))) * u31);
+        }
+        if (r + 3 < hiddenDim && b + 2 < batch) {
+            hb.set((b + 2) * hiddenDim + r + 3, (g32 / (1.0f + TornadoMath.exp(-g32))) * u32);
+        }
+        if (r + 3 < hiddenDim && b + 3 < batch) {
+            hb.set((b + 3) * hiddenDim + r + 3, (g33 / (1.0f + TornadoMath.exp(-g33))) * u33);
+        }
+    }
+
+    // @formatter:off
+    /**
+     * {@code Qwen3Kernels.batchedFusedQKVMatmulQ8_0} as a tiled matrix multiplication over the Q, K
+     * and V rows taken as one {@code qDim + 2 * kvDim}-row matrix. Each 64-row tile lies in one of
+     * the three (both sizes are multiples of 64, which the caller checks) and writes to that
+     * projection's output. 64-row by 64-token tiles, 256 threads, a 4x4 block per thread. Grid:
+     * {@code ((qDim + 2 * kvDim) / 64) * ceil(batch / 64)} workgroups of 256 threads.
+     */
+    // @formatter:on
+    public static void batchedGemmQKVQ8(
+            KernelContext context,
+            FloatArray x,
+            FloatArray q,
+            FloatArray k,
+            FloatArray v,
+            ByteArray wq,
+            ByteArray wk,
+            ByteArray wv,
+            int dim,
+            int qDim,
+            int kvDim,
+            int batch) {
+        float[] ws = context.allocateFloatLocalArray(64 * 33);
+        float[] xs = context.allocateFloatLocalArray(64 * 33);
+        int tid = context.localIdx;
+        int tx = tid & 15;
+        int ty = tid >> 4;
+        int rowTiles = (qDim + 2 * kvDim) >> 6;
+        int grp = context.groupIdx;
+        int r0 = (grp % rowTiles) << 6;
+        int b0 = (grp / rowTiles) << 6;
+        int which = r0 < qDim ? 0 : (r0 < qDim + kvDim ? 1 : 2);
+        int local0 = which == 0 ? r0 : (which == 1 ? r0 - qDim : r0 - qDim - kvDim);
+        float a00 = 0.0f;
+        float a01 = 0.0f;
+        float a02 = 0.0f;
+        float a03 = 0.0f;
+        float a10 = 0.0f;
+        float a11 = 0.0f;
+        float a12 = 0.0f;
+        float a13 = 0.0f;
+        float a20 = 0.0f;
+        float a21 = 0.0f;
+        float a22 = 0.0f;
+        float a23 = 0.0f;
+        float a30 = 0.0f;
+        float a31 = 0.0f;
+        float a32 = 0.0f;
+        float a33 = 0.0f;
+        for (int k0 = 0; k0 < dim; k0 += 32) {
+            for (int e = tid; e < 2048; e += 256) {
+                int rr = e >> 5;
+                int kk = e & 31;
+                int kc = k0 + kk;
+                float wvl;
+                if (which == 0) {
+                    wvl =
+                            ((float)
+                                            wq.get(
+                                                    ((local0 + rr) * (dim >> 5) + ((kc) >> 5)) * 34
+                                                            + 2
+                                                            + ((kc) & 31)))
+                                    * wq.getHalfFloat(
+                                                    ((local0 + rr) * (dim >> 5) + ((kc) >> 5)) * 34)
+                                            .getFloat32();
+                } else if (which == 1) {
+                    wvl =
+                            ((float)
+                                            wk.get(
+                                                    ((local0 + rr) * (dim >> 5) + ((kc) >> 5)) * 34
+                                                            + 2
+                                                            + ((kc) & 31)))
+                                    * wk.getHalfFloat(
+                                                    ((local0 + rr) * (dim >> 5) + ((kc) >> 5)) * 34)
+                                            .getFloat32();
+                } else {
+                    wvl =
+                            ((float)
+                                            wv.get(
+                                                    ((local0 + rr) * (dim >> 5) + ((kc) >> 5)) * 34
+                                                            + 2
+                                                            + ((kc) & 31)))
+                                    * wv.getHalfFloat(
+                                                    ((local0 + rr) * (dim >> 5) + ((kc) >> 5)) * 34)
+                                            .getFloat32();
+                }
+                ws[rr * 33 + kk] = wvl;
+                float xv = 0.0f;
+                if (b0 + rr < batch) {
+                    xv = x.get((b0 + rr) * dim + kc);
+                }
+                xs[rr * 33 + kk] = xv;
+            }
+            context.localBarrier();
+            int wr = (ty << 2) * 33;
+            int xr = (tx << 2) * 33;
+            for (int kk = 0; kk < 32; kk++) {
+                float x0 = xs[xr + 0 + kk];
+                float x1 = xs[xr + 33 + kk];
+                float x2 = xs[xr + 66 + kk];
+                float x3 = xs[xr + 99 + kk];
+                float w0 = ws[wr + 0 + kk];
+                float w1 = ws[wr + 33 + kk];
+                float w2 = ws[wr + 66 + kk];
+                float w3 = ws[wr + 99 + kk];
+                a00 += w0 * x0;
+                a01 += w0 * x1;
+                a02 += w0 * x2;
+                a03 += w0 * x3;
+                a10 += w1 * x0;
+                a11 += w1 * x1;
+                a12 += w1 * x2;
+                a13 += w1 * x3;
+                a20 += w2 * x0;
+                a21 += w2 * x1;
+                a22 += w2 * x2;
+                a23 += w2 * x3;
+                a30 += w3 * x0;
+                a31 += w3 * x1;
+                a32 += w3 * x2;
+                a33 += w3 * x3;
+            }
+            context.localBarrier();
+        }
+        int rl = local0 + (ty << 2);
+        int b = b0 + (tx << 2);
+        if (which == 0) {
+            if (b + 0 < batch) {
+                q.set((b + 0) * qDim + rl + 0, a00);
+            }
+            if (b + 1 < batch) {
+                q.set((b + 1) * qDim + rl + 0, a01);
+            }
+            if (b + 2 < batch) {
+                q.set((b + 2) * qDim + rl + 0, a02);
+            }
+            if (b + 3 < batch) {
+                q.set((b + 3) * qDim + rl + 0, a03);
+            }
+            if (b + 0 < batch) {
+                q.set((b + 0) * qDim + rl + 1, a10);
+            }
+            if (b + 1 < batch) {
+                q.set((b + 1) * qDim + rl + 1, a11);
+            }
+            if (b + 2 < batch) {
+                q.set((b + 2) * qDim + rl + 1, a12);
+            }
+            if (b + 3 < batch) {
+                q.set((b + 3) * qDim + rl + 1, a13);
+            }
+            if (b + 0 < batch) {
+                q.set((b + 0) * qDim + rl + 2, a20);
+            }
+            if (b + 1 < batch) {
+                q.set((b + 1) * qDim + rl + 2, a21);
+            }
+            if (b + 2 < batch) {
+                q.set((b + 2) * qDim + rl + 2, a22);
+            }
+            if (b + 3 < batch) {
+                q.set((b + 3) * qDim + rl + 2, a23);
+            }
+            if (b + 0 < batch) {
+                q.set((b + 0) * qDim + rl + 3, a30);
+            }
+            if (b + 1 < batch) {
+                q.set((b + 1) * qDim + rl + 3, a31);
+            }
+            if (b + 2 < batch) {
+                q.set((b + 2) * qDim + rl + 3, a32);
+            }
+            if (b + 3 < batch) {
+                q.set((b + 3) * qDim + rl + 3, a33);
+            }
+        } else if (which == 1) {
+            if (b + 0 < batch) {
+                k.set((b + 0) * kvDim + rl + 0, a00);
+            }
+            if (b + 1 < batch) {
+                k.set((b + 1) * kvDim + rl + 0, a01);
+            }
+            if (b + 2 < batch) {
+                k.set((b + 2) * kvDim + rl + 0, a02);
+            }
+            if (b + 3 < batch) {
+                k.set((b + 3) * kvDim + rl + 0, a03);
+            }
+            if (b + 0 < batch) {
+                k.set((b + 0) * kvDim + rl + 1, a10);
+            }
+            if (b + 1 < batch) {
+                k.set((b + 1) * kvDim + rl + 1, a11);
+            }
+            if (b + 2 < batch) {
+                k.set((b + 2) * kvDim + rl + 1, a12);
+            }
+            if (b + 3 < batch) {
+                k.set((b + 3) * kvDim + rl + 1, a13);
+            }
+            if (b + 0 < batch) {
+                k.set((b + 0) * kvDim + rl + 2, a20);
+            }
+            if (b + 1 < batch) {
+                k.set((b + 1) * kvDim + rl + 2, a21);
+            }
+            if (b + 2 < batch) {
+                k.set((b + 2) * kvDim + rl + 2, a22);
+            }
+            if (b + 3 < batch) {
+                k.set((b + 3) * kvDim + rl + 2, a23);
+            }
+            if (b + 0 < batch) {
+                k.set((b + 0) * kvDim + rl + 3, a30);
+            }
+            if (b + 1 < batch) {
+                k.set((b + 1) * kvDim + rl + 3, a31);
+            }
+            if (b + 2 < batch) {
+                k.set((b + 2) * kvDim + rl + 3, a32);
+            }
+            if (b + 3 < batch) {
+                k.set((b + 3) * kvDim + rl + 3, a33);
+            }
+        } else {
+            if (b + 0 < batch) {
+                v.set((b + 0) * kvDim + rl + 0, a00);
+            }
+            if (b + 1 < batch) {
+                v.set((b + 1) * kvDim + rl + 0, a01);
+            }
+            if (b + 2 < batch) {
+                v.set((b + 2) * kvDim + rl + 0, a02);
+            }
+            if (b + 3 < batch) {
+                v.set((b + 3) * kvDim + rl + 0, a03);
+            }
+            if (b + 0 < batch) {
+                v.set((b + 0) * kvDim + rl + 1, a10);
+            }
+            if (b + 1 < batch) {
+                v.set((b + 1) * kvDim + rl + 1, a11);
+            }
+            if (b + 2 < batch) {
+                v.set((b + 2) * kvDim + rl + 1, a12);
+            }
+            if (b + 3 < batch) {
+                v.set((b + 3) * kvDim + rl + 1, a13);
+            }
+            if (b + 0 < batch) {
+                v.set((b + 0) * kvDim + rl + 2, a20);
+            }
+            if (b + 1 < batch) {
+                v.set((b + 1) * kvDim + rl + 2, a21);
+            }
+            if (b + 2 < batch) {
+                v.set((b + 2) * kvDim + rl + 2, a22);
+            }
+            if (b + 3 < batch) {
+                v.set((b + 3) * kvDim + rl + 2, a23);
+            }
+            if (b + 0 < batch) {
+                v.set((b + 0) * kvDim + rl + 3, a30);
+            }
+            if (b + 1 < batch) {
+                v.set((b + 1) * kvDim + rl + 3, a31);
+            }
+            if (b + 2 < batch) {
+                v.set((b + 2) * kvDim + rl + 3, a32);
+            }
+            if (b + 3 < batch) {
+                v.set((b + 3) * kvDim + rl + 3, a33);
+            }
+        }
     }
 }

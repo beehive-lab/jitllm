@@ -1,12 +1,24 @@
 package org.beehive.jitllm.backend.tornado.plan.components.q4_0;
 
+import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.llama.LlamaQ4_0LayersBatchPrefill;
 import org.beehive.jitllm.backend.tornado.layers.type.q4_0.LlamaQ4_0FFNLayers;
+import org.beehive.jitllm.backend.tornado.layers.type.q4_0.decode.LlamaQ4_0FFNLayersDecode;
+import org.beehive.jitllm.backend.tornado.layers.type.q4_0.prefill.LlamaQ4_0LayersBatchPrefillMMA;
+import org.beehive.jitllm.backend.tornado.layers.type.q4_0.prefill.LlamaQ4_0LayersBatchPrefillNative;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LogitsQ8_0Layer;
-import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode.LogitsQ8_0LayerDecode;
+import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.components.StagedForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation;
+import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
+import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillQ8DeviceActivation;
+import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.LlamaState;
@@ -14,20 +26,23 @@ import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.llama.LlamaConfiguration;
 
+// @formatter:off
 /**
  * Llama's plan when its per-layer weights are retained as Q4_0.
  *
  * <p>Mixed by construction, because the file is. {@code llama-quantize ... Q4_0} writes every
- * {@code blk.*} weight as Q4_0 but leaves {@code token_embd} — which is also the output projection
- * when the two are tied — as Q6_K, which has no kernel here and is still materialized as Q8_0. So
- * the transformer layers read Q4_0 and the logits layer is the existing Q8_0 one, each reading what
- * its own tensors actually hold.
+ * {@code blk.*} weight as Q4_0 (and some {@code ffn_down} as Q4_1), with {@code token_embd} as Q4_0
+ * or Q6_K, which is materialized as Q8_0 for the host-side embedding lookup. So the transformer
+ * layers read Q4_0, the embedding is Q8_0, and the logits layer reads the output projection in its
+ * own representation.
  *
- * <p><b>Single-token only.</b> Q4_0 has no prefill or batched kernels, and saying so here rather
- * than implementing {@code PrefillDecodeForwardPlanComponents} is what makes the registry refuse
- * those modes by name instead of failing on a cast.
+ * <p>Single-token decode, and batched prefill with its projections run by cuBLAS ({@code
+ * --with-native-libraries}). There is no sequential prefill/decode plan: asking for one fails here,
+ * by name.
  */
-public class LlamaQ4_0PlanComponents implements SingleTokenForwardPlanComponents {
+// @formatter:on
+public class LlamaQ4_0PlanComponents
+        implements BatchPrefillDecodeForwardPlanComponents, StagedForwardPlanComponents {
 
     private final LlamaState state;
     private final LlamaTornadoWeights weights;
@@ -55,5 +70,96 @@ public class LlamaQ4_0PlanComponents implements SingleTokenForwardPlanComponents
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
         return new LogitsQ8_0Layer(
                 "logits", state, weights, config, previousGraphId, schedulerType);
+    }
+
+    // ── Batched prefill + decode ──────────────────────────────────────────────
+
+    @Override
+    public ActivationTaskGraph batchPrefillActivation(int batchSize) {
+        // Metal: the host decodes the Q4_0 embeddings into the FP32 batch carrier for the
+        // SIMD-group layers. CUDA: the embedding is Q8_0 (materialized from Q4_0 or Q6_K),
+        // decoded on the device for the cuBLAS and tensor-core layers.
+        return BatchPrefillGemmPolicy.simdgroup()
+                ? new BatchPrefillActivation(state, config, batchSize, true)
+                : new BatchPrefillQ8DeviceActivation(state, config, batchSize);
+    }
+
+    @Override
+    public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
+        return BatchPrefillGemmPolicy.simdgroup()
+                ? new BatchDecodeActivation(state, config, lastBatchLayerId, true, true)
+                : new BatchDecodeActivation(state, config, lastBatchLayerId, true);
+    }
+
+    @Override
+    public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
+        if (BatchPrefillGemmPolicy.simdgroup()) {
+            return new org.beehive.jitllm.backend.tornado.layers.llama.LlamaQ4_0FFNLayersDecode(
+                    "decode", state, weights, config, schedulerType);
+        }
+        return new LlamaQ4_0FFNLayersDecode("decode", state, weights, config, schedulerType);
+    }
+
+    @Override
+    public BatchPrefillTransformerLayerTaskGraphs batchPrefillTransformerLayers(int batchSize) {
+        return BatchPrefillGemmPolicy.simdgroup()
+                ? new LlamaQ4_0LayersBatchPrefill(state, weights, config, batchSize)
+                : batchPrefillTransformerLayers(batchSize, 0, config.numberOfLayers());
+    }
+
+    @Override
+    public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
+        return new LogitsQ8_0LayerDecode(
+                "logits", state, weights, config, previousGraphId, schedulerType);
+    }
+
+    // ── Pipeline stages ───────────────────────────────────────────────────────
+
+    @Override
+    public TransformerLayerTaskGraphs singleTokenTransformerLayers(int firstLayer, int endLayer) {
+        return new LlamaQ4_0FFNLayers(
+                "layers", state, weights, config, schedulerType, firstLayer, endLayer);
+    }
+
+    @Override
+    public BatchPrefillTransformerLayerTaskGraphs batchPrefillTransformerLayers(
+            int batchSize, int firstLayer, int endLayer) {
+        // The whole model: the projections decoded to FP16, then the tensor-core GEMM (cuBLAS
+        // under native libraries). A pipeline stage keeps the int8/cuBLAS layers, which build any
+        // range of layers.
+        if (firstLayer == 0 && endLayer == config.numberOfLayers()) {
+            return new LlamaQ4_0LayersBatchPrefillMMA(state, weights, config, batchSize);
+        }
+        if (!NativePrefillSupport.nativeProjections(state.executionPolicy())) {
+            throw new UnsupportedOperationException(
+                    "the Llama Q4_0 batched prefill of a pipeline stage runs its projections"
+                            + " through cuBLAS: add --with-native-libraries");
+        }
+        return new LlamaQ4_0LayersBatchPrefillNative(
+                state, weights, config, batchSize, firstLayer, endLayer);
+    }
+
+    @Override
+    public TransformerLayerTaskGraphs batchDecodeTransformerLayers(int firstLayer, int endLayer) {
+        return new LlamaQ4_0FFNLayersDecode(
+                "decode", state, weights, config, schedulerType, firstLayer, endLayer);
+    }
+
+    // ── Sequential prefill/decode: not implemented for Q4_0 ──────────────────
+
+    @Override
+    public ActivationTaskGraph prefillDecodeActivation() {
+        throw noSequentialPrefill();
+    }
+
+    @Override
+    public TransformerLayerTaskGraphs prefillDecodeTransformerLayers() {
+        throw noSequentialPrefill();
+    }
+
+    private static UnsupportedOperationException noSequentialPrefill() {
+        return new UnsupportedOperationException(
+                "Llama Q4_0 has no sequential prefill/decode plan; use --batch-prefill-size N"
+                        + " with --with-native-libraries, or the default single-token plan");
     }
 }

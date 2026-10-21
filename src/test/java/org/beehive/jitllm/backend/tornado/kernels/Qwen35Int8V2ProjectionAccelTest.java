@@ -26,8 +26,8 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 // @formatter:off
 /**
- * Research: the second int8 Q4_0 projection design ({@code Qwen35Int8Kernels}) — quantize + decode
- * + block-scaled int8 GEMM — checked and screened against the production FP16 pair.
+ * Research: the second int8 Q4_0 projection design ({@code Int8GemmKernels}) — quantize + decode +
+ * block-scaled int8 GEMM — checked and screened against the production FP16 pair.
  *
  * <p>Implementation correctness is separated from the activation-quantization error: (1a) the
  * quantizer equals the host quantizer bit for bit; (1b) the decoder's int8 words and FP32 scales
@@ -107,7 +107,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                     int qv = 0;
                     if (d > 0) {
                         float v =
-                                amax >= Qwen35Int8Kernels.RECIPROCAL_FINITE_AMAX
+                                amax >= Int8GemmKernels.RECIPROCAL_FINITE_AMAX
                                         ? x * (127.0f / amax)
                                         : (x / amax) * 127.0f;
                         qv = Math.min(127, (int) Math.floor(Math.abs(v) + 0.5f));
@@ -165,7 +165,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                                 DataTransferMode.EVERY_EXECUTION, a, w, q8, dA, w8, dW, out)
                         .task(
                                 "q",
-                                Qwen35Int8Kernels::quantizeActivationsQ8Warp,
+                                Int8GemmKernels::quantizeActivationsQ8Warp,
                                 new KernelContext(),
                                 a,
                                 q8,
@@ -173,7 +173,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                                 k)
                         .task(
                                 "d",
-                                Qwen35Int8Kernels::decodeQ4_0ToInt8Tiled,
+                                Int8GemmKernels::decodeQ4_0ToInt8Tiled,
                                 new KernelContext(),
                                 w,
                                 w8,
@@ -182,7 +182,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                                 k)
                         .task(
                                 "g",
-                                Qwen35Int8Kernels::gemmInt8BlockScaled,
+                                Int8GemmKernels::gemmInt8BlockScaled,
                                 new KernelContext(),
                                 q8,
                                 dA,
@@ -267,7 +267,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                         .transferToDevice(DataTransferMode.EVERY_EXECUTION, a, q8, dA)
                         .task(
                                 "q",
-                                Qwen35Int8Kernels::quantizeActivationsQ8Warp,
+                                Int8GemmKernels::quantizeActivationsQ8Warp,
                                 new KernelContext(),
                                 a,
                                 q8,
@@ -393,7 +393,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                                 hb)
                         .task(
                                 "r",
-                                Qwen35Int8Kernels::gemmInt8BlockScaledResidual,
+                                Int8GemmKernels::gemmInt8BlockScaledResidual,
                                 new KernelContext(),
                                 r.q8(),
                                 r.dA(),
@@ -405,7 +405,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                                 k)
                         .task(
                                 "s",
-                                Qwen35Int8Kernels::gemmInt8BlockScaledSwiGLU,
+                                Int8GemmKernels::gemmInt8BlockScaledSwiGLU,
                                 new KernelContext(),
                                 r.q8(),
                                 r.dA(),
@@ -668,7 +668,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                                         DataTransferMode.FIRST_EXECUTION, a, w, q8, dA, w8, dW)
                                 .task(
                                         "q",
-                                        Qwen35Int8Kernels::quantizeActivationsQ8Warp,
+                                        Int8GemmKernels::quantizeActivationsQ8Warp,
                                         new KernelContext(),
                                         a,
                                         q8,
@@ -676,7 +676,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                                         k)
                                 .task(
                                         "d",
-                                        Qwen35Int8Kernels::decodeQ4_0ToInt8Tiled,
+                                        Int8GemmKernels::decodeQ4_0ToInt8Tiled,
                                         new KernelContext(),
                                         w,
                                         w8,
@@ -685,7 +685,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                                         k)
                                 .task(
                                         "g",
-                                        Qwen35Int8Kernels::gemmInt8BlockScaled,
+                                        Int8GemmKernels::gemmInt8BlockScaled,
                                         new KernelContext(),
                                         q8,
                                         dA,
@@ -701,7 +701,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                                 .transferToDevice(DataTransferMode.FIRST_EXECUTION, a, q8, dA)
                                 .task(
                                         "q",
-                                        Qwen35Int8Kernels::quantizeActivationsQ8Warp,
+                                        Int8GemmKernels::quantizeActivationsQ8Warp,
                                         new KernelContext(),
                                         a,
                                         q8,
@@ -713,7 +713,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                                 .transferToDevice(DataTransferMode.FIRST_EXECUTION, w, w8, dW)
                                 .task(
                                         "d",
-                                        Qwen35Int8Kernels::decodeQ4_0ToInt8Tiled,
+                                        Int8GemmKernels::decodeQ4_0ToInt8Tiled,
                                         new KernelContext(),
                                         w,
                                         w8,
@@ -726,7 +726,7 @@ public class Qwen35Int8V2ProjectionAccelTest {
                                 .transferToDevice(DataTransferMode.FIRST_EXECUTION, q8, dA, w8, dW)
                                 .task(
                                         "g",
-                                        Qwen35Int8Kernels::gemmInt8BlockScaled,
+                                        Int8GemmKernels::gemmInt8BlockScaled,
                                         new KernelContext(),
                                         q8,
                                         dA,

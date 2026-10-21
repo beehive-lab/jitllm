@@ -52,8 +52,9 @@ public final class OpenAIServer implements AutoCloseable {
     /**
      * Either path, behind one call. The engine-backed service batches several conversations; the
      * original serializes them behind a lock. The HTTP handlers do not need to know which.
+     * Package-private so the wire format can be tested without a model.
      */
-    private interface Generator extends AutoCloseable {
+    interface Generator extends AutoCloseable {
         InferenceService.Result generate(
                 InferenceService.Request request, java.util.function.Consumer<String> onToken);
 
@@ -142,7 +143,7 @@ public final class OpenAIServer implements AutoCloseable {
         };
     }
 
-    private OpenAIServer(Generator service, String servedModel, boolean gpu, int contextLength) {
+    OpenAIServer(Generator service, String servedModel, boolean gpu, int contextLength) {
         this.service = service;
         this.servedModel = servedModel;
         this.gpu = gpu;
@@ -630,6 +631,7 @@ public final class OpenAIServer implements AutoCloseable {
         float topP = (float) Json.num(body, "top_p", 0.95);
         long seed = (long) Json.num(body, "seed", 1234);
         boolean stream = Json.bool(body, "stream", false);
+        boolean includeUsage = stream && includeUsage(body);
 
         String requestedModel = Json.str(body, "model", null);
         int promptChars = promptCharacters(messages);
@@ -655,7 +657,7 @@ public final class OpenAIServer implements AutoCloseable {
         long startNanos = System.nanoTime();
         try {
             if (stream) {
-                streamResponse(ex, req, id, created, chat);
+                streamResponse(ex, req, id, created, chat, includeUsage);
             } else {
                 fullResponse(ex, req, id, created, chat);
             }
@@ -710,19 +712,27 @@ public final class OpenAIServer implements AutoCloseable {
         resp.put("created", created);
         resp.put("model", servedModel);
         resp.put("choices", List.of(choice));
-        resp.put(
-                "usage",
-                Map.of(
-                        "prompt_tokens", r.promptTokens(),
-                        "completion_tokens", r.completionTokens(),
-                        "total_tokens", r.promptTokens() + r.completionTokens()));
+        resp.put("usage", usage(r.promptTokens(), r.completionTokens()));
         sendJson(ex, 200, resp);
+    }
+
+    static Map<String, Object> usage(int promptTokens, int completionTokens) {
+        Map<String, Object> u = new LinkedHashMap<>();
+        u.put("prompt_tokens", promptTokens);
+        u.put("completion_tokens", completionTokens);
+        u.put("total_tokens", promptTokens + completionTokens);
+        return u;
     }
 
     // ── Streaming (Server-Sent Events) ────────────────────────────────────────
 
     private void streamResponse(
-            HttpExchange ex, InferenceService.Request req, String id, long created, boolean chat)
+            HttpExchange ex,
+            InferenceService.Request req,
+            String id,
+            long created,
+            boolean chat,
+            boolean includeUsage)
             throws IOException {
         ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
         ex.getResponseHeaders().set("Cache-Control", "no-cache");
@@ -734,7 +744,7 @@ public final class OpenAIServer implements AutoCloseable {
         try {
             if (chat) {
                 // First chunk carries the assistant role.
-                writeSse(os, chunk(id, object, created, roleDelta(), null));
+                writeSse(os, chunk(id, object, created, roleDelta(), null, includeUsage));
             }
             InferenceService.Result r =
                     service.generate(
@@ -748,14 +758,35 @@ public final class OpenAIServer implements AutoCloseable {
                                                     object,
                                                     created,
                                                     chat ? contentDelta(piece) : textField(piece),
-                                                    null));
+                                                    null,
+                                                    includeUsage));
                                 } catch (IOException io) {
                                     throw new RuntimeException(
                                             io); // client disconnected — abort generation
                                 }
                             });
             String finish = r.stopped() ? "stop" : "length";
-            writeSse(os, chunk(id, object, created, chat ? Map.of() : textField(""), finish));
+            writeSse(
+                    os,
+                    chunk(
+                            id,
+                            object,
+                            created,
+                            chat ? Map.of() : textField(""),
+                            finish,
+                            includeUsage));
+            if (includeUsage) {
+                writeSse(
+                        os,
+                        Json.write(
+                                usageChunk(
+                                        id,
+                                        object,
+                                        created,
+                                        servedModel,
+                                        r.promptTokens(),
+                                        r.completionTokens())));
+            }
             os.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
             os.flush();
         } catch (Exception e) {
@@ -763,6 +794,38 @@ public final class OpenAIServer implements AutoCloseable {
         } finally {
             os.close();
         }
+    }
+
+    /**
+     * Whether the client asked for token usage on a streamed reply ({@code
+     * stream_options.include_usage}). Usage is optional, so a malformed {@code stream_options}
+     * means "no", not a 400.
+     */
+    @SuppressWarnings("unchecked")
+    static boolean includeUsage(Map<String, Object> body) {
+        return body.get("stream_options") instanceof Map<?, ?> options
+                && Json.bool((Map<String, Object>) options, "include_usage", false);
+    }
+
+    /**
+     * The OpenAI usage chunk: sent after the finish chunk and before {@code [DONE]}, with empty
+     * {@code choices}, so a client that does not read usage ignores it.
+     */
+    static Map<String, Object> usageChunk(
+            String id,
+            String object,
+            long created,
+            String model,
+            int promptTokens,
+            int completionTokens) {
+        Map<String, Object> obj = new LinkedHashMap<>();
+        obj.put("id", id);
+        obj.put("object", object);
+        obj.put("created", created);
+        obj.put("model", model);
+        obj.put("choices", List.of());
+        obj.put("usage", usage(promptTokens, completionTokens));
+        return obj;
     }
 
     private Map<String, Object> roleDelta() {
@@ -780,9 +843,18 @@ public final class OpenAIServer implements AutoCloseable {
         return Map.of("text", piece);
     }
 
-    /** One SSE data object. {@code delta} is the chat delta map or the completion text map. */
+    /**
+     * One SSE data object. {@code delta} is the chat delta map or the completion text map. When the
+     * client asked for usage, every ordinary chunk carries {@code "usage": null}, as OpenAI's do;
+     * only the final usage chunk has the counts.
+     */
     private String chunk(
-            String id, String object, long created, Map<String, Object> delta, String finish) {
+            String id,
+            String object,
+            long created,
+            Map<String, Object> delta,
+            String finish,
+            boolean includeUsage) {
         Map<String, Object> choice = new LinkedHashMap<>();
         choice.put("index", 0);
         if (object.startsWith("chat")) {
@@ -797,6 +869,9 @@ public final class OpenAIServer implements AutoCloseable {
         obj.put("created", created);
         obj.put("model", servedModel);
         obj.put("choices", List.of(choice));
+        if (includeUsage) {
+            obj.put("usage", null);
+        }
         return Json.write(obj);
     }
 
@@ -858,7 +933,14 @@ public final class OpenAIServer implements AutoCloseable {
                         .contextLength(options.contextLength())
                         .maxConcurrentSessions(options.maxConcurrentSessions() + 1)
                         .thinkingMode(options.thinkingMode());
-        if (options.executionPolicy() != null) b.executionPolicy(options.executionPolicy());
+        // A properties-derived policy is left unset, so the device's default still applies.
+        if (options.executionPolicy() != null
+                && !options.executionPolicy()
+                        .equals(
+                                org.beehive.jitllm.runtime.policy.ExecutionPolicy
+                                        .fromSystemProperties())) {
+            b.executionPolicy(options.executionPolicy());
+        }
         if (options.storageOptions() != null) b.storageOptions(options.storageOptions());
         if (options.backend() != null) b.backend(options.backend());
         if (options.device() != null) b.device(options.device());

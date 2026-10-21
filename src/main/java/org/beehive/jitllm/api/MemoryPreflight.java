@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.memory.TornadoMemoryModel;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.loader.ModelLoader;
 import org.beehive.jitllm.runtime.memory.MemoryPlan;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 
 /**
  * Builds a {@link MemoryPlan} from a model file, and refuses a load that cannot fit.
@@ -21,6 +22,21 @@ final class MemoryPreflight {
 
     /** The predicted plan for this file and these options. Reads descriptors, not tensor data. */
     static MemoryPlan plan(Path modelFile, int contextLength, ModelOptions options)
+            throws IOException {
+        return plan(modelFile, contextLength, options, options.executionPolicy(), true);
+    }
+
+    /**
+     * The plan for {@code policy}, with or without the family's batched-prefill workspace: without
+     * it, what everything else costs, which the residency of decoded projections is decided
+     * against.
+     */
+    private static MemoryPlan plan(
+            Path modelFile,
+            int contextLength,
+            ModelOptions options,
+            ExecutionPolicy policy,
+            boolean withWorkspace)
             throws IOException {
         // loadWeights = false, useTornadovm = false: the configuration comes from metadata and no
         // tensor is materialized, on the host or the device. That is what makes this a *pre*flight.
@@ -40,21 +56,118 @@ final class MemoryPreflight {
         return TornadoMemoryModel.predict(
                 weights,
                 config,
-                options.executionPolicy(),
+                policy,
                 TornadoDevices.current(),
                 configuredBudgetBytes(),
-                new org.beehive.jitllm.runtime.memory.KeyValueReservation(
-                        options.maxConcurrentSessions(),
-                        DelegatingModel.attachesSharedPool(
-                                model,
-                                options.storageOptions(),
-                                org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection
-                                        .mayHandle(
-                                                model.architectureId(),
-                                                loadedWeightType(modelFile),
-                                                options.executionPolicy())),
-                        org.beehive.jitllm.runtime.memory.KeyValueReservation.BLOCK_SIZE_TOKENS,
-                        options.storageOptions().usesFp16KeyValueCache()));
+                keyValueReservation(model, modelFile, options),
+                withWorkspace
+                        ? workspace(model, modelFile, options, policy)
+                        : java.util.Optional.empty());
+    }
+
+    private static org.beehive.jitllm.runtime.memory.KeyValueReservation keyValueReservation(
+            org.beehive.jitllm.model.Model model, Path modelFile, ModelOptions options) {
+        return new org.beehive.jitllm.runtime.memory.KeyValueReservation(
+                options.maxConcurrentSessions(),
+                DelegatingModel.attachesSharedPool(
+                        model,
+                        options.storageOptions(),
+                        org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.mayHandle(
+                                model.architectureId(),
+                                loadedWeightType(modelFile),
+                                options.executionPolicy())),
+                org.beehive.jitllm.runtime.memory.KeyValueReservation.BLOCK_SIZE_TOKENS,
+                options.storageOptions().usesFp16KeyValueCache());
+    }
+
+    /** What the family's batched prefill layers would allocate per session, if anything. */
+    private static java.util.Optional<
+                    org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
+            workspace(
+                    org.beehive.jitllm.model.Model model,
+                    Path modelFile,
+                    ModelOptions options,
+                    ExecutionPolicy policy) {
+        var weightType = loadedWeightType(modelFile);
+        if (weightType == null || policy.prefillBatchSize() <= 1) {
+            return java.util.Optional.empty();
+        }
+        return org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry.provider(
+                        model.architectureId())
+                .flatMap(
+                        provider ->
+                                provider.batchPrefillWorkspace(
+                                        weightType,
+                                        model.configuration(),
+                                        policy.prefillBatchSize(),
+                                        policy,
+                                        options.storageOptions().usesFp16KeyValueCache()));
+    }
+
+    // @formatter:off
+    /**
+     * {@code policy} with where its batched prefill keeps decoded projections settled for this
+     * load: resident only when one copy per session fits beside everything else predicted,
+     * otherwise one per-chunk scratch. The layers then build what was predicted.
+     *
+     * <p>When even the per-chunk scratch cannot fit a budget the rest of the plan predicts exactly,
+     * the load is refused here, before any device allocation. A policy that pins the residency is
+     * kept as it is.
+     *
+     * @throws InsufficientDeviceMemoryException when neither representation fits
+     */
+    // @formatter:on
+    static ExecutionPolicy resolveDecodedProjections(
+            Path modelFile, int contextLength, ModelOptions options, ExecutionPolicy policy) {
+        try {
+            var model = ModelLoader.loadModel(modelFile, contextLength, false, false);
+            var workspace = workspace(model, modelFile, options, policy);
+            if (workspace.isEmpty() || !workspace.get().decodesProjections()) {
+                return policy;
+            }
+            MemoryPlan others = plan(modelFile, contextLength, options, policy, false);
+            long budget = configuredBudgetBytes();
+            int sessions = options.maxConcurrentSessions();
+            if (budget > 0
+                    && others.confidence() == MemoryPlan.Confidence.EXACT
+                    && others.predictedBudgetBytes() + workspace.get().perChunkBytes() * sessions
+                            > budget) {
+                throw new InsufficientDeviceMemoryException(
+                        plan(
+                                modelFile,
+                                contextLength,
+                                options,
+                                withDecodedProjections(
+                                        policy, ExecutionPolicy.DecodedProjections.PER_CHUNK),
+                                true));
+            }
+            if (policy.decodedProjections() != ExecutionPolicy.DecodedProjections.BACKEND) {
+                return policy;
+            }
+            boolean resident =
+                    TornadoMemoryModel.residentDecodedProjections(
+                            policy,
+                            workspace.get(),
+                            others.predictedBudgetBytes(),
+                            budget,
+                            sessions);
+            return withDecodedProjections(
+                    policy,
+                    resident
+                            ? ExecutionPolicy.DecodedProjections.RESIDENT
+                            : ExecutionPolicy.DecodedProjections.PER_CHUNK);
+        } catch (IOException | RuntimeException unpredictable) {
+            if (unpredictable instanceof InsufficientDeviceMemoryException refused) {
+                throw refused;
+            }
+            // As the preflight: a prediction that cannot be made leaves the backend's own rule.
+            return policy;
+        }
+    }
+
+    private static ExecutionPolicy withDecodedProjections(
+            ExecutionPolicy policy, ExecutionPolicy.DecodedProjections decodedProjections) {
+        return ExecutionPolicy.from(policy).decodedProjections(decodedProjections).build();
     }
 
     /**
@@ -82,6 +195,12 @@ final class MemoryPreflight {
      * happens to exceed the budget would block a load that would in fact have run, and the caller
      * has no way to overrule it. An under-confident plan is reported by {@link
      * LocalModels#preflight}, where a person can read it, rather than enforced here.
+     *
+     * <p>Except where even its lower bound does not fit: a plan whose buffers, each counted once,
+     * already exceed the budget is refused at any known confidence ({@link
+     * MemoryPlan#exceedsConfiguredBudgetAtLowerBound}). That is what refuses a Metal load — capped
+     * at {@code CONSERVATIVE} — that could only die part-allocated, such as a 7B Q8_0 model whose
+     * MLX prefill adds a second form of its projections beside them.
      */
     static void refuseIfOverCapacity(Path modelFile, int contextLength, ModelOptions options) {
         MemoryPlan plan;
@@ -92,7 +211,9 @@ final class MemoryPreflight {
             // load's own error is the better diagnostic in that case.
             return;
         }
-        if (plan.confidence() != MemoryPlan.Confidence.EXACT || plan.fitsConfiguredBudget()) {
+        boolean exactOver =
+                plan.confidence() == MemoryPlan.Confidence.EXACT && !plan.fitsConfiguredBudget();
+        if (!exactOver && !plan.exceedsConfiguredBudgetAtLowerBound()) {
             return;
         }
         throw new InsufficientDeviceMemoryException(plan);
@@ -102,9 +223,15 @@ final class MemoryPreflight {
      * The backend's configured budget, or 0 when it is not set.
      *
      * <p>Read from the same property the backend charges against, so the preflight and the
-     * allocator are talking about one number.
+     * allocator are talking about one number. The budget is per device, so a model split across
+     * several devices gets it once per device.
      */
     private static long configuredBudgetBytes() {
+        return perDeviceBudgetBytes()
+                * org.beehive.jitllm.runtime.backend.DeviceSplit.requestedDeviceCount();
+    }
+
+    private static long perDeviceBudgetBytes() {
         String configured = System.getProperty("tornado.device.memory");
         if (configured == null || configured.isBlank()) {
             return 0;

@@ -19,6 +19,10 @@ public final class TornadoSupportSets {
     /** All three plan shapes. */
     public static final Set<ExecutionMode> EVERY_MODE = EnumSet.allOf(ExecutionMode.class);
 
+    /** Single-token and batched prefill/decode, without the sequential prefill/decode plan. */
+    public static final Set<ExecutionMode> STANDARD_AND_BATCH =
+            EnumSet.of(ExecutionMode.STANDARD, ExecutionMode.BATCH_PREFILL_DECODE);
+
     /** Single-token only, which is most families today. */
     public static final Set<ExecutionMode> STANDARD_ONLY = EnumSet.of(ExecutionMode.STANDARD);
 

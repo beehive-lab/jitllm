@@ -3,6 +3,7 @@ package org.beehive.jitllm.format;
 import static java.nio.file.StandardOpenOption.READ;
 import static java.nio.file.StandardOpenOption.WRITE;
 
+import java.io.EOFException;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -14,6 +15,8 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,11 +28,6 @@ public final class GGUF {
     private static final int GGUF_MAGIC = 0x46554747;
     private static final int DEFAULT_ALIGNMENT = 32; // must be a power of 2
     private static final List<Integer> SUPPORTED_GGUF_VERSIONS = List.of(2, 3);
-    private final ByteBuffer BB_1 = ByteBuffer.allocate(Byte.BYTES).order(ByteOrder.LITTLE_ENDIAN);
-    private final ByteBuffer BB_2 = ByteBuffer.allocate(Short.BYTES).order(ByteOrder.LITTLE_ENDIAN);
-    private final ByteBuffer BB_4 =
-            ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN);
-    private final ByteBuffer BB_8 = ByteBuffer.allocate(Long.BYTES).order(ByteOrder.LITTLE_ENDIAN);
     private int magic;
     private int version;
     private int tensorCount; // uint64_t
@@ -55,9 +53,20 @@ public final class GGUF {
             throw new RuntimeException("Failed to open file channel for " + modelPath, e);
         }
 
+        // One load parses the same file several times (the memory preflight, the model facts,
+        // the loader); the result is the same as long as the file is.
+        FileIdentity identity = FileIdentity.of(modelPath);
+        Parsed last = lastParsed;
+        if (last != null && last.identity().equals(identity)) {
+            return last.gguf();
+        }
+
         // Read and store the gguf metadata
         try {
             GGUF gguf = new GGUF();
+            // A tokenizer's metadata alone is ~150k strings plus their scores and types: read it
+            // through a buffer, not one read(2) per field.
+            gguf.reader = new MetadataReader(fileChannel);
             // The header of the file.
             gguf.readHeader(fileChannel); // gguf_header_t header;
             // Tensor infos, which can be used to locate the tensor data.
@@ -71,9 +80,9 @@ public final class GGUF {
             // Padding to the nearest multiple of `ALIGNMENT`.
             // uint8_t _padding[ALIGNMENT - (sizeof(header + tensor_infos) % ALIGNMENT)];
             long _padding =
-                    (gguf.getAlignment() - (fileChannel.position() % gguf.getAlignment()))
+                    (gguf.getAlignment() - (gguf.reader.position() % gguf.getAlignment()))
                             % gguf.getAlignment();
-            fileChannel.position(fileChannel.position() + _padding);
+            fileChannel.position(gguf.reader.position() + _padding);
             // Tensor data.
             //
             // This is arbitrary binary data corresponding to the weights of the model. This data
@@ -91,6 +100,8 @@ public final class GGUF {
             // should be padded to `ALIGNMENT` bytes.
             // uint8_t tensor_data[];
             gguf.tensorDataOffset = fileChannel.position();
+            gguf.reader = null; // the buffer is only needed while parsing
+            lastParsed = new Parsed(identity, gguf);
             return gguf;
         } catch (Exception e) {
             throw new RuntimeException(
@@ -297,9 +308,7 @@ public final class GGUF {
         // The length of the string, in bytes.
         int len = Math.toIntExact(readLong(fileChannel)); // uint64_t len;
         // The string as a UTF-8 non-null-terminated string.
-        byte[] bytes = new byte[len]; // char string[len];
-        int bytesRead = fileChannel.read(ByteBuffer.wrap(bytes));
-        assert len == bytesRead;
+        byte[] bytes = reader.bytes(len); // char string[len];
         return new String(bytes, StandardCharsets.UTF_8);
     }
 
@@ -447,9 +456,7 @@ public final class GGUF {
     }
 
     private byte readByte(FileChannel fileChannel) throws IOException {
-        int bytesRead = fileChannel.read(BB_1);
-        assert bytesRead == 1;
-        return BB_1.clear().get(0);
+        return reader.ensure(Byte.BYTES).get();
     }
 
     private boolean readBoolean(FileChannel fileChannel) throws IOException {
@@ -457,21 +464,15 @@ public final class GGUF {
     }
 
     private short readShort(FileChannel fileChannel) throws IOException {
-        int bytesRead = fileChannel.read(BB_2);
-        assert bytesRead == 2;
-        return BB_2.clear().getShort(0);
+        return reader.ensure(Short.BYTES).getShort();
     }
 
     private int readInt(FileChannel fileChannel) throws IOException {
-        int bytesRead = fileChannel.read(BB_4);
-        assert bytesRead == 4;
-        return BB_4.clear().getInt(0);
+        return reader.ensure(Integer.BYTES).getInt();
     }
 
     private long readLong(FileChannel fileChannel) throws IOException {
-        int bytesRead = fileChannel.read(BB_8);
-        assert bytesRead == 8;
-        return BB_8.clear().getLong(0);
+        return reader.ensure(Long.BYTES).getLong();
     }
 
     private float readFloat(FileChannel fileChannel) throws IOException {
@@ -497,4 +498,79 @@ public final class GGUF {
     }
 
     public record GGUFTensorInfo(String name, int[] dimensions, GGMLType ggmlType, long offset) {}
+
+    /** The metadata reader of the file being loaded. */
+    private MetadataReader reader;
+
+    /**
+     * Reads the metadata section through a 1 MiB little-endian buffer. Fills it with large reads,
+     * looping until a value is complete (a single {@code read} may return fewer bytes than asked),
+     * and tracks the logical position, which the tensor-data offset is computed from.
+     */
+    static final class MetadataReader {
+        private static final int CAPACITY = 1 << 20;
+
+        private final FileChannel channel;
+        private final ByteBuffer buffer =
+                ByteBuffer.allocate(CAPACITY).order(ByteOrder.LITTLE_ENDIAN);
+
+        /** File position of the byte after the buffer's contents. */
+        private long end;
+
+        MetadataReader(FileChannel channel) throws IOException {
+            this.channel = channel;
+            this.end = channel.position();
+            buffer.limit(0);
+        }
+
+        /** The file position of the next byte to be read. */
+        long position() {
+            return end - buffer.remaining();
+        }
+
+        /** The buffer, holding at least {@code n} unread bytes ({@code n} at most the capacity). */
+        ByteBuffer ensure(int n) throws IOException {
+            if (buffer.remaining() < n) {
+                buffer.compact();
+                while (buffer.position() < n) {
+                    int read = channel.read(buffer, end);
+                    if (read < 0) {
+                        throw new EOFException("GGUF metadata ends early at byte " + end);
+                    }
+                    end += read;
+                }
+                buffer.flip();
+            }
+            return buffer;
+        }
+
+        /** The next {@code n} bytes; strings longer than the buffer are read in pieces. */
+        byte[] bytes(int n) throws IOException {
+            byte[] bytes = new byte[n];
+            int done = 0;
+            while (done < n) {
+                int chunk = Math.min(n - done, CAPACITY);
+                ensure(chunk).get(bytes, done, chunk);
+                done += chunk;
+            }
+            return bytes;
+        }
+    }
+
+    /** The last file parsed: one entry, enough for the repeated parses of a single load. */
+    private static volatile Parsed lastParsed;
+
+    private record Parsed(FileIdentity identity, GGUF gguf) {}
+
+    /** A file as it is now: rewriting or replacing it changes the size, time or file key. */
+    private record FileIdentity(Path path, Object fileKey, long size, FileTime lastModified) {
+        static FileIdentity of(Path path) throws IOException {
+            BasicFileAttributes attributes = Files.readAttributes(path, BasicFileAttributes.class);
+            return new FileIdentity(
+                    path.toRealPath(),
+                    attributes.fileKey(),
+                    attributes.size(),
+                    attributes.lastModifiedTime());
+        }
+    }
 }

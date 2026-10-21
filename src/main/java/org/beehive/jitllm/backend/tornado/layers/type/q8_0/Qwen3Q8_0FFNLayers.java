@@ -3,10 +3,15 @@ package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
+import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
+import org.beehive.jitllm.backend.tornado.scheduling.RmsReductionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.backend.tornado.scheduling.SplitKvAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.state.State;
@@ -42,17 +47,50 @@ public class Qwen3Q8_0FFNLayers
     private final int nEmbdHead;
     private final int nEmbdGqa;
     private final int gqa;
-    // Decode attention is split-KV (flash-decoding) on every backend except Metal, where TornadoVM
-    // fails to JIT the multi-workgroup split-KV kernel; Metal falls back to the
-    // single-workgroup-per-head
-    // online-softmax kernel instead (see SchedulerDetectionService.isMetalBackend). Splits per
-    // head: see State.SPLIT_KV.
-    private final boolean isMetalBackend = SchedulerDetectionService.isMetalBackend();
-    private final int attentionSplits = isMetalBackend ? 1 : State.SPLIT_KV;
+    // Decode attention is split-KV (flash-decoding) wherever the device grants
+    // SPLIT_KV_ATTENTION, which every backend does; a device without it falls back to the
+    // single-workgroup-per-head online-softmax kernel. On a device whose local memory cannot hold
+    // the 64-thread kernel's arrays (Metal), SplitKvAttentionPolicy selects the 32-thread kernel
+    // and fewer splits. Split capacity: see State.SPLIT_KV.
+    private final boolean singleWorkgroupAttention =
+            SchedulerDetectionService.lacksSplitKvAttention();
+    private final int attentionSplits =
+            singleWorkgroupAttention ? 1 : SplitKvAttentionPolicy.splits(State.SPLIT_KV);
     // GEMV reduction strategy: 32-lane warp-shuffle on CUDA, shared-memory trees elsewhere.
     // Warp is
     // faster but the OpenCL backend miscompiles simdShuffleDown, so it is auto-selected by backend.
     private final boolean useWarpMatmul = SchedulerDetectionService.isWarpShuffleSupported();
+
+    /**
+     * Lanes per output row for the packed projections: a multiple of 32. One warp covers a
+     * 1024-wide row with a block per lane.
+     */
+    private static final int PACKED_LOCAL = 32;
+
+    // @formatter:off
+    /**
+     * How many adjacent transformer layers one decode graph holds.
+     *
+     * <p>Every graph submission ends in a device wait, so the graphs of a token are separated by a
+     * host round trip each; holding several layers in one graph removes all but one of those round
+     * trips per group, for the same tasks in the same order over the same buffers.
+     *
+     * <p>Seven, measured on an A10 with Qwen3-0.6B (28 layers, so four full graphs): tg128 at depth
+     * 0 and 680 reads 330 / 305 tok/s at one layer per graph and 372 / 339, 375 / 342, 373 / 338,
+     * 372 / 340 at five, seven, ten and thirteen. Past five the remaining submissions cost little,
+     * and seven keeps each graph well inside TornadoVM's fixed 8192-byte per-graph bytecode buffer.
+     */
+    // @formatter:on
+    @Override
+    protected int layersPerGraph() {
+        return LAYERS_PER_GRAPH;
+    }
+
+    static final int LAYERS_PER_GRAPH = 7;
+
+    private static WorkerGrid packedWorker(int rows) {
+        return PackedActivationTasks.projectionWorker(rows, PACKED_LOCAL);
+    }
 
     public Qwen3Q8_0FFNLayers(
             String taskGraphName,
@@ -87,11 +125,28 @@ public class Qwen3Q8_0FFNLayers
                 WorkerGridFactory.createRoPEWorker(config.numberOfHeads(), nEmbdHead);
         // Split-KV attention launches nHeads*nSplits workgroups, then a combine pass over nHeads
         // workgroups.
+        // The FP32 split-KV kernel's local arrays grow with its workgroup; where 64 threads do
+        // not fit (Metal), the 32-thread kernel runs on 32-thread workgroups.
         WorkerGrid parallelAttentionWorker =
-                WorkerGridFactory.createAttentionWorker(
-                        config.numberOfHeads() * attentionSplits, nEmbdHead);
+                laneAttention(nEmbdHead)
+                        ? LaneAttentionPolicy.worker(
+                                config.numberOfHeads() * attentionSplits, nEmbdHead)
+                        : SplitKvAttentionPolicy.narrow() && !useFp16KVCache()
+                                ? WorkerGridFactory.genericWorker(
+                                        config.numberOfHeads()
+                                                * attentionSplits
+                                                * SplitKvAttentionPolicy.NARROW_GROUP,
+                                        SplitKvAttentionPolicy.NARROW_GROUP)
+                                : WorkerGridFactory.createAttentionWorker(
+                                        config.numberOfHeads() * attentionSplits, nEmbdHead);
         WorkerGrid attentionCombineWorker =
                 WorkerGridFactory.createAttentionWorker(config.numberOfHeads(), nEmbdHead);
+        // One warp-group per (head, split) for the lane-cooperative kernel; unused when it is not
+        // selected.
+        WorkerGrid laneAttentionWorker =
+                WorkerGridFactory.createLaneAttentionWorker(
+                        config.numberOfHeads() * attentionSplits,
+                        LaneAttentionPolicy.WARPS_PER_GROUP);
         // attn_output_proj worker (output projection)
         int matmul1Global = config.dim() * LOCAL_WORK_GROUP_SIZE_ALLOC;
         WorkerGrid matmul1Worker =
@@ -112,25 +167,44 @@ public class Qwen3Q8_0FFNLayers
         WorkerGrid fusedQKVWorker =
                 WorkerGridFactory.genericWorker(fusedQKVGlobal, LOCAL_WORK_GROUP_SIZE_ALLOC);
 
+        boolean packed = PackedActivationTasks.enabled();
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            gridScheduler.addWorkerGrid("layer_" + i + ".attn_rms_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid("layer_" + i + ".attn_rms_qkv_projection", fusedQKVWorker);
-            gridScheduler.addWorkerGrid("layer_" + i + ".qk_rmsnorm", qkRmsNormWorker);
-            gridScheduler.addWorkerGrid("layer_" + i + ".rope_and_kv_cache", ropeWorker);
-            gridScheduler.addWorkerGrid(
-                    "layer_" + i + ".attention",
-                    isMetalBackend ? attentionCombineWorker : parallelAttentionWorker);
-            if (!isMetalBackend) {
+            String l = layerGraphName(i) + "." + layerTaskPrefix(i);
+            gridScheduler.addWorkerGrid(l + "attn_rms_reduce", rmsReduceWorker);
+            if (packed) {
                 gridScheduler.addWorkerGrid(
-                        "layer_" + i + ".attention_combine", attentionCombineWorker);
+                        l + "attn_rms_apply", PackedActivationTasks.quantizeWorker(config.dim()));
+                gridScheduler.addWorkerGrid(l + "qkv_projection", packedWorker(fusedQKVRows));
+                gridScheduler.addWorkerGrid(
+                        l + "attn_out_quantize", PackedActivationTasks.quantizeWorker(qDim0));
+                gridScheduler.addWorkerGrid(l + "attn_output_proj", packedWorker(config.dim()));
+                gridScheduler.addWorkerGrid(
+                        l + "ffn_rms_apply", PackedActivationTasks.quantizeWorker(config.dim()));
+                gridScheduler.addWorkerGrid(l + "ffn_gate_up", packedWorker(config.hiddenDim()));
+                gridScheduler.addWorkerGrid(
+                        l + "ffn_down_quantize",
+                        PackedActivationTasks.quantizeWorker(config.hiddenDim()));
+                gridScheduler.addWorkerGrid(l + "ffn_down_proj", packedWorker(config.dim()));
+            } else {
+                gridScheduler.addWorkerGrid(l + "attn_rms_qkv_projection", fusedQKVWorker);
+                gridScheduler.addWorkerGrid(l + "attn_output_proj", matmul1Worker);
+                gridScheduler.addWorkerGrid(l + "rms_ffn_gate_up", fusedFFNW1W3Worker);
+                gridScheduler.addWorkerGrid(l + "ffn_down_proj", projectionTwoWorker);
             }
-            gridScheduler.addWorkerGrid("layer_" + i + ".attn_output_proj", matmul1Worker);
-            gridScheduler.addWorkerGrid("layer_" + i + ".ffn_rms_reduce", rmsReduceWorker);
+            gridScheduler.addWorkerGrid(l + "qk_rmsnorm", qkRmsNormWorker);
+            gridScheduler.addWorkerGrid(l + "rope_and_kv_cache", ropeWorker);
+            gridScheduler.addWorkerGrid(
+                    l + "attention",
+                    singleWorkgroupAttention
+                            ? attentionCombineWorker
+                            : fp32LaneAttention() ? laneAttentionWorker : parallelAttentionWorker);
+            if (!singleWorkgroupAttention) {
+                gridScheduler.addWorkerGrid(l + "attention_combine", attentionCombineWorker);
+            }
+            gridScheduler.addWorkerGrid(l + "ffn_rms_reduce", rmsReduceWorker);
             if (shouldUseFinalNormalization()) {
-                gridScheduler.addWorkerGrid("layer_" + i + ".ffn_rms_finalize", rmsNormWorker);
+                gridScheduler.addWorkerGrid(l + "ffn_rms_finalize", rmsNormWorker);
             }
-            gridScheduler.addWorkerGrid("layer_" + i + ".rms_ffn_gate_up", fusedFFNW1W3Worker);
-            gridScheduler.addWorkerGrid("layer_" + i + ".ffn_down_proj", projectionTwoWorker);
         }
         return gridScheduler;
     }
@@ -139,21 +213,37 @@ public class Qwen3Q8_0FFNLayers
     // @formatter:off
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        var taskGraphName = "layer_" + layerIndex;
+        return appendFFNLayer(null, layerIndex);
+    }
+
+    // @formatter:off
+    /**
+     * Layer {@code layerIndex}'s tasks, in a new graph when {@code existing} is null and appended
+     * to {@code existing} otherwise. Only the layer that opens a graph binds the buffers it shares
+     * with the graph before it; the layers after it find them in the graph already. Every task name
+     * carries the layer's {@link #layerTaskPrefix}, so the layers of one graph do not collide.
+     */
+    // @formatter:on
+    @Override
+    protected TaskGraph appendFFNLayer(TaskGraph existing, int layerIndex) {
+        boolean firstInGraph = existing == null;
+        String tp = layerTaskPrefix(layerIndex);
 
         // === Dimension Parameters ===
         int qDim = nEmbdHeadK * config.numberOfHeads(); // Q output size (full heads)
         int kvDim = nEmbdGqa; // K/V output size (reduced for GQA)
         int inputDim = config.dim(); // Model dimension
 
-        var unifiedLayer = new TaskGraph(taskGraphName);
+        var unifiedLayer = firstInGraph ? new TaskGraph(layerGraphName(layerIndex)) : existing;
 
         // === Data Setup ===
-        String wrapXSrc = predecessorGraphName(layerIndex);
-        if (wrapXSrc != null) {
-            unifiedLayer.consumeFromDevice(wrapXSrc, qwen3State.workspace.wrapX);
-        } else {
-            unifiedLayer.consumeFromDevice(qwen3State.workspace.wrapX);
+        if (firstInGraph) {
+            String wrapXSrc = predecessorGraphName(layerIndex);
+            if (wrapXSrc != null) {
+                unifiedLayer.consumeFromDevice(wrapXSrc, qwen3State.workspace.wrapX);
+            } else {
+                unifiedLayer.consumeFromDevice(qwen3State.workspace.wrapX);
+            }
         }
         Object[] layerWeights = {
             // Attention weights
@@ -171,13 +261,18 @@ public class Qwen3Q8_0FFNLayers
             weights.w2Layered[layerIndex].asByteArray(), // FFN down projection
             weights.w3Layered[layerIndex].asByteArray() // FFN up projection
         };
-        String weightSrc = weightSourceGraphName(layerIndex);
-        if (weightSrc != null) {
-            unifiedLayer.consumeFromDevice(weightSrc, layerWeights);
-        } else {
-            unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
+        bindLayerWeights(unifiedLayer, weightSourceGraphName(layerIndex), layerIndex, layerWeights);
+        if (firstInGraph) {
+            unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
+            if (PackedActivationTasks.enabled()) {
+                Object[] packed = PackedActivationTasks.buffers(qwen3State.workspace);
+                if (layerIndex == 0) {
+                    unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, packed);
+                } else {
+                    unifiedLayer.consumeFromDevice(layerGraphName(layerIndex - 1), packed);
+                }
+            }
         }
-        unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
 
         // ═══════════════════════════════════════════════════════════════════════
         //                           ATTENTION BLOCK
@@ -185,7 +280,7 @@ public class Qwen3Q8_0FFNLayers
 
         // RMS Normalization - compute scale factor
         unifiedLayer.task(
-                "attn_rms_reduce",
+                tp + "attn_rms_reduce",
                 rmsReduceKernel(),
                 context,
                 qwen3State.workspace.temp, // output: scale factor
@@ -196,7 +291,7 @@ public class Qwen3Q8_0FFNLayers
 
         if (shouldUseFinalNormalization()) {
             unifiedLayer.task(
-                    "attn_rms_finalize",
+                    tp + "attn_rms_finalize",
                     TransformerComputeKernelsLayered::reductionFinalNormalization,
                     context,
                     state.workspace.temp,
@@ -205,9 +300,33 @@ public class Qwen3Q8_0FFNLayers
         }
 
         // Fused RMS Apply + QKV Projection
-        if (useWarpMatmul) {
+        if (PackedActivationTasks.enabled()) {
+            PackedActivationTasks.rmsApplyAndQuantize(
+                    unifiedLayer,
+                    tp + "attn_rms_apply",
+                    context,
+                    qwen3State.workspace,
+                    weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                    qwen3State.workspace.temp);
             unifiedLayer.task(
-                    "attn_rms_qkv_projection",
+                    tp + "qkv_projection",
+                    TransformerComputeKernelsQ8_0DP4A::fusedQKVMatmulQ8_0DP4A,
+                    context,
+                    qwen3State.workspace.wrapXbQuants,
+                    qwen3State.workspace.wrapXbScales,
+                    qwen3State.workspace.wrapQ,
+                    qwen3State.workspace.wrapK,
+                    qwen3State.workspace.wrapV,
+                    weights.wqLayered[layerIndex].asByteArray(),
+                    weights.wkLayered[layerIndex].asByteArray(),
+                    weights.wvLayered[layerIndex].asByteArray(),
+                    inputDim,
+                    qDim,
+                    kvDim,
+                    PACKED_LOCAL);
+        } else if (useWarpMatmul) {
+            unifiedLayer.task(
+                    tp + "attn_rms_qkv_projection",
                     Qwen3Kernels::fusedRmsNormQKVMatmulQ8_0Warp,
                     context,
                     qwen3State.workspace.wrapX, // input: raw hidden state (FP32)
@@ -225,7 +344,7 @@ public class Qwen3Q8_0FFNLayers
                     LOCAL_WORK_GROUP_SIZE_ALLOC);
         } else {
             unifiedLayer.task(
-                    "attn_rms_qkv_projection",
+                    tp + "attn_rms_qkv_projection",
                     Qwen3Kernels::fusedRmsNormQKVMatmulQ8_0,
                     context,
                     qwen3State.workspace.wrapX, // input: raw hidden state (FP32)
@@ -245,7 +364,7 @@ public class Qwen3Q8_0FFNLayers
 
         // Fused Q/K RMSNorm (Qwen3-specific)
         unifiedLayer.task(
-                "qk_rmsnorm",
+                tp + "qk_rmsnorm",
                 Qwen3Kernels::fusedQKRmsNorm,
                 context,
                 qwen3State.workspace.wrapQ, // Q vectors (in/out)
@@ -262,7 +381,7 @@ public class Qwen3Q8_0FFNLayers
         // the weights, so an FP16 cache takes the kernels the FP16 weights use.
         if (useFp16KVCache()) {
             unifiedLayer.task(
-                    "rope_and_kv_cache",
+                    tp + "rope_and_kv_cache",
                     Qwen3PagedKvKernels::ropeRotationWithCacheCopyFP16Paged,
                     context,
                     qwen3State.workspace.positionHolder, // current position
@@ -281,7 +400,7 @@ public class Qwen3Q8_0FFNLayers
                     state.kvBlockStride); // max sequence length
         } else {
             unifiedLayer.task(
-                    "rope_and_kv_cache",
+                    tp + "rope_and_kv_cache",
                     Qwen3PagedKvKernels::ropeRotationWithCacheCopyPaged,
                     context,
                     qwen3State.workspace.positionHolder, // current position
@@ -300,13 +419,13 @@ public class Qwen3Q8_0FFNLayers
                     state.kvBlockStride); // max sequence length
         }
 
-        if (isMetalBackend) {
+        if (singleWorkgroupAttention) {
             // Metal: single-workgroup-per-head online-softmax attention, writing directly to
             // wrapXb.
             // No combine phase needed (TornadoVM fails to JIT the multi-workgroup split-KV kernel
             // here).
             unifiedLayer.task(
-                    "attention",
+                    tp + "attention",
                     TransformerPagedKvKernels::processHeadsFlashAttentionPaged,
                     context,
                     qwen3State.workspace.wrapQ, // query vectors
@@ -327,9 +446,14 @@ public class Qwen3Q8_0FFNLayers
             // Phase 1: split each head's KV range across attentionSplits workgroups; partials ->
             // wrapAttSplit.
             if (useFp16KVCache()) {
+                LaneAttentionPolicy.Kernel kernel =
+                        laneAttention(nEmbdHead)
+                                ? LaneAttentionPolicy.kernel(nEmbdHead)
+                                : TransformerPagedKvKernels
+                                        ::processHeadsFlashAttentionSplitKVFP16Paged;
                 unifiedLayer.task(
-                        "attention",
-                        TransformerPagedKvKernels::processHeadsFlashAttentionSplitKVFP16Paged,
+                        tp + "attention",
+                        kernel,
                         context,
                         qwen3State.workspace.wrapQ, // query vectors
                         qwen3State.workspace.wrapKeyCacheFP16, // key cache (FP16)
@@ -348,8 +472,15 @@ public class Qwen3Q8_0FFNLayers
                         attentionSplits); // number of KV splits per head
             } else {
                 unifiedLayer.task(
-                        "attention",
-                        TransformerPagedKvKernels::processHeadsFlashAttentionSplitKVPaged,
+                        tp + "attention",
+                        fp32LaneAttention()
+                                ? TransformerPagedKvKernels
+                                        ::processHeadsFlashAttentionSplitKVPagedLaneHead128
+                                : SplitKvAttentionPolicy.narrow()
+                                        ? TransformerPagedKvKernels
+                                                ::processHeadsFlashAttentionSplitKVPaged32
+                                        : TransformerPagedKvKernels
+                                                ::processHeadsFlashAttentionSplitKVPaged,
                         context,
                         qwen3State.workspace.wrapQ, // query vectors
                         qwen3State.workspace.wrapKeyCache, // key cache
@@ -370,7 +501,7 @@ public class Qwen3Q8_0FFNLayers
             // Phase 2: combine the per-head split partials into the final attention output ->
             // wrapXb.
             unifiedLayer.task(
-                    "attention_combine",
+                    tp + "attention_combine",
                     TransformerComputeKernelsLayered::combineSplitKVAttention,
                     context,
                     state.workspace
@@ -382,9 +513,28 @@ public class Qwen3Q8_0FFNLayers
         }
 
         // Output Projection with Residual
-        if (useWarpMatmul) {
+        if (PackedActivationTasks.enabled()) {
+            // The attention output is a new activation: quantized fresh for the projection.
+            PackedActivationTasks.quantize(
+                    unifiedLayer,
+                    tp + "attn_out_quantize",
+                    context,
+                    qwen3State.workspace,
+                    qwen3State.workspace.wrapXb);
             unifiedLayer.task(
-                    "attn_output_proj",
+                    tp + "attn_output_proj",
+                    TransformerComputeKernelsQ8_0DP4A::matrixVectorGenericWithResidualQ8_0DP4A,
+                    context,
+                    qwen3State.workspace.wrapXbQuants,
+                    qwen3State.workspace.wrapXbScales,
+                    qwen3State.workspace.wrapX, // output: wrapX += Wo · wrapXb
+                    weights.woLayered[layerIndex].asByteArray(),
+                    qDim, // input dim
+                    config.dim(), // output dim
+                    PACKED_LOCAL);
+        } else if (useWarpMatmul) {
+            unifiedLayer.task(
+                    tp + "attn_output_proj",
                     TransformerComputeKernelsLayered::matrixVectorGenericWithResidualQ8_0ByteSimd32,
                     context,
                     qwen3State.workspace.wrapXb, // input: attention output
@@ -394,7 +544,7 @@ public class Qwen3Q8_0FFNLayers
                     config.dim()); // output dim
         } else {
             unifiedLayer.task(
-                    "attn_output_proj",
+                    tp + "attn_output_proj",
                     TransformerComputeKernelsLayered::matrixVectorGenericWithResidualQ8_0Byte,
                     context,
                     qwen3State.workspace.wrapXb, // input: attention output
@@ -411,7 +561,7 @@ public class Qwen3Q8_0FFNLayers
 
         // RMS Normalization - compute scale factor
         unifiedLayer.task(
-                "ffn_rms_reduce",
+                tp + "ffn_rms_reduce",
                 rmsReduceKernel(),
                 context,
                 qwen3State.workspace.tempFFN, // output: scale factor
@@ -423,7 +573,7 @@ public class Qwen3Q8_0FFNLayers
         // Final normalization (non-NVIDIA only)
         if (shouldUseFinalNormalization()) {
             unifiedLayer.task(
-                    "ffn_rms_finalize",
+                    tp + "ffn_rms_finalize",
                     TransformerComputeKernelsLayered::reductionFinalNormalization,
                     context,
                     qwen3State.workspace.tempFFN, // scale factor (in/out)
@@ -432,9 +582,29 @@ public class Qwen3Q8_0FFNLayers
         }
 
         // Fused RMS Apply + Gate/Up Projection + SiLU + GLU
-        if (useWarpMatmul) {
+        if (PackedActivationTasks.enabled()) {
+            PackedActivationTasks.rmsApplyAndQuantize(
+                    unifiedLayer,
+                    tp + "ffn_rms_apply",
+                    context,
+                    qwen3State.workspace,
+                    weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                    qwen3State.workspace.tempFFN);
             unifiedLayer.task(
-                    "rms_ffn_gate_up",
+                    tp + "ffn_gate_up",
+                    TransformerComputeKernelsQ8_0DP4A::fusedFFNGateUpSiLUQ8_0DP4A,
+                    context,
+                    qwen3State.workspace.wrapXbQuants,
+                    qwen3State.workspace.wrapXbScales,
+                    qwen3State.workspace.wrapHb, // output: SiLU(x·W1) ⊙ (x·W3)
+                    weights.w1Layered[layerIndex].asByteArray(),
+                    weights.w3Layered[layerIndex].asByteArray(),
+                    config.dim(),
+                    config.hiddenDim(),
+                    PACKED_LOCAL);
+        } else if (useWarpMatmul) {
+            unifiedLayer.task(
+                    tp + "rms_ffn_gate_up",
                     TransformerComputeKernelsLayered::fusedRmsNormFFNGateUpQ8_0Warp,
                     context,
                     qwen3State.workspace.wrapX, // input: raw hidden state (FP32)
@@ -448,7 +618,7 @@ public class Qwen3Q8_0FFNLayers
                     LOCAL_WORK_GROUP_SIZE_ALLOC);
         } else {
             unifiedLayer.task(
-                    "rms_ffn_gate_up",
+                    tp + "rms_ffn_gate_up",
                     TransformerComputeKernelsLayered::fusedRmsNormFFNGateUpQ8_0,
                     context,
                     qwen3State.workspace.wrapX, // input: raw hidden state (FP32)
@@ -463,9 +633,28 @@ public class Qwen3Q8_0FFNLayers
         }
 
         // Down Projection with Residual
-        if (useWarpMatmul) {
+        if (PackedActivationTasks.enabled()) {
+            // SwiGLU's output, quantized fresh for the down projection.
+            PackedActivationTasks.quantize(
+                    unifiedLayer,
+                    tp + "ffn_down_quantize",
+                    context,
+                    qwen3State.workspace,
+                    qwen3State.workspace.wrapHb);
             unifiedLayer.task(
-                    "ffn_down_proj",
+                    tp + "ffn_down_proj",
+                    TransformerComputeKernelsQ8_0DP4A::matrixVectorGenericWithResidualQ8_0DP4A,
+                    context,
+                    qwen3State.workspace.wrapXbQuants,
+                    qwen3State.workspace.wrapXbScales,
+                    qwen3State.workspace.wrapX, // output: wrapX += W2 · wrapHb
+                    weights.w2Layered[layerIndex].asByteArray(),
+                    config.hiddenDim(),
+                    config.dim(),
+                    PACKED_LOCAL);
+        } else if (useWarpMatmul) {
+            unifiedLayer.task(
+                    tp + "ffn_down_proj",
                     TransformerComputeKernelsLayered::matrixVectorGenericWithResidualQ8_0ByteSimd32,
                     context,
                     qwen3State.workspace.wrapHb, // input: FFN intermediate
@@ -475,7 +664,7 @@ public class Qwen3Q8_0FFNLayers
                     config.dim()); // output dim
         } else {
             unifiedLayer.task(
-                    "ffn_down_proj",
+                    tp + "ffn_down_proj",
                     TransformerComputeKernelsLayered::matrixVectorGenericWithResidualQ8_0Byte,
                     context,
                     qwen3State.workspace.wrapHb, // input: FFN intermediate
@@ -503,7 +692,7 @@ public class Qwen3Q8_0FFNLayers
      * generations. Decode subclasses override this.
      */
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "activationUpdate" : "layer_" + (layerIndex - 1);
+        return (layerIndex == 0) ? "activationUpdate" : layerGraphName(layerIndex - 1);
     }
 
     /** Configure data transfers for first and subsequent layers */
@@ -555,7 +744,7 @@ public class Qwen3Q8_0FFNLayers
             // Subsequent layers: consume from the previous layer graph BY NAME. The no-arg
             // consume form does not propagate the persisted KV cache in interpreter mode, so
             // it would be re-allocated every decode token and exhaust the memory pool (OOM).
-            String pred = "layer_" + (layerIndex - 1);
+            String pred = layerGraphName(layerIndex - 1);
             unifiedLayer.consumeFromDevice(
                     pred,
                     context,
@@ -588,5 +777,22 @@ public class Qwen3Q8_0FFNLayers
      */
     protected String weightSourceGraphName(int layerIndex) {
         return null;
+    }
+
+    /**
+     * Whether split-KV attention over the FP32 cache runs the lane-cooperative kernel; see {@link
+     * LaneAttentionPolicy#laneCooperativeAttentionFp32Cache}. A method rather than a field because
+     * the head width is set in the constructor, after field initializers run.
+     */
+    private boolean fp32LaneAttention() {
+        return !singleWorkgroupAttention
+                && !useFp16KVCache()
+                && LaneAttentionPolicy.laneCooperativeAttentionFp32Cache(nEmbdHead);
+    }
+
+    /** Without a separate finalize task on Metal; see {@link RmsReductionPolicy}. */
+    @Override
+    protected boolean shouldUseFinalNormalization() {
+        return super.shouldUseFinalNormalization() && !RmsReductionPolicy.singleWorkgroup();
     }
 }
