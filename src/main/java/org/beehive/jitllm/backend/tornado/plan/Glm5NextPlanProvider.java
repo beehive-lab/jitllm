@@ -15,8 +15,8 @@ import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * The {@code glm5next} plan (GLM-5.3-Flash): Q8_0 only, on CUDA, in all three modes. The batched
- * prefill runs DP4A kernels and needs no tensor cores. There is no split across devices yet, and
- * the latent cache is FP32.
+ * prefill's projections are int8 tensor-core GEMMs. There is no split across devices yet, and the
+ * latent cache is FP32.
  */
 public final class Glm5NextPlanProvider implements TornadoPlanProvider {
 
@@ -48,12 +48,14 @@ public final class Glm5NextPlanProvider implements TornadoPlanProvider {
         return new Glm5NextPlanComponents(typed, model);
     }
 
-    /** The batched prefill's reductions use warp shuffles, which are CUDA's here. */
+    /** The batched prefill's projections run on CUDA int8 tensor cores. */
     @Override
     public Optional<String> batchPrefillUnsupported(Combination c) {
-        return BackendId.CUDA.equals(c.backend())
+        return BackendId.CUDA.equals(c.backend()) && c.tensorCores()
                 ? Optional.empty()
-                : Optional.of("the glm5next batched prefill is written for the CUDA backend");
+                : Optional.of(
+                        "the glm5next batched prefill runs its projections on CUDA int8 tensor"
+                                + " cores, which this device does not have");
     }
 
     /** The reductions use warp shuffles, which are CUDA's here. */

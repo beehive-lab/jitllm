@@ -98,6 +98,33 @@ HC_POST_MULT = 2.0
 
 # Positions whose indexer selection had a tie at the budget boundary.
 TIES = []
+# Every width a multiple of 128 (and every reduction of 64), so the batched prefill's projections
+# take the int8 tensor-core GEMM path; five layers: three KDA, one sparse attention, one KDA.
+MEDIUM_OVERRIDES = {
+    "hidden_size": 256,
+    "intermediate_size": 512,
+    "moe_intermediate_size": 128,
+    "num_hidden_layers": 5,
+    "layer_types": ["linear_attention"] * 3 + ["deepseek_sparse_attention", "linear_attention"],
+    "mlp_layer_types": ["dense"] * 3 + ["sparse"] * 2,
+    "indexer_types": ["full"] * 5,
+    "q_lora_rank": 256,
+    "kv_lora_rank": 128,
+    "qk_nope_head_dim": 128,
+    "qk_head_dim": 128,
+    "v_head_dim": 128,
+    "linear_attn_config": {
+        "num_heads": 2,
+        "head_dim": 128,
+        "short_conv_kernel_size": 4,
+        "gate_lower_bound": -5.0,
+        "kda_layers": [0, 1, 2, 4],
+        "full_attn_layers": [3],
+    },
+    "index_n_heads": 4,
+    "index_head_dim": 128,
+}
+
 SEQ_TOKENS = 40
 
 
@@ -618,9 +645,13 @@ def main():
     ap.add_argument("--out", required=True, help="output directory")
     ap.add_argument("--seed", type=int, default=5301)
     ap.add_argument("--check-transformers", action="store_true")
+    ap.add_argument("--config", choices=["tiny", "medium"], default="tiny",
+                    help="tiny: the smallest model of every layer kind; medium: widths the int8 GEMMs take")
     args = ap.parse_args()
 
     cfg = json.loads(json.dumps(TINY_TEXT_CONFIG))
+    if args.config == "medium":
+        cfg.update(json.loads(json.dumps(MEDIUM_OVERRIDES)))
     ckpt_dir = os.path.join(args.out, "hf")
     write_checkpoint(ckpt_dir, cfg, build_weights(cfg, args.seed))
 

@@ -1,12 +1,14 @@
 package org.beehive.jitllm.backend.tornado.workspace;
 
+import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 /**
  * The chunk-wide device arrays of the {@code glm5next} batched prefill, row {@code b} of each
- * holding the chunk's token {@code b}. The embedding arrives in the workspace's {@code wrapXBatch},
- * which then carries each sublayer's collapsed input.
+ * holding the chunk's token {@code b}, over the chunk padded to whole 128-row GEMM tiles. The
+ * embedding arrives in the workspace's {@code wrapXBatch}, which then carries each sublayer's
+ * collapsed input.
  */
 public final class Glm5NextBatchArrays {
 
@@ -18,6 +20,15 @@ public final class Glm5NextBatchArrays {
     public final IntArray quants;
     public final FloatArray scales;
     public final IntArray sums;
+
+    /**
+     * The same activation in the int8 GEMMs' form — one byte per element and a scale per 32 — over
+     * {@code paddedBatch} rows, the GEMMs' whole 128-row tiles.
+     */
+    public final ByteArray a8;
+
+    public final FloatArray a8Scales;
+
     public final FloatArray branch;
 
     public final FloatArray kdaQ;
@@ -62,6 +73,7 @@ public final class Glm5NextBatchArrays {
     /** The widths the arrays are sized from, per row; {@code batch} rows of each. */
     public record Sizes(
             int batch,
+            int paddedBatch,
             int dim,
             int streams,
             int mixes,
@@ -83,7 +95,9 @@ public final class Glm5NextBatchArrays {
             int moeHidden) {}
 
     private Glm5NextBatchArrays(Sizes s) {
-        int b = s.batch;
+        // Every chunk-wide array holds whole 128-row tiles: an int8 GEMM stores every row of a
+        // tile it computes, real or padding.
+        int b = s.paddedBatch;
         streams = TornadoWorkspaces.floats(b * s.streams);
         residual = TornadoWorkspaces.floats(b * s.streams);
         mixes = TornadoWorkspaces.floats(b * s.mixes);
@@ -92,6 +106,8 @@ public final class Glm5NextBatchArrays {
         quants = TornadoWorkspaces.ints(b * s.widest / 4);
         scales = TornadoWorkspaces.floats(b * s.widest / 32);
         sums = TornadoWorkspaces.ints(b * s.widest / 32);
+        a8 = TornadoWorkspaces.bytes(s.paddedBatch * s.widest);
+        a8Scales = TornadoWorkspaces.floats(s.paddedBatch * s.widest / 32);
         branch = TornadoWorkspaces.floats(b * s.dim);
         kdaQ = TornadoWorkspaces.floats(b * s.kdaWidth);
         kdaK = TornadoWorkspaces.floats(b * s.kdaWidth);
