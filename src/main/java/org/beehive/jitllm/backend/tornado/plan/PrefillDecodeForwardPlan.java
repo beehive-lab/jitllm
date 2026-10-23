@@ -37,8 +37,7 @@ public class PrefillDecodeForwardPlan extends ForwardPlan {
     public PrefillDecodeForwardPlan(
             Model model, PrefillDecodeForwardPlanComponents components, WeightPrepacker prepacker) {
         super(prepacker);
-        int N = model.configuration().numberOfLayers();
-        List<ImmutableTaskGraph> inference = new ArrayList<>(N + 2);
+        List<ImmutableTaskGraph> inference = new ArrayList<>();
         GridScheduler scheduler = new GridScheduler();
 
         ActivationTaskGraph act = components.prefillDecodeActivation();
@@ -46,7 +45,10 @@ public class PrefillDecodeForwardPlan extends ForwardPlan {
         act.updateGridScheduler(scheduler);
 
         TransformerLayerTaskGraphs layers = components.prefillDecodeTransformerLayers();
-        inference.addAll(layers.getFFNLayerImmutableTaskGraphs());
+        // Graphs, not layers: a family may hold several layers in one graph.
+        List<ImmutableTaskGraph> layerGraphs = layers.getFFNLayerImmutableTaskGraphs();
+        int N = layerGraphs.size();
+        inference.addAll(layerGraphs);
         layers.updateGridScheduler(scheduler);
 
         AbstractLogitsTaskGraph logits =
