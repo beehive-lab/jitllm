@@ -655,4 +655,53 @@ public class Glm5NextKernelsAccelTest {
                     1e-5);
         }
     }
+
+    /** The batched router at the model's size: 288 experts, eight chosen, for every row. */
+    @Test
+    public void theBatchedRouterMatchesTheHost() throws Exception {
+        int experts = 288, used = 8, batch = 64;
+        float scale = 2.5f;
+        Random rng = new Random(5);
+        FloatArray logits = gaussian(batch * experts, rng, 2f);
+        FloatArray bias = gaussian(experts, rng, 0.1f);
+        IntArray ids = new IntArray(batch * used);
+        FloatArray weights = new FloatArray(batch * used);
+        TaskGraph g =
+                new TaskGraph("routeb")
+                        .transferToDevice(DataTransferMode.EVERY_EXECUTION, logits, bias)
+                        .task(
+                                "topk",
+                                Glm5NextBatchKernels::routerTopKSigmoid,
+                                new KernelContext(),
+                                logits,
+                                bias,
+                                ids,
+                                weights,
+                                experts,
+                                used,
+                                1,
+                                scale,
+                                batch)
+                        .transferToHost(DataTransferMode.EVERY_EXECUTION, ids, weights);
+        GridScheduler s = new GridScheduler();
+        s.addWorkerGrid("routeb.topk", groups(batch, Glm5NextBatchKernels.GROUP));
+        try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
+            plan.withGridScheduler(s).execute();
+        }
+        for (int b = 0; b < batch; b++) {
+            final int row = b;
+            double[] select = new double[experts];
+            for (int e = 0; e < experts; e++) {
+                select[e] = sigmoid(logits.get(row * experts + e)) + bias.get(e);
+            }
+            Integer[] order = new Integer[experts];
+            for (int e = 0; e < experts; e++) {
+                order[e] = e;
+            }
+            Arrays.sort(order, (x, y) -> Double.compare(select[y], select[x]));
+            for (int k = 0; k < used; k++) {
+                assertEquals("row " + b + " expert " + k, (int) order[k], ids.get(b * used + k));
+            }
+        }
+    }
 }

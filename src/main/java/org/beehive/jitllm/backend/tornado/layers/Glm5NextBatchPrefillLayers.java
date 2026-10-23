@@ -67,6 +67,17 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
         this.config = config;
         this.w = weights.layers;
         this.batch = batch;
+        int[] shape = {
+            config.dim(),
+            config.expertHiddenDim(),
+            config.sharedHiddenDim(),
+            config.expertsUsed(),
+            Math.min(config.expertChunkSize(), config.expertCount()),
+            batch
+        };
+        for (int i = 0; i < shape.length; i++) {
+            state.workspace.glm5nextBatch.expertShape.set(i, shape[i]);
+        }
         TaskGraph g = new TaskGraph(GRAPH);
         bind(g);
         var ws = state.workspace;
@@ -167,7 +178,8 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 b.moeHidden,
                 b.moeQuants,
                 b.moeScales,
-                b.moeSums);
+                b.moeSums,
+                b.expertShape);
         g.transferToDevice(DataTransferMode.FIRST_EXECUTION, persistent());
         g.transferToDevice(DataTransferMode.FIRST_EXECUTION, weightArrays(w, config).toArray());
     }
@@ -773,13 +785,8 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                                 f.sharedGate()[l].asByteArray(),
                                 f.sharedUp()[l].asByteArray(),
                                 b.moeHidden,
-                                dim,
-                                hidden,
-                                shared,
-                                used,
-                                split,
-                                config.swigluLimit(),
-                                batch));
+                                b.expertShape,
+                                config.swigluLimit()));
         task(
                 g,
                 p + "experts_hidden_q8",
