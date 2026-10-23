@@ -53,6 +53,15 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     @Override
     public String describeProjections() {
+        if (mlx != null) {
+            return (mlx.runsAttention() ? "MLX GEMMs and attention (" : "MLX GEMMs (")
+                    + weights.dataType()
+                    + (mlx.form()
+                                    == org.beehive.jitllm.backend.tornado.MlxPrefill.Projections
+                                            .AFFINE
+                            ? " weights repacked to MLX's affine format)"
+                            : " weights decoded once to resident FP16 copies)");
+        }
         if (q8DirectGemms.isEmpty()
                 && dequantTasks.isEmpty()
                 && mmaTasks.isEmpty()
@@ -106,6 +115,12 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     /** The feed-forward of a family built on this one, or {@code null} for the dense SwiGLU. */
     private final Qwen35BatchFeedForward feedForward;
+
+    /**
+     * The projections and attention on Apple MLX ({@code --with-native-libraries} on Metal), or
+     * {@code null} when the Metal or tensor-core kernels run. Only for the dense feed-forward.
+     */
+    private final Qwen35MlxPrefill mlx;
 
     /** The layers this prefill builds, {@code [firstLayer, endLayer)}: one pipeline stage's. */
     private final int firstLayer;
@@ -637,6 +652,23 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             + batchSize);
         }
         this.feedForward = feedForward;
+        this.mlx =
+                feedForward == null
+                        ? Qwen35MlxPrefill.resolve(
+                                        state.executionPolicy(), weights.dataType(), config)
+                                .map(
+                                        m ->
+                                                new Qwen35MlxPrefill(
+                                                        m,
+                                                        state,
+                                                        weights,
+                                                        config,
+                                                        context,
+                                                        batchSize,
+                                                        firstLayer,
+                                                        endLayer))
+                                .orElse(null)
+                        : null;
         this.graphs =
                 IntStream.range(firstLayer, endLayer)
                         .mapToObj(this::buildLayer)
@@ -1461,6 +1493,9 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         layer.consumeFromDevice(predecessor, state.workspace.wrapXBatch);
         configureTransfers(layer, layerIndex, predecessor);
         transferLayerWeights(layer, layerIndex);
+        if (mlx != null) {
+            mlx.declare(layer, layerIndex);
+        }
 
         normalize(
                 layer,
@@ -1502,6 +1537,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     /** The dense feed-forward of one layer, from the normalized chunk into {@code wrapXBatch}. */
     private void denseFeedForward(TaskGraph layer, int layerIndex) {
+        if (mlx != null) {
+            mlx.feedForward(layer, layerIndex);
+            return;
+        }
         TornadoTensor down = require(weights.w2Layered, layerIndex, "ffn_down");
         // Both representations this family's ffn_down comes in. The Q4_1 kernel below was written
         // and tested with the Q4_0 one, and then never reached: this condition asked for Q4_0 and
@@ -1729,12 +1768,8 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         }
     }
 
-    private void attentionBranch(TaskGraph layer, int layerIndex) {
-        final int headDim = config.numberOfHeadsKey();
-        final int kvDim = config.kvDim();
-        final int attnDim = config.attentionOutputInputDim();
-        final int kvLayer = config.keyValueLayerIndex(layerIndex);
-
+    /** Query/gate, key and value of the normed chunk on the Metal or tensor-core kernels. */
+    private void jitAttentionProjections(TaskGraph layer, int layerIndex, int kvDim) {
         matVecBatch(
                 layer,
                 layerIndex,
@@ -1768,7 +1803,19 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 config.dim(),
                 kvDim,
                 false);
+    }
 
+    private void attentionBranch(TaskGraph layer, int layerIndex) {
+        final int headDim = config.numberOfHeadsKey();
+        final int kvDim = config.kvDim();
+        final int attnDim = config.attentionOutputInputDim();
+        final int kvLayer = config.keyValueLayerIndex(layerIndex);
+
+        if (mlx != null) {
+            mlx.attentionProjections(layer, layerIndex);
+        } else {
+            jitAttentionProjections(layer, layerIndex, kvDim);
+        }
         layer.task(
                 "attn_split_query_gate",
                 Qwen35BatchKernels::splitQueryGateBatch,
@@ -1844,7 +1891,9 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     state.kvBlockStride);
         }
 
-        if (scoredAttention()) {
+        if (mlx != null && mlx.runsAttention()) {
+            mlx.attention(layer, layerIndex);
+        } else if (scoredAttention()) {
             // Each dot product once, kept in the state's score scratch for the two later passes.
             // The span stride is the context capacity the scratch was sized to. The warp form
             // computes each dot product with one warp (a 256-wide head over 128 lanes, on the
@@ -1953,6 +2002,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 attnDim,
                 state.workspace.batchStartPosHolder);
 
+        if (mlx != null) {
+            mlx.attentionOutput(layer, layerIndex);
+            return;
+        }
         TornadoTensor attnOutput = require(weights.woLayered, layerIndex, "attn_output");
         if (attnOutput.dataType() == DataType.Q4_0 && mmaEligible(attnDim, config.dim())) {
             // The same three-task shape ffn_down and ssm_out use: a tensor-core store overwrites,
@@ -2016,15 +2069,14 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 true);
     }
 
-    private void deltaNetBranch(TaskGraph layer, int layerIndex) {
+    /**
+     * The delta-net input projections of the normed chunk on the Metal or tensor-core kernels: the
+     * convolution input, the output gate, beta and alpha.
+     */
+    private void jitDeltaNetProjections(TaskGraph layer, int layerIndex) {
         final int convDim = config.deltaNetConvDim();
-        final int keyDim = config.deltaNetKeyDim();
         final int valueDim = config.deltaNetValueDim();
         final int valueHeads = config.numberOfValueHeads();
-        final int headK = config.headKeyDim();
-        final int headV = config.headValueDim();
-        final int recurrent = config.recurrentLayerIndex(layerIndex);
-
         matVecBatch(
                 layer,
                 layerIndex,
@@ -2090,6 +2142,22 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     config.dim(),
                     valueHeads,
                     false);
+        }
+    }
+
+    private void deltaNetBranch(TaskGraph layer, int layerIndex) {
+        final int convDim = config.deltaNetConvDim();
+        final int keyDim = config.deltaNetKeyDim();
+        final int valueDim = config.deltaNetValueDim();
+        final int valueHeads = config.numberOfValueHeads();
+        final int headK = config.headKeyDim();
+        final int headV = config.headValueDim();
+        final int recurrent = config.recurrentLayerIndex(layerIndex);
+
+        if (mlx != null) {
+            mlx.deltaNetProjections(layer, layerIndex);
+        } else {
+            jitDeltaNetProjections(layer, layerIndex);
         }
 
         layer.task(
@@ -2243,6 +2311,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 config.rmsNormEps(),
                 state.workspace.batchStartPosHolder);
 
+        if (mlx != null) {
+            mlx.deltaNetOutput(layer, layerIndex);
+            return;
+        }
         TornadoTensor ssmOut = require(weights.ssmOut, layerIndex, "ssm_out");
         if (ssmOut.dataType() == DataType.Q5_K && mmaEligible(valueDim, config.dim())) {
             // Same shape as ffn_down: convert the readout, project, then add the residual back,
@@ -2319,6 +2391,21 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         List<Object> tensors = new ArrayList<>();
         tensors.add(weights.rms_att_weightLayered[layerIndex].asFloatArray());
         tensors.add(weights.rms_ffn_weightLayered[layerIndex].asFloatArray());
+        if (mlx != null) {
+            // MLX reads its own form of every projection (Qwen35MlxPrefill#declare); the decode
+            // graphs upload the model's.
+            if (config.isRecurrentLayer(layerIndex)) {
+                tensors.add(require(weights.ssmConv1d, layerIndex, "ssm_conv1d").asFloatArray());
+                tensors.add(require(weights.ssmDtBias, layerIndex, "ssm_dt.bias").asFloatArray());
+                tensors.add(require(weights.ssmA, layerIndex, "ssm_a").asFloatArray());
+                tensors.add(require(weights.ssmNorm, layerIndex, "ssm_norm").asFloatArray());
+            } else {
+                tensors.add(require(weights.attnQNorm, layerIndex, "attn_q_norm").asFloatArray());
+                tensors.add(require(weights.attnKNorm, layerIndex, "attn_k_norm").asFloatArray());
+            }
+            layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, tensors.toArray());
+            return;
+        }
         if (feedForward != null) {
             tensors.addAll(feedForward.layerWeights(layerIndex));
         } else {
@@ -2682,6 +2769,9 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             scheduler.addWorkerGrid(prefix + "ffn_rms_apply", rmsApply);
             if (feedForward != null) {
                 feedForward.addWorkerGrids(scheduler, prefix);
+            }
+            if (mlx != null) {
+                mlx.addGrids(scheduler, layer, prefix);
             }
             if (TENSOR_CORES && TensorCoreSupport.isTensorCoreCapableBackend()) {
                 scheduler.addWorkerGrid(prefix + "attn_rms_apply_fp16", fp16Convert);
