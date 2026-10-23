@@ -368,7 +368,10 @@ public class MlxPrefillProjectionsTest {
                 () -> new MlxPrefill(DataType.Q8_0, MlxPrefill.Projections.FP16));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new MlxPrefill(DataType.Q4_K, MlxPrefill.Projections.AFFINE));
+                () -> new MlxPrefill(DataType.Q4_1, MlxPrefill.Projections.AFFINE));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new MlxPrefill(DataType.Q4_K, MlxPrefill.Projections.FP16));
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
