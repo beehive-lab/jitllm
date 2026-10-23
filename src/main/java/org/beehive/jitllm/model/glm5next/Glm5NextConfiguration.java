@@ -94,6 +94,33 @@ public record Glm5NextConfiguration(
         return l >= numberOfLayers || ffnTypes[l] == MOE_FFN;
     }
 
+    /** Among the trunk's KDA layers, the index of layer {@code l}. */
+    public int kdaIndex(int l) {
+        int index = 0;
+        for (int i = 0; i < l; i++) {
+            index += isKda(i) ? 1 : 0;
+        }
+        return index;
+    }
+
+    /** Among the trunk's sparse-attention layers, the index of layer {@code l}. */
+    public int sparseIndex(int l) {
+        return l - kdaIndex(l);
+    }
+
+    public int kdaLayerCount() {
+        return kdaIndex(numberOfLayers);
+    }
+
+    public int sparseLayerCount() {
+        return numberOfLayers - kdaLayerCount();
+    }
+
+    /** Pools a cache of {@link #contextLength()} positions can complete, plus the open one. */
+    public int maxPools() {
+        return contextLength / indexerPoolSize + 1;
+    }
+
     /** Trunk and MTP layers together: the index range of the weights. */
     public int allLayers() {
         return numberOfLayers + nextnLayers;

@@ -2,8 +2,10 @@ package org.beehive.jitllm.backend.tornado.kernels;
 
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.math.TornadoMath;
+import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
+import uk.ac.manchester.tornado.api.utils.QuantizationUtils;
 
 /**
  * Decode kernels for the blocks {@code glm5next} (GLM-5.3-Flash) adds to what deepseek2 and
@@ -784,6 +786,185 @@ public final class Glm5NextKernels {
             float norm = n * (total + 1e-20f) + (1.0f - n);
             for (int k = 0; k < used; k++) {
                 weights.set(k, weights.get(k) / norm * scale);
+            }
+        }
+    }
+
+    // ── Experts ───────────────────────────────────────────────────────────────
+
+    private static final int QK = 32;
+    private static final int BLOCK_BYTES = 34;
+
+    private static float warpSum(KernelContext context, float value) {
+        float v = value;
+        v += context.simdShuffleDown(v, 16);
+        v += context.simdShuffleDown(v, 8);
+        v += context.simdShuffleDown(v, 4);
+        v += context.simdShuffleDown(v, 2);
+        v += context.simdShuffleDown(v, 1);
+        return v;
+    }
+
+    private static int blockDot(ByteArray w, int offset, IntArray xQuants, int quantBase) {
+        int dot = 0;
+        for (int g = 0; g < QK / 4; g++) {
+            int o = offset + 2 + g * 4;
+            int packed =
+                    (w.getHalfFloat(o).getHalfFloatValue() & 0xFFFF)
+                            | ((w.getHalfFloat(o + 2).getHalfFloatValue() & 0xFFFF) << 16);
+            dot = QuantizationUtils.dp4a_packed(packed, xQuants.get(quantBase + g), dot);
+        }
+        return dot;
+    }
+
+    private static float rowPartial(
+            ByteArray w, int row, int blocks, IntArray xQuants, FloatArray xScales, int lane) {
+        float partial = 0.0f;
+        for (int b = lane; b < blocks; b += 32) {
+            int offset = (row * blocks + b) * BLOCK_BYTES;
+            partial +=
+                    w.getHalfFloat(offset).getFloat32()
+                            * xScales.get(b)
+                            * blockDot(w, offset, xQuants, b * (QK / 4));
+        }
+        return partial;
+    }
+
+    private static float clampedSilu(float gate, float up, float limit) {
+        float g = TornadoMath.min(gate, limit);
+        float u = TornadoMath.max(-limit, TornadoMath.min(up, limit));
+        return g / (1.0f + TornadoMath.exp(-g)) * u;
+    }
+
+    // @formatter:off
+    /**
+     * The selected experts' and the shared expert's clamped SwiGLU over the quantized input, a warp
+     * per hidden row: {@code hidden[slot * hiddenDim + r]} for each slot, then the shared expert's
+     * rows. The routed experts are held in two stacks, experts {@code [0, split)} in the first; a
+     * model with one stack passes it twice.
+     *
+     * <p>Each branch reduces and stores its own row: a value merged from an if/else is miscompiled
+     * by the CUDA backend. Worker: {@code (used * hiddenDim + sharedHiddenDim) * 32} lanes.
+     */
+    // @formatter:on
+    public static void expertsGateUpClamped(
+            KernelContext context,
+            IntArray xQuants,
+            FloatArray xScales,
+            IntArray ids,
+            ByteArray gate0,
+            ByteArray up0,
+            ByteArray gate1,
+            ByteArray up1,
+            ByteArray sharedGate,
+            ByteArray sharedUp,
+            FloatArray hidden,
+            int dim,
+            int hiddenDim,
+            int sharedHiddenDim,
+            int used,
+            int split,
+            float limit) {
+        int warp = context.globalIdx >> 5;
+        int lane = context.localIdx & 31;
+        int routedRows = used * hiddenDim;
+        int blocks = dim / QK;
+        if (warp < routedRows) {
+            int slot = warp / hiddenDim;
+            int r = warp - slot * hiddenDim;
+            int e = ids.get(slot);
+            if (e < split) {
+                int row = e * hiddenDim + r;
+                float g = warpSum(context, rowPartial(gate0, row, blocks, xQuants, xScales, lane));
+                float u = warpSum(context, rowPartial(up0, row, blocks, xQuants, xScales, lane));
+                if (lane == 0) {
+                    hidden.set(warp, clampedSilu(g, u, limit));
+                }
+            } else {
+                int row = (e - split) * hiddenDim + r;
+                float g = warpSum(context, rowPartial(gate1, row, blocks, xQuants, xScales, lane));
+                float u = warpSum(context, rowPartial(up1, row, blocks, xQuants, xScales, lane));
+                if (lane == 0) {
+                    hidden.set(warp, clampedSilu(g, u, limit));
+                }
+            }
+        }
+        if (warp >= routedRows && warp < routedRows + sharedHiddenDim) {
+            int row = warp - routedRows;
+            float g = warpSum(context, rowPartial(sharedGate, row, blocks, xQuants, xScales, lane));
+            float u = warpSum(context, rowPartial(sharedUp, row, blocks, xQuants, xScales, lane));
+            if (lane == 0) {
+                hidden.set(warp, clampedSilu(g, u, limit));
+            }
+        }
+    }
+
+    // @formatter:off
+    /**
+     * {@code out[r] = sum_slot weight[slot] * (down_e[r] . hidden[slot]) + sharedDown[r] .
+     * hidden[used]}, a warp per output row, over the hidden activations quantized per block.
+     *
+     * <p>A pair whose expert is in the other stack contributes zero times a valid row of this one
+     * rather than being skipped, so no partial sum is merged across a branch. Worker: {@code dim *
+     * 32} lanes.
+     */
+    // @formatter:on
+    public static void expertsDown(
+            KernelContext context,
+            IntArray hQuants,
+            FloatArray hScales,
+            IntArray ids,
+            FloatArray weights,
+            ByteArray down0,
+            ByteArray down1,
+            ByteArray sharedDown,
+            FloatArray out,
+            int dim,
+            int hiddenDim,
+            int sharedHiddenDim,
+            int used,
+            int split) {
+        int row = context.globalIdx >> 5;
+        int lane = context.localIdx & 31;
+        if (row < dim) {
+            int perSlot = hiddenDim / QK;
+            int routedPairs = used * perSlot;
+            float first = 0.0f;
+            float second = 0.0f;
+            for (int p = lane; p < routedPairs; p += 32) {
+                int slot = p / perSlot;
+                int block = p - slot * perSlot;
+                int e = ids.get(slot);
+                int inFirst = e < split ? 1 : 0;
+                int e0 = inFirst * e;
+                int e1 = (1 - inFirst) * (e - split);
+                int offset0 = ((e0 * dim + row) * perSlot + block) * BLOCK_BYTES;
+                int offset1 = ((e1 * dim + row) * perSlot + block) * BLOCK_BYTES;
+                float w = weights.get(slot) * hScales.get(p);
+                first +=
+                        inFirst
+                                * w
+                                * down0.getHalfFloat(offset0).getFloat32()
+                                * blockDot(down0, offset0, hQuants, p * (QK / 4));
+                second +=
+                        (1 - inFirst)
+                                * w
+                                * down1.getHalfFloat(offset1).getFloat32()
+                                * blockDot(down1, offset1, hQuants, p * (QK / 4));
+            }
+            int sharedBlocks = sharedHiddenDim / QK;
+            float shared = 0.0f;
+            for (int b = lane; b < sharedBlocks; b += 32) {
+                int offset = (row * sharedBlocks + b) * BLOCK_BYTES;
+                int p = routedPairs + b;
+                shared +=
+                        sharedDown.getHalfFloat(offset).getFloat32()
+                                * hScales.get(p)
+                                * blockDot(sharedDown, offset, hQuants, p * (QK / 4));
+            }
+            float sum = warpSum(context, first + second + shared);
+            if (lane == 0) {
+                out.set(row, sum);
             }
         }
     }

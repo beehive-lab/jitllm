@@ -1,5 +1,7 @@
 package org.beehive.jitllm.inference.state;
 
+import org.beehive.jitllm.backend.tornado.workspace.Glm5NextDeviceArrays;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.glm5next.Glm5NextConfiguration;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
@@ -195,7 +197,130 @@ public final class Glm5NextState extends State {
                 fields.keyCache[l] = allocateKeyValue(config.contextLength(), config.kvLoraRank());
             }
         }
+        if (Boolean.parseBoolean(System.getProperty("use.tornadovm", "false"))) {
+            allocateDeviceWorkspace(config);
+        }
         return fields;
+    }
+
+    // ── Device workspace ──────────────────────────────────────────────────────
+
+    private int latentStride;
+    private int indexerStride;
+    private int poolStride;
+
+    /** Where sparse-attention layer {@code l}'s latent rows start in the device cache. */
+    public int latentCacheOffset(Glm5NextConfiguration c, int l) {
+        return c.sparseIndex(l) * latentStride;
+    }
+
+    /** Where layer {@code l}'s indexer keys and pool gates start in their device caches. */
+    public int indexerCacheOffset(Glm5NextConfiguration c, int l) {
+        return c.sparseIndex(l) * indexerStride;
+    }
+
+    /** Where layer {@code l}'s compressed pool keys start. */
+    public int poolKeyOffset(Glm5NextConfiguration c, int l) {
+        return c.sparseIndex(l) * poolStride;
+    }
+
+    // @formatter:off
+    /**
+     * The device arrays of the single-token plan, for the trunk only (the MTP layer runs on the
+     * host).
+     *
+     * <ul>
+     *   <li>the latent cache, {@code [sparse layer][position][kvLoraRank]} in FP32;
+     *   <li>the KDA windows, {@code [KDA layer][q, k, v][channel][kernel - 1]}, and matrices,
+     *       {@code [KDA layer][head][key][value]};
+     *   <li>the streams, the indexer caches and the selection in {@link Glm5NextDeviceArrays}.
+     * </ul>
+     */
+    // @formatter:on
+    private void allocateDeviceWorkspace(Glm5NextConfiguration c) {
+        int dim = c.dim();
+        int context = c.contextLength();
+        int width = c.kdaDim();
+        int hidden = Math.max(c.hiddenDim(), c.sharedHiddenDim());
+        int moeHidden = Math.max(32, c.expertsUsed() * c.expertHiddenDim() + c.sharedHiddenDim());
+        this.latentStride = context * c.kvLoraRank();
+        this.indexerStride = context * c.indexerHeadDim();
+        this.poolStride = c.maxPools() * c.indexerHeadDim();
+
+        TornadoWorkspaces.activationQ8_0(workspace, dim);
+        workspace.wrapX = TornadoWorkspaces.floats(dim);
+        workspace.wrapXb = TornadoWorkspaces.floats(Math.max(dim, c.attentionOutputInputDim()));
+        workspace.wrapXb2 = TornadoWorkspaces.floats(dim);
+        int widest =
+                Math.max(
+                        Math.max(
+                                Math.max(dim, hidden),
+                                Math.max(width, c.attentionOutputInputDim())),
+                        c.qLoraRank());
+        TornadoWorkspaces.packedActivation(workspace, widest);
+        workspace.wrapHb = TornadoWorkspaces.floats(hidden);
+        workspace.wrapHb2 = TornadoWorkspaces.floats(hidden);
+        workspace.wrapLogits = TornadoWorkspaces.floats(c.vocabularySize());
+
+        workspace.wrapQueryLatent = TornadoWorkspaces.floats(c.qLoraRank());
+        workspace.wrapQ = TornadoWorkspaces.floats(c.queryDim());
+        workspace.wrapCompressedKv = TornadoWorkspaces.floats(c.kvLoraRank());
+        workspace.wrapAbsorbedQuery = TornadoWorkspaces.floats(c.absorbedQueryDim());
+        workspace.wrapLatentOut = TornadoWorkspaces.floats(c.absorbedQueryDim());
+        workspace.wrapAtt = TornadoWorkspaces.floats(c.numberOfHeads() * context);
+        workspace.wrapKeyCache =
+                TornadoWorkspaces.floats(Math.max(1, c.sparseLayerCount() * latentStride));
+        workspace.wrapValueCache = TornadoWorkspaces.floats(1);
+        workspace.wrapConvState =
+                TornadoWorkspaces.floats(
+                        Math.max(1, c.kdaLayerCount() * 3 * width * (c.kdaConvKernel() - 1)));
+        workspace.wrapDeltaState =
+                TornadoWorkspaces.floats(
+                        Math.max(
+                                1,
+                                c.kdaLayerCount()
+                                        * c.kdaHeads()
+                                        * c.kdaHeadDim()
+                                        * c.kdaHeadDim()));
+
+        workspace.wrapRouterLogits = TornadoWorkspaces.floats(Math.max(1, c.expertCount()));
+        workspace.wrapSelectedExperts = TornadoWorkspaces.ints(Math.max(1, c.expertsUsed()));
+        workspace.wrapRoutingWeights = TornadoWorkspaces.floats(Math.max(1, c.expertsUsed()));
+        workspace.wrapMoeHidden = TornadoWorkspaces.floats(moeHidden);
+        workspace.wrapMoeHiddenQuants = TornadoWorkspaces.ints(moeHidden / 4);
+        workspace.wrapMoeHiddenQScales = TornadoWorkspaces.floats(moeHidden / 32);
+        workspace.wrapMoeHiddenQSums = TornadoWorkspaces.ints(moeHidden / 32);
+
+        workspace.glm5next =
+                Glm5NextDeviceArrays.allocate(
+                        new Glm5NextDeviceArrays.Sizes(
+                                dim,
+                                c.hcCount() * dim,
+                                c.hcMixCount(),
+                                c.kdaHeads(),
+                                c.kdaHeadDim(),
+                                width,
+                                c.attentionOutputInputDim(),
+                                c.indexerHeads(),
+                                c.indexerHeadDim(),
+                                c.sparseLayerCount(),
+                                indexerStride,
+                                c.maxPools()));
+
+        // [0] = position, [1] = table-local KV slot.
+        workspace.positionHolder = TornadoWorkspaces.ints(2);
+        workspace.temp = TornadoWorkspaces.floats(1 + ((dim + localSize - 1) / localSize));
+        workspace.tempFFN = TornadoWorkspaces.floats(1 + ((dim + localSize - 1) / localSize));
+        workspace.tempLogits = TornadoWorkspaces.floats(1 + ((dim + localSize - 1) / localSize));
+    }
+
+    /** The KDA windows and matrices, which a reset uploads after zeroing. */
+    @Override
+    public Object[] recurrentDeviceBuffers() {
+        if (workspace.wrapConvState == null || workspace.wrapDeltaState == null) {
+            return new Object[0];
+        }
+        return new Object[] {workspace.wrapConvState, workspace.wrapDeltaState};
     }
 
     /**
@@ -212,5 +337,6 @@ public final class Glm5NextState extends State {
                 deltaState[l].fillInPlace(0, deltaState[l].size(), 0f);
             }
         }
+        TornadoWorkspaces.zeroRecurrentState(workspace);
     }
 }

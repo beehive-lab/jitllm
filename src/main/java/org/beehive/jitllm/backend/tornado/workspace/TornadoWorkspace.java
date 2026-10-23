@@ -51,6 +51,10 @@ public final class TornadoWorkspace {
     public PrefillFamily prefillFamily;
 
     public FloatArray wrapAttSplit;
+
+    /** The {@code glm5next} decode plan's own arrays; null for every other family. */
+    public Glm5NextDeviceArrays glm5next;
+
     public FloatArray
             wrapLogits; // FloatArray wrapper for the logits tensor, compatible with TornadoVM for
     // GPU execution.
