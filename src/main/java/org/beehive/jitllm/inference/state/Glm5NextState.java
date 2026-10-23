@@ -313,6 +313,7 @@ public final class Glm5NextState extends State {
                     Glm5NextBatchArrays.allocate(
                             new Glm5NextBatchArrays.Sizes(
                                     prefillBatchWidth,
+                                    (prefillBatchWidth + 127) & ~127,
                                     dim,
                                     c.hcCount() * dim,
                                     c.hcMixCount(),

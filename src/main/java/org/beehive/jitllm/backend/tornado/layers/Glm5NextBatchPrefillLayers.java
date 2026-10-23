@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextKernels;
+import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35DeltaNetKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -20,6 +21,7 @@ import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
+import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
@@ -145,6 +147,8 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 b.quants,
                 b.scales,
                 b.sums,
+                b.a8,
+                b.a8Scales,
                 b.branch,
                 b.kdaQ,
                 b.kdaK,
@@ -827,7 +831,10 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
 
     // ── building blocks ───────────────────────────────────────────────────────
 
-    /** Every row's first {@code n} values of {@code x}, quantized per block. */
+    /**
+     * Every row's first {@code n} values of {@code x}, quantized per block in both forms: packed
+     * for the DP4A kernels and bytewise for the int8 GEMMs, so a projection may take either.
+     */
     private void quantize(TaskGraph g, String name, FloatArray x, int n) {
         Glm5NextBatchArrays b = gs.workspace.glm5nextBatch;
         task(
@@ -843,12 +850,73 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                                 b.quants,
                                 b.scales,
                                 b.sums));
+        task(
+                g,
+                name + "_i8",
+                lanes(batch * n, 128),
+                t ->
+                        g.task(
+                                t,
+                                Int8GemmKernels::quantizeActivationsQ8Warp,
+                                context,
+                                x,
+                                b.a8,
+                                b.a8Scales,
+                                n));
     }
 
-    /** {@code out_b = w . x_b} for every row; {@code n} inputs, {@code d} outputs. */
+    /** Whether {@link Int8GemmKernels#gemmInt8Q8_0} takes a projection of this shape. */
+    static boolean gemmShape(int n, int d) {
+        return d % Int8GemmKernels.I8_BN == 0 && n % Int8GemmKernels.I8_BK == 0;
+    }
+
+    // @formatter:off
+    /**
+     * {@code out_b = w . x_b} for every row; {@code n} inputs, {@code d} outputs. On the int8
+     * tensor-core GEMM when the shape allows it — outputs in whole 128-column tiles, inputs in
+     * whole 64-element rounds — over the chunk's rows padded to whole 128-row tiles, of which it
+     * computes the real ones; otherwise a DP4A warp per row and output.
+     */
+    // @formatter:on
     private void project(
             TaskGraph g, String name, TornadoTensor weight, FloatArray out, int n, int d) {
         Glm5NextBatchArrays b = gs.workspace.glm5nextBatch;
+        var ws = gs.workspace;
+        if (gemmShape(n, d)) {
+            int padded =
+                    (batch + Int8GemmKernels.I8_BM - 1)
+                            / Int8GemmKernels.I8_BM
+                            * Int8GemmKernels.I8_BM;
+            WorkerGrid2D grid =
+                    new WorkerGrid2D(
+                            padded / Int8GemmKernels.I8_BM * Int8GemmKernels.Q8_GEMM_THREADS,
+                            d / Int8GemmKernels.I8_BN);
+            grid.setLocalWork(Int8GemmKernels.Q8_GEMM_THREADS, 1, 1);
+            task(
+                    g,
+                    name,
+                    grid,
+                    t ->
+                            g.task(
+                                    t,
+                                    Int8GemmKernels::gemmInt8Q8_0,
+                                    context,
+                                    b.a8,
+                                    b.a8Scales,
+                                    weight.asByteArray(),
+                                    out,
+                                    out,
+                                    padded,
+                                    d,
+                                    n,
+                                    Int8GemmKernels.EPILOGUE_STORE,
+                                    out,
+                                    1,
+                                    ws.batchStartPosHolder,
+                                    d,
+                                    0));
+            return;
+        }
         task(
                 g,
                 name,
@@ -907,7 +975,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
 
     @Override
     public String describeProjections() {
-        return "Q8_0 DP4A kernels, one warp per row and token";
+        return "int8 tensor-core GEMMs on Q8_0 weights where the shape allows, DP4A otherwise";
     }
 
     @Override
