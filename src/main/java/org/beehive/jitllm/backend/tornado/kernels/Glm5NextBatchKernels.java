@@ -942,6 +942,9 @@ public final class Glm5NextBatchKernels {
      * {@link Glm5NextKernels#expertsGateUpClamped} for every row: row {@code b}'s hidden
      * activations at {@code hidden[b * (used * hiddenDim + sharedHiddenDim)]}. Worker: {@code batch
      * * (used * hiddenDim + sharedHiddenDim) * 32} lanes.
+     *
+     * <p>{@code shape} holds {@code dim, hiddenDim, sharedHiddenDim, used, split, batch}: with them
+     * as separate arguments the kernel read the second stack through the wrong argument.
      */
     // @formatter:on
     public static void expertsGateUpClamped(
@@ -956,66 +959,66 @@ public final class Glm5NextBatchKernels {
             ByteArray sharedGate,
             ByteArray sharedUp,
             FloatArray hidden,
-            int dim,
-            int hiddenDim,
-            int sharedHiddenDim,
-            int used,
-            int split,
-            float limit,
-            int batch) {
+            IntArray shape,
+            float limit) {
+        int dim = shape.get(0);
+        int hiddenDim = shape.get(1);
+        int sharedHiddenDim = shape.get(2);
+        int used = shape.get(3);
+        int split = shape.get(4);
+        int batch = shape.get(5);
         int warp = context.globalIdx >> 5;
         int lane = context.localIdx & 31;
         int perRow = used * hiddenDim + sharedHiddenDim;
         int blocks = dim / QK;
-        if (warp < batch * perRow) {
-            int b = warp / perRow;
-            int w = warp - b * perRow;
-            int xBlock = b * blocks;
-            if (w < used * hiddenDim) {
-                int slot = w / hiddenDim;
-                int r = w - slot * hiddenDim;
-                int e = ids.get(b * used + slot);
-                if (e < split) {
-                    int row = e * hiddenDim + r;
-                    float g =
-                            warpSum(
-                                    context,
-                                    rowPartial(gate0, row, blocks, xQuants, xScales, xBlock, lane));
-                    float u =
-                            warpSum(
-                                    context,
-                                    rowPartial(up0, row, blocks, xQuants, xScales, xBlock, lane));
-                    if (lane == 0) {
-                        hidden.set(warp, clampedSilu(g, u, limit));
-                    }
-                } else {
-                    int row = (e - split) * hiddenDim + r;
-                    float g =
-                            warpSum(
-                                    context,
-                                    rowPartial(gate1, row, blocks, xQuants, xScales, xBlock, lane));
-                    float u =
-                            warpSum(
-                                    context,
-                                    rowPartial(up1, row, blocks, xQuants, xScales, xBlock, lane));
-                    if (lane == 0) {
-                        hidden.set(warp, clampedSilu(g, u, limit));
-                    }
-                }
-            } else {
-                int row = w - used * hiddenDim;
-                float g =
-                        warpSum(
-                                context,
-                                rowPartial(
-                                        sharedGate, row, blocks, xQuants, xScales, xBlock, lane));
-                float u =
-                        warpSum(
-                                context,
-                                rowPartial(sharedUp, row, blocks, xQuants, xScales, xBlock, lane));
-                if (lane == 0) {
-                    hidden.set(warp, clampedSilu(g, u, limit));
-                }
+        // Three independent branches, none nested in another's else: the CUDA backend selected the
+        // wrong weight array for a stack branch nested under the routed/shared branch, and read
+        // past the end of the shared expert at the model's size.
+        int b = warp / perRow;
+        int w = warp - b * perRow;
+        int xBlock = b * blocks;
+        int routed = used * hiddenDim;
+        int inRange = warp < batch * perRow ? 1 : 0;
+        int isRouted = inRange * (w < routed ? 1 : 0);
+        int slot = isRouted * (w / hiddenDim);
+        int r = w - slot * hiddenDim;
+        int e = ids.get(inRange * (b * used + slot));
+        if (isRouted == 1 && e < split) {
+            int row = e * hiddenDim + r;
+            float g =
+                    warpSum(
+                            context,
+                            rowPartial(gate0, row, blocks, xQuants, xScales, xBlock, lane));
+            float u =
+                    warpSum(context, rowPartial(up0, row, blocks, xQuants, xScales, xBlock, lane));
+            if (lane == 0) {
+                hidden.set(warp, clampedSilu(g, u, limit));
+            }
+        }
+        if (isRouted == 1 && e >= split) {
+            int row = (e - split) * hiddenDim + r;
+            float g =
+                    warpSum(
+                            context,
+                            rowPartial(gate1, row, blocks, xQuants, xScales, xBlock, lane));
+            float u =
+                    warpSum(context, rowPartial(up1, row, blocks, xQuants, xScales, xBlock, lane));
+            if (lane == 0) {
+                hidden.set(warp, clampedSilu(g, u, limit));
+            }
+        }
+        if (inRange == 1 && isRouted == 0) {
+            int row = w - routed;
+            float g =
+                    warpSum(
+                            context,
+                            rowPartial(sharedGate, row, blocks, xQuants, xScales, xBlock, lane));
+            float u =
+                    warpSum(
+                            context,
+                            rowPartial(sharedUp, row, blocks, xQuants, xScales, xBlock, lane));
+            if (lane == 0) {
+                hidden.set(warp, clampedSilu(g, u, limit));
             }
         }
     }

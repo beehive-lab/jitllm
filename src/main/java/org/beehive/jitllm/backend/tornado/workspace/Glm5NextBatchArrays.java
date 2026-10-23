@@ -56,6 +56,9 @@ public final class Glm5NextBatchArrays {
     public final FloatArray moeScales;
     public final IntArray moeSums;
 
+    /** The expert kernels' shape: dim, expert hidden, shared hidden, used, split, batch. */
+    public final IntArray expertShape;
+
     /** The widths the arrays are sized from, per row; {@code batch} rows of each. */
     public record Sizes(
             int batch,
@@ -123,6 +126,7 @@ public final class Glm5NextBatchArrays {
         moeQuants = TornadoWorkspaces.ints(b * s.moeHidden / 4);
         moeScales = TornadoWorkspaces.floats(b * s.moeHidden / 32);
         moeSums = TornadoWorkspaces.ints(b * s.moeHidden / 32);
+        expertShape = TornadoWorkspaces.ints(6);
     }
 
     public static Glm5NextBatchArrays allocate(Sizes sizes) {
