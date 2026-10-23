@@ -8,6 +8,7 @@ import org.beehive.jitllm.backend.tornado.kernels.Glm5NextBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35DeltaNetKernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.Glm5NextBatchArrays;
@@ -183,7 +184,17 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 b.moeQuants,
                 b.moeScales,
                 b.moeSums,
-                b.expertShape);
+                b.expertShape,
+                b.sortedToken,
+                b.position,
+                b.tiles,
+                b.routedHidden,
+                b.routedHidden8,
+                b.routedHiddenScales,
+                b.routedOut,
+                b.sharedGate,
+                b.sharedUp,
+                b.sharedOut);
         g.transferToDevice(DataTransferMode.FIRST_EXECUTION, persistent());
         g.transferToDevice(DataTransferMode.FIRST_EXECUTION, weightArrays(w, config).toArray());
     }
@@ -720,7 +731,228 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
         project(g, p + "ffn_down", f.down()[l], b.branch, hidden, dim);
     }
 
+    /** Whether the grouped int8 expert kernels take this model's widths: whole 128-column tiles. */
+    private boolean groupedExperts() {
+        return config.dim() % Qwen35MoeBatchKernels.TILE_COLS == 0
+                && config.expertHiddenDim() % Qwen35MoeBatchKernels.TILE_COLS == 0
+                && gemmShape(config.dim(), config.sharedHiddenDim())
+                && gemmShape(config.sharedHiddenDim(), config.dim());
+    }
+
+    // @formatter:off
+    /**
+     * The mixture of experts on int8 tensor cores:
+     *
+     * <ol>
+     *   <li>sigmoid routing; the assignments sorted by expert and cut into 64-row tiles;
+     *   <li>per stack of experts, the grouped clamped gate/up over the tiles of its experts, then
+     *       the grouped down projection, the hidden activations quantized between;
+     *   <li>the shared expert over every row as GEMMs, the clamp between;
+     *   <li>each row's routed outputs weighted and added to the shared one, into {@code branch}.
+     * </ol>
+     */
+    // @formatter:on
+    private void groupedMixtureOfExperts(TaskGraph g, String p, int l) {
+        var ws = gs.workspace;
+        Glm5NextBatchArrays b = ws.glm5nextBatch;
+        var f = w.ffn();
+        final int dim = config.dim();
+        final int experts = config.expertCount();
+        final int used = config.expertsUsed();
+        final int hidden = config.expertHiddenDim();
+        final int shared = config.sharedHiddenDim();
+        final int assignments = batch * used;
+        List<TornadoTensor> gates = f.gateExperts().get(l);
+        List<TornadoTensor> ups = f.upExperts().get(l);
+        List<TornadoTensor> downs = f.downExperts().get(l);
+        int split = gates.size() == 1 ? experts : config.expertChunkSize();
+        int[][] ranges =
+                gates.size() == 1
+                        ? new int[][] {{0, experts}}
+                        : new int[][] {{0, split}, {split, experts}};
+
+        route(g, p, l);
+        task(
+                g,
+                p + "group",
+                groups(1, Qwen35MoeBatchKernels.GROUP_THREADS),
+                t ->
+                        g.task(
+                                t,
+                                Qwen35MoeBatchKernels::groupByExpert,
+                                context,
+                                b.expertIds,
+                                ws.batchStartPosHolder,
+                                b.sortedToken,
+                                b.position,
+                                b.tiles,
+                                experts,
+                                used,
+                                batch));
+        for (int s = 0; s < ranges.length; s++) {
+            int lo = ranges[s][0];
+            int hi = ranges[s][1];
+            ByteArray gate = gates.get(s).asByteArray();
+            ByteArray up = ups.get(s).asByteArray();
+            WorkerGrid2D grid =
+                    new WorkerGrid2D(
+                            hidden
+                                    / Qwen35MoeBatchKernels.TILE_COLS
+                                    * Qwen35MoeBatchKernels.GEMM_THREADS,
+                            b.maxTiles);
+            grid.setLocalWork(Qwen35MoeBatchKernels.GEMM_THREADS, 1, 1);
+            task(
+                    g,
+                    p + "experts_gate_up" + s,
+                    grid,
+                    t ->
+                            g.task(
+                                    t,
+                                    Glm5NextBatchKernels::groupedGateUpClamped,
+                                    context,
+                                    b.a8,
+                                    b.a8Scales,
+                                    b.sortedToken,
+                                    b.tiles,
+                                    gate,
+                                    up,
+                                    b.routedHidden,
+                                    dim,
+                                    hidden,
+                                    lo,
+                                    hi,
+                                    config.swigluLimit()));
+        }
+        task(
+                g,
+                p + "experts_hidden_q8",
+                lanes(assignments * hidden, 128),
+                t ->
+                        g.task(
+                                t,
+                                Int8GemmKernels::quantizeActivationsQ8Warp,
+                                context,
+                                b.routedHidden,
+                                b.routedHidden8,
+                                b.routedHiddenScales,
+                                hidden));
+        for (int s = 0; s < ranges.length; s++) {
+            int lo = ranges[s][0];
+            int hi = ranges[s][1];
+            ByteArray down = downs.get(s).asByteArray();
+            WorkerGrid2D grid =
+                    new WorkerGrid2D(
+                            dim
+                                    / Qwen35MoeBatchKernels.TILE_COLS
+                                    * Qwen35MoeBatchKernels.GEMM_THREADS,
+                            b.maxTiles);
+            grid.setLocalWork(Qwen35MoeBatchKernels.GEMM_THREADS, 1, 1);
+            task(
+                    g,
+                    p + "experts_down" + s,
+                    grid,
+                    t ->
+                            g.task(
+                                    t,
+                                    Glm5NextBatchKernels::groupedDown,
+                                    context,
+                                    b.routedHidden8,
+                                    b.routedHiddenScales,
+                                    b.tiles,
+                                    down,
+                                    b.routedOut,
+                                    dim,
+                                    hidden,
+                                    lo,
+                                    hi));
+        }
+        // The shared expert reads the same quantized input as the routed ones, so it runs after
+        // their gate/up and before its own hidden activation replaces that input.
+        project(g, p + "shared_gate", f.sharedGate()[l], b.sharedGate, dim, shared);
+        project(g, p + "shared_up", f.sharedUp()[l], b.sharedUp, dim, shared);
+        task(
+                g,
+                p + "shared_swiglu",
+                lanes(batch * shared, 128),
+                t ->
+                        g.task(
+                                t,
+                                Glm5NextKernels::clampedSwiGLU,
+                                context,
+                                b.sharedGate,
+                                b.sharedUp,
+                                batch * shared,
+                                config.swigluLimit()));
+        quantize(g, p + "shared_hidden_q8", b.sharedGate, shared);
+        project(g, p + "shared_down", f.sharedDown()[l], b.sharedOut, shared, dim);
+        task(
+                g,
+                p + "experts_combine",
+                lanes(batch * dim, 256),
+                t ->
+                        g.task(
+                                t,
+                                Glm5NextBatchKernels::combineExperts,
+                                context,
+                                b.routedOut,
+                                b.position,
+                                b.expertWeights,
+                                b.sharedOut,
+                                b.branch,
+                                ws.batchStartPosHolder,
+                                dim,
+                                used));
+    }
+
+    /**
+     * The router logits and the sigmoid top-k, into {@code expertIds} and {@code expertWeights}.
+     */
+    private void route(TaskGraph g, String p, int l) {
+        Glm5NextBatchArrays b = gs.workspace.glm5nextBatch;
+        var f = w.ffn();
+        final int dim = config.dim();
+        final int experts = config.expertCount();
+        final int used = config.expertsUsed();
+        task(
+                g,
+                p + "router",
+                lanes(batch * experts * 32, 128),
+                t ->
+                        g.task(
+                                t,
+                                Glm5NextBatchKernels::routerLogits,
+                                context,
+                                b.normed,
+                                f.router()[l].asFloatArray(),
+                                b.routerLogits,
+                                dim,
+                                experts,
+                                batch));
+        task(
+                g,
+                p + "router_topk",
+                groups(batch, Glm5NextBatchKernels.GROUP),
+                t ->
+                        g.task(
+                                t,
+                                Glm5NextBatchKernels::routerTopKSigmoid,
+                                context,
+                                b.routerLogits,
+                                f.routerBias()[l].asFloatArray(),
+                                b.expertIds,
+                                b.expertWeights,
+                                experts,
+                                used,
+                                config.expertWeightsNorm() ? 1 : 0,
+                                config.expertWeightsScale(),
+                                batch));
+    }
+
     private void mixtureOfExperts(TaskGraph g, String p, int l) {
+        if (groupedExperts()) {
+            groupedMixtureOfExperts(g, p, l);
+            return;
+        }
         Glm5NextBatchArrays b = gs.workspace.glm5nextBatch;
         var f = w.ffn();
         final int dim = config.dim();
