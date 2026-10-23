@@ -203,7 +203,7 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
         state.workspace.temp.clear();
         state.workspace.tempFFN.clear();
 
-        for (int layer = 0; layer < config.numberOfLayers(); layer++) {
+        for (int layer = 0; layer < taskGraphLayout.N(); layer++) {
             var l =
                     executionPlan
                             .withGraph(taskGraphLayout.layerIdx(layer))
@@ -239,7 +239,7 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
         state.workspace.temp.clear();
         state.workspace.tempFFN.clear();
 
-        for (int layer = 0; layer < config.numberOfLayers(); layer++) {
+        for (int layer = 0; layer < taskGraphLayout.N(); layer++) {
             var l =
                     executionPlan
                             .withGraph(taskGraphLayout.layerIdx(layer))

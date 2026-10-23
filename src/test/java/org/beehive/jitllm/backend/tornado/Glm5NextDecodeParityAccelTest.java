@@ -98,6 +98,17 @@ public class Glm5NextDecodeParityAccelTest {
         assertTrue("greedy choices agree at " + r.agree, r.agree >= decoded * 8 / 10);
     }
 
+    /**
+     * The sequential prefill/decode plan, whose layers are one task graph for the whole trunk: it
+     * must run every graph the layers built, not one per layer.
+     */
+    @Test
+    public void theWholeModelDecodesLikeTheHostInPrefillDecodeMode() throws Exception {
+        Result r = run("model-Q8_0.gguf", 0, 1, true);
+        assertTrue("first token " + r.errors[0], r.errors[0] < 1e-4f);
+        assertTrue("greedy choices agree at " + r.agree, r.agree >= r.errors.length * 9 / 10);
+    }
+
     private record Result(float[] errors, int agree) {}
 
     /** Positions from {@code from} whose logits agree with the host to float rounding. */
@@ -118,7 +129,11 @@ public class Glm5NextDecodeParityAccelTest {
     }
 
     private static Result run(String modelFile) throws Exception {
-        return run(modelFile, 0, 1);
+        return run(modelFile, 0, 1, false);
+    }
+
+    private static Result run(String modelFile, int prefill, int chunk) throws Exception {
+        return run(modelFile, prefill, chunk, chunk > 1);
     }
 
     // @formatter:off
@@ -129,7 +144,8 @@ public class Glm5NextDecodeParityAccelTest {
      * produces no logits.
      */
     // @formatter:on
-    private static Result run(String modelFile, int prefill, int chunk) throws Exception {
+    private static Result run(String modelFile, int prefill, int chunk, boolean prefillDecode)
+            throws Exception {
         Path file = resource(modelFile);
         int[] tokens =
                 (int[])
@@ -150,7 +166,7 @@ public class Glm5NextDecodeParityAccelTest {
                         () ->
                                 State.withStorageOptions(
                                         StorageOptions.fp32(), device::createNewState));
-        if (chunk > 1) {
+        if (prefillDecode) {
             deviceState.resolveExecutionPolicy(
                     ExecutionPolicy.builder()
                             .phaseStrategy(ExecutionPolicy.PhaseStrategy.PREFILL_DECODE)
