@@ -49,8 +49,10 @@ system_profiler SPDisplaysDataType | head    # macOS/Metal
 Use a directory per tuple, so one build does not overwrite another's `dist/`.
 
 ```bash
+TVM_VERSION=7.3.1                             # tornadovm.release.version from step 1
 TVM_SRC="$HOME/tornadovm-sdks/jdk21-cuda"     # name it after the tuple
-git clone --depth 1 --branch v6.0.0 https://github.com/beehive-lab/TornadoVM.git "$TVM_SRC"
+git clone --depth 1 --branch "v$TVM_VERSION" https://github.com/beehive-lab/TornadoVM.git "$TVM_SRC"
+# for develop: --branch develop
 ```
 
 ## 4. Build

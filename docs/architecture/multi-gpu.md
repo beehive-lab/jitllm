@@ -72,9 +72,10 @@ stage 1 (device 1): receive x, layers [k1, k2), ...  ◀──┘ ... final norm
   also the final norm and vocabulary projection. The class names no family.
 - **Layer bounds** come from `DeviceSplit.layerBounds`: the shares in proportion, rounded to the
   family's `stageLayerAlignment()`.
-- **Key/value cache per stage.** A family whose provider says `stageCacheHoldsOnlyItsLayers()`
-  (Gemma 4, deepseek2) gives each stage a cache for its own layers only; otherwise each stage's
-  state is built for the whole model and only its layers are written.
+- **Key/value cache per stage.** By default (`stageCacheHoldsOnlyItsLayers()`) each stage gets a
+  cache for its own layers only. A family whose layers index their caches and recurrent state by
+  absolute layer (`qwen35`, `qwen35moe`) answers false: each stage's state is then built for the
+  whole model and only its layers are written.
 - **Kernels per device.** Each stage chooses its kernels for the device it runs on, not the
   first device, so mixed devices get the right variants. Packed weights are repacked on every
   stage.

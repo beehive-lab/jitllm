@@ -18,7 +18,7 @@ reference actually covers is stated below, and it is not all of them.
 
 | Class | What runs | Needs | When |
 | --- | --- | --- | --- |
-| **A** | architecture rules, unit tests, launcher-flag and benchmark-gate tooling tests, documentation links | a JVM. No model file, no accelerator, no TornadoVM | every push; `mvn test` and `make test-scripts` |
+| **A** | architecture rules, unit tests, launcher-flag and benchmark-gate tooling tests | a JVM. No model file, no accelerator, no TornadoVM | every push; `mvn test` and `make test-scripts` |
 | **B** | golden logits, CPU↔GPU parity, compiled-program identity, lowering parity, lifecycle, multi-session, KV/workspace sharing, diagnostics, metrics, execution modes | a TornadoVM SDK, a device, and the pinned model fixtures | `mvn verify -Paccel-tests` on a pinned tuple; required before merging any change to an execution path |
 | **C** | benchmark gate against `docs/perf-history.jsonl`, full model-matrix goldens | a Class B environment plus performance history | releases, and on every push to `main` |
 
@@ -88,7 +88,8 @@ Same fixture, same prompt, CPU as the reference. Per-element tolerance
 the fraction of elements allowed to violate it. NaN or Inf on either side fails.
 
 Coverage is every family with a fixture, in every representation it ships: Llama, Qwen3,
-Qwen2.5, Granite and Phi-3 in F16 and Q8_0, and Mistral in Q8_0. One class per family, so
+Qwen2.5, Granite and Phi-3 in F16 and Q8_0, Mistral in Q8_0, Gemma 4 in Q8_0 and BF16, and
+Qwen3.5 (Qwen3.8-27B) in Q4_0. One class per family, so
 surefire forks a JVM per family — device memory a closed session frees goes back to
 TornadoVM's buffer provider but not to the driver, so a single class covering everything
 exhausts the device partway through and the failures land on whichever model ran late rather
@@ -166,7 +167,7 @@ result after the whole matrix has run, against `.github/standalone-expectations.
 ## `qwen35` (Qwen3.5 / Qwen3.8)
 
 Verified on `Qwen3.8-27B-Q4_0.gguf`
-(`ede16c7b36e578ca87a8c70e011e4b4633a32c831c0ce76d0f474582384e671d`), host path only.
+(`ede16c7b36e578ca87a8c70e011e4b4633a32c831c0ce76d0f474582384e671d`).
 
 | Check | Result |
 | --- | --- |
@@ -178,13 +179,12 @@ Verified on `Qwen3.8-27B-Q4_0.gguf`
 | MTP draft agreement with the trunk, real model | 63 of 79 (80%) |
 | Tool-call wire format, both directions, including round-trip | pass (`Qwen35ToolCallsTest`) |
 | Full tool round-trip through the public API, real model | pass (`examples.ToolCalling`) |
-| CPU/accelerator parity | n/a — no backend claims the architecture |
+| CPU/accelerator parity | pass (`Qwen35CpuGpuParityAccelTest`; sequential and batched prefill in `Qwen35PrefillDecodeParityAccelTest` and the `Qwen35*BatchedPrefill*ParityAccelTest` classes) |
 
-**No CI rows, deliberately.** `standalone-inference.yml` is an accelerator matrix: every row
-asserts a resolved backend and a real `execution_path`, and this family has neither. The
-smallest `qwen35` release is also far larger than the fixtures that matrix carries — the one
-verified here is 16 GB. The unit gates above run in CI as ordinary tests; the fixture-backed
-checks are local, and `GoldenFixture` skips them by name when the file is absent.
+**No CI rows.** `standalone-inference.yml` carries no `qwen35` file, and the one verified here
+is 16 GB, far larger than the fixtures that matrix carries. The unit gates above run in CI as
+ordinary tests; the fixture-backed checks are local, and `GoldenFixture` skips them by name when
+the file is absent.
 
 The tool round-trip is the check that could not be replaced by a unit test: the model has to
 emit the format we prompt for, and no amount of parser testing says whether it does. It called
@@ -260,8 +260,8 @@ to begin with: a lane owning one value column of a head's state finds every quan
 its own.
 
 **What this does not establish**: that the kernels compile and run on a device, that the layer
-graph binds them correctly, or that the family runs on a GPU at all. Those are separate gates and
-none of them is met yet.
+graph binds them correctly, or that the family runs on a GPU at all. Those are separate gates:
+the CPU/accelerator parity classes above run the whole family on a device.
 
 ## `qwen35` attention device kernels
 
@@ -314,10 +314,10 @@ both representations. A key/value cache needs neither: attention reads no furthe
 position. A recurrence has no such mask, so whatever was in the allocation is read as the
 sequence's own history.
 
-Whether the device arrays are allocated is currently decided by the `use.tornadovm` property,
-which is the facade's own default and **not** the same question as which backend a session
-resolved. It is adequate only because no plan provider claims this architecture, so nothing can
-disagree with it; a construction-scoped answer from the session has to replace it when one does.
+Whether the device arrays are allocated is decided by the model, from whether its weights are
+device weights (`Qwen35State.withDeviceArrays`), and only when no caller says by the
+`use.tornadovm` property, which is the facade's own default and **not** the same question as
+which backend a session resolved.
 
 ## Retained weights in the memory preflight
 
@@ -362,14 +362,16 @@ configuration the caller has no way to overrule.
   the key/value cache was predicted over every layer where this family attends in one of four,
   and the recurrent state — 149.6 MiB, neither cache nor scratch — was not counted at all.
 
-- **`qwen35` on an accelerator is CUDA only, in all three modes.** Its provider declares
-  `STANDARD`, `PREFILL_DECODE` and `BATCH_PREFILL_DECODE`, and no lowering. Nothing is
+- **`qwen35` runs all three modes on CUDA and Metal; on OpenCL, single-token and sequential
+  prefill/decode.** Its provider declares `STANDARD`, `PREFILL_DECODE` and
+  `BATCH_PREFILL_DECODE`, Q4_0 and Q8_0 models, and no lowering. Nothing is
   materialized: Q4_0 projections and embeddings, Q4_1 down projections, Q5_K recurrent outputs, a
   Q6_K vocabulary projection and F32 norms and SSM parameters are each decoded by a kernel selected
   from that tensor's own representation, batched and single-token alike. All three modes meet the
   single-token bounds against the CPU reference on the real fixture, and the batched one meets them
-  at every chunk width tested with the same numbers to the last digit. OpenCL and Metal have not
-  been run for this family, and no claim is made for them.
+  at every chunk width tested with the same numbers to the last digit. On OpenCL the batched
+  prefill is refused by name: its projections do not compile on TornadoVM's OpenCL backend.
+  Per-backend evidence is in [`kv-cache-support.md`](kv-cache-support.md).
 - **This family's batched prefill is not the shared Q8_0 tensor-core path.** Its batched
   projections decode the file's own blocks and accumulate in FP32, exactly as its single-token ones
   do, which is why it meets the same bounds where the shared Q8_0 batched GEMM — FP16 accumulation
@@ -385,7 +387,7 @@ configuration the caller has no way to overrule.
   forward pass but no `ModelArchitecture`, exactly as Gemma-4 does. A description is consumed by
   the lowered path, nothing lowers this family, and writing one would mean adding roughly a dozen
   `TensorRole` values and two `OperationKind` values that no backend reads — vocabulary ahead of a
-  kernel, which is what the support tables exist to prevent. It arrives with the backend.
+  kernel, which is what the support tables exist to prevent. It arrives with a lowering.
 
 Recorded honestly rather than gated away. None of these is a passing configuration.
 
@@ -393,28 +395,30 @@ Recorded honestly rather than gated away. None of these is a passing configurati
 `CompiledProgramIdentityAccelTest` cannot observe there. A capture-path gap, not a
 numerical one.
 
-**Phi-3-mini on Metal does not complete, in either representation.** The run reaches the
-accelerator, emits a few tokens and then makes no further progress. A hang with no
-diagnostic rather than a toolchain refusal, and unresolved. Both rows are in the
-expectations table so that one hanging row cannot go on erasing the rest — each row now runs
-under its own budget.
+**Phi-3-mini on Metal is not covered by the standalone CI matrix.** On the macOS runner its
+rows, in both representations, ran past the per-row budget having emitted a single token, so
+the matrix carries no Metal row for it and the expectations table has none either. On an M4
+Pro the family is numerically correct: CPU/Metal parity in F16 has no violations, and its
+FP16-cache rows are in [`kv-cache-support.md`](kv-cache-support.md#matrix).
 
-**Qwen2.5-1.5B Q8_0 on Metal produces wrong output.** It resolves the backend, reports a
-real execution path, exits 0 at a normal throughput, and generates a stream of backticks
-instead of an answer. This is a correctness defect, not a recorded limitation, and it is
-deliberately *not* in the expectations table: the assertion step refuses to let a
-`WRONG-OUTPUT` row be silenced, so the Metal leg stays red until it is fixed.
+**Qwen2.5-1.5B Q8_0 on Metal once produced wrong output.** It resolved the backend, reported
+a real execution path, exited 0 at a normal throughput, and generated a stream of backticks
+instead of an answer. It was invisible until the Metal leg first ran to its assertion step:
+every earlier Metal run was cancelled at the job wall clock before that step, so an output
+check that existed, on a backend that ran, had never once been applied there.
 
-It was invisible until now. Every previous Metal run was cancelled at the job wall clock
-before the assertion step ran, so that backend had never produced a results table at all —
-which is why an output check that exists, on a backend that runs, had never once been
-applied there. Qwen2.5 F16 passes on the same machine, as do both Qwen3 representations, so
-the shape resembles the earlier Qwen FP16 Metal defect: capability-gated kernel selection
-choosing a reduction that is wrong on that device. Confirming that needs the Mac; nothing
-here claims to have reproduced it from Linux.
+The cause was a reduction that is correct only with its finalize step. Qwen2's Q8_0 layers
+were the only stack that emitted the feed-forward RMS finalize task without the attention one;
+on Metal, which is not granted `SINGLE_PASS_RMS`, the multi-workgroup reduction leaves a partial
+sum that only the finalize task corrects, so every layer normalized its attention input by the
+wrong scale. CUDA and OpenCL on NVIDIA take the single-pass reduction and never saw it.
+`RmsFinalizePairingTest` now fails the build for any block that reduces without its finalize,
+and the row runs in the matrix with no expectation entry, so it must pass.
 
-**Q8_0 batched prefill on CUDA.** A TornadoVM toolchain gap, with its named cause, in
-[`models-and-backends.md`](models-and-backends.md).
+**Q8_0 batched prefill on CUDA** runs, and is the default, but its numbers differ from the
+single-token path's by more than the parity bounds: the batched Q8_0 projections accumulate in
+FP16 through the tensor cores. The gap and the options for it are in
+[`execution.md`](execution.md#what-is-not).
 
 **Batched prefill on Metal** is verified on an Apple M4 Pro for every family it is enabled for:
 greedy text identical to single-token prefill for Qwen3, Llama (F16, Q8_0, Q4_0), Qwen2.5,
@@ -429,8 +433,9 @@ package, which surefire's class scan cannot load, so they run under the `tornado
 `org.junit.runner.JUnitCore`.
 
 **Devstral.** The `mistral3` fixture loads and generates correct text on Metal in
-`STANDARD`. `PREFILL_DECODE` and `BATCH_PREFILL_DECODE` are unsupported for the family,
-each with its own accurate diagnostic. The rest of its acceptance — teacher-forced CPU/GPU
+`STANDARD`. Its provider declares `STANDARD` and `BATCH_PREFILL_DECODE`; the batched prefill
+runs on the CUDA tensor cores only and is refused by name elsewhere, and `PREFILL_DECODE` is
+unsupported, with its own diagnostic. The rest of its acceptance — teacher-forced CPU/GPU
 logit parity, reset and multi-turn behaviour, memory-preflight accuracy — is **unrun**, and
 Devstral is not claimed as verified. It blocks nothing.
 
@@ -443,7 +448,12 @@ kernel-capture gap above. Nothing here claims a Metal run performed from Linux.
 
 ## Current results
 
-Measured on this branch, RTX 5090 Laptop, TornadoVM 6.0.0 built from the pinned tag:
+The suite today, counted from the sources (`@Test` methods; Class B is the `*AccelTest`
+classes): 868 Class A tests, and 543 Class B tests in 211 classes. The build needs a TornadoVM
+SDK of 7.3 or newer, and CI builds against TornadoVM's `develop` head.
+
+The last full recorded run, from September 2026 on an RTX 5090 Laptop with TornadoVM 6.0.0,
+against the suite of that time:
 
 | Configuration | Class A | Class B |
 | --- | --- | --- |
@@ -452,6 +462,6 @@ Measured on this branch, RTX 5090 Laptop, TornadoVM 6.0.0 built from the pinned 
 | JDK 21, OpenCL | 531 tests, 0 failures | 94 tests, 0 failures, 0 errors, 7 skipped |
 | JDK 25, OpenCL | 531 tests, 0 failures | 94 tests, 0 failures, 0 errors, 7 skipped |
 
-CPU↔GPU parity covers all eleven fixture/representation combinations on both backends. The
-skips each name a reason: an absent fixture, an absent `TENSOR_CORE_MMA`, or a Metal-only
+CPU↔GPU parity then covered all eleven fixture/representation combinations of that time on
+both backends; it now covers fourteen. The skips each name a reason: an absent fixture, an absent `TENSOR_CORE_MMA`, or a Metal-only
 kernel-selection check.

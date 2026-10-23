@@ -120,7 +120,7 @@ run_inference() {
       ./jitllm --gpu \
         --model "$MODELS_DIR/$model_file" \
         --prompt "$PROMPT" \
-        --max-tokens "$MAX_TOKENS" \
+        --max-new-tokens "$MAX_TOKENS" \
         --seed "$seed" \
         --gpu-memory "$GPU_MEMORY" \
         $flags ) \

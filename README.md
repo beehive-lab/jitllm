@@ -9,7 +9,7 @@
 ![OpenCL](https://img.shields.io/badge/OpenCL-supported-blue?logo=khronos)
 ![Apple](https://img.shields.io/badge/Metal-Apple%20Silicon-black?logo=apple)
 [![Docker](https://img.shields.io/badge/Docker-OpenCL-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/beehivelab/gpullama3.java-nvidia-openjdk-opencl)
-[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/beehive-lab/jitllm)
+[![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-blue)](https://deepwiki.com/beehive-lab/jitllm)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 -----------
@@ -334,15 +334,20 @@ runs on jitllm's own tensor-core kernels, about 0.5–0.75× as fast.
 
 ### Fast prompt processing on Apple silicon (MLX)
 
-On Metal, `--with-native-libraries` runs the batched prefill's attention and projections on
-[Apple MLX](https://github.com/ml-explore/mlx) through TornadoVM's `tornado-mlx` library tasks;
-decode stays on jitllm's kernels. It needs MLX 0.32.3's kernel library (`brew install mlx`) and an
-M4-class GPU, and should run with `-Dtornado.mlx.async=true`, without which every MLX call waits
-for the GPU and prefill is slower than jitllm's own kernels:
+On Metal, the batched prefill's attention and projections run on
+[Apple MLX](https://github.com/ml-explore/mlx) through TornadoVM's `tornado-mlx` library tasks by
+default where the model has an MLX path and MLX loads; decode stays on jitllm's kernels.
+`--with-native-libraries` requires MLX and `--no-native-libraries` keeps jitllm's kernels. It needs
+MLX 0.32.3's kernel library (`brew install mlx`) and an M4-class GPU.
+
+MLX calls should be dispatched without waiting for the GPU (`-Dtornado.mlx.async=true`); otherwise
+the MLX prefill is slower than jitllm's own kernels. The `jitllm` launcher and the JBang script set
+it on Metal with a TornadoVM SDK newer than 7.3.1, whose asynchronous mode also waits for MLX work
+before host reads and writes. With TornadoVM 7.3.1 it stays off. Set it yourself in
+`JAVA_TOOL_OPTIONS` to override the launcher, or as a system property when you embed jitllm:
 
 ```bash
-JAVA_TOOL_OPTIONS=-Dtornado.mlx.async=true ./jitllm run --gpu --with-prefill-decode \
-  --batch-prefill-size 2048 --with-native-libraries -m Qwen3-0.6B-Q8_0.gguf --prompt "..."
+./jitllm run --gpu --metal -m Qwen3-0.6B-Q8_0.gguf --prompt "..."
 ```
 
 Llama (F16, Q8_0, Q4_0), Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Phi-3 and Granite (F16,

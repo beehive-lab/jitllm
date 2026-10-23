@@ -4,7 +4,7 @@ description: >
   Nsight Compute workflow for one jitllm CUDA kernel. Use after nsys, the
   TornadoVM profiler or the metrics output has already named the hot kernel.
 tags:
-  - gpullama
+  - jitllm
   - ncu
   - kernel-profiling
 license: Apache-2.0
@@ -27,7 +27,7 @@ TornadoVM generates kernel names from task names, so the name in the timeline is
 match. Confirm it against the generated source rather than guessing:
 
 ```bash
-./jitllm --gpu --model "<model.gguf>" --prompt "hi" -n 1 --print-kernel
+./jitllm run --gpu --model "<model.gguf>" --prompt "hi" --max-new-tokens 1 --print-kernel
 ```
 
 Which kernel a run selects depends on device capability, not on backend name: warp-shuffle
@@ -44,8 +44,8 @@ bounded number of steady-state launches:
 ncu --section SpeedOfLight --csv \
     --kernel-name regex:"<kernel>" \
     --launch-skip 32 --launch-count 16 \
-    -- ./jitllm --gpu --model "<model.gguf>" \
-         --prompt "<prompt>" -n 128 --seed 42
+    -- ./jitllm run --gpu --model "<model.gguf>" \
+         --prompt "<prompt>" --max-new-tokens 128 --seed 42
 ```
 
 If the run reports `ERR_NVGPUCTRPERM`, the counters are restricted to admin users: `ncu`
@@ -55,8 +55,11 @@ host rather than working around it.
 
 Pick `--launch-skip` from what the phase does: prefill launches once per layer per chunk,
 decode once per layer per token, so a skip that clears warm-up in one phase does not in the
-other. Use a command that reaches the phase you are studying — `--with-prefill-decode` and
-`--batch-prefill-size` change which kernels exist at all.
+other. Use a command that reaches the phase you are studying — on GPU, prefill is batched
+(512 tokens per step) by default, and `--no-batch-prefill`, `--with-prefill-decode` and
+`--batch-prefill-size` change which kernels exist at all. Batched prefill may also run in
+cuBLAS/cuDNN rather than a generated kernel; pass `--no-native-libraries` to profile the
+generated one.
 
 ## 3. Escalate from the classification
 

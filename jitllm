@@ -18,7 +18,8 @@ import sys
 import time
 import platform
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
+import re
 from enum import Enum
 
 
@@ -50,6 +51,12 @@ BACKEND_PRIORITY_PROPERTY: Dict[Backend, str] = {
 # properties that need a single "primary" backend (e.g. the printed message,
 # and which backend becomes TornadoVM's default device).
 BACKEND_PRIORITY: List[Backend] = [Backend.CUDA, Backend.OPENCL, Backend.METAL]
+
+# TornadoVM's asynchronous MLX dispatch (-Dtornado.mlx.async=true) commits a batch of Metal work
+# before an MLX library task without waiting for it; without it every MLX call waits for the GPU
+# and the MLX prefill is slower than jitllm's own kernels. It is on only from the TornadoVM
+# release after 7.3.1, which also waits for MLX work before host reads and writes.
+MLX_ASYNC_MIN_TORNADOVM = (7, 3, 2)
 
 
 class LlamaRunner:
@@ -108,10 +115,28 @@ class LlamaRunner:
     @staticmethod
     def select_primary_backend(installed: List[Backend]) -> Backend:
         """Pick which installed backend to report/default to when the SDK has more than one."""
-        for backend in BACKEND_PRIORITY:
+        order = BACKEND_PRIORITY
+        if platform.system() == "Darwin":
+            # Apple's OpenCL is deprecated and its kernels have no verified FP16 key/value path,
+            # so an SDK built with Metal and OpenCL runs on Metal on a Mac.
+            order = [Backend.METAL] + [b for b in BACKEND_PRIORITY if b != Backend.METAL]
+        for backend in order:
             if backend in installed:
                 return backend
         return installed[0]
+
+    def tornadovm_version(self) -> Optional[Tuple[int, int, int]]:
+        """The SDK's version from etc/tornado.release (e.g. 7.3.1 or 7.3.2-jdk22plus-dev), or None."""
+        release = Path(self.tornado_sdk) / "etc" / "tornado.release"
+        try:
+            for line in release.read_text().splitlines():
+                if line.startswith("version="):
+                    m = re.match(r"(\d+)\.(\d+)\.(\d+)", line.split("=", 1)[1].strip())
+                    if m:
+                        return tuple(int(x) for x in m.groups())
+        except OSError:
+            pass
+        return None
 
     def _tornado_argfile(self) -> str:
         """The SDK's own JVM argument file, which is the source of truth for how to start it.
@@ -260,6 +285,13 @@ class LlamaRunner:
             for rank, backend in enumerate(effective_priority):
                 if backend in args.installed_backends:
                     cmd.append(f"-D{BACKEND_PRIORITY_PROPERTY[backend]}={n - rank}")
+
+        # MLX prefill on Metal: dispatch its library tasks asynchronously where the SDK supports
+        # it safely. A value the user sets in JAVA_TOOL_OPTIONS is left alone.
+        if (args.use_gpu and args.backend == Backend.METAL
+                and "tornado.mlx.async" not in os.environ.get("JAVA_TOOL_OPTIONS", "")
+                and (self.tornadovm_version() or (0, 0, 0)) >= MLX_ASYNC_MIN_TORNADOVM):
+            cmd.append("-Dtornado.mlx.async=true")
 
         module_config: List[str] = []
 

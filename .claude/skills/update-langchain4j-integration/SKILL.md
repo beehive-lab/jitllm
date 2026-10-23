@@ -67,8 +67,9 @@ Three adapter rules this integration has already had to learn:
   every request, while an engine session retains its own history. Reset the session per
   request, or each one appends the whole conversation to the previous and the context grows
   without bound.
-- **Import only `api/**`.** `BackendId` and `ExecutionPolicy` are reachable and marked
-  experimental; anything else from the engine is an internal type and a rule violation. Keep
+- **Import only `api/**`**, plus `runtime.backend.BackendId` and `runtime.policy.ExecutionPolicy`,
+  which the API exposes and marks experimental; anything else from the engine is an internal
+  type and a rule violation. Keep
   `@Experimental` types (`GenerationTimings`, for one) out of the module's public signatures.
 - **A truncated response is still a response.** Return the generated text with
   `FinishReason.LENGTH` on `MAX_TOKENS`/`CONTEXT_FULL`, never a substitute notice

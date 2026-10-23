@@ -144,9 +144,9 @@ compilation occurs.
 
 | Mode | Prompt ingestion | Notes |
 | --- | --- | --- |
-| `STANDARD` | one token at a time | the default |
+| `STANDARD` | one token at a time | the default on the CPU and where batched prefill is not built |
 | `PREFILL_DECODE` | sequential prefill, then single-token decode | token-identical to `STANDARD` |
-| `BATCH_PREFILL_DECODE` | a chunk of prompt tokens per invocation, then decode | **default-off**; see below |
+| `BATCH_PREFILL_DECODE` | a chunk of prompt tokens per invocation, then decode | **the GPU default**, 512 tokens per chunk; see below |
 
 A family whose layers carry state across tokens — `qwen35`'s recurrent three quarters — cannot
 treat a chunk's rows as independent. Its batched layer graphs scan the chunk in token order inside
@@ -157,7 +157,8 @@ Policy is resolved **once per generation**, never per token, and reaches the pla
 remain as defaults for the CLI; they are not read from inside the execution path.
 
 **Batched prefill is the default on every accelerator backend** where the family builds it
-(`BatchPrefillSupport.defaultFor`, resolved once the model is loaded), and native libraries are
+(`BatchPrefillSupport.defaultFor`, resolved once the model is loaded), in chunks of 512 tokens;
+on Metal only the families and formats `BatchPrefillSupport` lists. Native libraries are
 the default where they are implemented and installed (`NativeLibrarySupport.defaultFor`). A
 default the configuration then refuses is dropped, never reported: the caller asked for nothing.
 The CPU path and models split across devices keep single-token prefill. `--no-batch-prefill` and

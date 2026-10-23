@@ -74,7 +74,8 @@ adapter defects:
 Several of LangChain4j's shared contract tests assert model behaviour. Which of them pass
 depends on the fixture, and no single small fixture passes all of them:
 
-Measured on jitllm 1.0.0 / TornadoVM 7.0.1, unit tests included (the script's selection):
+Historical, measured on jitllm 1.0.0 / TornadoVM 7.0.1, unit tests included (the script's
+selection); re-measure on the current release before relying on it:
 
 | Fixture | Result |
 | --- | --- |

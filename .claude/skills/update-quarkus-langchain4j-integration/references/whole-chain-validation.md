@@ -16,7 +16,7 @@ Use an exact tool-capable model path for tool demo runs when needed. Never commi
 
 ```bash
 sdk use java 25.0.2-open
-sdk use tornadovm 7.0.1-jdk22plus-cuda   # or -opencl / -full; JDK 21: 7.0.1-jdk21-<backend>
+sdk use tornadovm 7.3.1-jdk22plus-cuda   # or -opencl / -full; JDK 21: 7.3.1-jdk21-<backend>
 
 java -version
 test -n "$TORNADOVM_HOME"

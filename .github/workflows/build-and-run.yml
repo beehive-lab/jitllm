@@ -228,9 +228,8 @@ jobs:
       backend: metal
       tornadovm_ref: ${{ needs.resolve-tornadovm.outputs.sha }}
       runner_os: macOS
-      # The same 22 rows take far longer on the Mac than on the CUDA/OpenCL machine --
-      # Phi-3-mini in FP16 alone ran past the 40-minute wall there, cancelling the job
-      # after seven rows had verified. The budget is per machine, not per matrix.
+      # The same rows take far longer on the Mac than on the CUDA/OpenCL machine, so the
+      # budget is per machine, not per matrix.
       timeout_minutes: 120
 
   # Test integration with Quarkus-langchain4j

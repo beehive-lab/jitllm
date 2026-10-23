@@ -1,6 +1,6 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 22+
-//DEPS io.github.beehive-lab:jitllm:1.0.2-jdk22plus
+//DEPS io.github.beehive-lab:jitllm:2.0.0-jdk22plus
 
 // TornadoVM itself is not a dependency: it comes from the installed SDK, whose argument file
 // carries the module path, the JVMCI/Graal arrangement and the per-backend exports. Those vary
@@ -55,9 +55,18 @@ public class JitllmCli {
                 rest.add(arg);
             }
         }
-        // The Metal kernels have no verified FP16 key/value path, so an FP32 cache is the only one.
-        if (System.getProperty("jitllm.kvcache.fp32") == null && backends(sdk).equals("metal-backend")) {
-            System.setProperty("jitllm.kvcache.fp32", "true");
+        boolean metal = backends(sdk).contains("metal-backend");
+        // An SDK built with Metal and OpenCL (the usual Apple build) would otherwise run on OpenCL,
+        // TornadoVM's default; on Apple silicon Metal is the backend jitllm is tuned for.
+        if (metal && System.getProperty("tornado.metal.priority") == null) {
+            System.setProperty("tornado.metal.priority", "100");
+        }
+        // MLX prefill on Metal: dispatch its library tasks asynchronously where the SDK supports it
+        // safely (the release after TornadoVM 7.3.1), as the `jitllm` launcher does.
+        if (System.getProperty("tornado.mlx.async") == null
+                && metal
+                && atLeast(tornadoVersion(sdk), 7, 3, 2)) {
+            System.setProperty("tornado.mlx.async", "true");
         }
         // The `jitllm` launcher's defaults. An unset --temperature also reaches the sampler as NaN
         // in jitllm 1.0.2, which turns every logit into NaN, so it must always be passed.
@@ -76,6 +85,35 @@ public class JitllmCli {
         }
         args.add(name);
         args.add(value);
+    }
+
+    /** The SDK's version, as {@code etc/tornado.release} gives it (e.g. 7.3.1), or empty. */
+    private static String tornadoVersion(String sdk) {
+        try {
+            Properties props = new Properties();
+            try (var in = Files.newBufferedReader(Path.of(sdk, "etc", "tornado.release"))) {
+                props.load(in);
+            }
+            return props.getProperty("version", "").trim();
+        } catch (IOException e) {
+            return "";
+        }
+    }
+
+    /** Whether a version such as 7.3.2-jdk22plus-dev is at least major.minor.patch. */
+    private static boolean atLeast(String version, int major, int minor, int patch) {
+        var m = java.util.regex.Pattern.compile("(\\d+)\\.(\\d+)\\.(\\d+)").matcher(version);
+        if (!m.lookingAt()) {
+            return false;
+        }
+        int[] have = {Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3))};
+        int[] want = {major, minor, patch};
+        for (int i = 0; i < 3; i++) {
+            if (have[i] != want[i]) {
+                return have[i] > want[i];
+            }
+        }
+        return true;
     }
 
     /** The backends the SDK was built with, as {@code etc/tornado.backend} lists them. */

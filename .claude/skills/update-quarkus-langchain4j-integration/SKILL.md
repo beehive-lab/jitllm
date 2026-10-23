@@ -71,11 +71,16 @@ Three rules this extension has already had to learn:
 - **Name no backend.** The engine rejects an explicit `BackendId` that disagrees with the
   device it resolves, rather than silently running on another one, so naming CUDA stops the
   extension starting on an OpenCL or Metal SDK. Set `use.tornadovm` and let the SDK decide.
-- **Batched prefill is default-off.** It is default-off in the engine on every backend, and
-  a default that turns it on makes every deployment opt in without asking. `prefill-decode`
-  defaults to `false` and `prefill-batch-size` to `1`.
-- **Import only `api/**`.** `BackendId` and `ExecutionPolicy` are reachable and marked
-  experimental; anything else from the engine is an internal type and a rule violation.
+- **Know which prefill the engine runs.** On GPU the engine defaults to batched prefill (512
+  tokens per step where the family supports it) and native libraries where implemented and
+  installed, but only when `ModelOptions` carry no `executionPolicy` and neither
+  `jitllm.withPrefillDecode` nor `jitllm.prefillBatchSize` is set. If the extension maps its
+  `prefill-decode` (default `false`) and `prefill-batch-size` (default `1`) settings into an
+  explicit `ExecutionPolicy`, every deployment runs single-token prefill. Check what the
+  current code passes before changing either default.
+- **Import only `api/**`**, plus `runtime.backend.BackendId` and `runtime.policy.ExecutionPolicy`,
+  which the API exposes and marks experimental; anything else from the engine is an internal
+  type and a rule violation.
 
 For a new capability, implement both request and response mappings, including conversation
 history, metadata, finish reasons, and streaming callbacks. Add deterministic unit tests where

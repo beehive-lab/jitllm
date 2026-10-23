@@ -6,7 +6,7 @@ description: >
   once a benchmark already shows a regression/target and you need to know *why*. For
   running reproducible benchmarks or before/after comparisons, use
   jitllm-benchmarking-specialist instead. Do not use for editing TornadoVM code
-  directly; delegate that to tornado-backend-specialist.
+  directly.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
 model: sonnet
 license: Apache-2.0
@@ -44,11 +44,11 @@ sense once a specific kernel is already a suspect from one of the other two.
 Enable via `jitllm` flags directly — no separate tool install needed:
 
 ```bash
-./jitllm <backend-flags> --model <model.gguf> --prompt <prompt> --profiler --profiler-dump-dir <dir> --verbose-init <other-flags>
+./jitllm <backend-flags> --model <model.gguf> --prompt <prompt> --profiler --profiler-dump-file <file.json> --verbose <other-flags>
 ```
 
-- `--profiler` turns on TornadoVM's own bytecode/task-graph profiler (JSON output under `--profiler-dump-dir`).
-- `--verbose-init` times TornadoVM initialization (SDK/module load, graph compilation) separately from steady-state decode — use it whenever init/JIT time is in question.
+- `--profiler` turns on TornadoVM's own bytecode/task-graph profiler (JSON written to the `--profiler-dump-file` file; default `profiler-log.json` in the jitllm directory). Pass a file path, not a directory.
+- `--verbose` (`-v`) prints the startup configuration on stderr and times TornadoVM initialization (SDK/module load, graph compilation) separately from steady-state decode — use it whenever init/JIT time is in question.
 - `--print-bytecodes` / `--print-threads` / `--print-kernel` / `--full-dump` add finer task-graph detail when the profiler JSON alone doesn't explain a phase.
 
 Use this as the default first pass before reaching for nsys/ncu — it's already wired into the

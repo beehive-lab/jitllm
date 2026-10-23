@@ -92,7 +92,7 @@ parameters, stop sequences, `tools`, and the streaming callbacks.
 timings and any tool calls.
 
 `FinishReason` is one of `STOP_TOKEN`, `MAX_TOKENS`, `STOP_SEQUENCE`, `CONTEXT_FULL`,
-`TOOL_CALL`.
+`TOOL_CALL`, `CANCELLED`.
 
 ## Conversations
 
@@ -143,8 +143,9 @@ format. It is the same predicate the request path enforces, so an integration ca
 thinking control or a reasoning effort
 at startup with its own message instead of catching the exception from the first request.
 
-Tool calling is reported by Llama 3.x, Qwen 2.5, Qwen 3, Qwen 3.5, Granite 3.2 / 4.0 and
-Gemma 4; thinking control by Qwen 3 and Qwen 3.5; reasoning-effort control by Qwen 3.5. The per-family table, with what each
+Tool calling is reported by Llama 3.x, Qwen 2.5, Qwen 3, Qwen 3.5 (and the Qwen3.6 MoE),
+Granite 3.2 / 4.0 and Gemma 4; thinking control by Qwen 3, Qwen 3.5 and GLM-4.7-Flash;
+reasoning-effort control by Qwen 3.5. The per-family table, with what each
 template says, is in [models-and-backends.md](models-and-backends.md#tool-calling-per-family).
 
 ## Streaming

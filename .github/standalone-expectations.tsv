@@ -11,20 +11,6 @@
 # Columns, tab-separated:
 #   backend  model  quantization  configuration  cause-substring
 #
-# TornadoVM 6.0.0 removed the former batch-prefill and hidden-class failures.
+# TornadoVM 6.0.0 removed the former batch-prefill and hidden-class failures. No row is currently
+# recorded as failing.
 #
-# Phi-3 FP16 is numerically correct on an M4 Pro: CPU/Metal parity has zero violations across
-# 2,052,096 logits (max absolute difference 0.0029875), and legacy/lowered parity passes.
-#
-# Phi-3-mini-4k-instruct F16 does not finish on the Metal runner. It took 2m44s there on
-# 2026-08-28 (run 33194156877) and now runs past the 15-minute row budget having emitted one
-# token, on main as much as on any branch: runs 34484047558 (2026-09-10) and 34582487450
-# (2026-09-11) are main, and both fail this row with this cause and nothing else. Recorded here
-# so the job reports the one thing that is broken rather than going red wholesale; the Metal
-# slowdown itself is still open, as is the Mistral-7B-on-Metal row already held out of the
-# matrix for a timeout of its own.
-#
-# Phi-3-mini-4k-instruct Q8_0 now times out the same way, on main as well: run 37305547475
-# (2026-10-05) is main and fails this row with this cause and nothing else.
-metal	Phi-3-mini-4k-instruct	F16	standard	timed out after 15 minutes
-metal	Phi-3-mini-4k-instruct	Q8_0	standard	timed out after 15 minutes

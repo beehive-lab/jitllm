@@ -4,8 +4,8 @@
 #
 # Summarizes TornadoVM's own profiler output (concatenated JSON objects, one per
 # task-graph execution) into a phase/task kernel-time breakdown. Produced when
-# `jitllm` is run with `--profiler --profiler-dump-dir <dir>`; point this
-# script at the resulting profiler log file.
+# `jitllm` is run with `--profiler --profiler-dump-file <file>`; point this
+# script at that file.
 #
 # Usage:
 #   scripts/summarize_tornado_profiler.py <profiler_log> [--top N]

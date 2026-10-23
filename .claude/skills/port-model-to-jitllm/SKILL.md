@@ -14,7 +14,8 @@ Read [`docs/architecture/architecture.md`](../../../docs/architecture/architectu
 [`docs/architecture/models-and-backends.md`](../../../docs/architecture/models-and-backends.md)
 first. This skill is the workflow; those are the contracts.
 
-Qwen 3.8 is the motivating example throughout. Nothing here implements it.
+Qwen 3.8, implemented as the `qwen35` family, is a recent complete port; read that code
+alongside each step.
 
 ## 1. Inventory before editing anything
 
@@ -63,7 +64,7 @@ A useful first command, on a real file:
 
 ```bash
 JAVA_TOOL_OPTIONS="-Djitllm.metrics.format=json -Djitllm.metrics.output=stdout" \
-  ./jitllm --model <model.gguf> --prompt hi -n 1 --verbose-init
+  ./jitllm run --model <model.gguf> --prompt hi --max-new-tokens 1 --verbose
 ```
 
 An unrecognized file fails with `[GPUL-MOD-002]` and prints the declared architecture and
@@ -202,8 +203,8 @@ A family may reuse another's computation. It may not borrow its identity.
 - **Keep the model's own `ArchitectureId`.** It is what the provider declares, what the
   program signature carries, and what the compiled-program cache keys on. Two models sharing
   an id share cache entries.
-- **Reuse is a verified claim.** Running Qwen 3.8 on Qwen3's program description is fine
-  *after* CPU/accelerator parity passes for Qwen 3.8's own fixture — not because the
+- **Reuse is a verified claim.** Running a new family on Qwen3's program description is fine
+  *after* CPU/accelerator parity passes for that family's own fixture — not because the
   configuration classes look alike.
 - **Never infer identity from a shared configuration class.** A shared `Configuration`
   implementation says two families have the same fields, nothing more.

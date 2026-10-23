@@ -7,7 +7,7 @@
 	<properties>
 		<maven.compiler.release>21</maven.compiler.release>
 		<!-- jitllm base version, for the jdk21 profile -->
-		<jitllm.version>1.0.0</jitllm.version>
+		<jitllm.version>2.0.0</jitllm.version>
 	</properties>
 	<dependencyManagement>
 		<dependencies>

@@ -95,7 +95,7 @@ arrangement, per-backend export lists, and the preview flag where the line needs
 of that varies by TornadoVM version, JDK and installed backends, so it is read rather than
 reproduced. The launchers add only what the argfile does not supply: heap and direct-memory
 sizes, `jdk.incubator.vector`, the interpreter bytecode buffer size, the `tornado.*` and
-`llama.*` properties, and the backend priorities when an SDK has more than one backend.
+`jitllm.*` properties, and the backend priorities when an SDK has more than one backend.
 
 The jar they run, `target/jitllm-<version>.jar`, is the same library jar that is published:
 jitllm's classes and service files only. TornadoVM and everything it depends on are
@@ -146,17 +146,21 @@ makes a divergence reviewable instead of looking like a bug.
 artifacts. `deploy-maven-central.yml` runs the JDK 21 and JDK 25 legs separately, because
 each JDK produces exactly one of the two.
 
-Two integrations consume the facade and are validated against it:
+Three integrations consume the facade and are validated against it:
 
-- **LangChain4j** — `langchain4j-gpu-llama3`, selecting `-jdk21`/`-jdk25` from JDK-specific
+- **LangChain4j** — `langchain4j-jitllm`, selecting `-jdk21`/`-jdk22plus` from JDK-specific
   profiles.
 - **Quarkus LangChain4j** — `model-providers/jitllm/{runtime,deployment}` (artifact
   `quarkus-langchain4j-jitllm`, configuration `quarkus.langchain4j.jitllm.*`), with the
   version driven by the root `jitllm.version` property and its `jdk22plus` profile
   override. Before jitllm 1.0.2 the extension was named `gpu-llama3`.
+- **Spring AI** — `spring-ai-jitllm`, with its auto-configuration and starter modules
+  (`spring-ai-autoconfigure-model-jitllm`, `spring-ai-starter-model-jitllm`), proposed to
+  spring-projects/spring-ai; `-jdk22plus` by default, `-jdk21` through a profile.
 
-Both must import only `api/**` types. The repository skills
-`update-langchain4j-integration` and `update-quarkus-langchain4j-integration` carry the
+All must import only `api/**` types. The repository skills
+`update-langchain4j-integration`, `update-quarkus-langchain4j-integration` and
+`update-spring-ai-integration` carry the
 whole-chain validation each one requires; compilation and focused tests do not complete an
 integration update.
 

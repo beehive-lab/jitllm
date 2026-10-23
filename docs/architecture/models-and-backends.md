@@ -25,8 +25,9 @@ declared architecture that is not special-cased is passed through as its own ide
 an identity nobody registered is reported as unrecognized (`GPUL-MOD-002`). It is never
 mapped to the nearest family.
 
-Registered architectures today: Llama, Mistral, Qwen2, Qwen3, DeepSeek-R1-Distill-Qwen,
-Granite, Phi-3, Gemma-4, Devstral, Qwen3.5 (`qwen35`).
+Registered architectures today: Llama, Mistral, Qwen2, Qwen2-MoE, Qwen3, DeepSeek-R1-Distill-Qwen,
+Granite, Phi-3, Gemma-4, Devstral, Qwen3.5 / 3.6 / 3.8 (`qwen35`), Qwen3.6 MoE (`qwen35moe`) and
+GLM-4.7-Flash (`deepseek2`).
 
 `qwen35` needed no recognition case at all — the file declares that architecture, nothing
 else claims the name, and the pass-through branch resolved it. A provider class and one
@@ -58,13 +59,14 @@ compare the encoder's output with that template rendered by Jinja2
 | --- | --- | --- |
 | Llama 3.1 / 3.2 | yes | tools as `tojson(indent=4)` in the first user message; `{"name", "parameters"}` calls; `ipython` results |
 | Qwen 2.5, Qwen 3 | yes | `<tools>` in the system turn; `<tool_call>{json}</tool_call>`; a run of results in one user turn |
-| Qwen 3.5 (`qwen35`) | yes | as Qwen 3, but calls in `<function=…><parameter=…>` pseudo-XML and tools before the system text |
+| Qwen 3.5 (`qwen35`), Qwen 3.6 MoE (`qwen35moe`) | yes | as Qwen 3, but calls in `<function=…><parameter=…>` pseudo-XML and tools before the system text |
 | Granite 3.2 | yes | a `tools` turn; `<\|tool_call\|>` + a JSON list; `tool` turns |
 | Granite 4.0 | yes | `<tools>` in the system message; `<tool_call>` blocks; results in one user turn |
 | Gemma 4 | yes | see above |
 | DeepSeek-R1-Distill-Qwen | no | the template replays tool calls and outputs but never renders tool definitions |
 | Qwen 1.5 / Qwen 2 MoE | no | no tools in the template, no `<tool_call>` in the vocabulary |
 | Phi-3 mini | no | no tools in the template (GGUF or upstream) |
+| GLM-4.7-Flash (`deepseek2`) | no | `Glm4ChatFormat` implements no tool format |
 | Mistral v0.3, Devstral | no, for now | the Mistral v0.3 GGUF template has no tools; the upstream one does (`[AVAILABLE_TOOLS]`), but it needs this format's non-tool turns reworked first |
 
 Granite's two dialects are told apart by the file's own template. A Granite file whose template
@@ -86,7 +88,8 @@ may keep a decoded representation, and the TornadoVM backend keeps Q4_K and Q6_K
 on the device rather than expanding them on the host.
 
 **Retaining a representation is a per-family capability, not a global one.** `Q4_K`/`Q6_K` are
-retained for Devstral and `Q4_0` for Llama, because those families' layer graphs have kernels
+retained for Devstral, `Q4_0` for Llama, `Q4_0`/`Q4_1` for Gemma 4, and every block format the
+file holds (`Q4_0`, `Q4_1`, `Q4_K`, `Q5_K`, `Q6_K`) for Qwen3.5, because those families' layer graphs have kernels
 that decode them in place; the same file loaded for a family without them is still materialized
 as `Q8_0`. The loader opts in explicitly rather than retaining everything with a kernel
 somewhere, because a tensor retained in a format its graph cannot read would be decoded as the
@@ -126,12 +129,15 @@ scattered through the layer builders.
 
 | Capability | Meaning |
 | --- | --- |
-| `PACKED_HALF2_MATH` | packed FP16 pair arithmetic holds CPU parity here |
-| `WARP_SHUFFLE` | warp-level shuffle reductions |
+| `PACKED_HALF2_MATH` | packed FP16 pair arithmetic holds CPU parity here (all but OpenCL) |
+| `WARP_SHUFFLE` | warp-level shuffle reductions; granted to no device today |
+| `SHUFFLE_REDUCED_FP16_GEMV` | the shuffle-reduced FP16 matrix-vector kernels are correct (CUDA) |
 | `SUBGROUP_SHUFFLE_32` | 32-wide subgroup shuffle (Metal's SIMD32 reductions) |
-| `TENSOR_CORE_MMA` | tensor-core MMA kernels, which exist only on CUDA |
+| `TENSOR_CORE_MMA` | FP16 tensor-core MMA kernels: CUDA, compute capability 8.0 and up |
+| `INT8_TENSOR_CORE_MMA` | int8 tensor-core MMA kernels: the same devices |
+| `PACKED_INTEGER_DOT` | packed four-way integer dot products with shuffle reductions: CUDA, compute capability 6.1 and up |
 | `SPLIT_KV_ATTENTION` | split-KV flash attention |
-| `SINGLE_PASS_RMS` | single-pass RMS normalization |
+| `SINGLE_PASS_RMS` | single-pass RMS normalization (NVIDIA devices) |
 
 A capability that is withheld is withheld deliberately and is a divergence, not a bug:
 `TENSOR_CORE_MMA` is CUDA-only because the MMA kernels do not exist elsewhere — the non-MMA
@@ -146,9 +152,9 @@ withheld. `SplitKvAttentionPolicy` now reads the device's local-memory size and 
 
 On Metal, every family below prefills in batches of 512 by default
 (`BatchPrefillSupport.defaultFor`), when the caller chose no execution policy and neither
-`--with-prefill-decode` nor `-Djitllm.prefillBatchSize` was given: Qwen3, Llama (including
-Q4_0), Qwen2 / DeepSeek-R1-Distill-Qwen, Mistral, Phi-3, Granite 3.2 / 4.0, Qwen3.5 (Q4_0)
-and Gemma 4 (Q8_0). With MLX installed, the families MLX covers run that prefill's attention
+`--with-prefill-decode` nor `-Djitllm.prefillBatchSize` was given: Qwen3, Llama,
+Qwen2 / DeepSeek-R1-Distill-Qwen, Mistral, Phi-3, Granite 3.2 / 4.0, Qwen3.5 and Gemma 4, in
+F16 and Q8_0, and Llama and Qwen3.5 in Q4_0 as well. With MLX installed, the families MLX covers run that prefill's attention
 and projections on MLX by default (see native libraries below). Pass `--no-batch-prefill`
 (`-Djitllm.withPrefillDecode=false`) to keep single-token prefill.
 
@@ -218,8 +224,8 @@ projection, its RoPE) rather than copying the layer graph.
 - **Native libraries.** On by default where implemented and installed
   (`NativeLibrarySupport.defaultFor`): every one of these GEMMs is then
   `cublasGemmExFP16FP32`; Q, K and V (and gate and up) are stacked into one buffer so one call
-  covers them. The flag is accepted for Llama, Mistral, Qwen2 / DeepSeek, Qwen3, Phi-3 and
-  Granite (Q8_0, F16), Devstral (Q8_0, Q4_K, F16), Gemma 4 (Q8_0, Q4_0) and Qwen3.5 (Q8_0); the
+  covers them. The flag is accepted for Llama (Q4_0, Q8_0, F16), Mistral, Qwen2 / DeepSeek, Qwen3,
+  Phi-3 and Granite (Q8_0, F16), Devstral (Q8_0, Q4_K, F16), Gemma 4 (Q8_0, Q4_0) and Qwen3.5 (Q8_0); the
   JIT kernels run elsewhere. Where the path exists but cuBLAS does not load, the run notes once
   (`For maximum performance please install cuBLAS 12 and cuDNN 9; falling back to the JIT
   kernels.`) and runs the JIT kernels. `--with-native-libraries` requires the path and refuses
@@ -232,8 +238,8 @@ projection, its RoPE) rather than copying the layer graph.
   projections as MLX GEMMs, launched by TornadoVM's `tornado-mlx` library tasks on TornadoVM's
   own queue and buffers (`MlxPrefill`). Decode stays on the JIT kernels. Each provider declares
   the weights it implements per backend (`TornadoPlanProvider.nativeLibraryWeights(BackendId)`):
-  on Metal Llama (F16, Q8_0, Q4_0), and Mistral, Qwen2 / DeepSeek, Qwen3, Phi-3 and Granite
-  (F16, Q8_0); everything else is refused. F16 weights are multiplied as they are, split Q/K/V
+  on Metal Llama (F16, Q8_0, Q4_0), Mistral, Qwen2 / DeepSeek, Qwen3, Phi-3 and Granite
+  (F16, Q8_0), and Gemma 4 (Q8_0); everything else is refused. F16 weights are multiplied as they are, split Q/K/V
   and gate/up stacked into one copy each. Q8_0 and Q4_0 weights are either decoded once into
   resident FP16 copies or repacked exactly into MLX's affine format — the same
   `decodedProjections` residency as above, settled against the budget at load or pinned with
@@ -291,8 +297,8 @@ assuming the CUDA result carries over.
 | Shared KV pool and leases | yes | yes | yes | yes |
 | Prefix caching | yes | yes | yes | yes |
 | Compiled-program caching | n/a | yes | yes | yes |
-| Lowered execution path under `auto` | n/a | Llama/F16/`STANDARD` | selects legacy | selects legacy |
-| `qwen35` (Qwen3.5 / 3.8) | yes | all three modes, Q4_0 | untested | single-token and batched prefill, Q4_0 |
+| Lowered execution path under `auto` | n/a | Llama/F16/`STANDARD` | Llama/F16/`STANDARD` | Llama/F16/`STANDARD` |
+| `qwen35` (Qwen3.5 / 3.8) | yes | all three modes, Q4_0 and Q8_0 | single-token and sequential prefill/decode, Q4_0; batched prefill refused | all three modes, Q4_0 and Q8_0 |
 | Conversations, tools, thinking control, streaming | yes | yes | yes | yes |
 | Memory preflight confidence | n/a | `EXACT` | `EXACT` | capped at `CONSERVATIVE` |
 | Reset / close / multi-session | yes | yes | yes | yes |
@@ -310,14 +316,16 @@ Recorded external limitations, each with its named cause:
 - **Kernel capture on Metal** — `withPrintKernel()` produces no kernel source, so
   `CompiledProgramIdentityAccelTest` cannot observe there. A capture-path gap, not a
   numerical one.
-- **`qwen35` runs all three modes on CUDA; single-token and batched prefill on Metal.** Sequential prefill reuses the
+- **`qwen35` runs all three modes on CUDA and Metal; on OpenCL, single-token and sequential
+  prefill/decode.** Sequential prefill reuses the
   single-token layer graphs with the logits graph skipped; batched prefill has its own layer
   graphs, in which the convolution and the delta rule scan the chunk in token order inside the
   kernel rather than treating its rows as independent. The MTP draft head is not built into any
   of them. On Metal the batched Q4_0 projections run on the SIMD-group GEMMs and decode
   attention takes 8-position key/value tiles (`processHeadsFlashAttentionPagedTile8`): with
   16-position tiles a 256-wide head needs 33.8 KB of threadgroup memory, over Metal's 32 KB.
-  OpenCL has not been run.
+  On OpenCL the batched prefill is refused by name: its projections do not compile on
+  TornadoVM's OpenCL backend.
 - **`qwen35` attention does not use the split-KV kernel.** Its head is 256 wide and
   `processHeadsFlashAttentionSplitKVPaged` fixes its query staging and per-thread accumulator
   at 128 floats per head, so a 256-wide head reads and writes past them — on CUDA an illegal
@@ -358,7 +366,8 @@ Qwen2 and Qwen3 in F16 once produced fluent-looking token salad on Metal, in eve
 execution mode, while exiting 0 and reporting normal throughput; the cause was
 capability-gated kernel selection, and the fix routes them to the verified SIMD32 kernels.
 
-**Qwen2.5 Q8_0 on Metal is still wrong** in the same way — correct backend, real execution
-path, exit code 0, and backticks instead of an answer. It is an open defect, not a recorded
-limitation. Both are in [`verification.md`](verification.md), because the lesson is about
-how they were measured rather than about Metal.
+Qwen2.5 Q8_0 later failed on Metal in the same way — correct backend, real execution path,
+exit code 0, and backticks instead of an answer — because its attention RMS reduction ran
+without its finalize step, which only a device without `SINGLE_PASS_RMS` exposes. It is fixed,
+and `RmsFinalizePairingTest` keeps it fixed. Both are in [`verification.md`](verification.md),
+because the lesson is about how they were measured rather than about Metal.

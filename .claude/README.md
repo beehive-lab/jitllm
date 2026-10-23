@@ -1,6 +1,6 @@
 # Claude Agents And Skills For jitllm
 
-This directory contains project-local Claude Code agents and skills for jitllm work, including benchmarking, profiling, correctness debugging, and TornadoVM integration.
+This directory contains project-local Claude Code agents and skills for jitllm work, including building, benchmarking, profiling, model porting, and framework integrations.
 
 The scope is broad enough to support future repo work:
 
@@ -23,18 +23,21 @@ After adding or editing files here, restart Claude Code from the repository root
 
 | Agent | Use For |
 |---|---|
-| `jitllm-perf-profiling-specialist` | Running jitllm benchmarks, collecting metrics, nsys/ncu profiling, bottleneck classification |
-| `tornado-backend-specialist` | TornadoVM backend changes, generated kernel codegen, native accelerator library integration |
-| `jitllm-correctness-debug-agent` | Output/accuracy regressions after TornadoVM or jitllm performance changes |
+| `jitllm-benchmarking-specialist` | Reproducible benchmarks: baseline/target comparisons, backend matrices, metrics JSON, before/after reports |
+| `jitllm-perf-profiling-specialist` | Root-causing performance with the TornadoVM profiler, nsys and ncu once a benchmark shows a regression or target; bottleneck classification |
 
 ## Skill Boundaries
 
 | Skill | Use For |
 |---|---|
-| `jitllm-benchmarking` | Reproducible jitllm benchmark runs using local scripts |
-| `jitllm-nsys-analysis` | Nsight Systems trace collection and system-level analysis |
-| `jitllm-ncu-analysis` | Nsight Compute analysis of a specific hot CUDA kernel |
-| `tornado-codegen-validation` | TornadoVM API/codegen/correctness validation for generated accelerator kernels |
+| `build-tornado` | Building a TornadoVM SDK (7.3 or newer) for the chosen JDK line and backend |
+| `build-n-run-engine` | Building jitllm with Maven and running it on an accelerator |
+| `jitllm-nsys-analysis` | Nsight Systems timeline on CUDA: generated kernels, launch overhead, sync, transfers, GPU idle |
+| `jitllm-ncu-analysis` | Nsight Compute analysis of one already-identified hot CUDA kernel |
+| `port-model-to-jitllm` | Porting a new model architecture, or deciding whether an existing family can be reused |
+| `update-langchain4j-integration` | Updating the LangChain4j jitllm integration to a new jitllm release |
+| `update-quarkus-langchain4j-integration` | Updating the Quarkus LangChain4j jitllm extension to a new jitllm release |
+| `update-spring-ai-integration` | Creating or updating the Spring AI jitllm integration for a jitllm release |
 
 ## Operating Rules
 

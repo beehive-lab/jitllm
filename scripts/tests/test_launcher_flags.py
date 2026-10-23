@@ -134,6 +134,52 @@ class VerbosityOptions(unittest.TestCase):
             args.installed_backends, args.backend = [launcher.Backend.CUDA], launcher.Backend.CUDA
             return runner._build_base_command(args)
 
+    def metal_command(self, release, tool_options=None):
+        args = launcher.create_parser().parse_args(["--model", "stub.gguf", "--gpu"])
+        with tempfile.TemporaryDirectory() as sdk:
+            open(os.path.join(sdk, "tornado-argfile"), "w").close()
+            os.makedirs(os.path.join(sdk, "target"))
+            open(os.path.join(sdk, "target", "jitllm-1.0.0-jdk21.jar"), "w").close()
+            if release is not None:
+                os.makedirs(os.path.join(sdk, "etc"))
+                with open(os.path.join(sdk, "etc", "tornado.release"), "w") as f:
+                    f.write("version=%s\n" % release)
+            runner = launcher.LlamaRunner.__new__(launcher.LlamaRunner)
+            runner.tornado_sdk = sdk
+            runner.java_home, runner.llama_root = "/stub/java", sdk
+            args.installed_backends, args.backend = [launcher.Backend.METAL], launcher.Backend.METAL
+            saved = os.environ.pop("JAVA_TOOL_OPTIONS", None)
+            try:
+                if tool_options is not None:
+                    os.environ["JAVA_TOOL_OPTIONS"] = tool_options
+                return runner._build_base_command(args)
+            finally:
+                os.environ.pop("JAVA_TOOL_OPTIONS", None)
+                if saved is not None:
+                    os.environ["JAVA_TOOL_OPTIONS"] = saved
+
+    def test_metal_is_preferred_on_macos(self):
+        both = [launcher.Backend.OPENCL, launcher.Backend.METAL]
+        real = launcher.platform.system
+        try:
+            launcher.platform.system = lambda: "Darwin"
+            self.assertEqual(launcher.Backend.METAL, launcher.LlamaRunner.select_primary_backend(both))
+            self.assertEqual(launcher.Backend.OPENCL,
+                             launcher.LlamaRunner.select_primary_backend([launcher.Backend.OPENCL]))
+            launcher.platform.system = lambda: "Linux"
+            self.assertEqual(launcher.Backend.OPENCL, launcher.LlamaRunner.select_primary_backend(both))
+        finally:
+            launcher.platform.system = real
+
+    def test_mlx_async_is_on_for_metal_after_tornadovm_7_3_1(self):
+        self.assertIn("-Dtornado.mlx.async=true", self.metal_command("7.3.2-jdk22plus-dev"))
+        self.assertIn("-Dtornado.mlx.async=true", self.metal_command("7.4.0"))
+        self.assertNotIn("-Dtornado.mlx.async=true", self.metal_command("7.3.1"))
+        self.assertNotIn("-Dtornado.mlx.async=true", self.metal_command(None))
+        self.assertNotIn("-Dtornado.mlx.async=true",
+                         self.metal_command("7.3.2", tool_options="-Dtornado.mlx.async=false"))
+        self.assertFalse([a for a in self.base_command("--gpu") if "mlx.async" in a], "CUDA never sets it")
+
     def test_kv_cache_is_fp16_unless_fp32_is_asked_for(self):
         default = self.base_command()
         self.assertFalse([a for a in default if "kvcache" in a], "FP16 is the Java default")
