@@ -1,0 +1,790 @@
+package org.beehive.jitllm.backend.tornado.kernels;
+
+import uk.ac.manchester.tornado.api.KernelContext;
+import uk.ac.manchester.tornado.api.math.TornadoMath;
+import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.IntArray;
+
+/**
+ * Decode kernels for the blocks {@code glm5next} (GLM-5.3-Flash) adds to what deepseek2 and
+ * qwen35moe already have: the hyper-connections around every sublayer, KDA's per-channel decay and
+ * its delta rule, the k-pool indexer, and latent attention restricted to the indexer's selection.
+ *
+ * <p>The projections themselves are the existing matrix-vector kernels; the absorbed query and the
+ * latent decompression are {@link DeepSeek2Kernels#absorbQuery} and {@link
+ * DeepSeek2Kernels#decompressLatent} with a rotated width of zero.
+ *
+ * <p>Every kernel takes the session's {@code positionHolder} where it needs the position (element
+ * 0), so one captured graph serves every token. Workgroup reductions assume a power-of-two local
+ * size no larger than {@link #GROUP}.
+ */
+public final class Glm5NextKernels {
+
+    /** The widest workgroup the reductions here are written for. */
+    public static final int GROUP = 256;
+
+    /** The most experts {@link #routerTopKSigmoid} routes over. */
+    public static final int MAX_EXPERTS = 512;
+
+    private Glm5NextKernels() {}
+
+    // ── Hyper-connections ─────────────────────────────────────────────────────
+
+    // @formatter:off
+    /**
+     * One mHC mixing coefficient per workgroup: {@code mixes[k] = fn[k] . s / rms(s)} over the
+     * flattened streams {@code s} of {@code width} values.
+     *
+     * <p>Grid: {@code mixCount} workgroups of {@code localSize ≤ GROUP} lanes.
+     */
+    // @formatter:on
+    public static void hcMixes(
+            KernelContext context,
+            FloatArray streams,
+            FloatArray fn,
+            FloatArray mixes,
+            int width,
+            int mixCount,
+            float rmsEps) {
+        int k = context.groupIdx;
+        int tid = context.localIdx;
+        int local = context.localGroupSizeX;
+        float[] dots = context.allocateFloatLocalArray(GROUP);
+        float[] squares = context.allocateFloatLocalArray(GROUP);
+        float dot = 0.0f;
+        float square = 0.0f;
+        if (k < mixCount) {
+            for (int i = tid; i < width; i += local) {
+                float v = streams.get(i);
+                dot += fn.get(k * width + i) * v;
+                square += v * v;
+            }
+        }
+        dots[tid] = dot;
+        squares[tid] = square;
+        context.localBarrier();
+        for (int stride = local / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                dots[tid] += dots[tid + stride];
+                squares[tid] += squares[tid + stride];
+            }
+            context.localBarrier();
+        }
+        if (k < mixCount && tid == 0) {
+            mixes.set(k, dots[0] / TornadoMath.sqrt(squares[0] / width + rmsEps));
+        }
+    }
+
+    // @formatter:off
+    /**
+     * The coefficients from the mixes, in one lane: {@code coeffs} is {@code pre[n]}, then {@code
+     * post[n]}, then the mix {@code comb[n][n]} with {@code comb[m][k]} feeding input stream {@code
+     * m} into output stream {@code k}.
+     *
+     * <ul>
+     *   <li>{@code pre = sigmoid(mix * s0 + b) + eps}, {@code post = postScale * sigmoid(mix * s1 +
+     *       b)};
+     *   <li>the mix: a row softmax plus eps, a column normalization, then {@code iterations - 1}
+     *       row-then-column normalizations (Sinkhorn).
+     * </ul>
+     */
+    // @formatter:on
+    public static void hcCoefficients(
+            KernelContext context,
+            FloatArray mixes,
+            FloatArray base,
+            FloatArray scale,
+            FloatArray coeffs,
+            int n,
+            int iterations,
+            float eps,
+            float postScale) {
+        int lane = context.globalIdx;
+        if (lane < 1) {
+            float s0 = scale.get(0);
+            float s1 = scale.get(1);
+            float s2 = scale.get(2);
+            for (int i = 0; i < n; i++) {
+                float pre = mixes.get(i) * s0 + base.get(i);
+                coeffs.set(i, 1.0f / (1.0f + TornadoMath.exp(-pre)) + eps);
+                float post = mixes.get(n + i) * s1 + base.get(n + i);
+                coeffs.set(n + i, postScale / (1.0f + TornadoMath.exp(-post)));
+            }
+            int c0 = 2 * n;
+            for (int r = 0; r < n; r++) {
+                float max = Float.NEGATIVE_INFINITY;
+                for (int c = 0; c < n; c++) {
+                    float v = mixes.get(c0 + r * n + c) * s2 + base.get(c0 + r * n + c);
+                    coeffs.set(c0 + r * n + c, v);
+                    max = TornadoMath.max(max, v);
+                }
+                float sum = 0.0f;
+                for (int c = 0; c < n; c++) {
+                    float e = TornadoMath.exp(coeffs.get(c0 + r * n + c) - max);
+                    coeffs.set(c0 + r * n + c, e);
+                    sum += e;
+                }
+                for (int c = 0; c < n; c++) {
+                    coeffs.set(c0 + r * n + c, coeffs.get(c0 + r * n + c) / sum + eps);
+                }
+            }
+            for (int it = 0; it < iterations; it++) {
+                if (it > 0) {
+                    for (int r = 0; r < n; r++) {
+                        float sum = 0.0f;
+                        for (int c = 0; c < n; c++) {
+                            sum += coeffs.get(c0 + r * n + c);
+                        }
+                        for (int c = 0; c < n; c++) {
+                            coeffs.set(c0 + r * n + c, coeffs.get(c0 + r * n + c) / (sum + eps));
+                        }
+                    }
+                }
+                for (int c = 0; c < n; c++) {
+                    float sum = 0.0f;
+                    for (int r = 0; r < n; r++) {
+                        sum += coeffs.get(c0 + r * n + c);
+                    }
+                    for (int r = 0; r < n; r++) {
+                        coeffs.set(c0 + r * n + c, coeffs.get(c0 + r * n + c) / (sum + eps));
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * {@code x = sum_m pre[m] * streams[m]}, saving the streams to {@code residual} for {@link
+     * #hcExpand}. A lane per hidden element.
+     */
+    public static void hcCollapse(
+            KernelContext context,
+            FloatArray streams,
+            FloatArray coeffs,
+            FloatArray residual,
+            FloatArray x,
+            int dim,
+            int n) {
+        int i = context.globalIdx;
+        if (i < dim) {
+            float sum = 0.0f;
+            for (int m = 0; m < n; m++) {
+                float v = streams.get(m * dim + i);
+                residual.set(m * dim + i, v);
+                sum += coeffs.get(m) * v;
+            }
+            x.set(i, sum);
+        }
+    }
+
+    /**
+     * {@code streams[k] = post[k] * branch + sum_m comb[m][k] * residual[m]}. A lane per stream
+     * element.
+     */
+    public static void hcExpand(
+            KernelContext context,
+            FloatArray residual,
+            FloatArray branch,
+            FloatArray coeffs,
+            FloatArray streams,
+            int dim,
+            int n) {
+        int id = context.globalIdx;
+        if (id < n * dim) {
+            int k = id / dim;
+            int i = id - k * dim;
+            float v = coeffs.get(n + k) * branch.get(i);
+            for (int m = 0; m < n; m++) {
+                v += coeffs.get(2 * n + m * n + k) * residual.get(m * dim + i);
+            }
+            streams.set(id, v);
+        }
+    }
+
+    /** The embedding into every stream. A lane per stream element. */
+    public static void hcBroadcast(
+            KernelContext context, FloatArray x, FloatArray streams, int dim, int n) {
+        int id = context.globalIdx;
+        if (id < n * dim) {
+            streams.set(id, x.get(id % dim));
+        }
+    }
+
+    /** The head's collapse: the plain mean of the streams. A lane per hidden element. */
+    public static void hcMean(
+            KernelContext context, FloatArray streams, FloatArray x, int dim, int n) {
+        int i = context.globalIdx;
+        if (i < dim) {
+            float sum = 0.0f;
+            for (int m = 0; m < n; m++) {
+                sum += streams.get(m * dim + i);
+            }
+            x.set(i, sum / n);
+        }
+    }
+
+    // ── KDA ───────────────────────────────────────────────────────────────────
+
+    // @formatter:off
+    /**
+     * The per-channel decay {@code exp(lower * sigmoid(exp(aLog[h]) * (raw + dtBias)))}, in place
+     * on {@code decay}, and {@code beta = sigmoid(beta)} in place for the first {@code heads}
+     * lanes.
+     */
+    // @formatter:on
+    public static void kdaDecayAndBeta(
+            KernelContext context,
+            FloatArray decay,
+            FloatArray dtBias,
+            FloatArray aLog,
+            FloatArray beta,
+            int width,
+            int headDim,
+            int heads,
+            float lowerBound) {
+        int c = context.globalIdx;
+        if (c < width) {
+            float rate = TornadoMath.exp(aLog.get(c / headDim));
+            float g = rate * (decay.get(c) + dtBias.get(c));
+            decay.set(c, TornadoMath.exp(lowerBound / (1.0f + TornadoMath.exp(-g))));
+        }
+        if (c < heads) {
+            beta.set(c, 1.0f / (1.0f + TornadoMath.exp(-beta.get(c))));
+        }
+    }
+
+    /**
+     * {@code x = x * scale / sqrt(sum(x²) + eps)} per head, a workgroup per head; the norm FLA
+     * uses.
+     */
+    public static void kdaL2Norm(
+            KernelContext context,
+            FloatArray values,
+            int heads,
+            int headDim,
+            float scale,
+            float eps) {
+        int h = context.groupIdx;
+        int tid = context.localIdx;
+        int local = context.localGroupSizeX;
+        float[] reduce = context.allocateFloatLocalArray(GROUP);
+        float ss = 0.0f;
+        if (h < heads) {
+            for (int i = tid; i < headDim; i += local) {
+                float v = values.get(h * headDim + i);
+                ss += v * v;
+            }
+        }
+        reduce[tid] = ss;
+        context.localBarrier();
+        for (int stride = local / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                reduce[tid] += reduce[tid + stride];
+            }
+            context.localBarrier();
+        }
+        if (h < heads) {
+            float inv = scale / TornadoMath.sqrt(reduce[0] + eps);
+            for (int i = tid; i < headDim; i += local) {
+                values.set(h * headDim + i, values.get(h * headDim + i) * inv);
+            }
+        }
+    }
+
+    // @formatter:off
+    /**
+     * The KDA delta rule, a lane per (head, value channel) owning one column of its head's state:
+     * {@code S[i][j] *= decay[i]}, {@code d = (v[j] - sum_i S[i][j] k[i]) * beta}, {@code S[i][j]
+     * += k[i] d}, {@code out[j] = sum_i S[i][j] q[i]}.
+     *
+     * <p>A column depends on no other column, so there is no synchronization. The state of this
+     * layer starts at {@code stateOffset}, row-major per head with the key channel as the row.
+     */
+    // @formatter:on
+    public static void kdaDeltaRule(
+            KernelContext context,
+            FloatArray q,
+            FloatArray k,
+            FloatArray v,
+            FloatArray decay,
+            FloatArray beta,
+            FloatArray state,
+            FloatArray out,
+            int heads,
+            int headDim,
+            int stateOffset) {
+        int lane = context.globalIdx;
+        if (lane < heads * headDim) {
+            int h = lane / headDim;
+            int j = lane - h * headDim;
+            int base = h * headDim;
+            int stateBase = stateOffset + h * headDim * headDim + j;
+            float correction = 0.0f;
+            for (int i = 0; i < headDim; i++) {
+                float s = state.get(stateBase + i * headDim) * decay.get(base + i);
+                state.set(stateBase + i * headDim, s);
+                correction += s * k.get(base + i);
+            }
+            float delta = (v.get(base + j) - correction) * beta.get(h);
+            float o = 0.0f;
+            for (int i = 0; i < headDim; i++) {
+                float s = state.get(stateBase + i * headDim) + k.get(base + i) * delta;
+                state.set(stateBase + i * headDim, s);
+                o += s * q.get(base + i);
+            }
+            out.set(base + j, o);
+        }
+    }
+
+    /** {@code rms_norm(x, weight) * sigmoid(gate)} per head, in place, a workgroup per head. */
+    public static void kdaGatedNorm(
+            KernelContext context,
+            FloatArray values,
+            FloatArray gate,
+            FloatArray weight,
+            int heads,
+            int headDim,
+            float eps) {
+        int h = context.groupIdx;
+        int tid = context.localIdx;
+        int local = context.localGroupSizeX;
+        float[] reduce = context.allocateFloatLocalArray(GROUP);
+        float ss = 0.0f;
+        if (h < heads) {
+            for (int i = tid; i < headDim; i += local) {
+                float v = values.get(h * headDim + i);
+                ss += v * v;
+            }
+        }
+        reduce[tid] = ss;
+        context.localBarrier();
+        for (int stride = local / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                reduce[tid] += reduce[tid + stride];
+            }
+            context.localBarrier();
+        }
+        if (h < heads) {
+            float inv = 1.0f / TornadoMath.sqrt(reduce[0] / headDim + eps);
+            for (int i = tid; i < headDim; i += local) {
+                int e = h * headDim + i;
+                float g = 1.0f / (1.0f + TornadoMath.exp(-gate.get(e)));
+                values.set(e, weight.get(i) * inv * values.get(e) * g);
+            }
+        }
+    }
+
+    // ── Indexer ───────────────────────────────────────────────────────────────
+
+    /**
+     * The indexer key {@code LayerNorm(raw)} and the pool gate, stored at this position of the
+     * layer's caches; one workgroup.
+     */
+    public static void indexerStore(
+            KernelContext context,
+            FloatArray rawKey,
+            FloatArray gate,
+            FloatArray weight,
+            FloatArray bias,
+            FloatArray keyCache,
+            FloatArray gateCache,
+            IntArray positionHolder,
+            int headDim,
+            int cacheOffset,
+            float eps) {
+        int tid = context.localIdx;
+        int local = context.localGroupSizeX;
+        float[] sums = context.allocateFloatLocalArray(GROUP);
+        float[] squares = context.allocateFloatLocalArray(GROUP);
+        float sum = 0.0f;
+        float square = 0.0f;
+        for (int i = tid; i < headDim; i += local) {
+            float v = rawKey.get(i);
+            sum += v;
+            square += v * v;
+        }
+        sums[tid] = sum;
+        squares[tid] = square;
+        context.localBarrier();
+        for (int stride = local / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                sums[tid] += sums[tid + stride];
+                squares[tid] += squares[tid + stride];
+            }
+            context.localBarrier();
+        }
+        float mean = sums[0] / headDim;
+        float variance = squares[0] / headDim - mean * mean;
+        float inv = 1.0f / TornadoMath.sqrt(variance + eps);
+        int row = cacheOffset + positionHolder.get(0) * headDim;
+        for (int i = tid; i < headDim; i += local) {
+            keyCache.set(row + i, (rawKey.get(i) - mean) * inv * weight.get(i) + bias.get(i));
+            gateCache.set(row + i, gate.get(i));
+        }
+    }
+
+    // @formatter:off
+    /**
+     * When this position completes a pool, its compressed key: per channel, a softmax over the pool
+     * of {@code gate + ape[slot]} weighting the pool's keys. A lane per channel.
+     */
+    // @formatter:on
+    public static void indexerPoolKey(
+            KernelContext context,
+            FloatArray keyCache,
+            FloatArray gateCache,
+            FloatArray ape,
+            FloatArray poolKeys,
+            IntArray positionHolder,
+            int headDim,
+            int pool,
+            int cacheOffset,
+            int poolOffset) {
+        int c = context.globalIdx;
+        int position = positionHolder.get(0);
+        if (c < headDim && (position + 1) % pool == 0) {
+            int p = position / pool;
+            int first = cacheOffset + p * pool * headDim + c;
+            float max = Float.NEGATIVE_INFINITY;
+            for (int j = 0; j < pool; j++) {
+                max =
+                        TornadoMath.max(
+                                max, gateCache.get(first + j * headDim) + ape.get(j * headDim + c));
+            }
+            float sum = 0.0f;
+            float acc = 0.0f;
+            for (int j = 0; j < pool; j++) {
+                float e =
+                        TornadoMath.exp(
+                                gateCache.get(first + j * headDim)
+                                        + ape.get(j * headDim + c)
+                                        - max);
+                sum += e;
+                acc += e * keyCache.get(first + j * headDim);
+            }
+            poolKeys.set(poolOffset + p * headDim + c, acc / sum);
+        }
+    }
+
+    // @formatter:off
+    /**
+     * Each complete pool's score {@code sum_h w_h / sqrt(H) * relu(q_h . key / sqrt(d))}; a lane
+     * per pool. Pools not yet complete score negative infinity.
+     */
+    // @formatter:on
+    public static void indexerScores(
+            KernelContext context,
+            FloatArray query,
+            FloatArray headWeights,
+            FloatArray poolKeys,
+            FloatArray scores,
+            IntArray positionHolder,
+            int heads,
+            int headDim,
+            int pool,
+            int maxPools,
+            int poolOffset) {
+        int p = context.globalIdx;
+        if (p < maxPools) {
+            int complete = (positionHolder.get(0) + 1) / pool;
+            if (p < complete) {
+                float headScale = 1.0f / TornadoMath.sqrt(heads);
+                float keyScale = 1.0f / TornadoMath.sqrt(headDim);
+                float score = 0.0f;
+                for (int h = 0; h < heads; h++) {
+                    float dot = 0.0f;
+                    for (int c = 0; c < headDim; c++) {
+                        dot +=
+                                query.get(h * headDim + c)
+                                        * poolKeys.get(poolOffset + p * headDim + c);
+                    }
+                    score += headWeights.get(h) * headScale * TornadoMath.max(dot * keyScale, 0.0f);
+                }
+                scores.set(p, score);
+            } else {
+                scores.set(p, Float.NEGATIVE_INFINITY);
+            }
+        }
+    }
+
+    // @formatter:off
+    /**
+     * Marks the {@code budget} best complete pools in {@code selected} (1 chosen, 0 not), in one
+     * workgroup.
+     *
+     * <p>With no more complete pools than the budget all are chosen. Otherwise a bisection on the
+     * score finds {@code hi}, above which fewer than {@code budget} pools lie, and {@code lo}, at
+     * or above which at least {@code budget} do; every pool at or above {@code hi} is chosen and
+     * the rest are taken from {@code [lo, hi)} in pool order — the tie rule of the host path, which
+     * the bisection's last interval holds only ties within float resolution of.
+     */
+    // @formatter:on
+    public static void indexerSelect(
+            KernelContext context,
+            FloatArray scores,
+            IntArray selected,
+            IntArray positionHolder,
+            int pool,
+            int maxPools,
+            int budget) {
+        int tid = context.localIdx;
+        int local = context.localGroupSizeX;
+        float[] reduceMin = context.allocateFloatLocalArray(GROUP);
+        float[] reduceMax = context.allocateFloatLocalArray(GROUP);
+        int[] counts = context.allocateIntLocalArray(GROUP);
+        int complete = TornadoMath.min((positionHolder.get(0) + 1) / pool, maxPools);
+        for (int p = tid; p < maxPools; p += local) {
+            selected.set(p, 0);
+        }
+        context.localBarrier();
+        if (complete <= budget) {
+            for (int p = tid; p < complete; p += local) {
+                selected.set(p, 1);
+            }
+        } else {
+            float lo = Float.POSITIVE_INFINITY;
+            float hi = Float.NEGATIVE_INFINITY;
+            for (int p = tid; p < complete; p += local) {
+                lo = TornadoMath.min(lo, scores.get(p));
+                hi = TornadoMath.max(hi, scores.get(p));
+            }
+            reduceMin[tid] = lo;
+            reduceMax[tid] = hi;
+            context.localBarrier();
+            for (int stride = local / 2; stride > 0; stride >>= 1) {
+                if (tid < stride) {
+                    reduceMin[tid] = TornadoMath.min(reduceMin[tid], reduceMin[tid + stride]);
+                    reduceMax[tid] = TornadoMath.max(reduceMax[tid], reduceMax[tid + stride]);
+                }
+                context.localBarrier();
+            }
+            // Invariant: count(score >= lo) >= budget and count(score >= hi) < budget.
+            float low = reduceMin[0];
+            float high = reduceMax[0] + 1.0f + TornadoMath.abs(reduceMax[0]);
+            for (int it = 0; it < 64; it++) {
+                float mid = 0.5f * (low + high);
+                int count = 0;
+                for (int p = tid; p < complete; p += local) {
+                    count += scores.get(p) >= mid ? 1 : 0;
+                }
+                counts[tid] = count;
+                context.localBarrier();
+                for (int stride = local / 2; stride > 0; stride >>= 1) {
+                    if (tid < stride) {
+                        counts[tid] += counts[tid + stride];
+                    }
+                    context.localBarrier();
+                }
+                int total = counts[0];
+                context.localBarrier();
+                float nextLow = total >= budget ? mid : low;
+                float nextHigh = total >= budget ? high : mid;
+                low = nextLow;
+                high = nextHigh;
+            }
+            int above = 0;
+            for (int p = tid; p < complete; p += local) {
+                int chosen = scores.get(p) >= high ? 1 : 0;
+                selected.set(p, chosen);
+                above += chosen;
+            }
+            counts[tid] = above;
+            context.localBarrier();
+            for (int stride = local / 2; stride > 0; stride >>= 1) {
+                if (tid < stride) {
+                    counts[tid] += counts[tid + stride];
+                }
+                context.localBarrier();
+            }
+            if (tid == 0) {
+                int need = budget - counts[0];
+                for (int p = 0; p < complete && need > 0; p++) {
+                    float s = scores.get(p);
+                    if (s >= low && s < high) {
+                        selected.set(p, 1);
+                        need--;
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Sparse latent attention ───────────────────────────────────────────────
+
+    // @formatter:off
+    /**
+     * Absorbed attention over the selected positions, a workgroup per head: the chosen pools, and
+     * when {@code selectTail} is 1 the incomplete pool holding this position.
+     *
+     * <p>{@code absorbed} is every head's query in latent space ({@code heads × rank}); the cache
+     * holds one normalized latent of {@code rank} per position from {@code cacheOffset}. The scores
+     * of head {@code h} use {@code scratch[h * context ...]}. The attended latent goes to {@code
+     * latentOut}.
+     */
+    // @formatter:on
+    public static void sparseLatentAttention(
+            KernelContext context,
+            FloatArray absorbed,
+            FloatArray latents,
+            IntArray selected,
+            FloatArray scratch,
+            FloatArray latentOut,
+            IntArray positionHolder,
+            int heads,
+            int rank,
+            int pool,
+            int contextLength,
+            int cacheOffset,
+            int selectTail,
+            float scale) {
+        int h = context.groupIdx;
+        int tid = context.localIdx;
+        int local = context.localGroupSizeX;
+        float[] reduce = context.allocateFloatLocalArray(GROUP);
+        int position = positionHolder.get(0);
+        int tailStart = (position + 1) / pool * pool;
+        int scores = h * contextLength;
+        float max = Float.NEGATIVE_INFINITY;
+        if (h < heads) {
+            for (int s = tid; s <= position; s += local) {
+                // No merge of branch assignments: the CUDA backend miscompiles them.
+                int tail = selectTail == 1 && s >= tailStart ? 1 : 0;
+                int visible = TornadoMath.max(selected.get(s / pool), tail);
+                if (visible == 1) {
+                    float dot = 0.0f;
+                    for (int r = 0; r < rank; r++) {
+                        dot += absorbed.get(h * rank + r) * latents.get(cacheOffset + s * rank + r);
+                    }
+                    scratch.set(scores + s, dot * scale);
+                } else {
+                    scratch.set(scores + s, Float.NEGATIVE_INFINITY);
+                }
+                max = TornadoMath.max(max, scratch.get(scores + s));
+            }
+        }
+        reduce[tid] = max;
+        context.localBarrier();
+        for (int stride = local / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                reduce[tid] = TornadoMath.max(reduce[tid], reduce[tid + stride]);
+            }
+            context.localBarrier();
+        }
+        float rowMax = reduce[0];
+        context.localBarrier();
+        float sum = 0.0f;
+        if (h < heads) {
+            for (int s = tid; s <= position; s += local) {
+                float e = TornadoMath.exp(scratch.get(scores + s) - rowMax);
+                scratch.set(scores + s, e);
+                sum += e;
+            }
+        }
+        reduce[tid] = sum;
+        context.localBarrier();
+        for (int stride = local / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                reduce[tid] += reduce[tid + stride];
+            }
+            context.localBarrier();
+        }
+        float total = reduce[0];
+        if (h < heads) {
+            for (int r = tid; r < rank; r += local) {
+                float acc = 0.0f;
+                for (int s = 0; s <= position; s++) {
+                    acc += scratch.get(scores + s) * latents.get(cacheOffset + s * rank + r);
+                }
+                latentOut.set(h * rank + r, acc / total);
+            }
+        }
+    }
+
+    // ── Feed-forward ──────────────────────────────────────────────────────────
+
+    /** {@code gate = silu(min(gate, limit)) * clamp(up, -limit, limit)}, a lane per element. */
+    public static void clampedSwiGLU(
+            KernelContext context, FloatArray gate, FloatArray up, int size, float limit) {
+        int i = context.globalIdx;
+        if (i < size) {
+            float g = TornadoMath.min(gate.get(i), limit);
+            float u = TornadoMath.max(-limit, TornadoMath.min(up.get(i), limit));
+            gate.set(i, g / (1.0f + TornadoMath.exp(-g)) * u);
+        }
+    }
+
+    // @formatter:off
+    /**
+     * Sigmoid routing for up to {@link #MAX_EXPERTS} experts, in one workgroup: the top {@code
+     * used} of {@code sigmoid(logit) + bias}, weighted by their sigmoids, normalized to sum to one
+     * when {@code normalize} is 1 and scaled. Ties go to the lower expert.
+     */
+    // @formatter:on
+    public static void routerTopKSigmoid(
+            KernelContext context,
+            FloatArray logits,
+            FloatArray bias,
+            IntArray ids,
+            FloatArray weights,
+            int experts,
+            int used,
+            int normalize,
+            float scale) {
+        int tid = context.localIdx;
+        int local = context.localGroupSizeX;
+        float[] select = context.allocateFloatLocalArray(MAX_EXPERTS);
+        float[] best = context.allocateFloatLocalArray(GROUP);
+        int[] bestIndex = context.allocateIntLocalArray(GROUP);
+        for (int e = tid; e < experts; e += local) {
+            float p = 1.0f / (1.0f + TornadoMath.exp(-logits.get(e)));
+            select[e] = p + bias.get(e);
+        }
+        context.localBarrier();
+        for (int k = 0; k < used; k++) {
+            float b = Float.NEGATIVE_INFINITY;
+            int index = experts;
+            for (int e = tid; e < experts; e += local) {
+                float s = select[e];
+                int better = s > b ? 1 : 0;
+                b = better == 1 ? s : b;
+                index = better == 1 ? e : index;
+            }
+            best[tid] = b;
+            bestIndex[tid] = index;
+            context.localBarrier();
+            for (int stride = local / 2; stride > 0; stride >>= 1) {
+                if (tid < stride) {
+                    float other = best[tid + stride];
+                    int otherIndex = bestIndex[tid + stride];
+                    int take =
+                            other > best[tid] || (other == best[tid] && otherIndex < bestIndex[tid])
+                                    ? 1
+                                    : 0;
+                    best[tid] = take == 1 ? other : best[tid];
+                    bestIndex[tid] = take == 1 ? otherIndex : bestIndex[tid];
+                }
+                context.localBarrier();
+            }
+            if (tid == 0) {
+                int chosen = bestIndex[0];
+                ids.set(k, chosen);
+                weights.set(k, 1.0f / (1.0f + TornadoMath.exp(-logits.get(chosen))));
+                select[chosen] = Float.NEGATIVE_INFINITY;
+            }
+            context.localBarrier();
+        }
+        if (tid == 0) {
+            float total = 0.0f;
+            for (int k = 0; k < used; k++) {
+                total += weights.get(k);
+            }
+            // A blend rather than a branch: a value merged from an if/else is miscompiled by the
+            // CUDA backend.
+            float n = normalize;
+            float norm = n * (total + 1e-20f) + (1.0f - n);
+            for (int k = 0; k < used; k++) {
+                weights.set(k, weights.get(k) / norm * scale);
+            }
+        }
+    }
+}

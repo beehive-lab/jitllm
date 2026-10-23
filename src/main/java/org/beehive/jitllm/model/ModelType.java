@@ -17,6 +17,7 @@ public enum ModelType {
     QWEN_3_5,
     GEMMA_4,
     DEEPSEEK_2,
+    GLM_5_NEXT,
     UNKNOWN;
 
     public boolean isDeepSeekR1() {

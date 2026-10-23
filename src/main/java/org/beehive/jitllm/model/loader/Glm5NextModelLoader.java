@@ -1,0 +1,366 @@
+package org.beehive.jitllm.model.loader;
+
+import static org.beehive.jitllm.tokenizer.Vocabulary.fromTokens;
+
+import java.nio.channels.FileChannel;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import org.beehive.jitllm.auxiliary.Pair;
+import org.beehive.jitllm.format.DataTypeMapping;
+import org.beehive.jitllm.format.GGMLTensorEntry;
+import org.beehive.jitllm.format.GGUF;
+import org.beehive.jitllm.inference.weights.Glm5NextLayerWeights;
+import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.inference.weights.standard.Glm5NextStandardWeights;
+import org.beehive.jitllm.model.format.Glm4ChatFormat;
+import org.beehive.jitllm.model.glm5next.Glm5Next;
+import org.beehive.jitllm.model.glm5next.Glm5NextConfiguration;
+import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.tokenizer.Glm4Tokenizer;
+import org.beehive.jitllm.tokenizer.Tokenizer;
+import org.beehive.jitllm.tokenizer.Vocabulary;
+
+/**
+ * Loads a {@code glm5next} GGUF: the text backbone of GLM-5.3-Flash, as written by {@code
+ * scripts/glm5next/convert.py}.
+ *
+ * <p>A file may hold a slice of the model's layers ({@code glm5next.layer_index} names them), and
+ * the MTP layer only when {@code glm5next.nextn_predict_layers} says so. The tokenizer is GLM-4's.
+ */
+public class Glm5NextModelLoader extends AbstractModelLoader<Glm5Next, Glm5NextConfiguration> {
+
+    /** The declared 1M positions would not fit a host session; the same default as deepseek2. */
+    private static final int DEFAULT_CONTEXT_LENGTH = 8192;
+
+    public Glm5NextModelLoader(
+            FileChannel fileChannel, GGUF gguf, int contextLength, boolean useTornadovm) {
+        super(fileChannel, gguf, contextLength, useTornadovm);
+    }
+
+    @Override
+    protected Vocabulary loadVocabulary(Map<String, Object> metadata) {
+        return fromTokens(metadata);
+    }
+
+    @Override
+    protected Tokenizer createTokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
+        return new Glm4Tokenizer(metadata, vocabulary);
+    }
+
+    // @formatter:off
+    @Override
+    protected Glm5NextConfiguration createConfiguration(Map<String, Object> metadata) {
+        String p = "glm5next.";
+        int modelContextLength = (int) metadata.get(p + "context_length");
+        int finalContextLength =
+                contextLength > 0
+                        ? Math.min(contextLength, modelContextLength)
+                        : Math.min(modelContextLength, DEFAULT_CONTEXT_LENGTH);
+        int layers = (int) metadata.get(p + "block_count");
+        int[] attentionTypes = (int[]) metadata.get(p + "attention_types");
+        int[] ffnTypes = (int[]) metadata.get(p + "ffn_types");
+        if (attentionTypes.length != layers || ffnTypes.length != layers) {
+            throw new ModelLoadException(
+                    DiagnosticCode.MODEL_MALFORMED.prefix()
+                            + "glm5next layer type arrays do not match block_count "
+                            + layers);
+        }
+        int[] layerIndex =
+                metadata.containsKey(p + "layer_index")
+                        ? (int[]) metadata.get(p + "layer_index")
+                        : java.util.stream.IntStream.range(0, layers).toArray();
+        return new Glm5NextConfiguration(
+                quantization(metadata),
+                (int) metadata.get(p + "embedding_length"),
+                (int) metadata.get(p + "feed_forward_length"),
+                layers,
+                (int) metadata.getOrDefault(p + "nextn_predict_layers", 0),
+                attentionTypes,
+                ffnTypes,
+                layerIndex,
+                this.vocabulary.size(),
+                modelContextLength,
+                finalContextLength,
+                (float) metadata.get(p + "attention.layer_norm_rms_epsilon"),
+                (int) metadata.get(p + "hc.count"),
+                (int) metadata.get(p + "hc.sinkhorn_iterations"),
+                (float) metadata.get(p + "hc.eps"),
+                (float) metadata.get(p + "hc.post_scale"),
+                (int) metadata.get(p + "kda.head_count"),
+                (int) metadata.get(p + "kda.head_dim"),
+                (int) metadata.get(p + "kda.conv_kernel"),
+                (float) metadata.get(p + "kda.gate_lower_bound"),
+                (int) metadata.get(p + "attention.head_count"),
+                (int) metadata.get(p + "attention.q_lora_rank"),
+                (int) metadata.get(p + "attention.kv_lora_rank"),
+                (int) metadata.get(p + "attention.key_length"),
+                (int) metadata.get(p + "attention.value_length"),
+                (int) metadata.get(p + "indexer.head_count"),
+                (int) metadata.get(p + "indexer.key_length"),
+                (int) metadata.get(p + "indexer.top_k"),
+                (int) metadata.get(p + "indexer.pool_size"),
+                (boolean) metadata.get(p + "indexer.select_tail"),
+                (int) metadata.get(p + "expert_count"),
+                (int) metadata.get(p + "expert_used_count"),
+                (int) metadata.get(p + "expert_feed_forward_length"),
+                (int) metadata.get(p + "expert_shared_count"),
+                (int) metadata.get(p + "expert_chunk_size"),
+                (float) metadata.get(p + "expert_weights_scale"),
+                (boolean) metadata.get(p + "expert_weights_norm"),
+                (float) metadata.get(p + "swiglu_limit"));
+    }
+
+    // @formatter:on
+
+    /** F32 files (the reference model's) report F32; the rest as {@link #getModelQuantization}. */
+    private static String quantization(Map<String, Object> metadata) {
+        return (int) metadata.get("general.file_type") == 0
+                ? "F32"
+                : getModelQuantization(metadata);
+    }
+
+    /** No RoPE anywhere: no tables. */
+    @Override
+    protected Pair<float[], float[]> precomputeRopeFrequencies(Glm5NextConfiguration config) {
+        return new Pair<>(new float[0], new float[0]);
+    }
+
+    @Override
+    protected Glm5Next createModel(
+            Glm5NextConfiguration config, Tokenizer tokenizer, Weights weights) {
+        return new Glm5Next(
+                config,
+                tokenizer,
+                weights,
+                new Glm4ChatFormat((Glm4Tokenizer) tokenizer, vocabulary));
+    }
+
+    @Override
+    protected Weights createStandardWeights(
+            Map<String, GGMLTensorEntry> tensorEntries,
+            Glm5NextConfiguration config,
+            Pair<float[], float[]> ropeFreqs,
+            GGMLTensorEntry tokenEmbeddings,
+            GGMLTensorEntry outputWeight) {
+        return new Glm5NextStandardWeights(
+                ModelLoader.loadTensor(tokenEmbeddings),
+                layerWeights(config, tensorEntries, new FloatTensor[0], ModelLoader::loadTensor),
+                ModelLoader.loadTensor(required(tensorEntries, "output_norm.weight")),
+                ModelLoader.loadTensor(outputWeight),
+                DataTypeMapping.sourceType(outputWeight.ggmlType()));
+    }
+
+    @Override
+    protected Weights createTornadoVMWeights(
+            Map<String, GGMLTensorEntry> tensorEntries,
+            Glm5NextConfiguration config,
+            Pair<float[], float[]> ropeFreqs,
+            GGMLTensorEntry tokenEmbeddings,
+            GGMLTensorEntry outputWeight) {
+        throw new UnsupportedOperationException(
+                "glm5next runs on the CPU backend only; its accelerator plan is not available yet");
+    }
+
+    // @formatter:off
+    /** Every layer's tensors, the trunk then the MTP layers; slots a layer lacks stay null. */
+    static <T> Glm5NextLayerWeights<T> layerWeights(
+            Glm5NextConfiguration config,
+            Map<String, GGMLTensorEntry> entries,
+            T[] type,
+            Function<GGMLTensorEntry, T> load) {
+        int n = config.allLayers();
+        Slots<T> s = new Slots<>(type, n);
+        T[] hcAttnFn = s.next(),
+                hcAttnBase = s.next(),
+                hcAttnScale = s.next(),
+                hcFfnFn = s.next(),
+                hcFfnBase = s.next(),
+                hcFfnScale = s.next(),
+                attnNorm = s.next(),
+                ffnNorm = s.next(),
+                q = s.next(),
+                k = s.next(),
+                v = s.next(),
+                convQ = s.next(),
+                convK = s.next(),
+                convV = s.next(),
+                decayA = s.next(),
+                decayB = s.next(),
+                dtBias = s.next(),
+                aLog = s.next(),
+                beta = s.next(),
+                gateA = s.next(),
+                gateB = s.next(),
+                outNorm = s.next(),
+                kdaOut = s.next(),
+                qA = s.next(),
+                qANorm = s.next(),
+                qB = s.next(),
+                kvA = s.next(),
+                kvANorm = s.next(),
+                kB = s.next(),
+                vB = s.next(),
+                attnOut = s.next(),
+                indexQ = s.next(),
+                indexK = s.next(),
+                indexKNorm = s.next(),
+                indexKNormBias = s.next(),
+                indexWeights = s.next(),
+                poolApe = s.next(),
+                poolGate = s.next(),
+                gate = s.next(),
+                up = s.next(),
+                down = s.next(),
+                router = s.next(),
+                routerBias = s.next(),
+                shGate = s.next(),
+                shUp = s.next(),
+                shDown = s.next(),
+                embedNorm = s.next(),
+                hiddenNorm = s.next(),
+                inputProjection = s.next(),
+                headNorm = s.next();
+        List<List<T>> gateExps = new ArrayList<>(),
+                upExps = new ArrayList<>(),
+                downExps = new ArrayList<>();
+        int chunks =
+                (config.expertCount() + config.expertChunkSize() - 1) / config.expertChunkSize();
+
+        for (int l = 0; l < n; l++) {
+            String b = "blk." + l + ".";
+            Function<String, T> get = name -> load.apply(required(entries, b + name));
+            attnNorm[l] = get.apply("attn_norm.weight");
+            ffnNorm[l] = get.apply("ffn_norm.weight");
+            if (l < config.numberOfLayers()) {
+                hcAttnFn[l] = get.apply("hc_attn_fn.weight");
+                hcAttnBase[l] = get.apply("hc_attn_base.weight");
+                hcAttnScale[l] = get.apply("hc_attn_scale.weight");
+                hcFfnFn[l] = get.apply("hc_ffn_fn.weight");
+                hcFfnBase[l] = get.apply("hc_ffn_base.weight");
+                hcFfnScale[l] = get.apply("hc_ffn_scale.weight");
+            } else {
+                embedNorm[l] = get.apply("nextn.enorm.weight");
+                hiddenNorm[l] = get.apply("nextn.hnorm.weight");
+                inputProjection[l] = get.apply("nextn.eh_proj.weight");
+                headNorm[l] = get.apply("nextn.shared_head_norm.weight");
+            }
+            if (config.isKda(l)) {
+                q[l] = get.apply("attn_q.weight");
+                k[l] = get.apply("attn_k.weight");
+                v[l] = get.apply("attn_v.weight");
+                convQ[l] = get.apply("kda_conv_q.weight");
+                convK[l] = get.apply("kda_conv_k.weight");
+                convV[l] = get.apply("kda_conv_v.weight");
+                decayA[l] = get.apply("kda_f_a.weight");
+                decayB[l] = get.apply("kda_f_b.weight");
+                dtBias[l] = get.apply("kda_dt_bias.weight");
+                aLog[l] = get.apply("kda_a_log.weight");
+                beta[l] = get.apply("kda_beta.weight");
+                gateA[l] = get.apply("kda_g_a.weight");
+                gateB[l] = get.apply("kda_g_b.weight");
+                outNorm[l] = get.apply("kda_o_norm.weight");
+                kdaOut[l] = get.apply("attn_output.weight");
+            } else {
+                qA[l] = get.apply("attn_q_a.weight");
+                qANorm[l] = get.apply("attn_q_a_norm.weight");
+                qB[l] = get.apply("attn_q_b.weight");
+                kvA[l] = get.apply("attn_kv_a_mqa.weight");
+                kvANorm[l] = get.apply("attn_kv_a_norm.weight");
+                kB[l] = get.apply("attn_k_b.weight");
+                vB[l] = get.apply("attn_v_b.weight");
+                attnOut[l] = get.apply("attn_output.weight");
+                indexQ[l] = get.apply("idx_q_b.weight");
+                indexK[l] = get.apply("idx_k.weight");
+                indexKNorm[l] = get.apply("idx_k_norm.weight");
+                indexKNormBias[l] = get.apply("idx_k_norm.bias");
+                indexWeights[l] = get.apply("idx_weights.weight");
+                poolApe[l] = get.apply("idx_pool_ape.weight");
+                poolGate[l] = get.apply("idx_pool_gate.weight");
+            }
+            List<T> g = new ArrayList<>(), u = new ArrayList<>(), d = new ArrayList<>();
+            if (config.isMoe(l)) {
+                router[l] = get.apply("ffn_gate_inp.weight");
+                routerBias[l] = get.apply("exp_probs_b.bias");
+                for (int c = 0; c < chunks; c++) {
+                    g.add(get.apply("ffn_gate_exps." + c + ".weight"));
+                    u.add(get.apply("ffn_up_exps." + c + ".weight"));
+                    d.add(get.apply("ffn_down_exps." + c + ".weight"));
+                }
+                if (config.sharedExperts() > 0) {
+                    shGate[l] = get.apply("ffn_gate_shexp.weight");
+                    shUp[l] = get.apply("ffn_up_shexp.weight");
+                    shDown[l] = get.apply("ffn_down_shexp.weight");
+                }
+            } else {
+                gate[l] = get.apply("ffn_gate.weight");
+                up[l] = get.apply("ffn_up.weight");
+                down[l] = get.apply("ffn_down.weight");
+            }
+            gateExps.add(g);
+            upExps.add(u);
+            downExps.add(d);
+        }
+        return new Glm5NextLayerWeights<>(
+                new Glm5NextLayerWeights.Mhc<>(
+                        hcAttnFn, hcAttnBase, hcAttnScale, hcFfnFn, hcFfnBase, hcFfnScale),
+                attnNorm,
+                ffnNorm,
+                new Glm5NextLayerWeights.Kda<>(
+                        q, k, v, convQ, convK, convV, decayA, decayB, dtBias, aLog, beta, gateA,
+                        gateB, outNorm, kdaOut),
+                new Glm5NextLayerWeights.SparseAttention<>(
+                        qA,
+                        qANorm,
+                        qB,
+                        kvA,
+                        kvANorm,
+                        kB,
+                        vB,
+                        attnOut,
+                        indexQ,
+                        indexK,
+                        indexKNorm,
+                        indexKNormBias,
+                        indexWeights,
+                        poolApe,
+                        poolGate),
+                new Glm5NextLayerWeights.FeedForward<>(
+                        gate,
+                        up,
+                        down,
+                        router,
+                        routerBias,
+                        gateExps,
+                        upExps,
+                        downExps,
+                        shGate,
+                        shUp,
+                        shDown),
+                new Glm5NextLayerWeights.Nextn<>(embedNorm, hiddenNorm, inputProjection, headNorm));
+    }
+
+    // @formatter:on
+
+    /** Hands out per-layer arrays of the weights' element type. */
+    private record Slots<T>(T[] type, int layers) {
+        T[] next() {
+            return Arrays.copyOf(type, layers);
+        }
+    }
+
+    static GGMLTensorEntry required(Map<String, GGMLTensorEntry> entries, String name) {
+        GGMLTensorEntry entry = entries.get(name);
+        if (entry == null) {
+            throw new ModelLoadException(
+                    DiagnosticCode.MODEL_MALFORMED.prefix()
+                            + "glm5next expects "
+                            + name
+                            + ", which this file does not carry");
+        }
+        return entry;
+    }
+}
