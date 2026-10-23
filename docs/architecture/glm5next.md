@@ -96,15 +96,15 @@ feed-forward is the MoE.
 
 ## Running on the GPU
 
-The CUDA decode plan (`Glm5NextPlanProvider`, `Glm5NextLayers`) runs the trunk one token at a
-time, in the standard and sequential prefill/decode modes. It has these requirements and limits:
+The CUDA plan (`Glm5NextPlanProvider`) runs the trunk in all three modes: one token at a time,
+sequential prefill/decode, and batched prefill/decode. It has these requirements and limits:
 
 - **Weights:** Q8_0 projections, with norms, gates, the router and the mHC parameters in F32 (what
   `convert.py --type Q8_0` writes).
 - **Expert stacks:** the routed experts must be stored in at most two stacks. The full model's 288
   experts in stacks of 144 qualify.
 - **Cache:** an FP32 latent cache, so run with `--fp32-kv-cache`.
-- **Not supported yet:** batched prefill, splitting the model across devices, and the MTP layer.
+- **Not supported yet:** splitting the model across devices, and the MTP layer.
 
 The whole trunk is one task graph. Per layer:
 
@@ -117,11 +117,27 @@ The whole trunk is one task graph. Per layer:
 4. The MoE uses `routerTopKSigmoid` (up to 512 experts), `expertsGateUpClamped` and `expertsDown`
    over the two stacks.
 
+The batched prefill (`Glm5NextBatchPrefillLayers`, `Glm5NextBatchKernels`) runs the trunk over a
+chunk of tokens in one task graph, a row per token:
+
+- **Token-parallel steps:** the hyper-connections, norms, projections, indexer keys and scores, and
+  the feed-forward run over every row at once. The projections are DP4A kernels, a warp per row and
+  token, so no tensor cores are needed.
+- **The KDA convolution and delta rule:** these walk the chunk's rows in order inside one launch. A
+  lane carries one channel or one state column from token to token.
+- **Sparse attention:** an online softmax over tiles of positions, reading the cache the chunk has
+  just written up to each row's own position.
+- **Hand-off to decode:** the latent cache, the KDA windows and matrices, and the indexer caches
+  are the decode layers' own arrays. The decode graph takes them, and every weight, from the
+  prefill graph by name.
+
 `Glm5NextDecodeParityAccelTest` compares the plan with the host pass over the tiny model's Q8_0
 files. To make the comparison like for like, the host rounds the activation of every projection to
 int8 per 32-value block, as the device kernels do. Agreement:
 
 - At most positions the two agree to float rounding (about 1e-7).
+- After a batched prefill (17 tokens in chunks of 8), the decoded positions show the same errors as
+  decoding every token one at a time.
 - The other positions are about 1% off. An activation sat on an int8 rounding boundary, and the two
   paths' last-bit differences rounded it apart. Nudging the host's own input by one ulp reproduces
   the same positions.

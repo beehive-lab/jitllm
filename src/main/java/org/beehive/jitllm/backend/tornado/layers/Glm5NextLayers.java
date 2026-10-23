@@ -67,13 +67,32 @@ public class Glm5NextLayers
             Glm5NextConfiguration config,
             SchedulerType schedulerType,
             String activationGraphName) {
+        this(taskGraphName, state, weights, config, schedulerType, activationGraphName, null);
+    }
+
+    /**
+     * The decode layers of a plan that also prefills in batches: they take the caches, the
+     * recurrent state and every weight from the prefill graph, so the plan holds one copy of each.
+     */
+    public Glm5NextLayers(
+            String taskGraphName,
+            Glm5NextState state,
+            Glm5NextTornadoWeights weights,
+            Glm5NextConfiguration config,
+            SchedulerType schedulerType,
+            String activationGraphName,
+            Glm5NextBatchPrefillLayers prefill) {
         super(taskGraphName, state, weights, config, schedulerType);
         this.gs = state;
         this.w = weights.layers;
         this.activationGraphName = activationGraphName;
+        this.prefill = prefill;
         requireSupported();
         setupFFNLayers();
     }
+
+    /** In the batched plan, the prefill layers whose arrays these share; otherwise null. */
+    private final Glm5NextBatchPrefillLayers prefill;
 
     private void requireSupported() {
         if (state.usesFp16KeyValueCache()) {
@@ -193,9 +212,6 @@ public class Glm5NextLayers
                 ws.wrapAbsorbedQuery,
                 ws.wrapLatentOut,
                 ws.wrapAtt,
-                ws.wrapKeyCache,
-                ws.wrapConvState,
-                ws.wrapDeltaState,
                 ws.wrapRouterLogits,
                 ws.wrapSelectedExperts,
                 ws.wrapRoutingWeights,
@@ -225,15 +241,36 @@ public class Glm5NextLayers
                 d.indexGate,
                 d.indexQuery,
                 d.indexHeadWeights,
-                d.indexKeyCache,
-                d.poolGateCache,
-                d.poolKeys,
                 d.poolScores,
                 d.selected,
                 d.noRope);
+        Object[] persistent = {
+            ws.wrapKeyCache,
+            ws.wrapConvState,
+            ws.wrapDeltaState,
+            d.indexKeyCache,
+            d.poolGateCache,
+            d.poolKeys
+        };
+        if (prefill != null) {
+            graph.consumeFromDevice(Glm5NextBatchPrefillLayers.GRAPH, persistent);
+        } else {
+            graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, persistent);
+        }
     }
 
     private void bindWeights(TaskGraph graph, int l) {
+        Object[] arrays = layerArrays(w, config, l).toArray();
+        if (prefill != null) {
+            graph.consumeFromDevice(Glm5NextBatchPrefillLayers.GRAPH, arrays);
+        } else {
+            graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, arrays);
+        }
+    }
+
+    /** Every device array layer {@code l} reads, in the order the graphs bind them. */
+    static List<Object> layerArrays(
+            Glm5NextLayerWeights<TornadoTensor> w, Glm5NextConfiguration config, int l) {
         List<Object> arrays = new ArrayList<>();
         var m = w.mhc();
         for (TornadoTensor t :
@@ -312,7 +349,7 @@ public class Glm5NextLayers
             arrays.add(deviceArray(f.up()[l]));
             arrays.add(deviceArray(f.down()[l]));
         }
-        graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, arrays.toArray());
+        return arrays;
     }
 
     // ── one layer ─────────────────────────────────────────────────────────────

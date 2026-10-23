@@ -14,8 +14,9 @@ import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
- * The {@code glm5next} plan (GLM-5.3-Flash): token-by-token decode, Q8_0 only, on CUDA. There is no
- * batched prefill and no split across devices yet, and the latent cache is FP32.
+ * The {@code glm5next} plan (GLM-5.3-Flash): Q8_0 only, on CUDA, in all three modes. The batched
+ * prefill runs DP4A kernels and needs no tensor cores. There is no split across devices yet, and
+ * the latent cache is FP32.
  */
 public final class Glm5NextPlanProvider implements TornadoPlanProvider {
 
@@ -38,7 +39,7 @@ public final class Glm5NextPlanProvider implements TornadoPlanProvider {
 
     @Override
     public Set<ExecutionMode> supportedModes() {
-        return Set.of(ExecutionMode.STANDARD, ExecutionMode.PREFILL_DECODE);
+        return Set.of(ExecutionMode.values());
     }
 
     @Override
@@ -47,9 +48,12 @@ public final class Glm5NextPlanProvider implements TornadoPlanProvider {
         return new Glm5NextPlanComponents(typed, model);
     }
 
+    /** The batched prefill's reductions use warp shuffles, which are CUDA's here. */
     @Override
     public Optional<String> batchPrefillUnsupported(Combination c) {
-        return Optional.of("glm5next has no batched prefill yet; it prefills token by token");
+        return BackendId.CUDA.equals(c.backend())
+                ? Optional.empty()
+                : Optional.of("the glm5next batched prefill is written for the CUDA backend");
     }
 
     /** The reductions use warp shuffles, which are CUDA's here. */

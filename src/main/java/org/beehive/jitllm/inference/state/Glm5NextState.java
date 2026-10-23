@@ -1,5 +1,6 @@
 package org.beehive.jitllm.inference.state;
 
+import org.beehive.jitllm.backend.tornado.workspace.Glm5NextBatchArrays;
 import org.beehive.jitllm.backend.tornado.workspace.Glm5NextDeviceArrays;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.model.Configuration;
@@ -306,6 +307,32 @@ public final class Glm5NextState extends State {
                                 c.sparseLayerCount(),
                                 indexerStride,
                                 c.maxPools()));
+
+        if (prefillBatchWidth > 1) {
+            workspace.glm5nextBatch =
+                    Glm5NextBatchArrays.allocate(
+                            new Glm5NextBatchArrays.Sizes(
+                                    prefillBatchWidth,
+                                    dim,
+                                    c.hcCount() * dim,
+                                    c.hcMixCount(),
+                                    widest,
+                                    c.kdaHeads(),
+                                    c.kdaHeadDim(),
+                                    width,
+                                    c.qLoraRank(),
+                                    c.kvLoraRank(),
+                                    c.queryDim(),
+                                    c.absorbedQueryDim(),
+                                    c.attentionOutputInputDim(),
+                                    c.indexerHeads(),
+                                    c.indexerHeadDim(),
+                                    c.maxPools(),
+                                    hidden,
+                                    c.expertCount(),
+                                    c.expertsUsed(),
+                                    moeHidden));
+        }
 
         // [0] = position, [1] = table-local KV slot.
         workspace.positionHolder = TornadoWorkspaces.ints(2);
