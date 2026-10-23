@@ -16,6 +16,7 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.standard.Glm5NextStandardWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.policy.StorageOptions;
 import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.junit.Test;
@@ -68,6 +69,35 @@ public class Glm5NextDecodeParityAccelTest {
         assertTrue("greedy choices agree at " + r.agree, r.agree >= r.errors.length * 9 / 10);
     }
 
+    /** Prefilled in chunks of eight (two whole, one partial), then decoded token by token. */
+    private static final int PREFILL = 17;
+
+    private static final int CHUNK = 8;
+
+    /** A KDA layer after a batched prefill: the state the chunks leave is the one decode needs. */
+    @Test
+    public void aKdaLayerDecodesLikeTheHostAfterABatchedPrefill() throws Exception {
+        float[] errors = run("model-Q8_0-layer0.gguf", PREFILL, CHUNK).errors;
+        assertTrue("exact at too few positions", exactPositions(errors, PREFILL) >= 3);
+        assertTrue("worst " + max(errors), max(errors) < 0.05f);
+    }
+
+    /** A sparse-attention layer after a batched prefill: the chunks' latents and pool keys. */
+    @Test
+    public void aSparseAttentionLayerDecodesLikeTheHostAfterABatchedPrefill() throws Exception {
+        float[] errors = run("model-Q8_0-layer3.gguf", PREFILL, CHUNK).errors;
+        assertTrue("exact at too few positions", exactPositions(errors, PREFILL) >= 3);
+        assertTrue("worst " + max(errors), max(errors) < 0.05f);
+    }
+
+    /** The whole tiny model after a batched prefill: the same greedy choices. */
+    @Test
+    public void theWholeModelDecodesLikeTheHostAfterABatchedPrefill() throws Exception {
+        Result r = run("model-Q8_0.gguf", PREFILL, CHUNK);
+        int decoded = r.errors.length - PREFILL;
+        assertTrue("greedy choices agree at " + r.agree, r.agree >= decoded * 8 / 10);
+    }
+
     private record Result(float[] errors, int agree) {}
 
     /** Positions from {@code from} whose logits agree with the host to float rounding. */
@@ -87,8 +117,19 @@ public class Glm5NextDecodeParityAccelTest {
         return m;
     }
 
-    /** Decodes the golden tokens on the device and on the int8-emulating host. */
     private static Result run(String modelFile) throws Exception {
+        return run(modelFile, 0, 1);
+    }
+
+    // @formatter:off
+    /**
+     * Runs the golden tokens on the device and on the int8-emulating host. The device prefills the
+     * first {@code prefill} in chunks of {@code chunk} through the batched plan when {@code chunk >
+     * 1}, then decodes the rest; the errors before {@code prefill} are zero, since a prefill
+     * produces no logits.
+     */
+    // @formatter:on
+    private static Result run(String modelFile, int prefill, int chunk) throws Exception {
         Path file = resource(modelFile);
         int[] tokens =
                 (int[])
@@ -103,14 +144,39 @@ public class Glm5NextDecodeParityAccelTest {
         System.setProperty("use.tornadovm", "true");
         Model device = ModelLoader.loadModel(file, CONTEXT, true, true);
         // The latent cache is FP32; the default FP16 cache is refused.
-        State deviceState = State.withStorageOptions(StorageOptions.fp32(), device::createNewState);
+        State deviceState =
+                State.withPrefillBatchSize(
+                        chunk,
+                        () ->
+                                State.withStorageOptions(
+                                        StorageOptions.fp32(), device::createNewState));
+        if (chunk > 1) {
+            deviceState.resolveExecutionPolicy(
+                    ExecutionPolicy.builder()
+                            .phaseStrategy(ExecutionPolicy.PhaseStrategy.PREFILL_DECODE)
+                            .prefillBatchSize(chunk)
+                            .build());
+        }
         TornadoVMMasterPlan plan = TornadoVMMasterPlan.initializeTornadoVMPlan(deviceState, device);
 
         float[] errors = new float[tokens.length];
         int agree = 0;
         try {
+            if (prefill > 0) {
+                TornadoBatchPrefillPass.batchPrefillAll(
+                        device,
+                        deviceState,
+                        java.util.Arrays.copyOf(tokens, prefill),
+                        0,
+                        prefill,
+                        chunk,
+                        (BatchPrefillDecodePlan) plan);
+            }
             for (int t = 0; t < tokens.length; t++) {
                 FloatTensor expected = Glm5NextForward.forward(host, hostState, tokens[t], t);
+                if (t < prefill) {
+                    continue;
+                }
                 Logits actual = TornadoForwardPass.forward(device, deviceState, tokens[t], t, plan);
                 float scale = 0f;
                 float diff = 0f;
