@@ -67,6 +67,26 @@ public final class Glm5NextBatchArrays {
     public final FloatArray moeScales;
     public final IntArray moeSums;
 
+    /** The grouped experts: each assignment's sorted row, and the per-expert tiles of rows. */
+    public final IntArray sortedToken;
+
+    public final IntArray position;
+    public final IntArray tiles;
+    public final int maxTiles;
+
+    /** The routed experts' hidden activations and outputs, one row per sorted assignment. */
+    public final FloatArray routedHidden;
+
+    public final ByteArray routedHidden8;
+    public final FloatArray routedHiddenScales;
+    public final FloatArray routedOut;
+
+    /** The shared expert over every row of the chunk. */
+    public final FloatArray sharedGate;
+
+    public final FloatArray sharedUp;
+    public final FloatArray sharedOut;
+
     /** The expert kernels' shape: dim, expert hidden, shared hidden, used, split, batch. */
     public final IntArray expertShape;
 
@@ -92,7 +112,9 @@ public final class Glm5NextBatchArrays {
             int hidden,
             int experts,
             int used,
-            int moeHidden) {}
+            int moeHidden,
+            int expertHidden,
+            int sharedHidden) {}
 
     private Glm5NextBatchArrays(Sizes s) {
         // Every chunk-wide array holds whole 128-row tiles: an int8 GEMM stores every row of a
@@ -143,6 +165,22 @@ public final class Glm5NextBatchArrays {
         moeScales = TornadoWorkspaces.floats(b * s.moeHidden / 32);
         moeSums = TornadoWorkspaces.ints(b * s.moeHidden / 32);
         expertShape = TornadoWorkspaces.ints(6);
+        int assignments = b * Math.max(1, s.used);
+        sortedToken = TornadoWorkspaces.ints(assignments);
+        position = TornadoWorkspaces.ints(assignments);
+        maxTiles =
+                org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels.maxTiles(
+                        assignments, Math.max(1, s.experts));
+        tiles = TornadoWorkspaces.ints(1 + 3 * maxTiles);
+        int hidden = Math.max(32, s.expertHidden);
+        routedHidden = TornadoWorkspaces.floats(assignments * hidden);
+        routedHidden8 = TornadoWorkspaces.bytes(assignments * hidden);
+        routedHiddenScales = TornadoWorkspaces.floats(assignments * hidden / 32);
+        routedOut = TornadoWorkspaces.floats(assignments * s.dim);
+        int shared = Math.max(32, s.sharedHidden);
+        sharedGate = TornadoWorkspaces.floats(b * shared);
+        sharedUp = TornadoWorkspaces.floats(b * shared);
+        sharedOut = TornadoWorkspaces.floats(b * s.dim);
     }
 
     public static Glm5NextBatchArrays allocate(Sizes sizes) {
