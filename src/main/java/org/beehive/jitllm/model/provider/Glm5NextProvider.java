@@ -6,7 +6,7 @@ import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.loader.Glm5NextModelLoader;
 import org.beehive.jitllm.runtime.backend.BackendId;
 
-/** The {@code glm5next} family: GLM-5.3-Flash's text backbone, on the CPU backend. */
+/** The {@code glm5next} family: GLM-5.3-Flash's text backbone. */
 public final class Glm5NextProvider extends FamilyProvider {
 
     public Glm5NextProvider() {
@@ -15,12 +15,9 @@ public final class Glm5NextProvider extends FamilyProvider {
 
     @Override
     public Model load(ModelSource source, BackendId backend, int contextLength) {
-        if (!BackendId.CPU.equals(backend)) {
-            throw new UnsupportedOperationException(
-                    "glm5next runs on the CPU backend only; its accelerator plan is not available"
-                            + " yet");
-        }
         FileChannel channel = source.gguf().getFileChannel();
-        return new Glm5NextModelLoader(channel, source.gguf(), contextLength, false).loadModel();
+        return new Glm5NextModelLoader(
+                        channel, source.gguf(), contextLength, !BackendId.CPU.equals(backend))
+                .loadModel();
     }
 }

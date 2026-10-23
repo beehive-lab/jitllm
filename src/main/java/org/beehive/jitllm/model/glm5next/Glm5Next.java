@@ -19,7 +19,7 @@ import org.beehive.jitllm.tokenizer.Tokenizer;
  * A loaded model of the {@code glm5next} architecture: the text backbone of GLM-5.3-Flash, with KDA
  * and sparse latent attention layers, a mixture of experts and hyper-connections.
  *
- * <p>It runs on the host only for now; {@link #generateTokensGPU} refuses.
+ * <p>On the accelerator it decodes one token at a time; the MTP layer runs on the host only.
  */
 public class Glm5Next extends AbstractModel {
 
@@ -100,8 +100,31 @@ public class Glm5Next extends AbstractModel {
             boolean echo,
             IntConsumer onTokenGenerated,
             TornadoVMMasterPlan tornadoVMPlan) {
-        throw new UnsupportedOperationException(
-                "glm5next runs on the CPU backend only; its accelerator plan is not available yet");
+        if (state.executionPolicy().phaseStrategy()
+                == org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
+            return TokenGenerationLoop.generateTokensGPUPrefillDecode(
+                    this,
+                    state,
+                    startPosition,
+                    promptTokens,
+                    stopTokens,
+                    maxTokens,
+                    sampler,
+                    echo,
+                    onTokenGenerated,
+                    tornadoVMPlan);
+        }
+        return TokenGenerationLoop.generateTokensGPUQwen3(
+                this,
+                state,
+                startPosition,
+                promptTokens,
+                stopTokens,
+                maxTokens,
+                sampler,
+                echo,
+                onTokenGenerated,
+                tornadoVMPlan);
     }
 
     @Override

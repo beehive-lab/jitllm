@@ -9,12 +9,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import org.beehive.jitllm.auxiliary.Pair;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.format.DataTypeMapping;
 import org.beehive.jitllm.format.GGMLTensorEntry;
 import org.beehive.jitllm.format.GGUF;
 import org.beehive.jitllm.inference.weights.Glm5NextLayerWeights;
 import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.inference.weights.standard.Glm5NextStandardWeights;
+import org.beehive.jitllm.inference.weights.tornado.Glm5NextTornadoWeights;
 import org.beehive.jitllm.model.format.Glm4ChatFormat;
 import org.beehive.jitllm.model.glm5next.Glm5Next;
 import org.beehive.jitllm.model.glm5next.Glm5NextConfiguration;
@@ -30,6 +32,7 @@ import org.beehive.jitllm.tokenizer.Vocabulary;
  *
  * <p>A file may hold a slice of the model's layers ({@code glm5next.layer_index} names them), and
  * the MTP layer only when {@code glm5next.nextn_predict_layers} says so. The tokenizer is GLM-4's.
+ * The accelerator path runs the trunk only; the MTP layer is loaded but not executed there.
  */
 public class Glm5NextModelLoader extends AbstractModelLoader<Glm5Next, Glm5NextConfiguration> {
 
@@ -154,6 +157,10 @@ public class Glm5NextModelLoader extends AbstractModelLoader<Glm5Next, Glm5NextC
                 DataTypeMapping.sourceType(outputWeight.ggmlType()));
     }
 
+    /**
+     * Device weights, every tensor as the file holds it. The decode plan reads Q8_0 projections;
+     * its provider refuses any other weight type before a plan is built.
+     */
     @Override
     protected Weights createTornadoVMWeights(
             Map<String, GGMLTensorEntry> tensorEntries,
@@ -161,8 +168,16 @@ public class Glm5NextModelLoader extends AbstractModelLoader<Glm5Next, Glm5NextC
             Pair<float[], float[]> ropeFreqs,
             GGMLTensorEntry tokenEmbeddings,
             GGMLTensorEntry outputWeight) {
-        throw new UnsupportedOperationException(
-                "glm5next runs on the CPU backend only; its accelerator plan is not available yet");
+        return new Glm5NextTornadoWeights(
+                ModelLoader.loadTornadoTensorNative(tokenEmbeddings),
+                layerWeights(
+                        config,
+                        tensorEntries,
+                        new TornadoTensor[0],
+                        ModelLoader::loadTornadoTensorNative),
+                ModelLoader.loadTornadoTensorNative(required(tensorEntries, "output_norm.weight")),
+                ModelLoader.loadTornadoTensorNative(outputWeight),
+                DataTypeMapping.sourceType(outputWeight.ggmlType()));
     }
 
     // @formatter:off

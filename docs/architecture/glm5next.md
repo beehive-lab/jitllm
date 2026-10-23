@@ -94,6 +94,38 @@ feed-forward is the MoE.
 | MTP | the qwen35 MTP hook | `Glm5NextForward.forwardNextn` |
 | tokenizer, chat | `Glm4Tokenizer` (same split regex, `ignore_merges`) and `Glm4ChatFormat` | GLM-5.3's template also opens with `<|system|>Reasoning Effort: …` and has the assistant start with `<think>` |
 
+## Running on the GPU
+
+The CUDA decode plan (`Glm5NextPlanProvider`, `Glm5NextLayers`) runs the trunk one token at a
+time, in the standard and sequential prefill/decode modes. It has these requirements and limits:
+
+- **Weights:** Q8_0 projections, with norms, gates, the router and the mHC parameters in F32 (what
+  `convert.py --type Q8_0` writes).
+- **Expert stacks:** the routed experts must be stored in at most two stacks. The full model's 288
+  experts in stacks of 144 qualify.
+- **Cache:** an FP32 latent cache, so run with `--fp32-kv-cache`.
+- **Not supported yet:** batched prefill, splitting the model across devices, and the MTP layer.
+
+The whole trunk is one task graph. Per layer:
+
+1. The mHC kernels (`hcMixes`, `hcCoefficients`, `hcCollapse`, `hcExpand`) wrap each sublayer.
+2. KDA uses the Q8_0 DP4A projections, qwen35's convolution, and `kdaL2Norm`, `kdaDecayAndBeta`,
+   `kdaDeltaRule` and `kdaGatedNorm`.
+3. Sparse attention uses deepseek2's `twoProjectionsQ8_0`, `latentNorms`, `ropeAndCache` (rotation
+   width 0), `absorbQuery` and `decompressLatent`, plus the indexer kernels and
+   `sparseLatentAttention`.
+4. The MoE uses `routerTopKSigmoid` (up to 512 experts), `expertsGateUpClamped` and `expertsDown`
+   over the two stacks.
+
+`Glm5NextDecodeParityAccelTest` compares the plan with the host pass over the tiny model's Q8_0
+files. To make the comparison like for like, the host rounds the activation of every projection to
+int8 per 32-value block, as the device kernels do. Agreement:
+
+- At most positions the two agree to float rounding (about 1e-7).
+- The other positions are about 1% off. An activation sat on an int8 rounding boundary, and the two
+  paths' last-bit differences rounded it apart. Nudging the host's own input by one ulp reproduces
+  the same positions.
+
 ## GGUF layout written by the converter
 
 The architecture key prefix is `glm5next.`. Main keys:
@@ -123,4 +155,5 @@ requested type; with Q4_0, the embedding and output stay Q8_0.
   indexer selections, the logits and the MTP logits over 40 tokens. With `--check-transformers` it
   also runs the same checkpoint through the transformers implementation.
 - `Glm5NextForwardTest` runs the converted F32 and Q8_0 files against those goldens.
-  `Glm5NextKernelsAccelTest` checks the decode kernels against host evaluations.
+  `Glm5NextKernelsAccelTest` checks the decode kernels against host evaluations, and
+  `Glm5NextDecodeParityAccelTest` checks the whole decode plan as described above.
