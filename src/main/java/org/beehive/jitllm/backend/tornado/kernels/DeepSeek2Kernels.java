@@ -708,10 +708,16 @@ public final class DeepSeek2Kernels {
         }
     }
 
+    // @formatter:off
     /**
-     * {@link #rmsNorm} and the Q8 block quantization of its output, by one workgroup of {@link
-     * #GROUP} lanes.
+     * {@link #rmsNorm} and the Q8 block quantization of its output, a workgroup of {@link #GROUP}
+     * lanes per {@code GROUP} values: each workgroup sums the squares of all {@code n} inputs, in
+     * the order one workgroup alone would, then normalizes its own values and quantizes their
+     * blocks, a warp per block. {@code in} and {@code out} must differ.
+     *
+     * <p>Grid: {@code ceil(n / GROUP)} workgroups of {@code GROUP} lanes.
      */
+    // @formatter:on
     public static void rmsNormQuantize(
             KernelContext context,
             FloatArray in,
@@ -723,8 +729,62 @@ public final class DeepSeek2Kernels {
             int n,
             float eps) {
         float[] reduce = context.allocateFloatLocalArray(GROUP);
-        normInto(context, reduce, in, out, weight, n, eps);
-        quantizeInto(context, out, quants, scales, sums, n);
+        int tid = context.localIdx;
+        int group = context.groupIdx;
+        float partial = 0.0f;
+        for (int i = tid; i < n; i += GROUP) {
+            float v = in.get(i);
+            partial += v * v;
+        }
+        reduce[tid] = partial;
+        context.localBarrier();
+        for (int stride = GROUP / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                reduce[tid] += reduce[tid + stride];
+            }
+            context.localBarrier();
+        }
+        float scale = 1.0f / TornadoMath.sqrt(reduce[0] / n + eps);
+        int id = group * GROUP + tid;
+        if (id < n) {
+            out.set(id, weight.get(id) * (in.get(id) * scale));
+        }
+        context.localBarrier();
+        int warp = tid >> 5;
+        int lane = tid & 31;
+        int blocksPerGroup = GROUP / QK;
+        int last = TornadoMath.min(n / QK, (group + 1) * blocksPerGroup);
+        for (int b = group * blocksPerGroup + warp; b < last; b += blocksPerGroup) {
+            float v = out.get(b * QK + lane);
+            float m = TornadoMath.abs(v);
+            m = TornadoMath.max(m, context.simdShuffleDown(m, 16));
+            m = TornadoMath.max(m, context.simdShuffleDown(m, 8));
+            m = TornadoMath.max(m, context.simdShuffleDown(m, 4));
+            m = TornadoMath.max(m, context.simdShuffleDown(m, 2));
+            m = TornadoMath.max(m, context.simdShuffleDown(m, 1));
+            m = context.simdBroadcastFirst(m);
+            float inverse = m > 0.0f ? 127.0f / m : 0.0f;
+            float scaled = v * inverse;
+            int q = (int) (scaled + (scaled >= 0.0f ? 0.5f : -0.5f));
+            q = TornadoMath.min(127, TornadoMath.max(-127, q));
+            float qf = q;
+            float q1 = context.simdShuffleDown(qf, 1);
+            float q2 = context.simdShuffleDown(qf, 2);
+            float q3 = context.simdShuffleDown(qf, 3);
+            float total = warpSum(context, qf);
+            if ((lane & 3) == 0) {
+                int packed =
+                        (q & 0xFF)
+                                | (((int) q1 & 0xFF) << 8)
+                                | (((int) q2 & 0xFF) << 16)
+                                | (((int) q3 & 0xFF) << 24);
+                quants.set(b * (QK / 4) + (lane >> 2), packed);
+            }
+            if (lane == 0) {
+                scales.set(b, m / 127.0f);
+                sums.set(b, (int) total);
+            }
+        }
     }
 
     // @formatter:off
