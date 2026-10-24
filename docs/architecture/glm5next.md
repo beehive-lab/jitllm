@@ -99,51 +99,109 @@ feed-forward is the MoE.
 ## Running on the GPU
 
 The CUDA plan (`Glm5NextPlanProvider`) runs the trunk in all three modes: one token at a time,
-sequential prefill/decode, and batched prefill/decode. It has these requirements and limits:
+sequential prefill/decode, and batched prefill/decode. Its requirements and limits:
 
 - **Weights:** Q8_0 projections, with norms, gates, the router, the mHC parameters and the
   indexer's head weights and k-pool gate in F32 (what llama.cpp's converter and `convert.py` write
-  with `q8_0`).
+  with `q8_0`). Q4_0 and K-quant weights are converted to Q8_0 at load, so they take Q8_0's
+  memory.
 - **Expert stacks:** the routed experts must load as at most two stacks. In Q8_0 the full model's
   288 experts load as two stacks of 144.
 - **Cache:** an FP32 latent cache, so run with `--fp32-kv-cache`.
+- **Native libraries:** `--with-native-libraries` is refused; the kernels below are TornadoVM's.
+  `--cuda-graphs` works in every mode.
 - **Not supported yet:** splitting the model across devices, and the MTP layer.
 
-The whole trunk is one task graph. Per layer:
+### Decode
 
-1. The mHC kernels (`hcMixes`, `hcCoefficients`, `hcCollapse`, `hcExpand`) wrap each sublayer.
-2. KDA uses the Q8_0 DP4A projections, qwen35's convolution, and `kdaL2Norm`, `kdaDecayAndBeta`,
-   `kdaDeltaRule` and `kdaGatedNorm`.
-3. Sparse attention uses deepseek2's `twoProjectionsQ8_0`, `latentNorms`, `ropeAndCache` (rotation
-   width 0), `absorbQuery` and `decompressLatent`, plus the indexer kernels and
-   `sparseLatentAttention`.
-4. The MoE uses `routerTopKSigmoid` (up to 512 experts), `expertsGateUpClamped` and `expertsDown`
-   over the two stacks.
+The whole trunk is one task graph (`Glm5NextLayers`, `Glm5NextKernels`). Per layer:
 
-The batched prefill (`Glm5NextBatchPrefillLayers`, `Glm5NextBatchKernels`) runs the trunk over a
-chunk of tokens in one task graph, a row per token:
+1. **mHC.** `rmsNormQuantize` normalizes and quantizes in one workgroup per 256 values, every
+   workgroup taking the whole sum of squares in the same order. `hcMixes` splits each of the 24 mix
+   sums over 16 chunks of the streams. `hcCoefficients` adds the chunks up and runs the Sinkhorn
+   normalization in one workgroup, a lane per mix and per entry of the 4×4 matrix. `hcCollapse`
+   and `hcExpand` are a lane per element.
+2. **KDA.** The projections are the Q8_0 DP4A matrix-vector kernels, then qwen35's convolution,
+   `kdaL2Norm`, `kdaDecayAndBeta` and `kdaGatedNorm`. `kdaDeltaRule` gives a workgroup 32 state
+   columns of one head, each column's 128 rows split into 8 chunks, a lane per (chunk, column),
+   the chunks' sums added in chunk order; the state is written once per token.
+3. **Sparse attention.** deepseek2's `twoProjectionsQ8_0`, `latentNorms`, `ropeAndCache` (rotation
+   width 0), `absorbQuery` and `decompressLatent`. The indexer's head weights and k-pool gate,
+   which llama.cpp keeps in F32, go through `projectF32`. `indexerScores` gives each pool 32
+   lanes, a head per lane, the heads' terms added in head order; `indexerSelect` and
+   `sparseLatentAttention` follow.
+4. **MoE.** `routerTopKSigmoid` (up to 512 experts), `expertsGateUpClamped`, and `expertsDown`,
+   which reads only the stack that holds each slot's expert.
 
-- **Token-parallel steps:** the hyper-connections, norms, projections, indexer keys and scores, and
-  the feed-forward run over every row at once. The projections are DP4A kernels, a warp per row and
-  token, so no tensor cores are needed.
-- **The KDA convolution and delta rule:** these walk the chunk's rows in order inside one launch. A
-  lane carries one channel or one state column from token to token.
-- **Sparse attention:** an online softmax over tiles of positions, reading the cache the chunk has
-  just written up to each row's own position.
+### Batched prefill
+
+`Glm5NextBatchPrefillLayers` and `Glm5NextBatchKernels` run the trunk over a chunk of tokens in one
+task graph, a row per token:
+
+- **Projections:** int8 tensor-core GEMMs (`Int8GemmKernels.gemmInt8Q8_0`) over activations
+  quantized per 32-value block, wherever the shape is whole GEMM tiles; DP4A kernels otherwise, and
+  `projectF32` for the F32 indexer weights. The chunk's arrays are padded to whole 128-row tiles.
+- **Routed experts:** the chunk's (token, expert) pairs are grouped by expert (`groupByExpert`) and
+  multiplied as grouped int8 GEMMs (`groupedGateUpClamped`, `groupedDown`), then combined.
+- **mHC:** `hcMixes` is one tiled GEMM, streams × `fn`ᵀ, split into 16 chunks of the depth
+  (32 rows × 32 mixes per workgroup, staged in local memory); `hcFinishMixes` adds the chunks.
+- **KDA:** the convolution walks the chunk's rows in order. `kdaDeltaRule` uses the decode
+  kernel's layout, and keeps the workgroup's 128×32 slice of the state in local memory for the
+  whole chunk, staging each row's key, query and decay once.
+- **Sparse attention:** on FP16 tensor cores when the latent and value widths are whole 128-column
+  tiles (`Glm5NextConfiguration.tensorCoreAttention`): the absorbed queries, their scores against
+  every filled position of the cache, a softmax that keeps only the indexer's pools and the open
+  tail (`sparseSoftmax`), the values and the decompression are strided GEMMs
+  (`BatchMmaKernels.gemmMMAStrided`) with FP32 accumulation. Otherwise an online softmax over tiles
+  of positions.
+- **Indexer:** `indexerScores` gives each (row, pool) 32 lanes, as the decode kernel does.
 - **Hand-off to decode:** the latent cache, the KDA windows and matrices, and the indexer caches
-  are the decode layers' own arrays. The decode graph takes them, and every weight, from the
-  prefill graph by name.
+  are the decode layers' own arrays. The decode graph takes them, and every weight the prefill
+  graph reads, from the prefill graph by name; `attn_k_b` and `attn_v_b`, which the tensor-core
+  attention reads as FP16 copies, it binds itself.
 
-`Glm5NextDecodeParityAccelTest` compares the plan with the host pass over the tiny model's Q8_0
-files. To make the comparison like for like, the host rounds the activation of every projection to
-int8 per 32-value block, as the device kernels do. Agreement:
+### Agreement with the host
 
-- At most positions the two agree to float rounding (about 1e-7).
-- After a batched prefill (17 tokens in chunks of 8), the decoded positions show the same errors as
-  decoding every token one at a time.
-- The other positions are about 1% off. An activation sat on an int8 rounding boundary, and the two
-  paths' last-bit differences rounded it apart. Nudging the host's own input by one ulp reproduces
-  the same positions.
+`Glm5NextDecodeParityAccelTest` compares the plan with the host pass over the tiny and medium
+models' Q8_0 files. To make the comparison like for like, the host rounds the activation of every
+projection to int8 per 32-value block, as the device kernels do.
+
+- The single-layer models agree to float rounding (about 1e-7) at a quarter of the positions or
+  more; the rest are about 1% off where an activation sits on an int8 rounding boundary.
+- The whole tiny model, whose routers have near ties, is held to an error of 0.05 from the first
+  token and to the same greedy choices.
+- After a batched prefill, the medium model must track the host as closely as token-by-token
+  decoding does. The prefill and the decode add some sums in different orders (the mHC mixes, the
+  delta rule's chunks), so a rounding flip in the prefilled positions can stay in the cache.
+
+## Performance
+
+On an NVIDIA A100 80GB, with Q8_0 slices of the real weights in the llama.cpp format, jitllm with
+`--cuda-graphs --fp32-kv-cache` and llama.cpp (October 2026, `-fa on -ngl 99`) on the same file.
+Tokens per second; llama.cpp's first repetition, always slower, is left out of its numbers.
+
+Layers 3–10 (8 MoE layers: 6 KDA, 2 sparse attention; 60 GiB):
+
+| | jitllm | llama.cpp |
+|---|---|---|
+| prefill 512, batch 512 | 3566 | 2305 |
+| prefill 1024, batch 512 | 3546 | 2317 |
+| prefill 512, batch 256 | 2531 | 1481 |
+| prefill 1024, batch 256 | 2551 | 1488 |
+| decode 128 | 209 | 188 |
+
+Layers 0–3 (3 dense layers and 1 MoE layer; 9.5 GiB):
+
+| | jitllm | llama.cpp |
+|---|---|---|
+| prefill 512, batch 512 | 10385 | 8700 |
+| prefill 1024, batch 512 | 10156 | 8795 |
+| prefill 512, batch 256 | 8104 | 6432 |
+| prefill 1024, batch 256 | 7991 | 6174 |
+| decode 128 | 396 | 405 |
+
+A slice says little about the whole model's speed: its embedding and output head weigh as much as
+in the full model, against 4 or 8 of 45 layers.
 
 ## GGUF layout
 
