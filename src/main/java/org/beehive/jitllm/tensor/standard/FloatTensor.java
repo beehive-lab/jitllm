@@ -239,11 +239,21 @@ public abstract class FloatTensor {
         return mapInPlace(thisOffset, size, unused -> value);
     }
 
+    /**
+     * Below this argument {@code (float) Math.exp} rounds to exactly zero: {@code e^-104} is under
+     * half the smallest float subnormal.
+     */
+    static final float EXP_UNDERFLOW = -104.0f;
+
     public FloatTensor softmaxInPlace(int thisOffset, int size) {
         // find max value (for numerical stability)
         float maxVal = max(thisOffset, size);
-        // exp and sum
-        mapInPlace(thisOffset, size, f -> (float) Math.exp(f - maxVal));
+        // exp and sum; below EXP_UNDERFLOW the float result is exactly zero, so the exponential
+        // is skipped
+        mapInPlace(
+                thisOffset,
+                size,
+                f -> f - maxVal < EXP_UNDERFLOW ? 0.0f : (float) Math.exp(f - maxVal));
         float sum = sum(thisOffset, size);
         // normalize
         return divideInPlace(thisOffset, size, sum);
