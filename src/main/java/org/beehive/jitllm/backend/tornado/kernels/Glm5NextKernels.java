@@ -1023,9 +1023,12 @@ public final class Glm5NextKernels {
      * {@code out[r] = sum_slot weight[slot] * (down_e[r] . hidden[slot]) + sharedDown[r] .
      * hidden[used]}, a warp per output row, over the hidden activations quantized per block.
      *
-     * <p>A pair whose expert is in the other stack contributes zero times a valid row of this one
-     * rather than being skipped, so no partial sum is merged across a branch. Worker: {@code dim *
-     * 32} lanes.
+     * <p>Only the stack that holds a slot's expert is read. Each branch adds to the lane's sum in
+     * local memory rather than to a value merged after the branch, which the CUDA backend
+     * miscompiles, and both stacks' expert indices are clamped into range, since the backend may
+     * form either address. A warp's 32 blocks of one step lie in one slot when {@code hiddenDim /
+     * 32} is a multiple of 32, so the branch is uniform across the warp. Worker: {@code dim * 32}
+     * lanes, local at most {@link #GROUP}.
      */
     // @formatter:on
     public static void expertsDown(
@@ -1045,31 +1048,33 @@ public final class Glm5NextKernels {
             int split) {
         int row = context.globalIdx >> 5;
         int lane = context.localIdx & 31;
+        int tid = context.localIdx;
+        float[] sums = context.allocateFloatLocalArray(GROUP);
+        sums[tid] = 0.0f;
         if (row < dim) {
             int perSlot = hiddenDim / QK;
             int routedPairs = used * perSlot;
-            float first = 0.0f;
-            float second = 0.0f;
             for (int p = lane; p < routedPairs; p += 32) {
                 int slot = p / perSlot;
                 int block = p - slot * perSlot;
                 int e = ids.get(slot);
-                int inFirst = e < split ? 1 : 0;
-                int e0 = inFirst * e;
-                int e1 = (1 - inFirst) * (e - split);
-                int offset0 = ((e0 * dim + row) * perSlot + block) * BLOCK_BYTES;
-                int offset1 = ((e1 * dim + row) * perSlot + block) * BLOCK_BYTES;
                 float w = weights.get(slot) * hScales.get(p);
-                first +=
-                        inFirst
-                                * w
-                                * down0.getHalfFloat(offset0).getFloat32()
-                                * blockDot(down0, offset0, hQuants, p * (QK / 4));
-                second +=
-                        (1 - inFirst)
-                                * w
-                                * down1.getHalfFloat(offset1).getFloat32()
-                                * blockDot(down1, offset1, hQuants, p * (QK / 4));
+                int e0 = TornadoMath.min(e, split - 1);
+                int e1 = TornadoMath.max(0, e - split);
+                if (e < split) {
+                    int offset = ((e0 * dim + row) * perSlot + block) * BLOCK_BYTES;
+                    sums[tid] +=
+                            w
+                                    * down0.getHalfFloat(offset).getFloat32()
+                                    * blockDot(down0, offset, hQuants, p * (QK / 4));
+                }
+                if (e >= split) {
+                    int offset = ((e1 * dim + row) * perSlot + block) * BLOCK_BYTES;
+                    sums[tid] +=
+                            w
+                                    * down1.getHalfFloat(offset).getFloat32()
+                                    * blockDot(down1, offset, hQuants, p * (QK / 4));
+                }
             }
             int sharedBlocks = sharedHiddenDim / QK;
             float shared = 0.0f;
@@ -1081,7 +1086,7 @@ public final class Glm5NextKernels {
                                 * hScales.get(p)
                                 * blockDot(sharedDown, offset, hQuants, p * (QK / 4));
             }
-            float sum = warpSum(context, first + second + shared);
+            float sum = warpSum(context, sums[tid] + shared);
             if (lane == 0) {
                 out.set(row, sum);
             }
