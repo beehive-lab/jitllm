@@ -3,8 +3,10 @@ package org.beehive.jitllm.backend.tornado.kernels;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.enums.MMAShape;
 import uk.ac.manchester.tornado.api.math.TornadoMath;
+import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 import uk.ac.manchester.tornado.api.utils.QuantizationUtils;
 
@@ -1376,6 +1378,90 @@ public final class Glm5NextBatchKernels {
                 sum += weights.get(a) * routed.get(position.get(a) * dim + c);
             }
             branch.set(i, sum + shared.get(i));
+        }
+    }
+
+    // ── Sparse attention on tensor cores ──────────────────────────────────────
+
+    // @formatter:off
+    /**
+     * The sparse softmax of every (token, head) row of scores, in FP16 for the value GEMM: row
+     * {@code t * heads + h} attends to the positions up to its own that lie in a pool the indexer
+     * chose for token {@code t}, or, with {@code selectTail}, in the incomplete pool that holds its
+     * position. Every other entry up to the chunk's filled width, and every padding row, is zero. A
+     * workgroup of {@link #GROUP} lanes per row.
+     *
+     * <p>A masked score is pushed to {@code -1e30} by arithmetic rather than chosen by a branch,
+     * whose merged value the CUDA backend miscompiles.
+     */
+    // @formatter:on
+    public static void sparseSoftmax(
+            KernelContext context,
+            IntArray batchInfo,
+            FloatArray scores,
+            HalfFloatArray probs,
+            IntArray selected,
+            int heads,
+            int paddedPositions,
+            int pool,
+            int maxPools,
+            int selectTail,
+            float scale) {
+        int row = context.groupIdx;
+        int tid = context.localIdx;
+        int t = row / heads;
+        int base = row * paddedPositions;
+        float[] reduce = context.allocateFloatLocalArray(GROUP);
+        int active = TornadoMath.min(1, TornadoMath.max(0, batchInfo.get(1) - t));
+        int position = batchInfo.get(0) + t;
+        int valid = active * (position + 1);
+        int tailStart = (position + 1) / pool * pool;
+        int selection = t * maxPools;
+        float localMax = -1.0e30f;
+        for (int j = tid; j < valid; j += GROUP) {
+            int tail = selectTail == 1 && j >= tailStart ? 1 : 0;
+            int visible = TornadoMath.max(selected.get(selection + j / pool), tail);
+            float v = visible * scores.get(base + j) * scale + (1 - visible) * -1.0e30f;
+            localMax = TornadoMath.max(localMax, v);
+        }
+        reduce[tid] = localMax;
+        context.localBarrier();
+        for (int stride = GROUP / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                reduce[tid] = TornadoMath.max(reduce[tid], reduce[tid + stride]);
+            }
+            context.localBarrier();
+        }
+        float max = reduce[0];
+        context.localBarrier();
+        float localSum = 0.0f;
+        for (int j = tid; j < valid; j += GROUP) {
+            int tail = selectTail == 1 && j >= tailStart ? 1 : 0;
+            int visible = TornadoMath.max(selected.get(selection + j / pool), tail);
+            float v = visible * scores.get(base + j) * scale + (1 - visible) * -1.0e30f;
+            localSum += TornadoMath.exp(v - max);
+        }
+        reduce[tid] = localSum;
+        context.localBarrier();
+        for (int stride = GROUP / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                reduce[tid] += reduce[tid + stride];
+            }
+            context.localBarrier();
+        }
+        float inverse = 1.0f / TornadoMath.max(reduce[0], 1.0e-30f);
+        int filled = ((batchInfo.get(0) + batchInfo.get(1) + 127) / 128) * 128;
+        int width = TornadoMath.min(paddedPositions, filled);
+        for (int j = tid; j < width; j += GROUP) {
+            if (j < valid) {
+                int tail = selectTail == 1 && j >= tailStart ? 1 : 0;
+                int visible = TornadoMath.max(selected.get(selection + j / pool), tail);
+                float v = visible * scores.get(base + j) * scale + (1 - visible) * -1.0e30f;
+                probs.set(base + j, new HalfFloat(TornadoMath.exp(v - max) * inverse));
+            }
+            if (j >= valid) {
+                probs.set(base + j, new HalfFloat(0.0f));
+            }
         }
     }
 }

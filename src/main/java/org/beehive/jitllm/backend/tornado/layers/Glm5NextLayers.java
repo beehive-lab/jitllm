@@ -260,12 +260,38 @@ public class Glm5NextLayers
     }
 
     private void bindWeights(TaskGraph graph, int l) {
-        Object[] arrays = layerArrays(w, config, l).toArray();
         if (prefill != null) {
-            graph.consumeFromDevice(Glm5NextBatchPrefillLayers.GRAPH, arrays);
+            graph.consumeFromDevice(
+                    Glm5NextBatchPrefillLayers.GRAPH, prefillArrays(w, config, l).toArray());
+            List<Object> own = notInPrefill(w, config, l);
+            if (!own.isEmpty()) {
+                graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, own.toArray());
+            }
         } else {
-            graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, arrays);
+            graph.transferToDevice(
+                    DataTransferMode.FIRST_EXECUTION, layerArrays(w, config, l).toArray());
         }
+    }
+
+    /**
+     * The arrays of layer {@code l} the batched prefill never reads, so never holds on the device:
+     * {@code attn_k_b} and {@code attn_v_b} when it attends on tensor cores from FP16 copies.
+     */
+    static List<Object> notInPrefill(
+            Glm5NextLayerWeights<TornadoTensor> w, Glm5NextConfiguration config, int l) {
+        if (config.isKda(l) || !config.tensorCoreAttention()) {
+            return List.of();
+        }
+        return List.of(deviceArray(w.sparse().kB()[l]), deviceArray(w.sparse().vB()[l]));
+    }
+
+    /** The arrays of layer {@code l} the batched prefill binds and the decode takes from it. */
+    static List<Object> prefillArrays(
+            Glm5NextLayerWeights<TornadoTensor> w, Glm5NextConfiguration config, int l) {
+        List<Object> arrays = layerArrays(w, config, l);
+        List<Object> skip = notInPrefill(w, config, l);
+        arrays.removeIf(a -> skip.stream().anyMatch(o -> o == a));
+        return arrays;
     }
 
     /** Every device array layer {@code l} reads, in the order the graphs bind them. */

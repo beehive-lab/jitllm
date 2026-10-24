@@ -121,6 +121,14 @@ public record Glm5NextConfiguration(
         return contextLength / indexerPoolSize + 1;
     }
 
+    /**
+     * Whether the batched prefill's sparse attention runs on FP16 tensor cores: latent and value
+     * heads in whole 128-column tiles, query heads in whole 16-element steps.
+     */
+    public boolean tensorCoreAttention() {
+        return kvLoraRank % 128 == 0 && valueHeadDim % 128 == 0 && keyHeadDim % 16 == 0;
+    }
+
     /** Trunk and MTP layers together: the index range of the weights. */
     public int allLayers() {
         return numberOfLayers + nextnLayers;

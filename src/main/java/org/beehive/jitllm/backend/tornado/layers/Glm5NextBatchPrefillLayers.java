@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.beehive.jitllm.backend.tornado.kernels.BatchMmaKernels;
+import org.beehive.jitllm.backend.tornado.kernels.DeepSeek2BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
@@ -23,9 +25,12 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.WorkerGrid2D;
+import uk.ac.manchester.tornado.api.WorkerGrid3D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
+import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 // @formatter:off
 /**
@@ -56,6 +61,11 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
     private final Map<String, WorkerGrid> grids = new LinkedHashMap<>();
     private final ImmutableTaskGraph graph;
 
+    /** The tensor-core attention's {@code attn_k_b} and {@code attn_v_b} in FP16, per layer. */
+    private final HalfFloatArray[] kBF16;
+
+    private final HalfFloatArray[] vBF16;
+
     public Glm5NextBatchPrefillLayers(
             Glm5NextState state,
             Glm5NextTornadoWeights weights,
@@ -80,6 +90,16 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
         };
         for (int i = 0; i < shape.length; i++) {
             state.workspace.glm5nextBatch.expertShape.set(i, shape[i]);
+        }
+        this.kBF16 = new HalfFloatArray[config.numberOfLayers()];
+        this.vBF16 = new HalfFloatArray[config.numberOfLayers()];
+        if (config.tensorCoreAttention()) {
+            for (int l = 0; l < config.numberOfLayers(); l++) {
+                if (!config.isKda(l)) {
+                    kBF16[l] = toHalf(w.sparse().kB()[l].asByteArray());
+                    vBF16[l] = toHalf(w.sparse().vB()[l].asByteArray());
+                }
+            }
         }
         TaskGraph g = new TaskGraph(GRAPH);
         bind(g);
@@ -126,7 +146,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
             Glm5NextLayerWeights<TornadoTensor> w, Glm5NextConfiguration config) {
         List<Object> arrays = new ArrayList<>();
         for (int l = 0; l < config.numberOfLayers(); l++) {
-            arrays.addAll(Glm5NextLayers.layerArrays(w, config, l));
+            arrays.addAll(Glm5NextLayers.prefillArrays(w, config, l));
         }
         return arrays;
     }
@@ -197,6 +217,22 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 b.sharedOut);
         g.transferToDevice(DataTransferMode.FIRST_EXECUTION, persistent());
         g.transferToDevice(DataTransferMode.FIRST_EXECUTION, weightArrays(w, config).toArray());
+        if (config.tensorCoreAttention()) {
+            g.transferToDevice(
+                    DataTransferMode.FIRST_EXECUTION,
+                    b.queryF16,
+                    b.absorbedF16,
+                    b.keysF16,
+                    b.latentTF16,
+                    b.scores,
+                    b.probsF16,
+                    b.latentF16);
+            for (int l = 0; l < config.numberOfLayers(); l++) {
+                if (kBF16[l] != null) {
+                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, kBF16[l], vBF16[l]);
+                }
+            }
+        }
     }
 
     private void task(TaskGraph g, String name, WorkerGrid grid, TaskAdder adder) {
@@ -568,23 +604,6 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                                 batch));
         task(
                 g,
-                p + "absorb",
-                lanes(batch * heads * rank * 32, 128),
-                t ->
-                        g.task(
-                                t,
-                                Glm5NextBatchKernels::projectSlicedF32,
-                                context,
-                                s.kB()[l].asByteArray(),
-                                b.query,
-                                b.absorbed,
-                                keyHead,
-                                heads * rank,
-                                rank,
-                                config.queryDim(),
-                                batch));
-        task(
-                g,
                 p + "idx_store",
                 groups(batch, idLocal),
                 t ->
@@ -657,44 +676,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                                 pool,
                                 maxPools,
                                 config.indexerPoolBudget()));
-        task(
-                g,
-                p + "attention",
-                groups(batch * heads, Glm5NextBatchKernels.GROUP),
-                t ->
-                        g.task(
-                                t,
-                                Glm5NextBatchKernels::sparseLatentAttention,
-                                context,
-                                b.absorbed,
-                                ws.wrapKeyCache,
-                                b.selected,
-                                b.latentOut,
-                                ws.batchStartPosHolder,
-                                heads,
-                                rank,
-                                pool,
-                                maxPools,
-                                cacheOffset,
-                                config.indexerSelectTail() ? 1 : 0,
-                                config.attentionScale()));
-        task(
-                g,
-                p + "decompress",
-                lanes(batch * heads * valueHead * 32, 128),
-                t ->
-                        g.task(
-                                t,
-                                Glm5NextBatchKernels::projectSlicedF32,
-                                context,
-                                s.vB()[l].asByteArray(),
-                                b.latentOut,
-                                b.attnOut,
-                                rank,
-                                heads * valueHead,
-                                valueHead,
-                                heads * rank,
-                                batch));
+        latentAttention(g, p, l, cacheOffset);
         quantize(g, p + "attn_out_q8", b.attnOut, config.attentionOutputInputDim());
         project(
                 g,
@@ -703,6 +685,277 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 b.branch,
                 config.attentionOutputInputDim(),
                 dim);
+    }
+
+    // @formatter:off
+    /**
+     * Each head's query absorbed through {@code attn_k_b}, attention over the selected latents, and
+     * the attended latents decompressed through {@code attn_v_b}, into {@code attnOut}.
+     *
+     * <p>On FP16 tensor cores when the widths allow it ({@link
+     * Glm5NextConfiguration#tensorCoreAttention}), as deepseek2's batched attention does: the
+     * absorbed queries' scores against every filled position of the cache, a softmax that keeps
+     * only the indexer's pools and the open tail, the values, each a strided GEMM with FP32
+     * accumulation. Otherwise per-row kernels, the attention an online softmax over tiles.
+     */
+    // @formatter:on
+    private void latentAttention(TaskGraph g, String p, int l, int cacheOffset) {
+        var ws = gs.workspace;
+        Glm5NextBatchArrays b = ws.glm5nextBatch;
+        var s = w.sparse();
+        final int heads = config.numberOfHeads();
+        final int rank = config.kvLoraRank();
+        final int keyHead = config.keyHeadDim();
+        final int valueHead = config.valueHeadDim();
+        final int pool = config.indexerPoolSize();
+        final int maxPools = config.maxPools();
+        if (!config.tensorCoreAttention()) {
+            task(
+                    g,
+                    p + "absorb",
+                    lanes(batch * heads * rank * 32, 128),
+                    t ->
+                            g.task(
+                                    t,
+                                    Glm5NextBatchKernels::projectSlicedF32,
+                                    context,
+                                    s.kB()[l].asByteArray(),
+                                    b.query,
+                                    b.absorbed,
+                                    keyHead,
+                                    heads * rank,
+                                    rank,
+                                    config.queryDim(),
+                                    batch));
+            task(
+                    g,
+                    p + "attention",
+                    groups(batch * heads, Glm5NextBatchKernels.GROUP),
+                    t ->
+                            g.task(
+                                    t,
+                                    Glm5NextBatchKernels::sparseLatentAttention,
+                                    context,
+                                    b.absorbed,
+                                    ws.wrapKeyCache,
+                                    b.selected,
+                                    b.latentOut,
+                                    ws.batchStartPosHolder,
+                                    heads,
+                                    rank,
+                                    pool,
+                                    maxPools,
+                                    cacheOffset,
+                                    config.indexerSelectTail() ? 1 : 0,
+                                    config.attentionScale()));
+            task(
+                    g,
+                    p + "decompress",
+                    lanes(batch * heads * valueHead * 32, 128),
+                    t ->
+                            g.task(
+                                    t,
+                                    Glm5NextBatchKernels::projectSlicedF32,
+                                    context,
+                                    s.vB()[l].asByteArray(),
+                                    b.latentOut,
+                                    b.attnOut,
+                                    rank,
+                                    heads * valueHead,
+                                    valueHead,
+                                    heads * rank,
+                                    batch));
+            return;
+        }
+        final int padded = paddedBatch();
+        final int rows = padded * heads;
+        final int npad = b.paddedPositions;
+        final int queryDim = config.queryDim();
+        toHalf(g, p + "q_f16", b.query, b.queryF16, padded * queryDim);
+        // Absorb: per head, absorbed[t][h][r] = k_b[h][r] . q[t][h].
+        mma(
+                g,
+                p + "absorb",
+                b.queryF16,
+                kBF16[l],
+                b.absorbed,
+                padded,
+                rank,
+                keyHead,
+                queryDim,
+                keyHead,
+                heads * rank,
+                keyHead,
+                rank * keyHead,
+                rank,
+                heads,
+                0,
+                0);
+        toHalf(g, p + "absorbed_f16", b.absorbed, b.absorbedF16, rows * rank);
+        task(
+                g,
+                p + "cache_f16",
+                lanes(npad * rank, 256),
+                t ->
+                        g.task(
+                                t,
+                                DeepSeek2BatchKernels::cacheToHalf,
+                                context,
+                                ws.batchStartPosHolder,
+                                ws.wrapKeyCache,
+                                b.keysF16,
+                                b.latentTF16,
+                                cacheOffset,
+                                rank,
+                                0,
+                                npad));
+        mma(
+                g,
+                p + "scores",
+                b.absorbedF16,
+                b.keysF16,
+                b.scores,
+                rows,
+                npad,
+                rank,
+                rank,
+                rank,
+                npad,
+                0,
+                0,
+                0,
+                1,
+                1,
+                0);
+        task(
+                g,
+                p + "softmax",
+                groups(rows, Glm5NextBatchKernels.GROUP),
+                t ->
+                        g.task(
+                                t,
+                                Glm5NextBatchKernels::sparseSoftmax,
+                                context,
+                                ws.batchStartPosHolder,
+                                b.scores,
+                                b.probsF16,
+                                b.selected,
+                                heads,
+                                npad,
+                                pool,
+                                maxPools,
+                                config.indexerSelectTail() ? 1 : 0,
+                                config.attentionScale()));
+        mma(
+                g,
+                p + "attend",
+                b.probsF16,
+                b.latentTF16,
+                b.latentOut,
+                rows,
+                rank,
+                npad,
+                npad,
+                npad,
+                rank,
+                0,
+                0,
+                0,
+                1,
+                0,
+                1);
+        toHalf(g, p + "latent_f16", b.latentOut, b.latentF16, rows * rank);
+        // Decompress: per head, out[t][h][j] = v_b[h][j] . latent[t][h].
+        mma(
+                g,
+                p + "decompress",
+                b.latentF16,
+                vBF16[l],
+                b.attnOut,
+                padded,
+                valueHead,
+                rank,
+                heads * rank,
+                rank,
+                heads * valueHead,
+                rank,
+                valueHead * rank,
+                valueHead,
+                heads,
+                0,
+                0);
+    }
+
+    private int paddedBatch() {
+        return (batch + 127) / 128 * 128;
+    }
+
+    private void toHalf(TaskGraph g, String name, FloatArray in, HalfFloatArray out, int n) {
+        task(g, name, lanes(n, 256), t -> g.task(t, BatchMmaKernels::toHalf, context, in, out, n));
+    }
+
+    /** A strided FP16 tensor-core GEMM ({@link BatchMmaKernels#gemmMMAStrided}). */
+    private void mma(
+            TaskGraph g,
+            String name,
+            HalfFloatArray a,
+            HalfFloatArray bm,
+            FloatArray c,
+            int m,
+            int n,
+            int k,
+            int lda,
+            int ldb,
+            int ldc,
+            int aBatch,
+            int bBatch,
+            int cBatchCols,
+            int batches,
+            int boundN,
+            int boundK) {
+        WorkerGrid3D grid = new WorkerGrid3D((m / 128) * 256, n / 128, batches);
+        grid.setLocalWork(256, 1, 1);
+        task(
+                g,
+                name,
+                grid,
+                t ->
+                        g.task(
+                                t,
+                                BatchMmaKernels::gemmMMAStrided,
+                                context,
+                                a,
+                                bm,
+                                c,
+                                m,
+                                n,
+                                k,
+                                lda,
+                                ldb,
+                                ldc,
+                                aBatch,
+                                bBatch,
+                                cBatchCols,
+                                gs.workspace.batchStartPosHolder,
+                                boundN,
+                                boundK,
+                                0,
+                                0,
+                                1,
+                                0));
+    }
+
+    /** Q8_0 blocks decoded to FP16, element for element: the tensor-core attention's weights. */
+    private static HalfFloatArray toHalf(ByteArray q8) {
+        int blocks = q8.getSize() / 34;
+        HalfFloatArray out = new HalfFloatArray(blocks * 32);
+        for (int i = 0; i < blocks; i++) {
+            float scale = q8.getHalfFloat(i * 34).getFloat32();
+            for (int j = 0; j < 32; j++) {
+                out.set(i * 32 + j, new HalfFloat(scale * q8.get(i * 34 + 2 + j)));
+            }
+        }
+        return out;
     }
 
     // ── feed-forward ──────────────────────────────────────────────────────────
