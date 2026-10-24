@@ -65,44 +65,81 @@ public final class Glm5NextBatchKernels {
         }
     }
 
-    /** {@code mixes[b][k] = fn[k] . s_b / rms(s_b)}, a workgroup per (row, mix). */
+    // @formatter:off
+    /**
+     * {@link Glm5NextKernels#hcMixes} for every row: workgroup {@code (b * mixCount + k) *
+     * HC_CHUNKS + j} writes row {@code b}'s partial sums of mix {@code k} over chunk {@code j} to
+     * {@code partials} at that index (the dot) and {@code squares} past it (the sum of squares).
+     */
+    // @formatter:on
     public static void hcMixes(
             KernelContext context,
             FloatArray streams,
             FloatArray fn,
-            FloatArray mixes,
+            FloatArray partials,
             int width,
             int mixCount,
-            float rmsEps,
+            int squares,
             int batch) {
         int g = context.groupIdx;
         int tid = context.localIdx;
         int local = context.localGroupSizeX;
         float[] dots = context.allocateFloatLocalArray(GROUP);
-        float[] squares = context.allocateFloatLocalArray(GROUP);
-        int b = g / mixCount;
-        int k = g - b * mixCount;
+        float[] sums = context.allocateFloatLocalArray(GROUP);
+        int rowMix = g / Glm5NextKernels.HC_CHUNKS;
+        int j = g - rowMix * Glm5NextKernels.HC_CHUNKS;
+        int b = rowMix / mixCount;
+        int k = rowMix - b * mixCount;
+        int chunk = (width + Glm5NextKernels.HC_CHUNKS - 1) / Glm5NextKernels.HC_CHUNKS;
+        int start = j * chunk;
+        int end = TornadoMath.min(width, start + chunk);
         float dot = 0.0f;
         float square = 0.0f;
         if (b < batch) {
-            for (int i = tid; i < width; i += local) {
+            for (int i = start + tid; i < end; i += local) {
                 float v = streams.get(b * width + i);
                 dot += fn.get(k * width + i) * v;
                 square += v * v;
             }
         }
         dots[tid] = dot;
-        squares[tid] = square;
+        sums[tid] = square;
         context.localBarrier();
         for (int stride = local / 2; stride > 0; stride >>= 1) {
             if (tid < stride) {
                 dots[tid] += dots[tid + stride];
-                squares[tid] += squares[tid + stride];
+                sums[tid] += sums[tid + stride];
             }
             context.localBarrier();
         }
         if (b < batch && tid == 0) {
-            mixes.set(g, dots[0] / TornadoMath.sqrt(squares[0] / width + rmsEps));
+            partials.set(g, dots[0]);
+            partials.set(squares + g, sums[0]);
+        }
+    }
+
+    /**
+     * {@code mixes[b][k]} from {@link #hcMixes}' partial sums, added in the order {@link
+     * Glm5NextKernels#hcCoefficients} adds them. A lane per (row, mix).
+     */
+    public static void hcFinishMixes(
+            KernelContext context,
+            FloatArray partials,
+            FloatArray mixes,
+            int width,
+            int mixCount,
+            int squares,
+            float rmsEps,
+            int batch) {
+        int id = context.globalIdx;
+        if (id < batch * mixCount) {
+            float dot = 0.0f;
+            float square = 0.0f;
+            for (int j = 0; j < Glm5NextKernels.HC_CHUNKS; j++) {
+                dot += partials.get(id * Glm5NextKernels.HC_CHUNKS + j);
+                square += partials.get(squares + id * Glm5NextKernels.HC_CHUNKS + j);
+            }
+            mixes.set(id, dot / TornadoMath.sqrt(square / width + rmsEps));
         }
     }
 
@@ -599,9 +636,12 @@ public final class Glm5NextBatchKernels {
         }
     }
 
+    // @formatter:off
     /**
-     * Every row's pool scores, as {@link Glm5NextKernels#indexerScores}; a lane per (row, pool).
+     * Every row's pool scores, as {@link Glm5NextKernels#indexerScores} and in its order: {@link
+     * Glm5NextKernels#INDEX_LANES} lanes per (row, pool).
      */
+    // @formatter:on
     public static void indexerScores(
             KernelContext context,
             FloatArray query,
@@ -616,29 +656,49 @@ public final class Glm5NextBatchKernels {
             int poolOffset,
             int batch) {
         int id = context.globalIdx;
-        if (id < batch * maxPools) {
-            int b = id / maxPools;
-            int p = id - b * maxPools;
-            int complete = (batchInfo.get(0) + b + 1) / pool;
-            if (b < batchInfo.get(1) && p < complete) {
-                float headScale = 1.0f / TornadoMath.sqrt(heads);
-                float keyScale = 1.0f / TornadoMath.sqrt(headDim);
-                float score = 0.0f;
-                for (int h = 0; h < heads; h++) {
-                    float dot = 0.0f;
-                    for (int c = 0; c < headDim; c++) {
-                        dot +=
-                                query.get((b * heads + h) * headDim + c)
-                                        * poolKeys.get(poolOffset + p * headDim + c);
-                    }
-                    score +=
-                            headWeights.get(b * heads + h)
-                                    * headScale
-                                    * TornadoMath.max(dot * keyScale, 0.0f);
+        int tid = context.localIdx;
+        int rowPool = id / Glm5NextKernels.INDEX_LANES;
+        int lane = id - rowPool * Glm5NextKernels.INDEX_LANES;
+        int first = tid - lane;
+        int b = rowPool / maxPools;
+        int p = rowPool - b * maxPools;
+        float[] terms = context.allocateFloatLocalArray(GROUP);
+        int real = TornadoMath.min(1, TornadoMath.max(0, batchInfo.get(1) - b));
+        int complete = real * ((batchInfo.get(0) + b + 1) / pool);
+        float headScale = 1.0f / TornadoMath.sqrt(heads);
+        float keyScale = 1.0f / TornadoMath.sqrt(headDim);
+        int key = poolOffset + p * headDim;
+        float score = 0.0f;
+        for (int h0 = 0; h0 < heads; h0 += Glm5NextKernels.INDEX_LANES) {
+            int h = h0 + lane;
+            float term = 0.0f;
+            if (b < batch && p < complete && h < heads) {
+                float dot = 0.0f;
+                for (int c = 0; c < headDim; c++) {
+                    dot += query.get((b * heads + h) * headDim + c) * poolKeys.get(key + c);
                 }
-                scores.set(id, score);
-            } else {
-                scores.set(id, Float.NEGATIVE_INFINITY);
+                term =
+                        headWeights.get(b * heads + h)
+                                * headScale
+                                * TornadoMath.max(dot * keyScale, 0.0f);
+            }
+            terms[tid] = term;
+            context.localBarrier();
+            if (lane == 0) {
+                int count = TornadoMath.min(Glm5NextKernels.INDEX_LANES, heads - h0);
+                for (int i = 0; i < count; i++) {
+                    score += terms[first + i];
+                }
+            }
+            context.localBarrier();
+        }
+        if (b < batch && lane == 0) {
+            int done = TornadoMath.min(1, TornadoMath.max(0, complete - p));
+            if (done == 1) {
+                scores.set(rowPool, score);
+            }
+            if (done == 0) {
+                scores.set(rowPool, Float.NEGATIVE_INFINITY);
             }
         }
     }

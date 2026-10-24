@@ -111,22 +111,27 @@ public class Glm5NextDecodeParityAccelTest {
 
     /**
      * The medium model, whose widths are whole GEMM tiles, so its batched prefill runs the int8
-     * tensor-core GEMMs: decoded after the prefill, every position must show what decoding every
-     * token one at a time shows, up to the rare position a rounding flip separates.
+     * tensor-core GEMMs and the tensor-core attention: decoded after the prefill, it must track the
+     * host as closely as decoding every token one at a time does. The two need not agree position
+     * for position: a rounding flip in the prefilled positions stays in the cache.
      */
     @Test
     public void theMediumModelDecodesTheSameAfterABatchedPrefill() throws Exception {
         float[] single = run("model-medium-Q8_0.gguf").errors;
         Result batched = run("model-medium-Q8_0.gguf", PREFILL, CHUNK);
-        int same = 0;
-        for (int t = PREFILL; t < single.length; t++) {
-            float a = single[t];
-            float b = batched.errors[t];
-            same += Math.abs(a - b) <= 1e-5f + 0.01f * Math.max(a, b) ? 1 : 0;
-        }
+        float singleMedian = median(single, PREFILL);
+        float batchedMedian = median(batched.errors, PREFILL);
+        assertTrue(
+                "median error " + batchedMedian + " against " + singleMedian + " token by token",
+                batchedMedian <= 1.25f * singleMedian);
         int decoded = single.length - PREFILL;
-        assertTrue("positions as token by token: " + same, same >= decoded * 7 / 10);
         assertTrue("greedy choices agree at " + batched.agree, batched.agree >= decoded * 8 / 10);
+    }
+
+    private static float median(float[] errors, int from) {
+        float[] tail = java.util.Arrays.copyOfRange(errors, from, errors.length);
+        java.util.Arrays.sort(tail);
+        return tail[tail.length / 2];
     }
 
     private record Result(float[] errors, int agree) {}

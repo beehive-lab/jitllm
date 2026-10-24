@@ -25,6 +25,15 @@ public final class Glm5NextKernels {
     /** The widest workgroup the reductions here are written for. */
     public static final int GROUP = 256;
 
+    /** The workgroups {@link #hcMixes} splits each mixing coefficient's sum over. */
+    public static final int HC_CHUNKS = 16;
+
+    /** The most mixing coefficients {@link #hcCoefficients} takes: {@code (2 + n) * n}. */
+    public static final int HC_MAX_MIXES = 128;
+
+    /** The lanes {@link #indexerScores} gives each pool, one per head and then round again. */
+    public static final int INDEX_LANES = 32;
+
     /** The most experts {@link #routerTopKSigmoid} routes over. */
     public static final int MAX_EXPERTS = 512;
 
@@ -34,29 +43,36 @@ public final class Glm5NextKernels {
 
     // @formatter:off
     /**
-     * One mHC mixing coefficient per workgroup: {@code mixes[k] = fn[k] . s / rms(s)} over the
-     * flattened streams {@code s} of {@code width} values.
+     * Partial sums of the mHC mixing coefficients {@code mixes[k] = fn[k] . s / rms(s)} over the
+     * flattened streams {@code s} of {@code width} values: workgroup {@code k * HC_CHUNKS + j}
+     * takes chunk {@code j} of the streams and writes {@code fn[k] . s} over it to {@code
+     * partials[k * HC_CHUNKS + j]} and {@code s . s} over it to {@code partials[(mixCount + k) *
+     * HC_CHUNKS + j]}. {@link #hcCoefficients} adds them up.
      *
-     * <p>Grid: {@code mixCount} workgroups of {@code localSize ≤ GROUP} lanes.
+     * <p>Grid: {@code mixCount * HC_CHUNKS} workgroups of {@code localSize ≤ GROUP} lanes.
      */
     // @formatter:on
     public static void hcMixes(
             KernelContext context,
             FloatArray streams,
             FloatArray fn,
-            FloatArray mixes,
+            FloatArray partials,
             int width,
-            int mixCount,
-            float rmsEps) {
-        int k = context.groupIdx;
+            int mixCount) {
+        int group = context.groupIdx;
+        int k = group / HC_CHUNKS;
+        int j = group - k * HC_CHUNKS;
         int tid = context.localIdx;
         int local = context.localGroupSizeX;
         float[] dots = context.allocateFloatLocalArray(GROUP);
         float[] squares = context.allocateFloatLocalArray(GROUP);
+        int chunk = (width + HC_CHUNKS - 1) / HC_CHUNKS;
+        int start = j * chunk;
+        int end = TornadoMath.min(width, start + chunk);
         float dot = 0.0f;
         float square = 0.0f;
         if (k < mixCount) {
-            for (int i = tid; i < width; i += local) {
+            for (int i = start + tid; i < end; i += local) {
                 float v = streams.get(i);
                 dot += fn.get(k * width + i) * v;
                 square += v * v;
@@ -73,85 +89,123 @@ public final class Glm5NextKernels {
             context.localBarrier();
         }
         if (k < mixCount && tid == 0) {
-            mixes.set(k, dots[0] / TornadoMath.sqrt(squares[0] / width + rmsEps));
+            partials.set(group, dots[0]);
+            partials.set(mixCount * HC_CHUNKS + group, squares[0]);
         }
     }
 
     // @formatter:off
     /**
-     * The coefficients from the mixes, in one lane: {@code coeffs} is {@code pre[n]}, then {@code
-     * post[n]}, then the mix {@code comb[n][n]} with {@code comb[m][k]} feeding input stream {@code
-     * m} into output stream {@code k}.
+     * The mixes from {@link #hcMixes}' partial sums, and the coefficients from them, in one
+     * workgroup: {@code coeffs} is {@code pre[n]}, then {@code post[n]}, then the mix {@code
+     * comb[n][n]} with {@code comb[m][k]} feeding input stream {@code m} into output stream {@code
+     * k}.
      *
      * <ul>
      *   <li>{@code pre = sigmoid(mix * s0 + b) + eps}, {@code post = postScale * sigmoid(mix * s1 +
      *       b)};
      *   <li>the mix: a row softmax plus eps, a column normalization, then {@code iterations - 1}
-     *       row-then-column normalizations (Sinkhorn).
+     *       row-then-column normalizations (Sinkhorn), a lane per entry.
      * </ul>
+     *
+     * <p>Grid: one workgroup of at least {@code (2 + n) * n} lanes, at most {@link #HC_MAX_MIXES}.
      */
     // @formatter:on
     public static void hcCoefficients(
             KernelContext context,
-            FloatArray mixes,
+            FloatArray partials,
             FloatArray base,
             FloatArray scale,
+            FloatArray mixes,
             FloatArray coeffs,
             int n,
+            int width,
             int iterations,
             float eps,
-            float postScale) {
-        int lane = context.globalIdx;
-        if (lane < 1) {
-            float s0 = scale.get(0);
-            float s1 = scale.get(1);
-            float s2 = scale.get(2);
-            for (int i = 0; i < n; i++) {
-                float pre = mixes.get(i) * s0 + base.get(i);
-                coeffs.set(i, 1.0f / (1.0f + TornadoMath.exp(-pre)) + eps);
-                float post = mixes.get(n + i) * s1 + base.get(n + i);
-                coeffs.set(n + i, postScale / (1.0f + TornadoMath.exp(-post)));
+            float postScale,
+            float rmsEps) {
+        int id = context.localIdx;
+        int mixCount = (2 + n) * n;
+        float[] mix = context.allocateFloatLocalArray(HC_MAX_MIXES);
+        float[] comb = context.allocateFloatLocalArray(HC_MAX_MIXES);
+        if (id < mixCount) {
+            float dot = 0.0f;
+            float square = 0.0f;
+            for (int j = 0; j < HC_CHUNKS; j++) {
+                dot += partials.get(id * HC_CHUNKS + j);
+                square += partials.get((mixCount + id) * HC_CHUNKS + j);
             }
-            int c0 = 2 * n;
-            for (int r = 0; r < n; r++) {
-                float max = Float.NEGATIVE_INFINITY;
+            float v = dot / TornadoMath.sqrt(square / width + rmsEps);
+            mix[id] = v;
+            mixes.set(id, v);
+        }
+        context.localBarrier();
+        if (id < n) {
+            float pre = mix[id] * scale.get(0) + base.get(id);
+            coeffs.set(id, 1.0f / (1.0f + TornadoMath.exp(-pre)) + eps);
+            float post = mix[n + id] * scale.get(1) + base.get(n + id);
+            coeffs.set(n + id, postScale / (1.0f + TornadoMath.exp(-post)));
+        }
+        int entries = n * n;
+        int row = id / n;
+        int c0 = 2 * n;
+        if (id < entries) {
+            comb[id] = mix[c0 + id] * scale.get(2) + base.get(c0 + id);
+        }
+        context.localBarrier();
+        // The row softmax plus eps.
+        float max = Float.NEGATIVE_INFINITY;
+        if (id < entries) {
+            for (int c = 0; c < n; c++) {
+                max = TornadoMath.max(max, comb[row * n + c]);
+            }
+        }
+        context.localBarrier();
+        if (id < entries) {
+            comb[id] = TornadoMath.exp(comb[id] - max);
+        }
+        context.localBarrier();
+        float sum = 0.0f;
+        if (id < entries) {
+            for (int c = 0; c < n; c++) {
+                sum += comb[row * n + c];
+            }
+        }
+        context.localBarrier();
+        if (id < entries) {
+            comb[id] = comb[id] / sum + eps;
+        }
+        context.localBarrier();
+        int column = id - row * n;
+        for (int it = 0; it < iterations; it++) {
+            // Rows, from the second iteration on.
+            int rows = TornadoMath.min(it, 1);
+            float rowSum = 0.0f;
+            if (id < entries) {
                 for (int c = 0; c < n; c++) {
-                    float v = mixes.get(c0 + r * n + c) * s2 + base.get(c0 + r * n + c);
-                    coeffs.set(c0 + r * n + c, v);
-                    max = TornadoMath.max(max, v);
-                }
-                float sum = 0.0f;
-                for (int c = 0; c < n; c++) {
-                    float e = TornadoMath.exp(coeffs.get(c0 + r * n + c) - max);
-                    coeffs.set(c0 + r * n + c, e);
-                    sum += e;
-                }
-                for (int c = 0; c < n; c++) {
-                    coeffs.set(c0 + r * n + c, coeffs.get(c0 + r * n + c) / sum + eps);
+                    rowSum += comb[row * n + c];
                 }
             }
-            for (int it = 0; it < iterations; it++) {
-                if (it > 0) {
-                    for (int r = 0; r < n; r++) {
-                        float sum = 0.0f;
-                        for (int c = 0; c < n; c++) {
-                            sum += coeffs.get(c0 + r * n + c);
-                        }
-                        for (int c = 0; c < n; c++) {
-                            coeffs.set(c0 + r * n + c, coeffs.get(c0 + r * n + c) / (sum + eps));
-                        }
-                    }
-                }
-                for (int c = 0; c < n; c++) {
-                    float sum = 0.0f;
-                    for (int r = 0; r < n; r++) {
-                        sum += coeffs.get(c0 + r * n + c);
-                    }
-                    for (int r = 0; r < n; r++) {
-                        coeffs.set(c0 + r * n + c, coeffs.get(c0 + r * n + c) / (sum + eps));
-                    }
+            context.localBarrier();
+            if (id < entries) {
+                float scaled = comb[id] / (rowSum + eps);
+                comb[id] = rows * scaled + (1 - rows) * comb[id];
+            }
+            context.localBarrier();
+            float columnSum = 0.0f;
+            if (id < entries) {
+                for (int r = 0; r < n; r++) {
+                    columnSum += comb[r * n + column];
                 }
             }
+            context.localBarrier();
+            if (id < entries) {
+                comb[id] = comb[id] / (columnSum + eps);
+            }
+            context.localBarrier();
+        }
+        if (id < entries) {
+            coeffs.set(c0 + id, comb[id]);
         }
     }
 
@@ -470,8 +524,13 @@ public final class Glm5NextKernels {
 
     // @formatter:off
     /**
-     * Each complete pool's score {@code sum_h w_h / sqrt(H) * relu(q_h . key / sqrt(d))}; a lane
-     * per pool. Pools not yet complete score negative infinity.
+     * Each complete pool's score {@code sum_h w_h / sqrt(H) * relu(q_h . key / sqrt(d))}; {@link
+     * #INDEX_LANES} lanes per pool, a head per lane for {@code INDEX_LANES} heads at a time, and
+     * the pool's first lane adding the heads' terms in head order. Pools not yet complete score
+     * negative infinity.
+     *
+     * <p>Grid: {@code maxPools * INDEX_LANES} lanes in workgroups of a multiple of {@code
+     * INDEX_LANES}, at most {@link #GROUP}.
      */
     // @formatter:on
     public static void indexerScores(
@@ -486,24 +545,43 @@ public final class Glm5NextKernels {
             int pool,
             int maxPools,
             int poolOffset) {
-        int p = context.globalIdx;
-        if (p < maxPools) {
-            int complete = (positionHolder.get(0) + 1) / pool;
-            if (p < complete) {
-                float headScale = 1.0f / TornadoMath.sqrt(heads);
-                float keyScale = 1.0f / TornadoMath.sqrt(headDim);
-                float score = 0.0f;
-                for (int h = 0; h < heads; h++) {
-                    float dot = 0.0f;
-                    for (int c = 0; c < headDim; c++) {
-                        dot +=
-                                query.get(h * headDim + c)
-                                        * poolKeys.get(poolOffset + p * headDim + c);
-                    }
-                    score += headWeights.get(h) * headScale * TornadoMath.max(dot * keyScale, 0.0f);
+        int id = context.globalIdx;
+        int tid = context.localIdx;
+        int p = id / INDEX_LANES;
+        int lane = id - p * INDEX_LANES;
+        int first = tid - lane;
+        float[] terms = context.allocateFloatLocalArray(GROUP);
+        int complete = (positionHolder.get(0) + 1) / pool;
+        float headScale = 1.0f / TornadoMath.sqrt(heads);
+        float keyScale = 1.0f / TornadoMath.sqrt(headDim);
+        int key = poolOffset + p * headDim;
+        float score = 0.0f;
+        for (int h0 = 0; h0 < heads; h0 += INDEX_LANES) {
+            int h = h0 + lane;
+            float term = 0.0f;
+            if (p < complete && h < heads) {
+                float dot = 0.0f;
+                for (int c = 0; c < headDim; c++) {
+                    dot += query.get(h * headDim + c) * poolKeys.get(key + c);
                 }
+                term = headWeights.get(h) * headScale * TornadoMath.max(dot * keyScale, 0.0f);
+            }
+            terms[tid] = term;
+            context.localBarrier();
+            if (lane == 0) {
+                int count = TornadoMath.min(INDEX_LANES, heads - h0);
+                for (int i = 0; i < count; i++) {
+                    score += terms[first + i];
+                }
+            }
+            context.localBarrier();
+        }
+        if (p < maxPools && lane == 0) {
+            int done = TornadoMath.min(1, TornadoMath.max(0, complete - p));
+            if (done == 1) {
                 scores.set(p, score);
-            } else {
+            }
+            if (done == 0) {
                 scores.set(p, Float.NEGATIVE_INFINITY);
             }
         }
