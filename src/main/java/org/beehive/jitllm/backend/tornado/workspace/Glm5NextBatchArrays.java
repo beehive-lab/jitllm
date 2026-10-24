@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.workspace;
 
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 /**
@@ -87,6 +88,26 @@ public final class Glm5NextBatchArrays {
     public final FloatArray sharedUp;
     public final FloatArray sharedOut;
 
+    // @formatter:off
+    /**
+     * The sparse attention on FP16 tensor cores, null without it: the queries and the absorbed
+     * queries in FP16, the layer's latents up to the chunk in FP16 as rows and as columns, the
+     * scores of every (token, head) row against every padded position, their masked softmax, and
+     * the attended latents in FP16 for the decompression.
+     */
+    // @formatter:on
+    public final HalfFloatArray queryF16;
+
+    public final HalfFloatArray absorbedF16;
+    public final HalfFloatArray keysF16;
+    public final HalfFloatArray latentTF16;
+    public final FloatArray scores;
+    public final HalfFloatArray probsF16;
+    public final HalfFloatArray latentF16;
+
+    /** The context rounded up to whole 128-column tiles: the score GEMM's width. */
+    public final int paddedPositions;
+
     /** The expert kernels' shape: dim, expert hidden, shared hidden, used, split, batch. */
     public final IntArray expertShape;
 
@@ -114,7 +135,10 @@ public final class Glm5NextBatchArrays {
             int used,
             int moeHidden,
             int expertHidden,
-            int sharedHidden) {}
+            int sharedHidden,
+            boolean tensorAttention,
+            int heads,
+            int context) {}
 
     private Glm5NextBatchArrays(Sizes s) {
         // Every chunk-wide array holds whole 128-row tiles: an int8 GEMM stores every row of a
@@ -181,6 +205,25 @@ public final class Glm5NextBatchArrays {
         sharedGate = TornadoWorkspaces.floats(b * shared);
         sharedUp = TornadoWorkspaces.floats(b * shared);
         sharedOut = TornadoWorkspaces.floats(b * s.dim);
+        paddedPositions = (s.context + 127) & ~127;
+        if (s.tensorAttention) {
+            int rows = b * s.heads;
+            queryF16 = TornadoWorkspaces.halfFloats(b * s.queryDim);
+            absorbedF16 = TornadoWorkspaces.halfFloats(b * s.absorbed);
+            keysF16 = TornadoWorkspaces.halfFloats(paddedPositions * s.rank);
+            latentTF16 = TornadoWorkspaces.halfFloats(s.rank * paddedPositions);
+            scores = TornadoWorkspaces.floats(rows * paddedPositions);
+            probsF16 = TornadoWorkspaces.halfFloats(rows * paddedPositions);
+            latentF16 = TornadoWorkspaces.halfFloats(b * s.absorbed);
+        } else {
+            queryF16 = null;
+            absorbedF16 = null;
+            keysF16 = null;
+            latentTF16 = null;
+            scores = null;
+            probsF16 = null;
+            latentF16 = null;
+        }
     }
 
     public static Glm5NextBatchArrays allocate(Sizes sizes) {

@@ -334,7 +334,10 @@ public final class Glm5NextState extends State {
                                     c.expertsUsed(),
                                     moeHidden,
                                     c.expertHiddenDim(),
-                                    c.sharedHiddenDim()));
+                                    c.sharedHiddenDim(),
+                                    c.tensorCoreAttention(),
+                                    c.numberOfHeads(),
+                                    context));
         }
 
         // [0] = position, [1] = table-local KV slot.
