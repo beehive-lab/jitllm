@@ -34,6 +34,12 @@ public final class Glm5NextKernels {
     /** The lanes {@link #indexerScores} gives each pool, one per head and then round again. */
     public static final int INDEX_LANES = 32;
 
+    /** The state columns one {@link #kdaDeltaRule} workgroup takes. */
+    public static final int DELTA_COLUMNS = 32;
+
+    /** The chunks {@link #kdaDeltaRule} splits each state column's rows into. */
+    public static final int DELTA_CHUNKS = 8;
+
     /** The most experts {@link #routerTopKSigmoid} routes over. */
     public static final int MAX_EXPERTS = 512;
 
@@ -349,12 +355,18 @@ public final class Glm5NextKernels {
 
     // @formatter:off
     /**
-     * The KDA delta rule, a lane per (head, value channel) owning one column of its head's state:
+     * The KDA delta rule over each head's state {@code S}, the key channel {@code i} as the row:
      * {@code S[i][j] *= decay[i]}, {@code d = (v[j] - sum_i S[i][j] k[i]) * beta}, {@code S[i][j]
      * += k[i] d}, {@code out[j] = sum_i S[i][j] q[i]}.
      *
-     * <p>A column depends on no other column, so there is no synchronization. The state of this
-     * layer starts at {@code stateOffset}, row-major per head with the key channel as the row.
+     * <p>A workgroup takes {@link #DELTA_COLUMNS} columns of one head, each column's rows split
+     * into {@link #DELTA_CHUNKS} chunks, a lane per (chunk, column): adjacent lanes read adjacent
+     * columns. The chunks' sums meet in local memory, added in chunk order. The second pass decays
+     * the state again from what it read rather than storing it twice. The state of this layer
+     * starts at {@code stateOffset}, row-major per head.
+     *
+     * <p>Grid: {@code heads * ceil(headDim / DELTA_COLUMNS)} workgroups of {@code DELTA_COLUMNS *
+     * DELTA_CHUNKS} lanes.
      */
     // @formatter:on
     public static void kdaDeltaRule(
@@ -369,26 +381,55 @@ public final class Glm5NextKernels {
             int heads,
             int headDim,
             int stateOffset) {
-        int lane = context.globalIdx;
-        if (lane < heads * headDim) {
-            int h = lane / headDim;
-            int j = lane - h * headDim;
-            int base = h * headDim;
-            int stateBase = stateOffset + h * headDim * headDim + j;
-            float correction = 0.0f;
-            for (int i = 0; i < headDim; i++) {
+        int tid = context.localIdx;
+        int column = tid % DELTA_COLUMNS;
+        int chunk = tid / DELTA_COLUMNS;
+        int tiles = (headDim + DELTA_COLUMNS - 1) / DELTA_COLUMNS;
+        int h = context.groupIdx / tiles;
+        int j = (context.groupIdx - h * tiles) * DELTA_COLUMNS + column;
+        float[] sums = context.allocateFloatLocalArray(DELTA_COLUMNS * DELTA_CHUNKS);
+        int rows = (headDim + DELTA_CHUNKS - 1) / DELTA_CHUNKS;
+        int start = chunk * rows;
+        int end = TornadoMath.min(headDim, start + rows);
+        int base = h * headDim;
+        int stateBase = stateOffset + h * headDim * headDim + j;
+        int active =
+                TornadoMath.min(1, TornadoMath.max(0, heads - h))
+                        * TornadoMath.min(1, TornadoMath.max(0, headDim - j));
+        float correction = 0.0f;
+        if (active == 1) {
+            for (int i = start; i < end; i++) {
                 float s = state.get(stateBase + i * headDim) * decay.get(base + i);
-                state.set(stateBase + i * headDim, s);
                 correction += s * k.get(base + i);
             }
-            float delta = (v.get(base + j) - correction) * beta.get(h);
-            float o = 0.0f;
-            for (int i = 0; i < headDim; i++) {
-                float s = state.get(stateBase + i * headDim) + k.get(base + i) * delta;
+        }
+        sums[tid] = correction;
+        context.localBarrier();
+        float total = 0.0f;
+        for (int c = 0; c < DELTA_CHUNKS; c++) {
+            total += sums[c * DELTA_COLUMNS + column];
+        }
+        context.localBarrier();
+        float o = 0.0f;
+        if (active == 1) {
+            float delta = (v.get(base + j) - total) * beta.get(h);
+            for (int i = start; i < end; i++) {
+                float s =
+                        state.get(stateBase + i * headDim) * decay.get(base + i)
+                                + k.get(base + i) * delta;
                 state.set(stateBase + i * headDim, s);
                 o += s * q.get(base + i);
             }
-            out.set(base + j, o);
+        }
+        sums[tid] = o;
+        context.localBarrier();
+        int writer = active * (1 - TornadoMath.min(1, chunk));
+        if (writer == 1) {
+            float result = 0.0f;
+            for (int c = 0; c < DELTA_CHUNKS; c++) {
+                result += sums[c * DELTA_COLUMNS + column];
+            }
+            out.set(base + j, result);
         }
     }
 

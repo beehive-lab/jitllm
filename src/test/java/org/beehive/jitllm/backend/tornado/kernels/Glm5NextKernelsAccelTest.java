@@ -418,7 +418,13 @@ public class Glm5NextKernelsAccelTest {
         s.addWorkerGrid("kda.decay", lanes(width, 64));
         s.addWorkerGrid("kda.nq", groups(heads, 32));
         s.addWorkerGrid("kda.nk", groups(heads, 32));
-        s.addWorkerGrid("kda.delta", lanes(width, 32));
+        s.addWorkerGrid(
+                "kda.delta",
+                groups(
+                        heads
+                                * ((hd + Glm5NextKernels.DELTA_COLUMNS - 1)
+                                        / Glm5NextKernels.DELTA_COLUMNS),
+                        Glm5NextKernels.DELTA_COLUMNS * Glm5NextKernels.DELTA_CHUNKS));
         s.addWorkerGrid("kda.norm", groups(heads, 32));
         try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
             for (int step = 0; step < steps; step++) {
