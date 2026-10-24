@@ -57,11 +57,11 @@ public class Glm5NextKernelsAccelTest {
     }
 
     /**
-     * The decode and the batched prefill compute the hyper-connection coefficients in the same
-     * order, so a decode continuing a batched prefill sees the same values bit for bit.
+     * The decode and the batched prefill compute the hyper-connection coefficients alike, to float
+     * rounding: the batched mixes are a tiled GEMM, which adds in another order.
      */
     @Test
-    public void theDecodeAndBatchedHyperConnectionCoefficientsAgreeBitwise() throws Exception {
+    public void theDecodeAndBatchedHyperConnectionCoefficientsAgree() throws Exception {
         int n = 4, dim = 4096, width = n * dim, mixCount = (2 + n) * n, iterations = 20;
         int chunks = Glm5NextKernels.HC_CHUNKS;
         float eps = 1e-6f, rmsEps = 1e-5f, postScale = 2f;
@@ -154,20 +154,20 @@ public class Glm5NextKernelsAccelTest {
         GridScheduler s = new GridScheduler();
         s.addWorkerGrid("hcb.mix", groups(mixCount * chunks, 256));
         s.addWorkerGrid("hcb.coef", groups(1, 32));
-        s.addWorkerGrid("hcb.bmix", groups(mixCount * chunks, 256));
+        s.addWorkerGrid("hcb.bmix", groups(chunks, 256));
         s.addWorkerGrid("hcb.bfinish", lanes(mixCount, 128));
         s.addWorkerGrid("hcb.bcoef", lanes(1, 32));
         try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
             plan.withGridScheduler(s).execute();
         }
         for (int i = 0; i < 2 * mixCount * chunks; i++) {
-            assertEquals("partial " + i, batchPartials.get(i), partials.get(i), 0f);
+            assertClose("partial " + i, batchPartials.get(i), partials.get(i), 1e-4);
         }
         for (int k = 0; k < mixCount; k++) {
-            assertEquals("mix " + k, batchMixes.get(k), mixes.get(k), 0f);
+            assertClose("mix " + k, batchMixes.get(k), mixes.get(k), 1e-5);
         }
         for (int k = 0; k < mixCount; k++) {
-            assertEquals("coefficient " + k, batchCoeffs.get(k), coeffs.get(k), 0f);
+            assertClose("coefficient " + k, batchCoeffs.get(k), coeffs.get(k), 1e-5);
         }
     }
 

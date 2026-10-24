@@ -277,12 +277,22 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
         final int dim = config.dim();
         final int n = config.hcCount();
         final int mixCount = config.hcMixCount();
+        if (mixCount > Glm5NextBatchKernels.HC_TILE) {
+            throw new UnsupportedOperationException(
+                    "the glm5next batched mHC takes at most "
+                            + Glm5NextBatchKernels.HC_TILE
+                            + " mixing coefficients");
+        }
         // The sums of squares follow the dots, past every padded row's.
         final int squares = paddedBatch() * mixCount * Glm5NextKernels.HC_CHUNKS;
         task(
                 g,
                 name + "_mix",
-                groups(batch * mixCount * Glm5NextKernels.HC_CHUNKS, Glm5NextBatchKernels.GROUP),
+                groups(
+                        (batch + Glm5NextBatchKernels.HC_TILE - 1)
+                                / Glm5NextBatchKernels.HC_TILE
+                                * Glm5NextKernels.HC_CHUNKS,
+                        Glm5NextBatchKernels.HC_TILE * Glm5NextBatchKernels.HC_TILE / 4),
                 t ->
                         g.task(
                                 t,

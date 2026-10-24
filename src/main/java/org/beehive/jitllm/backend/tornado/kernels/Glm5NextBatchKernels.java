@@ -93,11 +93,21 @@ public final class Glm5NextBatchKernels {
         }
     }
 
+    /** The rows and the mixes of one {@link #hcMixes} tile, and the depth of its K steps. */
+    public static final int HC_TILE = 32;
+
     // @formatter:off
     /**
-     * {@link Glm5NextKernels#hcMixes} for every row: workgroup {@code (b * mixCount + k) *
-     * HC_CHUNKS + j} writes row {@code b}'s partial sums of mix {@code k} over chunk {@code j} to
-     * {@code partials} at that index (the dot) and {@code squares} past it (the sum of squares).
+     * The partial sums of {@link Glm5NextKernels#hcMixes} for every row as one GEMM, {@code streams
+     * · fnᵀ}, split along the depth into {@link Glm5NextKernels#HC_CHUNKS} chunks: the workgroup
+     * {@code tile * HC_CHUNKS + j} computes rows {@code [tile * HC_TILE, (tile + 1) * HC_TILE)}
+     * against every mix over chunk {@code j}, staging {@code HC_TILE}-deep slices of both in local
+     * memory, each lane accumulating four outputs. The rows' sums of squares are taken from the
+     * same slices. The partials go where {@link #hcFinishMixes} reads them, the sum of squares once
+     * per mix.
+     *
+     * <p>Grid: {@code ceil(batch / HC_TILE) * HC_CHUNKS} workgroups of {@code HC_TILE * HC_TILE /
+     * 4} lanes; {@code mixCount} at most {@code HC_TILE}.
      */
     // @formatter:on
     public static void hcMixes(
@@ -109,40 +119,82 @@ public final class Glm5NextBatchKernels {
             int mixCount,
             int squares,
             int batch) {
+        final int t = HC_TILE;
         int g = context.groupIdx;
         int tid = context.localIdx;
-        int local = context.localGroupSizeX;
-        float[] dots = context.allocateFloatLocalArray(GROUP);
-        float[] sums = context.allocateFloatLocalArray(GROUP);
-        int rowMix = g / Glm5NextKernels.HC_CHUNKS;
-        int j = g - rowMix * Glm5NextKernels.HC_CHUNKS;
-        int b = rowMix / mixCount;
-        int k = rowMix - b * mixCount;
+        int tile = g / Glm5NextKernels.HC_CHUNKS;
+        int j = g - tile * Glm5NextKernels.HC_CHUNKS;
+        float[] a = context.allocateFloatLocalArray(HC_TILE * (HC_TILE + 1));
+        float[] w = context.allocateFloatLocalArray(HC_TILE * (HC_TILE + 1));
+        float[] sq = context.allocateFloatLocalArray(HC_TILE * 8);
         int chunk = (width + Glm5NextKernels.HC_CHUNKS - 1) / Glm5NextKernels.HC_CHUNKS;
         int start = j * chunk;
         int end = TornadoMath.min(width, start + chunk);
-        float dot = 0.0f;
+        // Loads: lane tid fills row tid / 8, depth (tid % 8) * 4 .. + 3 of both slices.
+        int loadRow = tid / 8;
+        int loadDepth = (tid % 8) * 4;
+        int b = tile * t + loadRow;
+        int realRow = TornadoMath.min(1, TornadoMath.max(0, batch - b));
+        int rowBase = realRow * b * width;
+        int realMix = TornadoMath.min(1, TornadoMath.max(0, mixCount - loadRow));
+        int mixBase = realMix * loadRow * width;
+        // Outputs: lane tid owns row tid / 8 and mixes (tid % 8) * 4 .. + 3.
+        int outRow = tid / 8;
+        int outMix = (tid % 8) * 4;
+        float acc0 = 0.0f;
+        float acc1 = 0.0f;
+        float acc2 = 0.0f;
+        float acc3 = 0.0f;
         float square = 0.0f;
-        if (b < batch) {
-            for (int i = start + tid; i < end; i += local) {
-                float v = streams.get(b * width + i);
-                dot += fn.get(k * width + i) * v;
+        for (int k0 = start; k0 < end; k0 += t) {
+            for (int d = 0; d < 4; d++) {
+                // A depth past the chunk reads its first element and counts as zero.
+                int k = k0 + loadDepth + d;
+                int in = TornadoMath.min(1, TornadoMath.max(0, end - k));
+                int safe = in * k + (1 - in) * start;
+                float v = in * realRow * streams.get(rowBase + safe);
+                a[loadRow * (t + 1) + loadDepth + d] = v;
                 square += v * v;
+                w[loadRow * (t + 1) + loadDepth + d] = in * realMix * fn.get(mixBase + safe);
             }
-        }
-        dots[tid] = dot;
-        sums[tid] = square;
-        context.localBarrier();
-        for (int stride = local / 2; stride > 0; stride >>= 1) {
-            if (tid < stride) {
-                dots[tid] += dots[tid + stride];
-                sums[tid] += sums[tid + stride];
+            context.localBarrier();
+            for (int kk = 0; kk < t; kk++) {
+                float x = a[outRow * (t + 1) + kk];
+                acc0 += x * w[outMix * (t + 1) + kk];
+                acc1 += x * w[(outMix + 1) * (t + 1) + kk];
+                acc2 += x * w[(outMix + 2) * (t + 1) + kk];
+                acc3 += x * w[(outMix + 3) * (t + 1) + kk];
             }
             context.localBarrier();
         }
-        if (b < batch && tid == 0) {
-            partials.set(g, dots[0]);
-            partials.set(squares + g, sums[0]);
+        sq[tid] = square;
+        context.localBarrier();
+        int row = tile * t + outRow;
+        if (row < batch) {
+            float rowSquares = 0.0f;
+            for (int i = 0; i < 8; i++) {
+                rowSquares += sq[outRow * 8 + i];
+            }
+            int base = row * mixCount;
+            if (outMix < mixCount) {
+                partials.set((base + outMix) * Glm5NextKernels.HC_CHUNKS + j, acc0);
+                partials.set(squares + (base + outMix) * Glm5NextKernels.HC_CHUNKS + j, rowSquares);
+            }
+            if (outMix + 1 < mixCount) {
+                partials.set((base + outMix + 1) * Glm5NextKernels.HC_CHUNKS + j, acc1);
+                partials.set(
+                        squares + (base + outMix + 1) * Glm5NextKernels.HC_CHUNKS + j, rowSquares);
+            }
+            if (outMix + 2 < mixCount) {
+                partials.set((base + outMix + 2) * Glm5NextKernels.HC_CHUNKS + j, acc2);
+                partials.set(
+                        squares + (base + outMix + 2) * Glm5NextKernels.HC_CHUNKS + j, rowSquares);
+            }
+            if (outMix + 3 < mixCount) {
+                partials.set((base + outMix + 3) * Glm5NextKernels.HC_CHUNKS + j, acc3);
+                partials.set(
+                        squares + (base + outMix + 3) * Glm5NextKernels.HC_CHUNKS + j, rowSquares);
+            }
         }
     }
 
