@@ -2,11 +2,13 @@
 
 GLM-5.3-Flash (`zai-org/GLM-5.3-Flash`, Hugging Face `model_type` `glm5_next`) is a multimodal
 mixture-of-experts model with 320B parameters, 18B of them active per token. jitllm loads its text
-backbone under the GGUF architecture name `glm5next`. The vision encoder is not supported yet.
+backbone from llama.cpp's GGUF format for it, architecture `glm5-next`, and runs it as the
+`glm5next` family. The vision encoder is not supported yet.
 
-No llama.cpp GGUF exists for this model. `scripts/glm5next/convert.py` converts the official
-safetensors checkpoint, and `scripts/glm5next/reference.py` is the PyTorch reference that the
-Java code is checked against.
+llama.cpp's `convert_hf_to_gguf.py` converts the whole checkpoint. `scripts/glm5next/convert.py`
+writes the same format and can convert a slice of the layers from only the shards that hold them;
+apart from rounding in `ssm_a`, the two write identical tensors. `scripts/glm5next/reference.py` is
+the PyTorch reference that the Java code is checked against.
 
 ## The checkpoint
 
@@ -89,7 +91,7 @@ feed-forward is the MoE.
 |---|---|---|
 | KDA | the qwen35 delta-rule layout: row = key channel, `CpuOperations.causalConv1d` with the GGUF channel-major taps, `Qwen35DeltaNetKernels` structure | per-channel decay, three separate convolutions, the FLA L2 norm (eps under the root), sigmoid output gate (`Glm5NextForward.kda`, `Glm5NextKernels.kda*`) |
 | sparse attention | the deepseek2 absorbed MLA: `attn_k_b`/`attn_v_b` split as llama.cpp does, `DeepSeek2Kernels.absorbQuery` and `decompressLatent` with rope width 0 | latent-only cache (512, no rope tail), the k-pool indexer and selection (`indexerSelect`, `Glm5NextKernels.indexer*`), attention restricted to the selection (`sparseLatentAttention`) |
-| MoE | the deepseek2 sigmoid routing with selection bias; the qwen35moe expert kernels | the SwiGLU clamp, 288 experts (beyond the 256 the existing router kernels hold), expert stacks split into tensors of at most `expert_chunk_size` experts so each stays under 2³¹ elements |
+| MoE | the deepseek2 sigmoid routing with selection bias; the qwen35moe expert kernels | the SwiGLU clamp, 288 experts (beyond the 256 the existing router kernels hold), each expert tensor loaded as stacks that stay under 2³¹ bytes (`Glm5NextModelLoader`) |
 | mHC | none | `hyperConnectionPre/Post`, `Glm5NextKernels.hc*` |
 | MTP | the qwen35 MTP hook | `Glm5NextForward.forwardNextn` |
 | tokenizer, chat | `Glm4Tokenizer` (same split regex, `ignore_merges`) and `Glm4ChatFormat` | GLM-5.3's template also opens with `<|system|>Reasoning Effort: …` and has the assistant start with `<think>` |
@@ -99,10 +101,11 @@ feed-forward is the MoE.
 The CUDA plan (`Glm5NextPlanProvider`) runs the trunk in all three modes: one token at a time,
 sequential prefill/decode, and batched prefill/decode. It has these requirements and limits:
 
-- **Weights:** Q8_0 projections, with norms, gates, the router and the mHC parameters in F32 (what
-  `convert.py --type Q8_0` writes).
-- **Expert stacks:** the routed experts must be stored in at most two stacks. The full model's 288
-  experts in stacks of 144 qualify.
+- **Weights:** Q8_0 projections, with norms, gates, the router, the mHC parameters and the
+  indexer's head weights and k-pool gate in F32 (what llama.cpp's converter and `convert.py` write
+  with `q8_0`).
+- **Expert stacks:** the routed experts must load as at most two stacks. In Q8_0 the full model's
+  288 experts load as two stacks of 144.
 - **Cache:** an FP32 latent cache, so run with `--fp32-kv-cache`.
 - **Not supported yet:** splitting the model across devices, and the MTP layer.
 
@@ -142,27 +145,35 @@ int8 per 32-value block, as the device kernels do. Agreement:
   paths' last-bit differences rounded it apart. Nudging the host's own input by one ulp reproduces
   the same positions.
 
-## GGUF layout written by the converter
+## GGUF layout
 
-The architecture key prefix is `glm5next.`. Main keys:
+The layout is llama.cpp's `glm5-next` (`src/models/glm5-next.cpp`); the key prefix is
+`glm5-next.`. What the loader reads:
 
-- `block_count`, plus `layer_index`, `attention_types` (0 KDA, 1 sparse) and `ffn_types`
-  (0 dense, 1 MoE) per layer. A file can hold a slice of the layers, renumbered from 0.
-- `nextn_predict_layers`
-- `kda.*`, `indexer.*`, `hc.*`, `expert_*` (including `expert_chunk_size`), `swiglu_limit`.
+- `block_count`, which counts the MTP layers too, and `nextn_predict_layers`. A file can hold a
+  slice of the layers, renumbered from 0.
+- `attention.head_count_kv` per block: 0 for a KDA block, 1 for sparse attention.
+  `leading_dense_block_count` blocks have a dense feed-forward, the rest a mixture of experts.
+- `kda.head_dim`, `kda.gate_lower_bound`, `ssm.conv_kernel`; `attention.q_lora_rank`,
+  `attention.kv_lora_rank`, `attention.key_length_mla`, `attention.value_length_mla`;
+  `attention.indexer.{head_count,key_length,top_k,kpool,kpool_select_tail}`;
+  `hyper_connection.{count,sinkhorn_iterations,epsilon}`; `expert_*` and `swiglu_clamp_exp`.
 
-Tensor names follow llama.cpp where it has one. The new tensors are:
+Tensors:
 
 - mHC: `hc_{attn,ffn}_{fn,base,scale}`
-- KDA: `kda_conv_{q,k,v}`, `kda_f_{a,b}`, `kda_dt_bias`, `kda_a_log`, `kda_beta`, `kda_g_{a,b}`,
-  `kda_o_norm`
-- indexer: `idx_q_b`, `idx_k`, `idx_k_norm.{weight,bias}`, `idx_weights`, `idx_pool_ape`,
-  `idx_pool_gate`
-- experts: `ffn_{gate,up,down}_exps.<chunk>`
+- KDA: `attn_{q,k,v}`, `ssm_conv1d_{q,k,v}`, `ssm_f_{a,b}`, `ssm_dt.bias`, `ssm_a` (which holds
+  `-exp(A_log)`), `ssm_beta`, `ssm_g_{a,b}`, `ssm_norm`, `attn_output`
+- sparse attention: `attn_q_a`, `attn_q_a_norm`, `attn_q_b`, `attn_kv_a_mqa`, `attn_kv_a_norm`,
+  `attn_k_b`, `attn_v_b`, `attn_output`
+- indexer: `indexer.attn_q_b`, `indexer.attn_k`, `indexer.k_norm.{weight,bias}`,
+  `indexer.proj`, `indexer_compressor_ape`, `indexer_compressor_gate`
+- experts: `ffn_{gate,up,down}_exps`, one tensor per projection over every expert
 - MTP: `nextn.{eh_proj,enorm,hnorm,shared_head_norm}`
 
-Norms, biases, gates, the router and the mHC parameters stay F32. Other matrices take the
-requested type; with Q4_0, the embedding and output stay Q8_0.
+Norms, biases, the router, the mHC parameters, the KDA convolutions, `ssm_a`, `ssm_dt` and the
+indexer's head weights, k-pool gate and APE stay F32. Other matrices take the requested type; with
+Q4_0, `convert.py` keeps the embedding and output in Q8_0.
 
 ## Checking
 

@@ -21,9 +21,9 @@ import org.beehive.jitllm.model.Configuration;
  *     #nextnLayers()}
  * @param attentionTypes per trunk layer, {@link #KDA} or {@link #SPARSE_ATTENTION}
  * @param ffnTypes per trunk layer, {@link #DENSE_FFN} or {@link #MOE_FFN}
- * @param layerIndex per trunk layer, its index in the full model; a file may hold a slice
  * @param keyHeadDim per head, the query and key width of sparse attention
- * @param expertChunkSize how many experts each stored expert tensor holds
+ * @param expertChunkSize how many experts each loaded expert stack holds: the file's expert tensors
+ *     are split so that every stack stays under 2³¹ bytes
  */
 // @formatter:off
 public record Glm5NextConfiguration(
@@ -34,7 +34,6 @@ public record Glm5NextConfiguration(
         int nextnLayers,
         int[] attentionTypes,
         int[] ffnTypes,
-        int[] layerIndex,
         int vocabularySize,
         int contextLengthModel,
         int contextLength,

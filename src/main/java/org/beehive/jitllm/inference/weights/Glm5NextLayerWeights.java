@@ -34,7 +34,7 @@ public record Glm5NextLayerWeights<T>(
             T[] decayA,
             T[] decayB,
             T[] dtBias,
-            T[] aLog,
+            T[] a,
             T[] beta,
             T[] gateA,
             T[] gateB,

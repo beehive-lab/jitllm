@@ -15,6 +15,7 @@ import org.beehive.jitllm.inference.Logits;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.standard.Glm5NextStandardWeights;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.Glm5NextModelLoader;
 import org.beehive.jitllm.model.loader.ModelLoader;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.policy.StorageOptions;
@@ -182,12 +183,21 @@ public class Glm5NextDecodeParityAccelTest {
                                 .getMetadata()
                                 .get("golden.tokens");
 
-        Model host = ModelLoader.loadModel(file, CONTEXT, true, false);
+        // The medium model's experts load as two stacks of eight, as the full model's 288 do
+        // as two of 144; the tiny models' fit one.
+        System.setProperty(Glm5NextModelLoader.STACK_BYTES_PROPERTY, "300000");
+        Model host;
+        Model device;
+        try {
+            host = ModelLoader.loadModel(file, CONTEXT, true, false);
+            System.setProperty("use.tornadovm", "true");
+            device = ModelLoader.loadModel(file, CONTEXT, true, true);
+        } finally {
+            System.clearProperty(Glm5NextModelLoader.STACK_BYTES_PROPERTY);
+        }
         emulateInt8Activations((Glm5NextStandardWeights) host.weights());
         State hostState = host.createNewState();
 
-        System.setProperty("use.tornadovm", "true");
-        Model device = ModelLoader.loadModel(file, CONTEXT, true, true);
         // The latent cache is FP32; the default FP16 cache is refused.
         State deviceState =
                 State.withPrefillBatchSize(

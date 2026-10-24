@@ -124,9 +124,14 @@ public class Glm5NextLayers
                                 s.vB()[l],
                                 s.output()[l],
                                 s.indexQ()[l],
-                                s.indexK()[l],
-                                s.indexWeights()[l],
-                                s.poolGate()[l]));
+                                s.indexK()[l]));
+                // llama.cpp keeps the indexer's head weights and k-pool gate in F32; they are
+                // read as F32 then, and as Q8_0 otherwise.
+                for (TornadoTensor t : List.of(s.indexWeights()[l], s.poolGate()[l])) {
+                    if (t.dataType() != DataType.F32) {
+                        projections.add(t);
+                    }
+                }
             }
             var f = w.ffn();
             if (config.isMoe(l)) {
@@ -326,7 +331,7 @@ public class Glm5NextLayers
                         k.decayA()[l],
                         k.decayB()[l],
                         k.dtBias()[l],
-                        k.aLog()[l],
+                        k.a()[l],
                         k.beta()[l],
                         k.gateA()[l],
                         k.gateB()[l],
@@ -630,7 +635,7 @@ public class Glm5NextLayers
                                 context,
                                 d.kdaDecay,
                                 k.dtBias()[l].asFloatArray(),
-                                k.aLog()[l].asFloatArray(),
+                                k.a()[l].asFloatArray(),
                                 d.kdaBeta,
                                 width,
                                 hd,
@@ -1104,6 +1109,24 @@ public class Glm5NextLayers
     private void project(
             TaskGraph g, int l, String name, TornadoTensor weight, FloatArray out, int n, int d) {
         var ws = gs.workspace;
+        if (weight.dataType() == DataType.F32) {
+            task(
+                    g,
+                    l,
+                    name,
+                    lanes(d * 32, 128),
+                    t ->
+                            g.task(
+                                    t,
+                                    Glm5NextKernels::projectF32,
+                                    context,
+                                    ws.wrapXb,
+                                    weight.asFloatArray(),
+                                    out,
+                                    n,
+                                    d));
+            return;
+        }
         int local = projectionLocal(n);
         task(
                 g,

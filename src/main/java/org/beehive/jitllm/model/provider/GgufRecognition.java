@@ -58,6 +58,7 @@ final class GgufRecognition {
                 case "granitemoehybrid" -> ArchitectureId.of("granite");
                     // The identity the loaded model reports and its plan provider registers under.
                 case "qwen2moe" -> ArchitectureId.of("qwen2-moe");
+                case "glm5-next" -> ArchitectureId.of("glm5next");
                 case "mistral3" -> withinMistral3(name);
                 default -> ArchitectureId.of(declared);
             };
