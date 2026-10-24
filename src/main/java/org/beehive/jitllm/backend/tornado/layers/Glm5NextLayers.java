@@ -641,7 +641,11 @@ public class Glm5NextLayers
                 g,
                 l,
                 "kda_delta",
-                lanes(width, Math.min(hd, 128)),
+                groups(
+                        heads
+                                * ((hd + Glm5NextKernels.DELTA_COLUMNS - 1)
+                                        / Glm5NextKernels.DELTA_COLUMNS),
+                        Glm5NextKernels.DELTA_COLUMNS * Glm5NextKernels.DELTA_CHUNKS),
                 t ->
                         g.task(
                                 t,
