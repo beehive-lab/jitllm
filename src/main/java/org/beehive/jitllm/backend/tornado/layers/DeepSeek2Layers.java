@@ -678,7 +678,7 @@ public class DeepSeek2Layers
                 g,
                 l,
                 name,
-                lanes(DeepSeek2Kernels.GROUP, DeepSeek2Kernels.GROUP),
+                lanes(n, DeepSeek2Kernels.GROUP),
                 t ->
                         g.task(
                                 t,
