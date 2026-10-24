@@ -163,6 +163,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 b.streams,
                 b.residual,
                 b.mixes,
+                b.mixPartials,
                 b.coeffs,
                 b.normed,
                 b.quants,
@@ -275,10 +276,12 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
         final int dim = config.dim();
         final int n = config.hcCount();
         final int mixCount = config.hcMixCount();
+        // The sums of squares follow the dots, past every padded row's.
+        final int squares = paddedBatch() * mixCount * Glm5NextKernels.HC_CHUNKS;
         task(
                 g,
                 name + "_mix",
-                groups(batch * mixCount, Glm5NextBatchKernels.GROUP),
+                groups(batch * mixCount * Glm5NextKernels.HC_CHUNKS, Glm5NextBatchKernels.GROUP),
                 t ->
                         g.task(
                                 t,
@@ -286,9 +289,25 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                                 context,
                                 b.streams,
                                 fn.asFloatArray(),
+                                b.mixPartials,
+                                n * dim,
+                                mixCount,
+                                squares,
+                                batch));
+        task(
+                g,
+                name + "_finish",
+                lanes(batch * mixCount, 128),
+                t ->
+                        g.task(
+                                t,
+                                Glm5NextBatchKernels::hcFinishMixes,
+                                context,
+                                b.mixPartials,
                                 b.mixes,
                                 n * dim,
                                 mixCount,
+                                squares,
                                 config.rmsNormEps(),
                                 batch));
         task(
@@ -644,7 +663,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
         task(
                 g,
                 p + "idx_scores",
-                lanes(batch * maxPools, 128),
+                lanes(batch * maxPools * Glm5NextKernels.INDEX_LANES, 128),
                 t ->
                         g.task(
                                 t,

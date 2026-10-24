@@ -22,6 +22,9 @@ public final class Glm5NextDeviceArrays {
 
     public final FloatArray mixes;
 
+    /** The mixing coefficients' partial sums, as {@code hcMixes} writes them. */
+    public final FloatArray mixPartials;
+
     /** {@code pre[n]}, {@code post[n]}, then the {@code n × n} mix. */
     public final FloatArray coeffs;
 
@@ -59,6 +62,12 @@ public final class Glm5NextDeviceArrays {
         streams = TornadoWorkspaces.floats(s.streams);
         residual = TornadoWorkspaces.floats(s.streams);
         mixes = TornadoWorkspaces.floats(s.mixes);
+        mixPartials =
+                TornadoWorkspaces.floats(
+                        2
+                                * s.mixes
+                                * org.beehive.jitllm.backend.tornado.kernels.Glm5NextKernels
+                                        .HC_CHUNKS);
         coeffs = TornadoWorkspaces.floats(s.mixes);
         branch = TornadoWorkspaces.floats(s.dim);
         kdaQ = TornadoWorkspaces.floats(s.kdaWidth);

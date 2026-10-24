@@ -56,6 +56,121 @@ public class Glm5NextKernelsAccelTest {
         assertEquals(what, expected, actual, tolerance * Math.max(1.0, Math.abs(expected)));
     }
 
+    /**
+     * The decode and the batched prefill compute the hyper-connection coefficients in the same
+     * order, so a decode continuing a batched prefill sees the same values bit for bit.
+     */
+    @Test
+    public void theDecodeAndBatchedHyperConnectionCoefficientsAgreeBitwise() throws Exception {
+        int n = 4, dim = 4096, width = n * dim, mixCount = (2 + n) * n, iterations = 20;
+        int chunks = Glm5NextKernels.HC_CHUNKS;
+        float eps = 1e-6f, rmsEps = 1e-5f, postScale = 2f;
+        Random rng = new Random(3);
+        FloatArray streams = gaussian(width, rng, 1f);
+        FloatArray fn = gaussian(mixCount * width, rng, 1f / (float) Math.sqrt(width));
+        FloatArray base = gaussian(mixCount, rng, 0.5f);
+        FloatArray scale = gaussian(3, rng, 0.2f);
+        for (int i = 0; i < 3; i++) {
+            scale.set(i, scale.get(i) + 1f);
+        }
+        FloatArray partials = new FloatArray(2 * mixCount * chunks);
+        FloatArray mixes = new FloatArray(mixCount);
+        FloatArray coeffs = new FloatArray(mixCount);
+        FloatArray batchPartials = new FloatArray(2 * mixCount * chunks);
+        FloatArray batchMixes = new FloatArray(mixCount);
+        FloatArray batchCoeffs = new FloatArray(mixCount);
+
+        TaskGraph g =
+                new TaskGraph("hcb")
+                        .transferToDevice(
+                                DataTransferMode.EVERY_EXECUTION, streams, fn, base, scale)
+                        .task(
+                                "mix",
+                                Glm5NextKernels::hcMixes,
+                                new KernelContext(),
+                                streams,
+                                fn,
+                                partials,
+                                width,
+                                mixCount)
+                        .task(
+                                "coef",
+                                Glm5NextKernels::hcCoefficients,
+                                new KernelContext(),
+                                partials,
+                                base,
+                                scale,
+                                mixes,
+                                coeffs,
+                                n,
+                                width,
+                                iterations,
+                                eps,
+                                postScale,
+                                rmsEps)
+                        .task(
+                                "bmix",
+                                Glm5NextBatchKernels::hcMixes,
+                                new KernelContext(),
+                                streams,
+                                fn,
+                                batchPartials,
+                                width,
+                                mixCount,
+                                mixCount * chunks,
+                                1)
+                        .task(
+                                "bfinish",
+                                Glm5NextBatchKernels::hcFinishMixes,
+                                new KernelContext(),
+                                batchPartials,
+                                batchMixes,
+                                width,
+                                mixCount,
+                                mixCount * chunks,
+                                rmsEps,
+                                1)
+                        .task(
+                                "bcoef",
+                                Glm5NextBatchKernels::hcCoefficients,
+                                new KernelContext(),
+                                batchMixes,
+                                base,
+                                scale,
+                                batchCoeffs,
+                                n,
+                                iterations,
+                                eps,
+                                postScale,
+                                1)
+                        .transferToHost(
+                                DataTransferMode.EVERY_EXECUTION,
+                                partials,
+                                mixes,
+                                coeffs,
+                                batchPartials,
+                                batchMixes,
+                                batchCoeffs);
+        GridScheduler s = new GridScheduler();
+        s.addWorkerGrid("hcb.mix", groups(mixCount * chunks, 256));
+        s.addWorkerGrid("hcb.coef", groups(1, 32));
+        s.addWorkerGrid("hcb.bmix", groups(mixCount * chunks, 256));
+        s.addWorkerGrid("hcb.bfinish", lanes(mixCount, 128));
+        s.addWorkerGrid("hcb.bcoef", lanes(1, 32));
+        try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
+            plan.withGridScheduler(s).execute();
+        }
+        for (int i = 0; i < 2 * mixCount * chunks; i++) {
+            assertEquals("partial " + i, batchPartials.get(i), partials.get(i), 0f);
+        }
+        for (int k = 0; k < mixCount; k++) {
+            assertEquals("mix " + k, batchMixes.get(k), mixes.get(k), 0f);
+        }
+        for (int k = 0; k < mixCount; k++) {
+            assertEquals("coefficient " + k, batchCoeffs.get(k), coeffs.get(k), 0f);
+        }
+    }
+
     @Test
     public void theHyperConnectionMatchesTheHost() throws Exception {
         int n = 4, dim = 256, width = n * dim, mixCount = (2 + n) * n, iterations = 20;
@@ -71,6 +186,7 @@ public class Glm5NextKernelsAccelTest {
         FloatArray branch = gaussian(dim, rng, 1f);
         float[] before = streams.toHeapArray();
         FloatArray mixes = new FloatArray(mixCount);
+        FloatArray partials = new FloatArray(2 * mixCount * Glm5NextKernels.HC_CHUNKS);
         FloatArray coeffs = new FloatArray(mixCount);
         FloatArray residual = new FloatArray(width);
         FloatArray x = new FloatArray(dim);
@@ -85,22 +201,24 @@ public class Glm5NextKernelsAccelTest {
                                 new KernelContext(),
                                 streams,
                                 fn,
-                                mixes,
+                                partials,
                                 width,
-                                mixCount,
-                                rmsEps)
+                                mixCount)
                         .task(
                                 "coef",
                                 Glm5NextKernels::hcCoefficients,
                                 new KernelContext(),
-                                mixes,
+                                partials,
                                 base,
                                 scale,
+                                mixes,
                                 coeffs,
                                 n,
+                                width,
                                 iterations,
                                 eps,
-                                postScale)
+                                postScale,
+                                rmsEps)
                         .task(
                                 "collapse",
                                 Glm5NextKernels::hcCollapse,
@@ -123,8 +241,8 @@ public class Glm5NextKernelsAccelTest {
                                 n)
                         .transferToHost(DataTransferMode.EVERY_EXECUTION, coeffs, x, streams);
         GridScheduler s = new GridScheduler();
-        s.addWorkerGrid("hc.mix", groups(mixCount, 256));
-        s.addWorkerGrid("hc.coef", lanes(1, 1));
+        s.addWorkerGrid("hc.mix", groups(mixCount * Glm5NextKernels.HC_CHUNKS, 256));
+        s.addWorkerGrid("hc.coef", groups(1, 32));
         s.addWorkerGrid("hc.collapse", lanes(dim, 128));
         s.addWorkerGrid("hc.expand", lanes(width, 128));
         try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
@@ -489,7 +607,7 @@ public class Glm5NextKernelsAccelTest {
         GridScheduler s = new GridScheduler();
         s.addWorkerGrid("idx.store", groups(1, 32));
         s.addWorkerGrid("idx.pool", lanes(id, 32));
-        s.addWorkerGrid("idx.score", lanes(maxPools, 32));
+        s.addWorkerGrid("idx.score", lanes(maxPools * Glm5NextKernels.INDEX_LANES, 64));
         s.addWorkerGrid("idx.select", groups(1, 64));
         s.addWorkerGrid("idx.attend", groups(heads, 64));
 

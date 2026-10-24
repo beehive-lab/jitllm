@@ -16,6 +16,10 @@ public final class Glm5NextBatchArrays {
     public final FloatArray streams;
     public final FloatArray residual;
     public final FloatArray mixes;
+
+    /** The mixing coefficients' partial sums, as {@code hcMixes} writes them. */
+    public final FloatArray mixPartials;
+
     public final FloatArray coeffs;
     public final FloatArray normed;
     public final IntArray quants;
@@ -147,6 +151,13 @@ public final class Glm5NextBatchArrays {
         streams = TornadoWorkspaces.floats(b * s.streams);
         residual = TornadoWorkspaces.floats(b * s.streams);
         mixes = TornadoWorkspaces.floats(b * s.mixes);
+        mixPartials =
+                TornadoWorkspaces.floats(
+                        2
+                                * b
+                                * s.mixes
+                                * org.beehive.jitllm.backend.tornado.kernels.Glm5NextKernels
+                                        .HC_CHUNKS);
         coeffs = TornadoWorkspaces.floats(b * s.mixes);
         normed = TornadoWorkspaces.floats(b * s.dim);
         quants = TornadoWorkspaces.ints(b * s.widest / 4);

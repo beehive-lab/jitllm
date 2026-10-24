@@ -222,6 +222,7 @@ public class Glm5NextLayers
                 d.streams,
                 d.residual,
                 d.mixes,
+                d.mixPartials,
                 d.coeffs,
                 d.branch,
                 d.kdaQ,
@@ -453,7 +454,7 @@ public class Glm5NextLayers
                 g,
                 l,
                 name + "_mix",
-                groups(mixCount, Glm5NextKernels.GROUP),
+                groups(mixCount * Glm5NextKernels.HC_CHUNKS, Glm5NextKernels.GROUP),
                 t ->
                         g.task(
                                 t,
@@ -461,28 +462,30 @@ public class Glm5NextLayers
                                 context,
                                 d.streams,
                                 fn.asFloatArray(),
-                                d.mixes,
+                                d.mixPartials,
                                 n * dim,
-                                mixCount,
-                                config.rmsNormEps()));
+                                mixCount));
         task(
                 g,
                 l,
                 name + "_coef",
-                lanes(1, 1),
+                groups(1, hcLanes(mixCount)),
                 t ->
                         g.task(
                                 t,
                                 Glm5NextKernels::hcCoefficients,
                                 context,
-                                d.mixes,
+                                d.mixPartials,
                                 base.asFloatArray(),
                                 scale.asFloatArray(),
+                                d.mixes,
                                 d.coeffs,
                                 n,
+                                n * dim,
                                 config.hcSinkhornIterations(),
                                 config.hcEps(),
-                                config.hcPostScale()));
+                                config.hcPostScale(),
+                                config.rmsNormEps()));
         task(
                 g,
                 l,
@@ -823,7 +826,7 @@ public class Glm5NextLayers
                 g,
                 l,
                 "idx_scores",
-                lanes(maxPools, 128),
+                lanes(maxPools * Glm5NextKernels.INDEX_LANES, 128),
                 t ->
                         g.task(
                                 t,
@@ -1136,6 +1139,14 @@ public class Glm5NextLayers
         WorkerGrid1D grid = new WorkerGrid1D(global);
         grid.setLocalWork(local, 1, 1);
         return grid;
+    }
+
+    /** The power-of-two workgroup {@link Glm5NextKernels#hcCoefficients} needs for the mixes. */
+    private static int hcLanes(int mixCount) {
+        if (mixCount > Glm5NextKernels.HC_MAX_MIXES) {
+            throw new IllegalArgumentException("too many mHC mixing coefficients: " + mixCount);
+        }
+        return Math.max(32, Integer.highestOneBit(mixCount - 1) << 1);
     }
 
     private static WorkerGrid groups(int count, int local) {
