@@ -514,10 +514,23 @@ public final class Glm5NextBatchKernels {
         }
     }
 
+    /** The widest KDA head {@link #kdaDeltaRule} keeps in local memory. */
+    public static final int MAX_KDA_HEAD = 128;
+
     // @formatter:off
     /**
-     * The KDA delta rule over the chunk's real rows in order, a lane per (head, value channel)
-     * owning one state column, as {@link Glm5NextKernels#kdaDeltaRule} does for one token.
+     * The KDA delta rule over the chunk's real rows in order, as {@link
+     * Glm5NextKernels#kdaDeltaRule} does for one token and with its layout: a workgroup takes
+     * {@link Glm5NextKernels#DELTA_COLUMNS} state columns of one head, each column's rows split
+     * into {@link Glm5NextKernels#DELTA_CHUNKS} chunks, a lane per (chunk, column), the chunks'
+     * sums added in chunk order.
+     *
+     * <p>The workgroup's slice of the state stays in local memory for the whole chunk: read once,
+     * updated row by row, written back after the last row. Each row's key, query and decay are
+     * staged once for all lanes.
+     *
+     * <p>Grid: {@code heads * ceil(headDim / DELTA_COLUMNS)} workgroups of {@code DELTA_COLUMNS *
+     * DELTA_CHUNKS} lanes; {@code headDim} at most {@link #MAX_KDA_HEAD}.
      */
     // @formatter:on
     public static void kdaDeltaRule(
@@ -533,29 +546,81 @@ public final class Glm5NextBatchKernels {
             int heads,
             int headDim,
             int stateOffset) {
-        int lane = context.globalIdx;
-        if (lane < heads * headDim) {
-            int h = lane / headDim;
-            int j = lane - h * headDim;
-            int width = heads * headDim;
-            int stateBase = stateOffset + h * headDim * headDim + j;
-            int rows = batchInfo.get(1);
-            for (int b = 0; b < rows; b++) {
-                int base = b * width + h * headDim;
-                float correction = 0.0f;
-                for (int i = 0; i < headDim; i++) {
-                    float s = state.get(stateBase + i * headDim) * decay.get(base + i);
-                    state.set(stateBase + i * headDim, s);
-                    correction += s * k.get(base + i);
+        final int cols = Glm5NextKernels.DELTA_COLUMNS;
+        final int chunks = Glm5NextKernels.DELTA_CHUNKS;
+        int tid = context.localIdx;
+        int column = tid % cols;
+        int chunk = tid / cols;
+        int tiles = (headDim + cols - 1) / cols;
+        int h = context.groupIdx / tiles;
+        int j = (context.groupIdx - h * tiles) * cols + column;
+        float[] slice =
+                context.allocateFloatLocalArray(MAX_KDA_HEAD * Glm5NextKernels.DELTA_COLUMNS);
+        float[] keys = context.allocateFloatLocalArray(MAX_KDA_HEAD);
+        float[] queries = context.allocateFloatLocalArray(MAX_KDA_HEAD);
+        float[] decays = context.allocateFloatLocalArray(MAX_KDA_HEAD);
+        float[] sums =
+                context.allocateFloatLocalArray(
+                        Glm5NextKernels.DELTA_COLUMNS * Glm5NextKernels.DELTA_CHUNKS);
+        int rowsPerChunk = (headDim + chunks - 1) / chunks;
+        int start = chunk * rowsPerChunk;
+        int end = TornadoMath.min(headDim, start + rowsPerChunk);
+        int active =
+                TornadoMath.min(1, TornadoMath.max(0, heads - h))
+                        * TornadoMath.min(1, TornadoMath.max(0, headDim - j));
+        int stateBase = stateOffset + h * headDim * headDim + j;
+        int width = heads * headDim;
+        if (active == 1) {
+            for (int i = start; i < end; i++) {
+                slice[i * cols + column] = state.get(stateBase + i * headDim);
+            }
+        }
+        int rows = batchInfo.get(1);
+        for (int b = 0; b < rows; b++) {
+            int base = b * width + h * headDim;
+            context.localBarrier();
+            if (tid < headDim && h < heads) {
+                keys[tid] = k.get(base + tid);
+                queries[tid] = q.get(base + tid);
+                decays[tid] = decay.get(base + tid);
+            }
+            context.localBarrier();
+            float correction = 0.0f;
+            for (int i = start; i < end; i++) {
+                float s = slice[i * cols + column] * decays[i];
+                slice[i * cols + column] = s;
+                correction += s * keys[i];
+            }
+            sums[tid] = correction;
+            context.localBarrier();
+            float total = 0.0f;
+            for (int c = 0; c < chunks; c++) {
+                total += sums[c * cols + column];
+            }
+            context.localBarrier();
+            float o = 0.0f;
+            if (active == 1) {
+                float delta = (v.get(base + j) - total) * beta.get(b * heads + h);
+                for (int i = start; i < end; i++) {
+                    float s = slice[i * cols + column] + keys[i] * delta;
+                    slice[i * cols + column] = s;
+                    o += s * queries[i];
                 }
-                float delta = (v.get(base + j) - correction) * beta.get(b * heads + h);
-                float o = 0.0f;
-                for (int i = 0; i < headDim; i++) {
-                    float s = state.get(stateBase + i * headDim) + k.get(base + i) * delta;
-                    state.set(stateBase + i * headDim, s);
-                    o += s * q.get(base + i);
+            }
+            sums[tid] = o;
+            context.localBarrier();
+            int writer = active * (1 - TornadoMath.min(1, chunk));
+            if (writer == 1) {
+                float result = 0.0f;
+                for (int c = 0; c < chunks; c++) {
+                    result += sums[c * cols + column];
                 }
-                out.set(base + j, o);
+                out.set(base + j, result);
+            }
+        }
+        if (active == 1) {
+            for (int i = start; i < end; i++) {
+                state.set(stateBase + i * headDim, slice[i * cols + column]);
             }
         }
     }

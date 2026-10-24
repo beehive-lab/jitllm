@@ -503,11 +503,20 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                                 heads,
                                 config.kdaGateLowerBound(),
                                 batch));
+        if (hd > Glm5NextBatchKernels.MAX_KDA_HEAD) {
+            throw new UnsupportedOperationException(
+                    "the glm5next batched delta rule holds KDA heads of at most "
+                            + Glm5NextBatchKernels.MAX_KDA_HEAD);
+        }
         int stateOffset = index * heads * hd * hd;
         task(
                 g,
                 p + "kda_delta",
-                lanes(width, Math.min(hd, 128)),
+                groups(
+                        heads
+                                * ((hd + Glm5NextKernels.DELTA_COLUMNS - 1)
+                                        / Glm5NextKernels.DELTA_COLUMNS),
+                        Glm5NextKernels.DELTA_COLUMNS * Glm5NextKernels.DELTA_CHUNKS),
                 t ->
                         g.task(
                                 t,
