@@ -38,6 +38,34 @@ public final class Glm5NextBatchKernels {
 
     private Glm5NextBatchKernels() {}
 
+    /**
+     * {@link Glm5NextKernels#projectF32} for every row: {@code out[b] = w . x[b]}, a warp per (row,
+     * output). Worker: {@code batch * d * 32} lanes.
+     */
+    public static void projectF32(
+            KernelContext context,
+            FloatArray x,
+            FloatArray w,
+            FloatArray out,
+            int n,
+            int d,
+            int batch) {
+        int warp = context.globalIdx >> 5;
+        int lane = context.localIdx & 31;
+        if (warp < batch * d) {
+            int b = warp / d;
+            int row = warp - b * d;
+            float partial = 0.0f;
+            for (int i = lane; i < n; i += 32) {
+                partial += w.get(row * n + i) * x.get(b * n + i);
+            }
+            float sum = warpSum(context, partial);
+            if (lane == 0) {
+                out.set(warp, sum);
+            }
+        }
+    }
+
     private static float warpSum(KernelContext context, float value) {
         float v = value;
         v += context.simdShuffleDown(v, 16);
@@ -468,7 +496,7 @@ public final class Glm5NextBatchKernels {
             KernelContext context,
             FloatArray decay,
             FloatArray dtBias,
-            FloatArray aLog,
+            FloatArray a,
             FloatArray beta,
             int width,
             int headDim,
@@ -478,7 +506,7 @@ public final class Glm5NextBatchKernels {
         int id = context.globalIdx;
         if (id < batch * width) {
             int c = id % width;
-            float g = TornadoMath.exp(aLog.get(c / headDim)) * (decay.get(id) + dtBias.get(c));
+            float g = -a.get(c / headDim) * (decay.get(id) + dtBias.get(c));
             decay.set(id, TornadoMath.exp(lowerBound * sigmoid(g)));
         }
         if (id < batch * heads) {

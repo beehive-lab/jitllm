@@ -18,6 +18,7 @@ import org.beehive.jitllm.inference.state.Glm5NextState;
 import org.beehive.jitllm.inference.weights.Glm5NextLayerWeights;
 import org.beehive.jitllm.inference.weights.tornado.Glm5NextTornadoWeights;
 import org.beehive.jitllm.model.glm5next.Glm5NextConfiguration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -495,7 +496,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                                 context,
                                 b.kdaDecay,
                                 k.dtBias()[l].asFloatArray(),
-                                k.aLog()[l].asFloatArray(),
+                                k.a()[l].asFloatArray(),
                                 b.kdaBeta,
                                 width,
                                 hd,
@@ -1386,6 +1387,24 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
             TaskGraph g, String name, TornadoTensor weight, FloatArray out, int n, int d) {
         Glm5NextBatchArrays b = gs.workspace.glm5nextBatch;
         var ws = gs.workspace;
+        if (weight.dataType() == DataType.F32) {
+            task(
+                    g,
+                    name,
+                    lanes(batch * d * 32, 128),
+                    t ->
+                            g.task(
+                                    t,
+                                    Glm5NextBatchKernels::projectF32,
+                                    context,
+                                    b.normed,
+                                    weight.asFloatArray(),
+                                    out,
+                                    n,
+                                    d,
+                                    batch));
+            return;
+        }
         if (gemmShape(n, d)) {
             int padded =
                     (batch + Int8GemmKernels.I8_BM - 1)

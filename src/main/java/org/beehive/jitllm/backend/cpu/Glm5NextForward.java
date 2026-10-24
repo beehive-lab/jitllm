@@ -283,8 +283,9 @@ public final class Glm5NextForward {
      *   <li>query, key and value projections, each through its own causal depthwise convolution and
      *       a SiLU; query and key L2-normalized per head, the query scaled by {@code
      *       1/sqrt(headDim)};
-     *   <li>a per-channel log decay {@code g = lowerBound * sigmoid(exp(A_log[h]) * (f_b(f_a(x)) +
-     *       dt_bias))}, so the decay {@code exp(g)} stays within {@code (exp(lowerBound), 1)};
+     *   <li>a per-channel log decay {@code g = lowerBound * sigmoid(-a[h] * (f_b(f_a(x)) +
+     *       dt_bias))}, {@code a = -exp(A_log)} as the file stores it, so the decay {@code exp(g)}
+     *       stays within {@code (exp(lowerBound), 1)};
      *   <li>per head {@code S = diag(exp(g)) S}, {@code d = (v - Sᵀk) * beta}, {@code S += k ⊗ d},
      *       {@code o = Sᵀq};
      *   <li>{@code o} RMS-normalized per head and gated by {@code sigmoid(g_b(g_a(x)))}.
@@ -327,10 +328,10 @@ public final class Glm5NextForward {
         CpuOperations.matVec(w.decayA()[l], x, state.kdaLowRank, hd, dim);
         CpuOperations.matVec(w.decayB()[l], state.kdaLowRank, state.kdaDecay, width, hd);
         FloatTensor dtBias = w.dtBias()[l];
-        FloatTensor aLog = w.aLog()[l];
+        FloatTensor a = w.a()[l];
         final float lower = config.kdaGateLowerBound();
         for (int c = 0; c < width; c++) {
-            float rate = (float) Math.exp(aLog.getFloat(c / hd));
+            float rate = -a.getFloat(c / hd);
             float g = lower * sigmoid(rate * (state.kdaDecay.getFloat(c) + dtBias.getFloat(c)));
             state.kdaDecay.setFloat(c, (float) Math.exp(g));
         }

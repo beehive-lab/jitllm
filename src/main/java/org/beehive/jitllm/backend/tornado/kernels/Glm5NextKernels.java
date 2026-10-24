@@ -289,16 +289,16 @@ public final class Glm5NextKernels {
 
     // @formatter:off
     /**
-     * The per-channel decay {@code exp(lower * sigmoid(exp(aLog[h]) * (raw + dtBias)))}, in place
-     * on {@code decay}, and {@code beta = sigmoid(beta)} in place for the first {@code heads}
-     * lanes.
+     * The per-channel decay {@code exp(lower * sigmoid(-a[h] * (raw + dtBias)))}, in place on
+     * {@code decay}, where {@code a = -exp(A_log)} as llama.cpp stores it, and {@code beta =
+     * sigmoid(beta)} in place for the first {@code heads} lanes.
      */
     // @formatter:on
     public static void kdaDecayAndBeta(
             KernelContext context,
             FloatArray decay,
             FloatArray dtBias,
-            FloatArray aLog,
+            FloatArray a,
             FloatArray beta,
             int width,
             int headDim,
@@ -306,7 +306,7 @@ public final class Glm5NextKernels {
             float lowerBound) {
         int c = context.globalIdx;
         if (c < width) {
-            float rate = TornadoMath.exp(aLog.get(c / headDim));
+            float rate = -a.get(c / headDim);
             float g = rate * (decay.get(c) + dtBias.get(c));
             decay.set(c, TornadoMath.exp(lowerBound / (1.0f + TornadoMath.exp(-g))));
         }
@@ -913,6 +913,26 @@ public final class Glm5NextKernels {
 
     private static final int QK = 32;
     private static final int BLOCK_BYTES = 34;
+
+    /**
+     * {@code out = w . x} over an F32 weight, a warp per output row: the projections llama.cpp
+     * keeps in F32, such as the indexer's k-pool gate. Worker: {@code d * 32} lanes.
+     */
+    public static void projectF32(
+            KernelContext context, FloatArray x, FloatArray w, FloatArray out, int n, int d) {
+        int row = context.globalIdx >> 5;
+        int lane = context.localIdx & 31;
+        if (row < d) {
+            float partial = 0.0f;
+            for (int i = lane; i < n; i += 32) {
+                partial += w.get(row * n + i) * x.get(i);
+            }
+            float sum = warpSum(context, partial);
+            if (lane == 0) {
+                out.set(row, sum);
+            }
+        }
+    }
 
     private static float warpSum(KernelContext context, float value) {
         float v = value;

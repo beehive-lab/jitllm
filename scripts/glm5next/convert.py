@@ -1,14 +1,16 @@
-"""Convert a GLM-5.3-Flash (glm5next) safetensors checkpoint to a jitllm GGUF file.
+"""Convert a GLM-5.3-Flash safetensors checkpoint to a llama.cpp glm5-next GGUF file.
 
 The converter reads tensors through model.safetensors.index.json and opens only
 the shards that hold the requested layers, so a slice of the model can be
 converted without the whole checkpoint on disk. With --hf-repo it downloads just
-those shards (plus config and tokenizer files) first.
+those shards (plus config and tokenizer files) first. The output has llama.cpp's
+glm5-next metadata, tensor names and layouts, so llama.cpp and jitllm load the
+same file; a slice is written as a model of fewer blocks.
 
 FP8 (E4M3, 128x128 block scales), BF16 and F32 inputs are supported. Large
 matrices are written as --type (Q8_0, Q4_0, F16 or F32); norms, biases, gates and
-the mHC parameters stay F32. Expert stacks are split into tensors of at most
---expert-chunk experts so each stays below 2^31 elements.
+the mHC parameters stay F32. Each layer's routed experts are one tensor per
+projection, as llama.cpp stores them.
 
 Examples:
     # first four layers (three KDA and one sparse-attention layer) as Q8_0
@@ -30,17 +32,20 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gguf_io  # noqa: E402
 
-ARCH = "glm5next"
+ARCH = "glm5-next"
 PREFIX = "model.language_model."
 
-# Tensors kept in F32 whatever the target type (small, or precision-sensitive).
+# Tensors kept in F32 whatever the target type (small, or precision-sensitive), as llama.cpp's
+# converter keeps them.
 F32_PATTERNS = [
     r"\.hc_(attn|ffn)_(fn|base|scale)\.weight$",
     r"\.ffn_gate_inp\.weight$",
     r"\.exp_probs_b\.bias$",
-    r"\.kda_conv_[qkv]\.weight$",
-    r"\.kda_(dt_bias|a_log)\.weight$",
-    r"\.idx_pool_ape\.weight$",
+    r"\.ssm_conv1d_[qkv]\.weight$",
+    r"\.ssm_dt\.bias$",
+    r"\.ssm_a$",
+    r"\.indexer_compressor_(ape|gate)\.weight$",
+    r"\.indexer\.proj\.weight$",
     r"norm\.(weight|bias)$",
 ]
 
@@ -49,17 +54,17 @@ KDA_NAMES = {
     "k_proj.weight": "attn_k.weight",
     "v_proj.weight": "attn_v.weight",
     "o_proj.weight": "attn_output.weight",
-    "q_conv1d.weight": "kda_conv_q.weight",
-    "k_conv1d.weight": "kda_conv_k.weight",
-    "v_conv1d.weight": "kda_conv_v.weight",
-    "f_a_proj.weight": "kda_f_a.weight",
-    "f_b_proj.weight": "kda_f_b.weight",
-    "dt_bias": "kda_dt_bias.weight",
-    "A_log": "kda_a_log.weight",
-    "b_proj.weight": "kda_beta.weight",
-    "g_a_proj.weight": "kda_g_a.weight",
-    "g_b_proj.weight": "kda_g_b.weight",
-    "o_norm.weight": "kda_o_norm.weight",
+    "q_conv1d.weight": "ssm_conv1d_q.weight",
+    "k_conv1d.weight": "ssm_conv1d_k.weight",
+    "v_conv1d.weight": "ssm_conv1d_v.weight",
+    "f_a_proj.weight": "ssm_f_a.weight",
+    "f_b_proj.weight": "ssm_f_b.weight",
+    "dt_bias": "ssm_dt.bias",
+    "A_log": "ssm_a",
+    "b_proj.weight": "ssm_beta.weight",
+    "g_a_proj.weight": "ssm_g_a.weight",
+    "g_b_proj.weight": "ssm_g_b.weight",
+    "o_norm.weight": "ssm_norm.weight",
 }
 
 DSA_NAMES = {
@@ -69,13 +74,13 @@ DSA_NAMES = {
     "kv_a_proj_with_mqa.weight": "attn_kv_a_mqa.weight",
     "kv_a_layernorm.weight": "attn_kv_a_norm.weight",
     "o_proj.weight": "attn_output.weight",
-    "indexer.wq_b.weight": "idx_q_b.weight",
-    "indexer.wk.weight": "idx_k.weight",
-    "indexer.k_norm.weight": "idx_k_norm.weight",
-    "indexer.k_norm.bias": "idx_k_norm.bias",
-    "indexer.weights_proj.weight": "idx_weights.weight",
-    "indexer.index_kpool_compress_ape": "idx_pool_ape.weight",
-    "indexer.index_kpool_compress_gate": "idx_pool_gate.weight",
+    "indexer.wq_b.weight": "indexer.attn_q_b.weight",
+    "indexer.wk.weight": "indexer.attn_k.weight",
+    "indexer.k_norm.weight": "indexer.k_norm.weight",
+    "indexer.k_norm.bias": "indexer.k_norm.bias",
+    "indexer.weights_proj.weight": "indexer.proj.weight",
+    "indexer.index_kpool_compress_ape": "indexer_compressor_ape.weight",
+    "indexer.index_kpool_compress_gate": "indexer_compressor_gate.weight",
 }
 
 LAYER_NAMES = {
@@ -136,10 +141,9 @@ def download(repo, directory, files):
 class Plan:
     """The tensors to write: (gguf name, ne, type, producer of byte pieces)."""
 
-    def __init__(self, ckpt, target, expert_chunk):
+    def __init__(self, ckpt, target):
         self.ckpt = ckpt
         self.target = target
-        self.expert_chunk = expert_chunk
         self.items = []
 
     def type_for(self, name, ne):
@@ -151,7 +155,7 @@ class Plan:
             return gguf_io.Q8_0
         return self.target
 
-    def add(self, gguf_name, hf_name, reshape=None):
+    def add(self, gguf_name, hf_name, reshape=None, transform=None):
         shape = self.ckpt.shape(hf_name)
         if reshape is not None:
             shape = reshape(shape)
@@ -159,8 +163,10 @@ class Plan:
         t = self.type_for(gguf_name, ne)
 
         def produce():
-            x = self.ckpt.tensor_f32(hf_name).reshape(shape)
-            yield gguf_io.encode(x, t)
+            x = self.ckpt.tensor_f32(hf_name)
+            if transform is not None:
+                x = transform(x)
+            yield gguf_io.encode(x.reshape(shape), t)
 
         self.items.append((gguf_name, ne, t, produce))
 
@@ -179,20 +185,19 @@ class Plan:
             self.items.append((gname, ne, t, produce))
 
     def add_experts(self, gguf_prefix, hf_prefix, n_experts):
+        """One tensor per projection over every expert, [experts, rows, cols], as llama.cpp stores them."""
         for proj, gname in EXPERT_PROJ:
             first = f"{hf_prefix}experts.0.{proj}.weight"
             rows, cols = self.ckpt.shape(first)
-            for c, start in enumerate(range(0, n_experts, self.expert_chunk)):
-                count = min(self.expert_chunk, n_experts - start)
-                name = f"{gguf_prefix}{gname}.{c}.weight"
-                ne = [cols, rows, count]
-                t = self.type_for(name, ne)
+            name = f"{gguf_prefix}{gname}.weight"
+            ne = [cols, rows, n_experts]
+            t = self.type_for(name, ne)
 
-                def produce(start=start, count=count, proj=proj):
-                    for e in range(start, start + count):
-                        yield gguf_io.encode(self.ckpt.tensor_f32(f"{hf_prefix}experts.{e}.{proj}.weight"), t)
+            def produce(proj=proj):
+                for e in range(n_experts):
+                    yield gguf_io.encode(self.ckpt.tensor_f32(f"{hf_prefix}experts.{e}.{proj}.weight"), t)
 
-                self.items.append((name, ne, t, produce))
+            self.items.append((name, ne, t, produce))
 
 
 def tokenizer_metadata(writer, model_dir, vocab_size):
@@ -265,7 +270,6 @@ def main():
     ap.add_argument("--type", default="Q8_0", choices=["Q8_0", "Q4_0", "F16", "F32"])
     ap.add_argument("--layers", help="decoder layers to include, e.g. 0-3 or 0,3,7 (default all)")
     ap.add_argument("--mtp", action="store_true", help="include the MTP (next-token prediction) layer")
-    ap.add_argument("--expert-chunk", type=int, default=144, help="experts per expert-stack tensor")
     ap.add_argument("--context-length", type=int, help="override the context length in the metadata")
     args = ap.parse_args()
 
@@ -294,12 +298,13 @@ def main():
 
     ckpt = gguf_io.Checkpoint(model_dir)
     target = gguf_io.TYPE_BY_NAME[args.type]
-    plan = Plan(ckpt, target, args.expert_chunk)
+    plan = Plan(ckpt, target)
 
     plan.add("token_embd.weight", PREFIX + "embed_tokens.weight")
     plan.add("output_norm.weight", PREFIX + "norm.weight")
     plan.add("output.weight", "lm_head.weight")
 
+    la_heads = cfg["linear_attn_config"]["num_heads"]
     layer_types = cfg["layer_types"]
     mlp_types = cfg.get("mlp_layer_types") or (["dense"] * cfg["first_k_dense_replace"]
                                                 + ["sparse"] * (n_layers - cfg["first_k_dense_replace"]))
@@ -319,7 +324,12 @@ def main():
             if rel == "kv_b_proj.weight":
                 continue
             if rel.endswith("_conv1d.weight"):
-                plan.add(g + gname, name, reshape=lambda s: [s[0], s[2]])
+                # ggml [d_conv, 1, d_inner, 1]: the same bytes as [d_inner, d_conv]
+                plan.add(g + gname, name, reshape=lambda s: [1, s[0], 1, s[-1]])
+            elif rel == "A_log":
+                heads = la_heads
+                plan.add(g + gname, name, reshape=lambda s: [heads],
+                         transform=lambda x: -np.exp(x.reshape(-1)[:heads]))
             else:
                 plan.add(g + gname, name)
         if not kda:
@@ -329,48 +339,62 @@ def main():
             plan.add_experts(g, hf + "mlp.", cfg["n_routed_experts"])
 
     la = cfg["linear_attn_config"]
+    dense = [mlp_types[i] == "dense" for i in layers]
+    lead = dense.index(False) if False in dense else len(dense)
+    if any(dense[lead:]):
+        raise SystemExit("a glm5-next file has its dense layers first; this slice does not")
+    blocks = len(out_layers)
     w = gguf_io.GGUFWriter(args.out, ARCH)
     w.add_string("general.name", "GLM-5.3-Flash" if len(layers) == n_layers else
                  f"GLM-5.3-Flash layers {args.layers}")
     w.add_uint32("general.file_type", {"F32": 0, "F16": 1, "Q4_0": 2, "Q8_0": 7}[args.type])
     k = ARCH + "."
-    w.add_uint32(k + "block_count", len(layers))
-    w.add_uint32(k + "nextn_predict_layers", len(mtp_layers))
-    w.add_array(k + "layer_index", gguf_io.GGUF_INT32, layers)
-    w.add_array(k + "attention_types", gguf_io.GGUF_INT32,
-                [0 if layer_types[i] == "linear_attention" else 1 for i in layers])
-    w.add_array(k + "ffn_types", gguf_io.GGUF_INT32, [0 if mlp_types[i] == "dense" else 1 for i in layers])
+    w.add_uint32(k + "block_count", blocks)
+    if mtp_layers:
+        w.add_uint32(k + "nextn_predict_layers", len(mtp_layers))
     w.add_uint32(k + "context_length", args.context_length or cfg["max_position_embeddings"])
     w.add_uint32(k + "embedding_length", cfg["hidden_size"])
-    w.add_uint32(k + "vocab_size", cfg["vocab_size"])
-    w.add_float32(k + "attention.layer_norm_rms_epsilon", cfg["rms_norm_eps"])
     w.add_uint32(k + "feed_forward_length", cfg["intermediate_size"])
+    w.add_uint32(k + "vocab_size", cfg["vocab_size"])
+    w.add_uint32(k + "attention.head_count", cfg["num_attention_heads"])
+    w.add_array(k + "attention.head_count_kv", gguf_io.GGUF_UINT32,
+                [0 if layer_types[i] == "linear_attention" else 1 for i in layers] + [1] * len(mtp_layers))
+    w.add_float32(k + "attention.layer_norm_rms_epsilon", cfg["rms_norm_eps"])
+    w.add_float32(k + "attention.layer_norm_epsilon", 1e-6)
+    w.add_uint32(k + "ssm.conv_kernel", la["short_conv_kernel_size"])
+    w.add_uint32(k + "kda.head_dim", la["head_dim"])
+    w.add_float32(k + "kda.gate_lower_bound", la.get("gate_lower_bound", -5.0))
+    w.add_uint32(k + "attention.q_lora_rank", cfg["q_lora_rank"])
+    w.add_uint32(k + "attention.kv_lora_rank", cfg["kv_lora_rank"])
+    w.add_uint32(k + "rope.dimension_count", cfg["qk_rope_head_dim"])
+    w.add_uint32(k + "attention.key_length", cfg["kv_lora_rank"] + cfg["qk_rope_head_dim"])
+    w.add_uint32(k + "attention.value_length", cfg["kv_lora_rank"])
+    w.add_uint32(k + "attention.key_length_mla", cfg["qk_nope_head_dim"] + cfg["qk_rope_head_dim"])
+    w.add_uint32(k + "attention.value_length_mla", cfg["v_head_dim"])
+    w.add_uint32(k + "attention.indexer.head_count", cfg["index_n_heads"])
+    w.add_uint32(k + "attention.indexer.key_length", cfg["index_head_dim"])
+    w.add_uint32(k + "attention.indexer.top_k", cfg["index_topk"])
+    w.add_uint32(k + "attention.indexer.kpool", cfg["index_kpool"])
+    w.add_bool(k + "attention.indexer.kpool_select_tail", cfg.get("index_kpool_always_select_tail", True))
+    if cfg.get("indexer_types") is not None:
+        w.add_array(k + "attention.indexer.types", gguf_io.GGUF_BOOL,
+                    [cfg["indexer_types"][i] == "full" for i in layers])
+    w.add_uint32(k + "hyper_connection.count", cfg["hc_mult"])
+    w.add_uint32(k + "hyper_connection.sinkhorn_iterations", cfg["hc_sinkhorn_iters"])
+    w.add_float32(k + "hyper_connection.epsilon", cfg["hc_eps"])
+    w.add_uint32(k + "leading_dense_block_count", lead)
     w.add_uint32(k + "expert_feed_forward_length", cfg["moe_intermediate_size"])
     w.add_uint32(k + "expert_count", cfg["n_routed_experts"])
     w.add_uint32(k + "expert_used_count", cfg["num_experts_per_tok"])
     w.add_uint32(k + "expert_shared_count", cfg["n_shared_experts"])
-    w.add_uint32(k + "expert_chunk_size", args.expert_chunk)
+    w.add_uint32(k + "expert_gating_func", 2)  # sigmoid
+    w.add_uint32(k + "expert_group_count", cfg.get("n_group", 1))
+    w.add_uint32(k + "expert_group_used_count", cfg.get("topk_group", 1))
     w.add_float32(k + "expert_weights_scale", cfg["routed_scaling_factor"])
     w.add_bool(k + "expert_weights_norm", cfg["norm_topk_prob"])
-    w.add_float32(k + "swiglu_limit", cfg["swiglu_limit"])
-    w.add_uint32(k + "attention.head_count", cfg["num_attention_heads"])
-    w.add_uint32(k + "attention.q_lora_rank", cfg["q_lora_rank"])
-    w.add_uint32(k + "attention.kv_lora_rank", cfg["kv_lora_rank"])
-    w.add_uint32(k + "attention.key_length", cfg["qk_nope_head_dim"] + cfg["qk_rope_head_dim"])
-    w.add_uint32(k + "attention.value_length", cfg["v_head_dim"])
-    w.add_uint32(k + "indexer.head_count", cfg["index_n_heads"])
-    w.add_uint32(k + "indexer.key_length", cfg["index_head_dim"])
-    w.add_uint32(k + "indexer.top_k", cfg["index_topk"])
-    w.add_uint32(k + "indexer.pool_size", cfg["index_kpool"])
-    w.add_bool(k + "indexer.select_tail", cfg["index_kpool_always_select_tail"])
-    w.add_uint32(k + "kda.head_count", la["num_heads"])
-    w.add_uint32(k + "kda.head_dim", la["head_dim"])
-    w.add_uint32(k + "kda.conv_kernel", la["short_conv_kernel_size"])
-    w.add_float32(k + "kda.gate_lower_bound", la.get("gate_lower_bound", -5.0))
-    w.add_uint32(k + "hc.count", cfg["hc_mult"])
-    w.add_uint32(k + "hc.sinkhorn_iterations", cfg["hc_sinkhorn_iters"])
-    w.add_float32(k + "hc.eps", cfg["hc_eps"])
-    w.add_float32(k + "hc.post_scale", 2.0)
+    if cfg.get("swiglu_limit") is not None:
+        w.add_array(k + "swiglu_clamp_exp", gguf_io.GGUF_FLOAT32, [cfg["swiglu_limit"]] * blocks)
+        w.add_array(k + "swiglu_clamp_shexp", gguf_io.GGUF_FLOAT32, [cfg["swiglu_limit"]] * blocks)
     tokenizer_metadata(w, model_dir, cfg["vocab_size"])
 
     for name, ne, t, _ in plan.items:

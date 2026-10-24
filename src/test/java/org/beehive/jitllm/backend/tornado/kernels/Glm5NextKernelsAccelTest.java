@@ -337,6 +337,11 @@ public class Glm5NextKernelsAccelTest {
         FloatArray gate = new FloatArray(width);
         FloatArray dtBias = gaussian(width, rng, 0.5f);
         FloatArray aLog = gaussian(heads, rng, 0.5f);
+        // The file's ssm_a: -exp(A_log).
+        FloatArray a = new FloatArray(heads);
+        for (int h = 0; h < heads; h++) {
+            a.set(h, (float) -Math.exp(aLog.get(h)));
+        }
         FloatArray weight = gaussian(hd, rng, 0.1f);
         for (int i = 0; i < hd; i++) {
             weight.set(i, weight.get(i) + 1f);
@@ -356,7 +361,7 @@ public class Glm5NextKernelsAccelTest {
                                 beta,
                                 gate,
                                 dtBias,
-                                aLog,
+                                a,
                                 weight)
                         .transferToDevice(DataTransferMode.FIRST_EXECUTION, state)
                         .task(
@@ -365,7 +370,7 @@ public class Glm5NextKernelsAccelTest {
                                 new KernelContext(),
                                 decay,
                                 dtBias,
-                                aLog,
+                                a,
                                 beta,
                                 width,
                                 hd,

@@ -37,9 +37,14 @@ public class Glm5NextForwardTest {
 
     private static final String DIR = "/goldens/glm5next-tiny/";
 
+    /**
+     * Loaded as three stacks of six experts (the last holds four), as the full model's 288 experts
+     * are loaded as two stacks.
+     */
     @Test
     public void f32ModelMatchesTheReferenceLayerByLayer() throws Exception {
-        Run run = new Run("model-F32.gguf");
+        Run run = new Run("model-F32.gguf", 50_000);
+        assertEquals(6, run.config.expertChunkSize());
         for (int t = 0; t < run.tokens.length; t++) {
             Glm5NextForward.embed(run.config, run.weights, run.state, run.tokens[t]);
             for (int l = 0; l < run.config.numberOfLayers(); l++) {
@@ -119,10 +124,23 @@ public class Glm5NextForwardTest {
         private final Map<String, GGMLTensorEntry> goldens;
 
         Run(String modelFile) throws IOException, URISyntaxException {
+            this(modelFile, 0);
+        }
+
+        /** With {@code stackBytes > 0}, the experts loaded as stacks of at most that size. */
+        Run(String modelFile, long stackBytes) throws IOException, URISyntaxException {
             Path model = resource(modelFile);
             GGUF gguf = GGUF.loadGGUFMetadata(model);
-            Glm5Next glm =
-                    new Glm5NextModelLoader(gguf.getFileChannel(), gguf, 64, false).loadModel();
+            if (stackBytes > 0) {
+                System.setProperty(
+                        Glm5NextModelLoader.STACK_BYTES_PROPERTY, Long.toString(stackBytes));
+            }
+            Glm5Next glm;
+            try {
+                glm = new Glm5NextModelLoader(gguf.getFileChannel(), gguf, 64, false).loadModel();
+            } finally {
+                System.clearProperty(Glm5NextModelLoader.STACK_BYTES_PROPERTY);
+            }
             this.config = glm.configuration();
             this.weights = (Glm5NextStandardWeights) glm.weights();
             this.state = (Glm5NextState) glm.createNewState();
