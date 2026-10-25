@@ -262,6 +262,55 @@ public class Qwen35Int8TopologyAccelTest {
         return out;
     }
 
+    /**
+     * The epilogue each in-place int8 GEMM of one batched layer graph was built with, by task name:
+     * the kernel is the same for a store, a residual add and SwiGLU, so its mode argument is what
+     * tells them apart.
+     */
+    private static LinkedHashMap<String, Integer> int8Epilogues(
+            Qwen35BatchPrefillLayers layers, int layer) throws Exception {
+        java.lang.reflect.Field field = ImmutableTaskGraph.class.getDeclaredField("taskGraph");
+        field.setAccessible(true);
+        java.lang.reflect.Field impl = TaskGraph.class.getDeclaredField("taskGraphImpl");
+        impl.setAccessible(true);
+        LinkedHashMap<String, Integer> out = new LinkedHashMap<>();
+        for (ImmutableTaskGraph immutable : layers.getLayerImmutableTaskGraphs()) {
+            TaskGraph graph = (TaskGraph) field.get(immutable);
+            if (!graph.getTaskGraphName().equals("batchLayer_" + layer)) {
+                continue;
+            }
+            var graphImpl =
+                    (uk.ac.manchester.tornado.api.TornadoTaskGraphInterface) impl.get(graph);
+            java.lang.reflect.Field packages =
+                    graphImpl.getClass().getDeclaredField("taskPackages");
+            packages.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            List<uk.ac.manchester.tornado.api.common.TaskPackage> list =
+                    (List<uk.ac.manchester.tornado.api.common.TaskPackage>) packages.get(graphImpl);
+            for (var pkg : list) {
+                String id = pkg.getId();
+                String bare = id.substring(id.indexOf('.') + 1);
+                var task = graphImpl.getTask(bare);
+                if (task != null && task.getTaskName().startsWith("gemmInt8Q4_0")) {
+                    // The code, then (context, a8, dA, w, out, gate, m, n, k, epilogue, ...).
+                    out.put(bare, (Integer) pkg.getTaskParameters()[10]);
+                }
+            }
+        }
+        return out;
+    }
+
+    /** Asserts {@code task} is the in-place Q4_0 int8 GEMM with {@code epilogue}. */
+    private static void assertInt8Gemm(
+            String what,
+            LinkedHashMap<String, String> kernels,
+            LinkedHashMap<String, Integer> epilogues,
+            String task,
+            int epilogue) {
+        assertEquals(what + " " + task, "gemmInt8Q4_0", kernels.get(task));
+        assertEquals(what + " " + task + " epilogue", (Integer) epilogue, epilogues.get(task));
+    }
+
     private static List<String> names(GridScheduler scheduler, int layer) {
         List<String> names = new ArrayList<>();
         for (String key : scheduler.keySet()) {
@@ -286,9 +335,9 @@ public class Qwen35Int8TopologyAccelTest {
         layers.updateGridScheduler(scheduler);
         for (int layer = 0; layer < TRUNK_LAYERS; layer++) {
             LinkedHashMap<String, String> k = kernels(layers, layer);
-            assertEquals(
-                    "layer " + layer + " up", "gemmInt8BlockScaledSwiGLU", k.get("ffn_up_proj"));
-            assertEquals("layer " + layer + " gate", "gemmInt8BlockScaled", k.get("ffn_gate_proj"));
+            LinkedHashMap<String, Integer> e = int8Epilogues(layers, layer);
+            assertInt8Gemm("layer " + layer, k, e, "ffn_up_proj", Int8GemmKernels.EPILOGUE_SWIGLU);
+            assertInt8Gemm("layer " + layer, k, e, "ffn_gate_proj", Int8GemmKernels.EPILOGUE_STORE);
             assertFalse("layer " + layer + " kept a SwiGLU task", k.containsKey("ffn_swiglu"));
             assertEquals(
                     "layer "
@@ -321,10 +370,12 @@ public class Qwen35Int8TopologyAccelTest {
         layers.updateGridScheduler(scheduler);
         for (int layer = 1; layer < TRUNK_LAYERS; layer++) { // layer 0's down is Q4_1
             LinkedHashMap<String, String> k = kernels(layers, layer);
-            assertEquals(
-                    "layer " + layer + " down",
-                    "gemmInt8BlockScaledResidual",
-                    k.get("ffn_down_proj"));
+            assertInt8Gemm(
+                    "layer " + layer,
+                    k,
+                    int8Epilogues(layers, layer),
+                    "ffn_down_proj",
+                    Int8GemmKernels.EPILOGUE_RESIDUAL);
             assertEquals(
                     "layer " + layer + " SwiGLU writes FP32 for the quantizer",
                     "swiGLUBatch",
@@ -340,11 +391,14 @@ public class Qwen35Int8TopologyAccelTest {
                     "layer " + layer + " hb quantization lanes",
                     (long) WIDTH * 512,
                     scheduler.get("batchLayer_" + layer + ".ffn_down_q8").getGlobalWork()[0]);
+            // The int8 GEMM reads the Q4_0 blocks where they lie: no decode task, no scratch.
+            assertFalse(
+                    "layer " + layer + " decodes a weight the int8 GEMM reads in place",
+                    k.containsKey("ffn_down_proj_dequant"));
             assertEquals(
-                    "layer " + layer + " down decode lanes (a lane per word of four)",
-                    5120L * 512 / 4,
-                    scheduler.get("batchLayer_" + layer + ".ffn_down_proj_dequant")
-                            .getGlobalWork()[0]);
+                    "layer " + layer + " down GEMM local work",
+                    Int8GemmKernels.Q8_GEMM_THREADS,
+                    scheduler.get("batchLayer_" + layer + ".ffn_down_proj").getLocalWork()[0]);
         }
         LinkedHashMap<String, String> q41 = kernels(layers, 0);
         assertEquals(
@@ -366,9 +420,11 @@ public class Qwen35Int8TopologyAccelTest {
         Qwen35BatchPrefillLayers layers = build(config(5120, 5120));
         for (int layer = 1; layer < TRUNK_LAYERS; layer++) {
             LinkedHashMap<String, String> k = kernels(layers, layer);
-            assertEquals("gemmInt8BlockScaled", k.get("ffn_gate_proj"));
-            assertEquals("gemmInt8BlockScaledSwiGLU", k.get("ffn_up_proj"));
-            assertEquals("gemmInt8BlockScaledResidual", k.get("ffn_down_proj"));
+            LinkedHashMap<String, Integer> e = int8Epilogues(layers, layer);
+            assertInt8Gemm("layer " + layer, k, e, "ffn_gate_proj", Int8GemmKernels.EPILOGUE_STORE);
+            assertInt8Gemm("layer " + layer, k, e, "ffn_up_proj", Int8GemmKernels.EPILOGUE_SWIGLU);
+            assertInt8Gemm(
+                    "layer " + layer, k, e, "ffn_down_proj", Int8GemmKernels.EPILOGUE_RESIDUAL);
             assertEquals("quantizeActivationsQ8Warp", k.get("ffn_down_q8"));
             assertEquals("quantizeActivationsQ8Warp", k.get("ffn_rms_apply_q8"));
             assertEquals("quantizeActivationsQ8Warp", k.get("attn_rms_apply_q8"));

@@ -34,11 +34,10 @@ public class Qwen35MmaBatchedPrefillWidth256ParityAccelTest extends CpuGpuParity
                 "the batched attention kernel this plan compiled",
                 java.util.Set.of("attentionBatchPaged"),
                 gpu.batchedTaskKernels.get("attention"));
-        PlanDispatchEvidence.assertQwen35AttentionOutputOnDequantGemm(
+        PlanDispatchEvidence.assertQwen35AttentionOutputOnGemm(
                 gpu.gridScheduler, 256, gpu.dim, 6144);
         PlanDispatchEvidence.assertQwen35SsmOutOnDequantGemm(gpu.gridScheduler, 256, gpu.dim, 6144);
         PlanDispatchEvidence.assertQwen35BatchDeltaRuleWarp(gpu.gridScheduler, 48, 128);
-        PlanDispatchEvidence.assertQwen35FfnDownOnDequantGemm(
-                gpu.gridScheduler, 256, gpu.dim, 17408);
+        PlanDispatchEvidence.assertQwen35FfnDownOnGemm(gpu.gridScheduler, 256, gpu.dim, 17408);
     }
 }
