@@ -3,13 +3,13 @@ package org.beehive.jitllm.backend.tornado;
 import org.beehive.jitllm.auxiliary.RunMetrics;
 import org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection;
 import org.beehive.jitllm.backend.tornado.lowering.LoweringQualification;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.DeviceSplit;
 import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.backend.ExecutionPath;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
-import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
@@ -116,19 +116,13 @@ public interface TornadoVMMasterPlan {
 
         // Resolved from the session's policy, once, here — not from a class constant read at
         // initialization.
-        var policy = state.executionPolicy();
-        boolean prefillDecode =
-                policy.phaseStrategy() == ExecutionPolicy.PhaseStrategy.PREFILL_DECODE;
-        if (prefillDecode && policy.prefillBatchSize() > 1) {
-            // GPU path with batched prefill/decode
-            plan = new TornadoVMMasterPlanBatchPrefillDecode(state, model, sink);
-        } else if (prefillDecode) {
-            // GPU path with simple prefill/decode
-            plan = new TornadoVMMasterPlanPrefillDecode(state, model, sink);
-        } else {
-            // GPU path with no prefill/decode
-            plan = new TornadoVMMasterPlanSingleToken(state, model, sink);
-        }
+        plan =
+                switch (ExecutionMode.of(state.executionPolicy())) {
+                    case BATCH_PREFILL_DECODE ->
+                            new TornadoVMMasterPlanBatchPrefillDecode(state, model, sink);
+                    case PREFILL_DECODE -> new TornadoVMMasterPlanPrefillDecode(state, model, sink);
+                    case STANDARD -> new TornadoVMMasterPlanSingleToken(state, model, sink);
+                };
         // Deliberately not stored on the model. A plan belongs to the session that built it;
         // parking it on the shared model meant the second session to start silently replaced the
         // first session's plan, and a later CPU call would then take the GPU branch against a

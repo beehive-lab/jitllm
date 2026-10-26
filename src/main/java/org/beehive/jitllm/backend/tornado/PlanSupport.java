@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
 import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
@@ -59,8 +60,7 @@ public final class PlanSupport {
 
     /** Why a model split across devices cannot run {@code policy}, if it cannot. */
     static Optional<String> splitUnsupported(ExecutionPolicy policy) {
-        return policy.phaseStrategy() == ExecutionPolicy.PhaseStrategy.PREFILL_DECODE
-                        && policy.prefillBatchSize() <= 1
+        return ExecutionMode.of(policy) == ExecutionMode.PREFILL_DECODE
                 ? Optional.of(
                         "a model split across devices (--devices) runs single-token or with"
                                 + " batched prefill (--batch-prefill-size N, N > 1), not"

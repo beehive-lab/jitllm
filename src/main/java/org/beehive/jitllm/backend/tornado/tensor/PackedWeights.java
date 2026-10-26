@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado.tensor;
 
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.backend.DeviceCapability;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
@@ -139,11 +140,8 @@ public final class PackedWeights {
      * A batched prefill's width fills the int8 GEMM's row tiles, the only packed prefill kernel.
      */
     private static boolean prefillWidthTiles(ExecutionPolicy policy) {
-        if (policy.phaseStrategy() != ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
-            return true;
-        }
-        int width = policy.prefillBatchSize();
-        return width == 1 || width % GEMM_ROWS == 0;
+        return ExecutionMode.of(policy) != ExecutionMode.BATCH_PREFILL_DECODE
+                || policy.prefillBatchSize() % GEMM_ROWS == 0;
     }
 
     /** The refusal for a path that has no kernel over packed tiles. */

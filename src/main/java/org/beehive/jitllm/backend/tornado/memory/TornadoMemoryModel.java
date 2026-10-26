@@ -60,17 +60,7 @@ public final class TornadoMemoryModel {
 
     /** Layer graph families for this policy — <b>read from the layout, not declared here</b>. */
     private static int layerGraphFamilies(ExecutionPolicy policy, int layers) {
-        return TornadoGraphTopology.layerGraphFamilies(executionMode(policy), layers);
-    }
-
-    /** The backend's execution mode for a policy — the same mapping plan selection makes. */
-    private static ExecutionMode executionMode(ExecutionPolicy policy) {
-        if (policy.phaseStrategy() != ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
-            return ExecutionMode.STANDARD;
-        }
-        return policy.prefillBatchSize() > 1
-                ? ExecutionMode.BATCH_PREFILL_DECODE
-                : ExecutionMode.PREFILL_DECODE;
+        return TornadoGraphTopology.layerGraphFamilies(ExecutionMode.of(policy), layers);
     }
 
     private TornadoMemoryModel() {}
@@ -97,7 +87,7 @@ public final class TornadoMemoryModel {
      */
     // @formatter:on
     private static boolean nativePrefillSelected(ExecutionPolicy policy) {
-        return executionMode(policy) == ExecutionMode.BATCH_PREFILL_DECODE
+        return ExecutionMode.of(policy) == ExecutionMode.BATCH_PREFILL_DECODE
                 && NativePrefillSupport.nativeProjections(policy);
     }
 
@@ -238,8 +228,7 @@ public final class TornadoMemoryModel {
         }
 
         // ── batch staging, only when a batched capacity is configured ────────
-        if (policy.phaseStrategy() == ExecutionPolicy.PhaseStrategy.PREFILL_DECODE
-                && policy.prefillBatchSize() > 1) {
+        if (ExecutionMode.of(policy) == ExecutionMode.BATCH_PREFILL_DECODE) {
             components.add(
                     new MemoryComponent(
                             "batch staging",
@@ -306,7 +295,7 @@ public final class TornadoMemoryModel {
         // Tensor-core attention operands, split-K partial products and the FP16 projections a
         // Q8_0 (or native F16) prefill decodes: a resident copy of every one, or one scratch
         // decoded again for each chunk, whichever the residency resolves to.
-        boolean batched = executionMode(policy) == ExecutionMode.BATCH_PREFILL_DECODE;
+        boolean batched = ExecutionMode.of(policy) == ExecutionMode.BATCH_PREFILL_DECODE;
         java.util.Optional<BatchPrefillWorkspace> workspace =
                 batched ? prefill : java.util.Optional.empty();
         if (workspace.isPresent()) {
@@ -359,7 +348,7 @@ public final class TornadoMemoryModel {
                                 && !nativePrefill
                                 && workspace.isEmpty()
                                 && TornadoGraphTopology.verify(
-                                        executionMode(policy), config.numberOfLayers()))
+                                        ExecutionMode.of(policy), config.numberOfLayers()))
                         ? MemoryPlan.Confidence.EXACT
                         : MemoryPlan.Confidence.CONSERVATIVE;
         return new MemoryPlan(

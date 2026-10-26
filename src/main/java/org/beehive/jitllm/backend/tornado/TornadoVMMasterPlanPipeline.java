@@ -20,7 +20,6 @@ import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.DeviceSplit;
 import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
-import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -117,9 +116,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                             throw new UnsupportedOperationException(
                                     PlanSupport.refusal(architecture, model, reason));
                         });
-        this.batched =
-                policy.phaseStrategy() == ExecutionPolicy.PhaseStrategy.PREFILL_DECODE
-                        && policy.prefillBatchSize() > 1;
+        this.batched = ExecutionMode.of(policy) == ExecutionMode.BATCH_PREFILL_DECODE;
         this.batchSize = batched ? policy.prefillBatchSize() : 1;
         ExecutionMode mode = batched ? ExecutionMode.BATCH_PREFILL_DECODE : ExecutionMode.STANDARD;
 

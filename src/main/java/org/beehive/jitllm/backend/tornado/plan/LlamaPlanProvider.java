@@ -120,9 +120,7 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
      */
     @Override
     public Optional<String> splitUnsupported(DataType weights, ExecutionPolicy policy, int stages) {
-        boolean batched =
-                policy.phaseStrategy() == ExecutionPolicy.PhaseStrategy.PREFILL_DECODE
-                        && policy.prefillBatchSize() > 1;
+        boolean batched = ExecutionMode.of(policy) == ExecutionMode.BATCH_PREFILL_DECODE;
         if (weights == DataType.F16) {
             return TornadoPlanProvider.super.splitUnsupported(weights, policy, stages);
         }

@@ -250,7 +250,7 @@ public final class Fp16KeyValueSupport {
 
     /** The combination this model and policy resolve to on the current device. */
     public static Combination resolve(Model model, ExecutionPolicy policy, boolean gpu) {
-        ExecutionMode mode = executionMode(policy);
+        ExecutionMode mode = ExecutionMode.of(policy);
         if (!gpu) {
             return new Combination(
                     model.architectureId().toString(),
@@ -274,14 +274,5 @@ public final class Fp16KeyValueSupport {
     /** Whether the current device is NVIDIA-class, whatever the model. */
     public static boolean nvidiaDevice() {
         return TornadoDevices.target().capabilities().supports(DeviceCapability.SINGLE_PASS_RMS);
-    }
-
-    private static ExecutionMode executionMode(ExecutionPolicy policy) {
-        if (policy.phaseStrategy() != ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
-            return ExecutionMode.STANDARD;
-        }
-        return policy.prefillBatchSize() > 1
-                ? ExecutionMode.BATCH_PREFILL_DECODE
-                : ExecutionMode.PREFILL_DECODE;
     }
 }
