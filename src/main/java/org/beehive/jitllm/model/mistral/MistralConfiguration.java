@@ -43,4 +43,9 @@ public record MistralConfiguration(
     public int headSize() {
         return dim / numberOfHeads;
     }
+
+    @Override
+    public boolean supportsSharedKvStorage() {
+        return true;
+    }
 }

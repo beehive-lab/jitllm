@@ -24,6 +24,7 @@ import org.beehive.jitllm.format.DataTypeMapping;
 import org.beehive.jitllm.format.GGMLType;
 import org.beehive.jitllm.format.GGUF;
 import org.beehive.jitllm.format.TensorDescriptors;
+import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.provider.ModelProvider;
 import org.beehive.jitllm.model.provider.ModelProviders;
@@ -31,6 +32,7 @@ import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.memory.WeightFootprint;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.runtime.tensor.TensorDescriptor;
@@ -65,6 +67,23 @@ public final class ModelLoader {
         Model model = loadThroughProvider(source, contextLength, useTornadovm);
         RunMetrics.setLoadDuration(System.nanoTime() - start);
         return model;
+    }
+
+    /** A model file's architecture identity and configuration. */
+    public record Description(ArchitectureId architecture, Configuration configuration) {}
+
+    /**
+     * What a load of this file would be, from its metadata alone: the identity its provider gives
+     * it and the configuration it would load with. No tokenizer, tensor or weight is built, which
+     * is what lets the memory preflight run before the load it is checking.
+     *
+     * @param contextLength as for {@link #loadModel(Path, int, boolean, boolean)}
+     */
+    public static Description describe(Path ggufPath, int contextLength) throws IOException {
+        ModelSource source = ModelSource.ofFile(ggufPath);
+        ModelProvider provider = ModelProviders.select(source);
+        return new Description(
+                provider.architecture(source), provider.configuration(source, contextLength));
     }
 
     /**

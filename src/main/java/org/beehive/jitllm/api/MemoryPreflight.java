@@ -45,9 +45,9 @@ final class MemoryPreflight {
             ExecutionPolicy policy,
             boolean withWorkspace)
             throws IOException {
-        // loadWeights = false, useTornadovm = false: the configuration comes from metadata and no
-        // tensor is materialized, on the host or the device. That is what makes this a *pre*flight.
-        var model = ModelLoader.loadModel(modelFile, contextLength, false, false);
+        // The identity and configuration come from metadata: no tokenizer, tensor or weight is
+        // built, on the host or the device. That is what makes this a *pre*flight.
+        ModelLoader.Description model = ModelLoader.describe(modelFile, contextLength);
         Configuration config = model.configuration();
         // Descriptors only. The loader owns the format types (Rule 4 permits it there and forbids
         // them here), and what comes back is a neutral footprint.
@@ -57,9 +57,7 @@ final class MemoryPreflight {
         // is the difference between refusing a 27B model on a 24 GB device and running it.
         var weights =
                 ModelLoader.weightFootprint(
-                        modelFile,
-                        org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry
-                                .nativeDeviceTypes(model.architectureId()));
+                        modelFile, TornadoPlanRegistry.nativeDeviceTypes(model.architecture()));
         return TornadoMemoryModel.predict(
                 weights,
                 config,
@@ -70,7 +68,7 @@ final class MemoryPreflight {
                 withWorkspace
                         ? workspace(model, modelFile, options, policy)
                         : java.util.Optional.empty(),
-                packedRepackScratchBytes(modelFile, model.architectureId(), policy));
+                packedRepackScratchBytes(modelFile, model.architecture(), policy));
     }
 
     /**
@@ -101,14 +99,14 @@ final class MemoryPreflight {
     }
 
     private static org.beehive.jitllm.runtime.memory.KeyValueReservation keyValueReservation(
-            org.beehive.jitllm.model.Model model, Path modelFile, ModelOptions options) {
+            ModelLoader.Description model, Path modelFile, ModelOptions options) {
         return new org.beehive.jitllm.runtime.memory.KeyValueReservation(
                 options.maxConcurrentSessions(),
                 DelegatingModel.attachesSharedPool(
-                        model,
+                        model.configuration().supportsSharedKvStorage(),
                         options.storageOptions(),
                         org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.mayHandle(
-                                model.architectureId(),
+                                model.architecture(),
                                 loadedWeightType(modelFile),
                                 options.executionPolicy())),
                 org.beehive.jitllm.runtime.memory.KeyValueReservation.BLOCK_SIZE_TOKENS,
@@ -119,7 +117,7 @@ final class MemoryPreflight {
     private static java.util.Optional<
                     org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
             workspace(
-                    org.beehive.jitllm.model.Model model,
+                    ModelLoader.Description model,
                     Path modelFile,
                     ModelOptions options,
                     ExecutionPolicy policy) {
@@ -127,8 +125,7 @@ final class MemoryPreflight {
         if (weightType == null || policy.prefillBatchSize() <= 1) {
             return java.util.Optional.empty();
         }
-        return org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry.provider(
-                        model.architectureId())
+        return TornadoPlanRegistry.provider(model.architecture())
                 .flatMap(
                         provider ->
                                 provider.batchPrefillWorkspace(
@@ -155,7 +152,7 @@ final class MemoryPreflight {
     static ExecutionPolicy resolveDecodedProjections(
             Path modelFile, int contextLength, ModelOptions options, ExecutionPolicy policy) {
         try {
-            var model = ModelLoader.loadModel(modelFile, contextLength, false, false);
+            var model = ModelLoader.describe(modelFile, contextLength);
             var workspace = workspace(model, modelFile, options, policy);
             if (workspace.isEmpty() || !workspace.get().decodesProjections()) {
                 return policy;

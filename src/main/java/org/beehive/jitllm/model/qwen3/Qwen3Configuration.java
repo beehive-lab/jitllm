@@ -115,4 +115,10 @@ public record Qwen3Configuration(
     public int contextLengthModel() {
         return contextLengthModel;
     }
+
+    /** Its layer graphs chain the KV buffers by predecessor name, so a shared table stays fresh. */
+    @Override
+    public boolean supportsSharedKvStorage() {
+        return true;
+    }
 }

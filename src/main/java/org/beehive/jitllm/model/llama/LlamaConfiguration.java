@@ -83,5 +83,12 @@ public record LlamaConfiguration(
                 this.rmsNormEps,
                 this.ropeTheta);
     }
+
     // @formatter:on
+
+    /** Its layer graphs chain the KV buffers by predecessor name, so a shared table stays fresh. */
+    @Override
+    public boolean supportsSharedKvStorage() {
+        return true;
+    }
 }

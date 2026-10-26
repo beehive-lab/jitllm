@@ -142,6 +142,18 @@ public interface Configuration {
         return 0L;
     }
 
+    /**
+     * Whether this family may lease <b>shared</b> KV storage, as opposed to merely addressing its
+     * own through a block table.
+     *
+     * <p>Asked of the family rather than kept as a list of families elsewhere [Rule 15], and of its
+     * configuration rather than its model so the memory preflight can answer it from the file's
+     * metadata, before any model exists.
+     */
+    default boolean supportsSharedKvStorage() {
+        return false;
+    }
+
     /** Size of the vocabulary (token set) */
     int vocabularySize();
 

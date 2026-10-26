@@ -162,6 +162,17 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
     }
 
     /**
+     * The configuration alone, from the metadata: the vocabulary it is sized by is read, and no
+     * tokenizer, tensor or weight is built. What the memory preflight needs from a file it has not
+     * loaded yet.
+     */
+    public final C loadConfiguration() {
+        Map<String, Object> metadata = gguf.getMetadata();
+        this.vocabulary = loadVocabulary(metadata);
+        return createConfiguration(metadata);
+    }
+
+    /**
      * Load the vocabulary from GGUF metadata. Model-specific implementations should override this
      * method.
      *
