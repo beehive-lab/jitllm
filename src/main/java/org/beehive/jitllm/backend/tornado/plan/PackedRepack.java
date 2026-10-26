@@ -21,11 +21,12 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 // @formatter:off
 /**
- * Packing on the GPU at every load: a packed projection ({@link PackedTiles}) is uploaded as the
- * file stores it and repacked on the device, so the host never holds or writes the packed form.
+ * Packing on the GPU for every plan: a projection the plan's {@link TileLayout} tiles ({@link
+ * PackedTiles}) is uploaded as the file stores it and repacked on the device, so the host never
+ * holds or writes the packed form.
  *
  * <p>One instance per session, on its workspace. A layer graph hands its weights to {@link
- * #upload}, packed tensors among them: those are uploaded by a repack graph of their own, {@code
+ * #upload}, tiled ones among them: those are uploaded by a repack graph of their own, {@code
  * packedRepack_<layer graph>}, which the layer graph consumes them from. {@link #appendGraphs} adds
  * those graphs to the plan and {@link #run} runs them once, before the plan's warm-up, so no layer
  * graph ever computes on the file's bytes. Each repack graph copies a weight into one scratch
@@ -53,20 +54,20 @@ public final class PackedRepack {
 
     /**
      * Uploads {@code objects} to {@code graph} once ({@code FIRST_EXECUTION}): device arrays as
-     * they are, and {@link TornadoTensor}s as their device arrays, except packed ones, which {@code
-     * graph} consumes from its repack graph instead.
+     * they are, and {@link TornadoTensor}s as their device arrays, except those {@code layout}
+     * tiles, which {@code graph} consumes from its repack graph instead.
      */
-    public synchronized void upload(TaskGraph graph, Object... objects) {
+    public synchronized void upload(TaskGraph graph, TileLayout layout, Object... objects) {
         List<Object> plain = new ArrayList<>();
         List<Object> repacked = new ArrayList<>();
         for (Object o : objects) {
-            if (o instanceof TornadoTensor t && t.isPacked()) {
-                PackedTiles tiles = t.packedTiles();
+            if (o instanceof TornadoTensor t && layout.tiled(t)) {
+                // GGUF ne order: dimension 0 is a row's inputs, dimension 1 the rows.
                 Weight w =
                         new Weight(
                                 t.asByteArray(),
-                                tiles.rows(),
-                                tiles.cols(),
+                                Math.toIntExact(t.shape().dimension(1)),
+                                Math.toIntExact(t.shape().dimension(0)),
                                 t.dataType() == DataType.Q4_0);
                 repacked.add(w.bytes());
                 owned.computeIfAbsent(graph.getTaskGraphName(), k -> new ArrayList<>()).add(w);

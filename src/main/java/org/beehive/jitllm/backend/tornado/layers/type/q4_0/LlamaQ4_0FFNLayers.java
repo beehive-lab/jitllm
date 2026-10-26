@@ -141,7 +141,8 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
             unifiedLayer.consumeFromDevice(weightSrc, PackedRepack.deviceArrays(binding[0]));
         }
         if (binding[1].length > 0) {
-            state.workspace.packedRepack.upload(unifiedLayer, binding[1]);
+            state.workspace.packedRepack.upload(
+                    unifiedLayer, state.workspace.tileLayout, binding[1]);
         }
         if (firstInGraph) {
             unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
@@ -204,7 +205,7 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
                     weights.wvLayered[layerIndex],
                     config.kvDim());
         } else {
-            if (weights.wqLayered[layerIndex].isPackedQ4()) {
+            if (state.workspace.tileLayout.tiledQ4(weights.wqLayered[layerIndex])) {
                 // Packed weights have only the integer-dot kernels.
                 throw PackedWeights.noPackedKernel(
                         "llama decode without packed integer dot products");
@@ -283,7 +284,7 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
                 state.workspace.tempFFN);
 
-        if (dp4a() && weights.w1Layered[layerIndex].isPackedQ4()) {
+        if (dp4a() && state.workspace.tileLayout.tiledQ4(weights.w1Layered[layerIndex])) {
             unifiedLayer.task(
                     tp + "ffn_gate_up",
                     TransformerComputeKernelsQ4_0Packed::fusedFFNGateUpSiLUQ4_0Packed,
@@ -397,7 +398,7 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
 
     private void packedProjection(
             TaskGraph graph, String name, FloatArray out, TornadoTensor w, int rows) {
-        if (w.isPackedQ4()) {
+        if (state.workspace.tileLayout.tiledQ4(w)) {
             graph.task(
                     name,
                     TransformerComputeKernelsQ4_0Packed::matrixVectorQ4_0Packed,
@@ -442,7 +443,7 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
             TornadoTensor w,
             int n,
             int rows) {
-        if (w.isPackedQ4()) {
+        if (state.workspace.tileLayout.tiledQ4(w)) {
             graph.task(
                     name,
                     TransformerComputeKernelsQ4_0Packed::matrixVectorQ4_0Packed,
@@ -474,9 +475,9 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
         return PackedActivationTasks.projectionWorker(rows, PACKED_LOCAL);
     }
 
-    /** The grid for a projection over {@code w}: a 16-row group per workgroup when it is packed. */
-    private static WorkerGrid packedWorker(int rows, TornadoTensor w, boolean fused) {
-        if (w.isPackedQ4()) {
+    /** The grid for a projection over {@code w}: a 16-row group per workgroup when it is tiled. */
+    private WorkerGrid packedWorker(int rows, TornadoTensor w, boolean fused) {
+        if (state.workspace.tileLayout.tiledQ4(w)) {
             int local =
                     fused
                             ? TransformerComputeKernelsQ4_0Packed.FUSED_LOCAL

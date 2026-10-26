@@ -269,7 +269,7 @@ public final class MlxPrefillProjections {
         for (int i = 0; i < layers; i++) {
             perLayer[i] = layerWeights.apply(i);
             for (TornadoTensor t : perLayer[i].all()) {
-                if (t.isPacked()) {
+                if (state.workspace.tileLayout.tiled(t)) {
                     throw PackedWeights.noPackedKernel("The MLX batched prefill");
                 }
                 if (t.dataType() != mlx.weights()) {

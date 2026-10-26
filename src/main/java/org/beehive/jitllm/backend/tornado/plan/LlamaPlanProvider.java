@@ -78,9 +78,9 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
         return java.util.Set.of(DataType.F16, DataType.Q8_0, DataType.Q4_0);
     }
 
-    /** The retained Q4_0 projections, when every projection is Q4_0 ({@code LlamaModelLoader}). */
+    /** Its Q4_0 layers read Q4_0 projections as tiles. */
     @Override
-    public Set<DataType> packedProjectionTypes() {
+    public Set<DataType> tileTypes(ExecutionPolicy policy) {
         return Set.of(DataType.Q4_0);
     }
 

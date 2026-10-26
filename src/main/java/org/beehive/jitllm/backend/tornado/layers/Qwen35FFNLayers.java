@@ -340,7 +340,7 @@ public class Qwen35FFNLayers
                 }
             }
             case Q8_0 -> {
-                if (w.isPackedQ8() && !packedQ8_0) {
+                if (state.workspace.tileLayout.tiledQ8(w) && !packedQ8_0) {
                     packedTasks().add(layer + "." + task);
                     graph.task(
                             tn(task),
@@ -352,7 +352,7 @@ public class Qwen35FFNLayers
                             n,
                             d,
                             residual ? 1 : 0);
-                } else if (w.isPackedQ8()) {
+                } else if (state.workspace.tileLayout.tiledQ8(w)) {
                     packedTasks().add(layer + "." + task);
                     graph.task(
                             tn(task),
@@ -407,7 +407,7 @@ public class Qwen35FFNLayers
                 }
             }
             case Q4_0 -> {
-                if (w.isPackedQ4()) {
+                if (state.workspace.tileLayout.tiledQ4(w)) {
                     // A packed weight: the quantized activation where the branch made one (the two
                     // DP4A conditions below), otherwise the FP32 one.
                     boolean quantized =
@@ -715,8 +715,10 @@ public class Qwen35FFNLayers
                         "ffn_gate|ffn_up",
                         gate.dataType(),
                         packed || packedQ8_0));
-        if (gate.isPackedQ8() || up.isPackedQ8()) {
-            if (!packedQ8_0 || !gate.isPackedQ8() || !up.isPackedQ8()) {
+        if (state.workspace.tileLayout.tiledQ8(gate) || state.workspace.tileLayout.tiledQ8(up)) {
+            if (!packedQ8_0
+                    || !state.workspace.tileLayout.tiledQ8(gate)
+                    || !state.workspace.tileLayout.tiledQ8(up)) {
                 throw PackedWeights.noPackedKernel("qwen35 layer " + layer + " fused gate/up");
             }
             packedTasks().add(layer + ".ffn_gate_up");
@@ -748,8 +750,10 @@ public class Qwen35FFNLayers
                     MATVEC_LOCAL);
             return;
         }
-        if (gate.isPackedQ4() || up.isPackedQ4()) {
-            if (!packed || !gate.isPackedQ4() || !up.isPackedQ4()) {
+        if (state.workspace.tileLayout.tiledQ4(gate) || state.workspace.tileLayout.tiledQ4(up)) {
+            if (!packed
+                    || !state.workspace.tileLayout.tiledQ4(gate)
+                    || !state.workspace.tileLayout.tiledQ4(up)) {
                 throw PackedWeights.noPackedKernel("qwen35 layer " + layer + " fused gate/up");
             }
             packedQ4Tasks().add(layer + ".ffn_gate_up");
@@ -1925,7 +1929,8 @@ public class Qwen35FFNLayers
         if (source != null) {
             layer.consumeFromDevice(source, PackedRepack.deviceArrays(tensors.toArray()));
         } else {
-            state.workspace.packedRepack.upload(layer, tensors.toArray());
+            state.workspace.packedRepack.upload(
+                    layer, state.workspace.tileLayout, tensors.toArray());
         }
     }
 

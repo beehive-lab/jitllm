@@ -13,11 +13,14 @@ import java.util.List;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections.LayerWeights;
+import org.beehive.jitllm.backend.tornado.plan.TileLayout;
 import org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor;
-import org.beehive.jitllm.backend.tornado.tensor.PackedTiles;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.runtime.tensor.Shape;
 import org.junit.Test;
@@ -40,6 +43,10 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 public class MlxPrefillProjectionsTest {
 
     private static final int GROUP = MlxPrefill.GROUP;
+
+    /** The smallest Llama a session state can be built for. */
+    private static final LlamaConfiguration TINY_LLAMA =
+            new LlamaConfiguration("Q8_0", 32, 32, 1, 1, 1, 32, 16, 1e-5f, 10000f);
 
     // ── fixtures: GGUF blocks written by hand ────────────────────────────────
 
@@ -307,11 +314,12 @@ public class MlxPrefillProjectionsTest {
 
     @Test
     public void packedProjectionsAreRefusedByName() {
-        Q4_0TornadoTensor packed =
-                new Q4_0TornadoTensor(new ByteArray(18 * 4), new PackedTiles(4, 32));
+        Q4_0TornadoTensor packed = new Q4_0TornadoTensor(new ByteArray(18 * 4), Shape.of(32, 4));
         LayerWeights layer =
                 new LayerWeights(
                         new TornadoTensor[] {packed}, packed, new TornadoTensor[] {packed}, packed);
+        State state = new LlamaState(TINY_LLAMA, -1);
+        state.workspace.tileLayout = TileLayout.of(List.of(packed));
         UnsupportedOperationException e =
                 assertThrows(
                         UnsupportedOperationException.class,
@@ -319,7 +327,7 @@ public class MlxPrefillProjectionsTest {
                                 MlxPrefillProjections.of(
                                         new MlxPrefill(
                                                 DataType.Q4_0, MlxPrefill.Projections.AFFINE),
-                                        null,
+                                        state,
                                         null,
                                         null,
                                         16,
@@ -346,7 +354,7 @@ public class MlxPrefillProjectionsTest {
                 () ->
                         MlxPrefillProjections.of(
                                 new MlxPrefill(DataType.Q8_0, MlxPrefill.Projections.AFFINE),
-                                null,
+                                new LlamaState(TINY_LLAMA, -1),
                                 null,
                                 null,
                                 16,

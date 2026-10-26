@@ -195,14 +195,11 @@ public interface TornadoPlanProvider {
     }
 
     /**
-     * The representations this family's loader packs into tiles ({@code PackedTiles}) when packing
-     * is on for the load, or none. Read by the memory preflight, which charges the scratch buffer
-     * the packed weights are repacked through ({@code PackedRepack}).
-     *
-     * <p>A loader may still decline to pack, by a rule of its own; the preflight then charges a
-     * scratch that is never allocated, which is the safe direction.
+     * The representations this family's kernels read as tiles ({@code PackedTiles}) under {@code
+     * policy}, or none. A plan holds a projection of one of them in tiles where packing is on and
+     * its shape divides into tiles ({@link TileLayout}).
      */
-    default Set<DataType> packedProjectionTypes() {
+    default Set<DataType> tileTypes(ExecutionPolicy policy) {
         return Set.of();
     }
 

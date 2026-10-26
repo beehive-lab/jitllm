@@ -182,7 +182,8 @@ public class LlamaQ8_0FFNLayers
             unifiedLayer.consumeFromDevice(weightSrc, PackedRepack.deviceArrays(binding[0]));
         }
         if (binding[1].length > 0) {
-            state.workspace.packedRepack.upload(unifiedLayer, binding[1]);
+            state.workspace.packedRepack.upload(
+                    unifiedLayer, state.workspace.tileLayout, binding[1]);
         }
         boolean packed = PackedActivationTasks.enabled();
         if (firstInGraph) {

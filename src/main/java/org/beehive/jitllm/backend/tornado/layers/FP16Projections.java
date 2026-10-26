@@ -4,6 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.plan.TileLayout;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -80,6 +81,7 @@ public final class FP16Projections {
     }
 
     private final KernelContext context;
+    private final TileLayout tiles;
     private final HalfFloatArray scratch;
     private final SplitKGemm gemm;
     private final Map<String, Integer> decodeTasks = new LinkedHashMap<>();
@@ -90,12 +92,14 @@ public final class FP16Projections {
     private int nextFlag;
 
     /**
+     * @param tiles the plan's tile layout: a tiled weight has no FP16 decode here
      * @param widest the most weights one projection call multiplies, all its tensors together
      * @param rows the padded batch, the GEMMs' row count
      * @param widestSplit the widest output a split projection writes
      */
     public FP16Projections(
             KernelContext context,
+            TileLayout tiles,
             long widest,
             int rows,
             int widestSplit,
@@ -103,6 +107,7 @@ public final class FP16Projections {
             int projectionCalls,
             boolean nativeGemm) {
         this.context = context;
+        this.tiles = tiles;
         this.resident = resident;
         // One flag per resident projection, and a last one never set for the per-chunk decodes.
         this.decoded = new IntArray(projectionCalls + 1);
@@ -146,7 +151,7 @@ public final class FP16Projections {
         long total = 0;
         boolean wholeRowBlocks = k % 32 == 0;
         for (TornadoTensor w : ws) {
-            if (w.isPacked()) {
+            if (tiles.tiled(w)) {
                 throw PackedWeights.noPackedKernel("Q8_0 batch-prefill task '" + task + "'");
             }
             long elements = elements(w);
@@ -168,7 +173,7 @@ public final class FP16Projections {
         }
         int offset = 0;
         for (int i = 0; i < ws.length; i++) {
-            if (ws[i].isPacked()) {
+            if (tiles.tiled(ws[i])) {
                 throw PackedWeights.noPackedKernel("Q8_0 batch-prefill task '" + task + "'");
             }
             int n = (int) elements(ws[i]);

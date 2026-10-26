@@ -29,6 +29,7 @@ public class LlamaQ4_0LayersBatchPrefillMMA extends DequantizingFP16LayersBatchP
         LlamaTornadoWeights w = (LlamaTornadoWeights) weights;
         state.workspace.packedRepack.upload(
                 batchPrefillLayer,
+                state.workspace.tileLayout,
                 w.rms_att_weightLayered[layerIndex].asFloatArray(),
                 w.wqLayered[layerIndex],
                 w.wkLayered[layerIndex],
@@ -48,7 +49,7 @@ public class LlamaQ4_0LayersBatchPrefillMMA extends DequantizingFP16LayersBatchP
      */
     @Override
     protected void decode(TaskGraph layer, String task, TornadoTensor w, int destOffset, int n) {
-        if (w.isPacked()) {
+        if (state.workspace.tileLayout.tiled(w)) {
             layer.task(
                     task,
                     TransformerComputeKernelsQ4_0::dequantizeQ4_0PackedToFP16,
@@ -57,7 +58,7 @@ public class LlamaQ4_0LayersBatchPrefillMMA extends DequantizingFP16LayersBatchP
                     scratch(),
                     destOffset,
                     n,
-                    w.packedTiles().cols());
+                    Math.toIntExact(w.shape().dimension(0)));
             return;
         }
         switch (w.dataType()) {

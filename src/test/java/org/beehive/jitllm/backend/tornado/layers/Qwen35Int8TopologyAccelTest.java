@@ -10,8 +10,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
+import org.beehive.jitllm.backend.tornado.plan.TileLayout;
 import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
-import org.beehive.jitllm.backend.tornado.tensor.PackedTiles;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_1TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q5_KTornadoTensor;
@@ -119,23 +119,13 @@ public class Qwen35Int8TopologyAccelTest {
         };
     }
 
-    /**
-     * A Q4_0 projection of {@code rows} outputs over {@code cols} inputs, in packed tiles when
-     * {@code packed} is set and the shape packs, as the loader decides.
-     */
-    private static TornadoTensor q40(int rows, int cols, boolean packed) {
-        if (packed && PackedTiles.fits(rows, cols)) {
-            return new Q4_0TornadoTensor(
-                    new ByteArray(rows * cols / 32 * 18), new PackedTiles(rows, cols));
-        }
-        return blocked(DataType.Q4_0, rows * cols);
+    /** A Q4_0 projection of {@code rows} outputs over {@code cols} inputs. */
+    private static TornadoTensor q40(int rows, int cols) {
+        return new Q4_0TornadoTensor(new ByteArray(rows * cols / 32 * 18), Shape.of(cols, rows));
     }
 
-    /**
-     * Q4_0 everywhere but block 0's down projection, which is Q4_1 as on the 27B's first eight; the
-     * Q4_0 projections whose shape packs are packed when {@code packed} is set.
-     */
-    private static Qwen35TornadoWeights weights(Qwen35Configuration config, boolean packed) {
+    /** Q4_0 everywhere but block 0's down projection, which is Q4_1 as on the 27B's first eight. */
+    private static Qwen35TornadoWeights weights(Qwen35Configuration config) {
         final int DIM = config.dim();
         final int HIDDEN = config.hiddenDim();
         final int BLOCKS = TRUNK_LAYERS + NEXTN_LAYERS;
@@ -165,12 +155,12 @@ public class Qwen35Int8TopologyAccelTest {
         for (int l = 0; l < BLOCKS; l++) {
             attnNorm[l] = f32(DIM);
             ffnNorm[l] = f32(DIM);
-            ffnGate[l] = q40(HIDDEN, DIM, packed);
-            ffnUp[l] = q40(HIDDEN, DIM, packed);
-            ffnDown[l] = l == 0 ? blocked(DataType.Q4_1, HIDDEN * DIM) : q40(DIM, HIDDEN, packed);
+            ffnGate[l] = q40(HIDDEN, DIM);
+            ffnUp[l] = q40(HIDDEN, DIM);
+            ffnDown[l] = l == 0 ? blocked(DataType.Q4_1, HIDDEN * DIM) : q40(DIM, HIDDEN);
             if (l < TRUNK_LAYERS && config.isRecurrentLayer(l)) {
-                ssmQkv[l] = q40(config.deltaNetConvDim(), DIM, packed);
-                ssmGate[l] = q40(config.deltaNetValueDim(), DIM, packed);
+                ssmQkv[l] = q40(config.deltaNetConvDim(), DIM);
+                ssmGate[l] = q40(config.deltaNetValueDim(), DIM);
                 ssmConv[l] = f32(config.deltaNetConvDim() * CONV_KERNEL);
                 ssmAlpha[l] = f32(DIM * VALUE_HEADS);
                 ssmBeta[l] = f32(DIM * VALUE_HEADS);
@@ -179,10 +169,10 @@ public class Qwen35Int8TopologyAccelTest {
                 ssmNorm[l] = f32(config.headValueDim());
                 ssmOut[l] = blocked(DataType.Q5_K, config.deltaNetValueDim() * DIM);
             } else {
-                wq[l] = q40(queryGate, DIM, packed);
-                wk[l] = q40(kvDim, DIM, packed);
-                wv[l] = q40(kvDim, DIM, packed);
-                wo[l] = q40(DIM, attnDim, packed);
+                wq[l] = q40(queryGate, DIM);
+                wk[l] = q40(kvDim, DIM);
+                wv[l] = q40(kvDim, DIM);
+                wo[l] = q40(DIM, attnDim);
                 qNorm[l] = f32(HEAD_DIM);
                 kNorm[l] = f32(HEAD_DIM);
             }
@@ -226,7 +216,20 @@ public class Qwen35Int8TopologyAccelTest {
         System.setProperty("jitllm.qwen35.tensorCores", "true");
         Qwen35State state =
                 (Qwen35State) State.withPrefillBatchSize(WIDTH, () -> new Qwen35State(config, -1));
-        return new Qwen35BatchPrefillLayers(state, weights(config, packed), config, WIDTH);
+        Qwen35TornadoWeights weights = weights(config);
+        if (packed) {
+            // The Q4_0 projections whose shape divides into tiles, as a plan that packs holds them.
+            List<TornadoTensor> tiled = new ArrayList<>();
+            for (TornadoTensor[] role : weights.projections()) {
+                for (TornadoTensor w : role) {
+                    if (w != null && w.dataType() == DataType.Q4_0 && TileLayout.fits(w.shape())) {
+                        tiled.add(w);
+                    }
+                }
+            }
+            state.workspace.tileLayout = TileLayout.of(tiled);
+        }
+        return new Qwen35BatchPrefillLayers(state, weights, config, WIDTH);
     }
 
     /** Task name to kernel method name, for the tasks of one batched layer graph. */

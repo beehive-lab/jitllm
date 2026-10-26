@@ -121,6 +121,7 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.projections =
                 new FP16Projections(
                         context,
+                        state.workspace.tileLayout,
                         widestProjection(config),
                         paddedBatch,
                         config.dim(),

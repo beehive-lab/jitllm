@@ -581,7 +581,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         String graph = layer.getTaskGraphName() + ".";
         layer.task(
                 task,
-                w.isPackedQ4()
+                state.workspace.tileLayout.tiledQ4(w)
                         ? Int8GemmKernels::gemmInt8Q4_0Packed
                         : w.dataType() == DataType.Q4_0
                                 ? Int8GemmKernels::gemmInt8Q4_0
@@ -745,7 +745,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      */
     // @formatter:on
     private void addDequant(TaskGraph layer, String taskName, TornadoTensor w, int destOffset) {
-        if (w.isPackedQ4()) {
+        if (state.workspace.tileLayout.tiledQ4(w)) {
             // A packed weight has only the int8 GEMM (-Djitllm.gemma4.noInt8Prefill and native
             // projections are not open to it).
             throw PackedWeights.noPackedKernel("gemma4 batch-prefill task '" + taskName + "'");
@@ -919,7 +919,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      */
     private TornadoTensor[] requireMlx(String name, TornadoTensor... tensors) {
         for (TornadoTensor t : tensors) {
-            if (t.isPacked()) {
+            if (state.workspace.tileLayout.tiled(t)) {
                 throw PackedWeights.noPackedKernel("The gemma4 MLX batched prefill (" + name + ")");
             }
             if (t.dataType() != mlx.weights()) {
@@ -1305,7 +1305,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             declareMlxBuffers(layer, layerIndex);
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, mlxWeights(layerIndex));
         } else {
-            state.workspace.packedRepack.upload(layer, projections);
+            state.workspace.packedRepack.upload(layer, state.workspace.tileLayout, projections);
         }
         if (hasOwnKv) {
             requireDecodable(weights.wkLayered[layerIndex], "blk." + layerIndex + ".attn_k");
@@ -1313,9 +1313,11 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             layer.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION, weights.attnKNorm[layerIndex].asFloatArray());
             if (mlx == null) {
-                state.workspace.packedRepack.upload(layer, weights.wkLayered[layerIndex]);
+                state.workspace.packedRepack.upload(
+                        layer, state.workspace.tileLayout, weights.wkLayered[layerIndex]);
                 if (weights.wvLayered[layerIndex] != null) {
-                    state.workspace.packedRepack.upload(layer, weights.wvLayered[layerIndex]);
+                    state.workspace.packedRepack.upload(
+                            layer, state.workspace.tileLayout, weights.wvLayered[layerIndex]);
                 }
             }
         }

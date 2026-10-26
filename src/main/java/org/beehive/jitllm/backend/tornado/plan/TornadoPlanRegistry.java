@@ -11,6 +11,7 @@ import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForw
 import org.beehive.jitllm.backend.tornado.plan.components.PrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.memory.DeviceRetention;
@@ -212,6 +213,11 @@ public final class TornadoPlanRegistry {
                             throw new UnsupportedOperationException(reason);
                         });
 
+        // Decided before the components build their layer graphs, which read it.
+        state.workspace.tileLayout =
+                model.weights() instanceof TornadoWeights weights
+                        ? TileLayout.forPlan(provider, weights, state.executionPolicy())
+                        : TileLayout.NONE;
         SingleTokenForwardPlanComponents components =
                 provider.components(quantization, state, model);
         // A provider may support a mode for one representation and not for another — Llama has

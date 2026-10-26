@@ -309,7 +309,8 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      * takes it below the FP16 pair's output threshold too, since it has no other kernel.
      */
     private boolean q40Int8(String task, TornadoTensor w, int n, int k) {
-        return int8Eligible(task, n, k) || (w.isPackedQ4() && packedQ4Eligible(task, n, k));
+        return int8Eligible(task, n, k)
+                || (state.workspace.tileLayout.tiledQ4(w) && packedQ4Eligible(task, n, k));
     }
 
     /** {@code x += out}: the residual of a projection whose kernel stored rather than added. */
@@ -403,7 +404,8 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         if (splits > 1) {
             gemmSplitCounts.put(qualified, splits);
         }
-        boolean packed = q8 ? w.isPackedQ8() : w.isPackedQ4();
+        boolean packed =
+                q8 ? state.workspace.tileLayout.tiledQ8(w) : state.workspace.tileLayout.tiledQ4(w);
         graph.task(
                 task,
                 packed
@@ -485,7 +487,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             int n,
             int k,
             Epilogue epilogue) {
-        if (w.isPackedQ4()) {
+        if (state.workspace.tileLayout.tiledQ4(w)) {
             if (!packedQ4Eligible(task, n, k) || epilogue == Epilogue.SWIGLU) {
                 throw PackedWeights.noPackedKernel("qwen35 batch-prefill task '" + qualified + "'");
             }
@@ -698,7 +700,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             tensors[layer].dataType() == DataType.Q8_0
                                     ? q8Int8Eligible("", outputs, inputs)
                                     : int8Eligible(outputs, inputs)
-                                            || (tensors[layer].isPackedQ4()
+                                            || (state.workspace.tileLayout.tiledQ4(tensors[layer])
                                                     && packedQ4Eligible("", outputs, inputs));
                     if (eligible) {
                         int splits = gemmSplits(outputs, inputs);
@@ -887,7 +889,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 }
             }
             case Q4_0 -> {
-                if (w.isPackedQ4()) {
+                if (state.workspace.tileLayout.tiledQ4(w)) {
                     // A packed weight has only the packed int8 GEMM: the activation quantized here.
                     String qualified = GraphNames.batchLayer(layer) + "." + task;
                     if (!packedQ4Eligible(task, d, n)) {
@@ -1112,7 +1114,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     true);
             return;
         }
-        if (w.isPackedQ8()) {
+        if (state.workspace.tileLayout.tiledQ8(w)) {
             throw PackedWeights.noPackedKernel(
                     "qwen35 batch-prefill layer "
                             + layer
@@ -1398,7 +1400,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             }
             return;
         }
-        if (gate.isPackedQ4() || up.isPackedQ4()) {
+        if (state.workspace.tileLayout.tiledQ4(gate) || state.workspace.tileLayout.tiledQ4(up)) {
             throw PackedWeights.noPackedKernel(
                     "qwen35 batch-prefill layer " + layer + " fused gate/up");
         }
@@ -2352,7 +2354,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             tensors.add(require(weights.attnQNorm, layerIndex, "attn_q_norm").asFloatArray());
             tensors.add(require(weights.attnKNorm, layerIndex, "attn_k_norm").asFloatArray());
         }
-        state.workspace.packedRepack.upload(layer, tensors.toArray());
+        state.workspace.packedRepack.upload(layer, state.workspace.tileLayout, tensors.toArray());
     }
 
     private static Object deviceArray(TornadoTensor tensor) {

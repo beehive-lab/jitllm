@@ -113,8 +113,8 @@ public abstract class TornadoWeights implements Weights {
         return false;
     }
 
-    /** The per-layer projections a load may pack; a family with more of its own adds them. */
-    protected java.util.List<TornadoTensor[]> projections() {
+    /** The per-layer projections a plan may tile; a family with more of its own adds them. */
+    public java.util.List<TornadoTensor[]> projections() {
         return java.util.Arrays.asList(
                 wqLayered, wkLayered, wvLayered, woLayered, w1Layered, w2Layered, w3Layered);
     }

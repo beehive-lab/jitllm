@@ -930,7 +930,8 @@ public class Gemma4Q8_0FFNLayers
             own.add(weights.perLayerInpGate[layerIndex]);
             own.add(weights.perLayerProj[layerIndex]);
         }
-        gemma4State.workspace.packedRepack.upload(unifiedLayer, own.toArray());
+        gemma4State.workspace.packedRepack.upload(
+                unifiedLayer, state.workspace.tileLayout, own.toArray());
     }
 
     /** Whether the batched prefill multiplies the projections on MLX, in its own form of them. */
@@ -1375,9 +1376,9 @@ public class Gemma4Q8_0FFNLayers
         }
     }
 
-    /** Whether {@code w} holds packed Q4_0 tiles ({@code -Djitllm.q4.packed=true}). */
-    private static boolean packedQ4(TornadoTensor w) {
-        return w != null && w.dataType() == DataType.Q4_0 && w.isPackedQ4();
+    /** Whether the plan holds {@code w} as Q4_0 tiles. */
+    private boolean packedQ4(TornadoTensor w) {
+        return state.workspace.tileLayout.tiledQ4(w);
     }
 
     // @formatter:off

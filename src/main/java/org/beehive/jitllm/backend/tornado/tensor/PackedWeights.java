@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.backend.DeviceCapability;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 // @formatter:off
 /**
@@ -117,6 +118,28 @@ public final class PackedWeights {
      */
     public static boolean packedIntegerDotOn(String property) {
         return !"false".equalsIgnoreCase(System.getProperty(property, "true"));
+    }
+
+    /**
+     * Whether a plan under {@code policy} holds {@code type} in tiles, for a family whose kernels
+     * read it as tiles: {@code -Djitllm.q8.packed} or {@code -Djitllm.q4.packed} when set,
+     * otherwise a CUDA device with the packed kernels' capabilities and a prefill width they tile.
+     */
+    public static boolean tiles(DataType type, ExecutionPolicy policy) {
+        String property =
+                switch (type) {
+                    case Q8_0 -> Q8_PROPERTY;
+                    case Q4_0 -> Q4_PROPERTY;
+                    default -> null;
+                };
+        if (property == null) {
+            return false;
+        }
+        String asked = System.getProperty(property);
+        if (asked != null && !asked.isBlank()) {
+            return Boolean.parseBoolean(asked);
+        }
+        return deviceRunsPackedKernels() && prefillWidthTiles(policy);
     }
 
     private static boolean decide(String property, boolean familySupports) {
