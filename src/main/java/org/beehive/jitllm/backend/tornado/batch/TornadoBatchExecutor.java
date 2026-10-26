@@ -42,8 +42,8 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * here would have given the codebase two admission policies to disagree with each other.
  *
  * <p>So this class owns exactly: the task graphs (activation, N decode layers, batched logits), the
- * per-step buffers, and the translation from {@link BatchSlots} to what the kernels read. The bench
- * keeps its own copy and its own numbers; nothing was deleted from it.
+ * per-step buffers, and the translation from {@link BatchSlots} to what the kernels read. The
+ * original harness now lives in the test sources.
  *
  * <p><b>Slot identity.</b> The batched kernels index the block table at {@code batchIndex *
  * blocksPerSlot + …}, so a request's batch position <b>is</b> its KV slot. The scheduler follows
