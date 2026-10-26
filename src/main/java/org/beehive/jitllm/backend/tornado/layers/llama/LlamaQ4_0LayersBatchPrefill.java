@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.llama;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.IntStream;
+import org.beehive.jitllm.backend.tornado.BatchPrefillSupport;
 import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels;
@@ -26,9 +27,9 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 
 /**
  * Llama batched-prefill transformer-layer TaskGraphs for retained Q4_0 weights, on the Metal
- * SIMD-group kernels only ({@link org.beehive.jitllm.backend.tornado.BatchPrefillSupport} refuses
- * it elsewhere): the projections dequantize each Q4_0 block to {@code float} as they stage it. The
- * host decodes the embeddings into {@code wrapXBatch}, as for Q8_0.
+ * SIMD-group kernels only ({@link BatchPrefillSupport} refuses it elsewhere): the projections
+ * dequantize each Q4_0 block to {@code float} as they stage it. The host decodes the embeddings
+ * into {@code wrapXBatch}, as for Q8_0.
  */
 public class LlamaQ4_0LayersBatchPrefill implements BatchPrefillTransformerLayerTaskGraphs {
 

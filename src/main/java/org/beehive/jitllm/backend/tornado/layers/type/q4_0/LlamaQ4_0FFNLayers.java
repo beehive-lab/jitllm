@@ -6,6 +6,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0P
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LlamaQ8_0FFNLayers;
+import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
@@ -134,9 +135,7 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
         String weightSrc = weightSourceGraphName(layerIndex);
         Object[][] binding = weightBinding(weightSrc, layerIndex, layerWeights);
         if (binding[0].length > 0) {
-            unifiedLayer.consumeFromDevice(
-                    weightSrc,
-                    org.beehive.jitllm.backend.tornado.plan.PackedRepack.deviceArrays(binding[0]));
+            unifiedLayer.consumeFromDevice(weightSrc, PackedRepack.deviceArrays(binding[0]));
         }
         if (binding[1].length > 0) {
             state.workspace.packedRepack.upload(unifiedLayer, binding[1]);

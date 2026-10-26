@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.phi3;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.IntStream;
+import org.beehive.jitllm.backend.tornado.BatchPrefillSupport;
 import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
@@ -26,10 +27,10 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 // @formatter:off
 /**
  * Phi-3 batched-prefill transformer-layer TaskGraphs (Phi3FP16Layers weights), on the Metal
- * SIMD-group kernels only ({@link org.beehive.jitllm.backend.tornado.BatchPrefillSupport} refuses
- * the family elsewhere). The fused {@code wqkv} and {@code wUp} weights are read by the fused
- * projection kernels; RoPE rotates split-half pairs with Phi-3's base of 10000; attention runs the
- * kernel for the model's head width.
+ * SIMD-group kernels only ({@link BatchPrefillSupport} refuses the family elsewhere). The fused
+ * {@code wqkv} and {@code wUp} weights are read by the fused projection kernels; RoPE rotates
+ * split-half pairs with Phi-3's base of 10000; attention runs the kernel for the model's head
+ * width.
  */
 // @formatter:on
 public class Phi3FP16LayersBatchPrefill implements BatchPrefillTransformerLayerTaskGraphs {

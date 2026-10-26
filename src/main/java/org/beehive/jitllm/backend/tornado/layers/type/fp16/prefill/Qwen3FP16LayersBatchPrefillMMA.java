@@ -17,6 +17,7 @@ import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -253,8 +254,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      * but hands to no task is never uploaded and the consumer binds a buffer nothing wrote. Both
      * sides ask this one method; see {@code Qwen3FP16FFNLayersDecode.weightsNotProvidedBySource}.
      */
-    public static boolean nativeProjections(
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy) {
+    public static boolean nativeProjections(ExecutionPolicy policy) {
         return NativePrefillSupport.nativeProjections(policy);
     }
 
@@ -285,10 +285,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      * stacked weights and attention staging, which the configuration accounts; see the constructor.
      */
     public static BatchPrefillWorkspace workspace(
-            Qwen3Configuration config,
-            int batchSize,
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy,
-            boolean fp16Cache) {
+            Qwen3Configuration config, int batchSize, ExecutionPolicy policy, boolean fp16Cache) {
         int padded = (batchSize + 127) & ~127;
         int headSize = config.numberOfHeadsValue();
         boolean cudnnAttention =

@@ -3,8 +3,11 @@ package org.beehive.jitllm.backend.tornado.layers;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.IntStream;
+import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
 import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
+import org.beehive.jitllm.backend.tornado.kernels.NativeProjectionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
@@ -17,9 +20,11 @@ import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.Qwen35State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
 import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -53,10 +58,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     @Override
     public String describeNativeLibraries() {
-        return org.beehive.jitllm.backend.tornado.NativePrefillSupport.nativeProjections(
-                        state.executionPolicy())
-                ? "cuBLAS"
-                : "none";
+        return NativePrefillSupport.nativeProjections(state.executionPolicy()) ? "cuBLAS" : "none";
     }
 
     @Override
@@ -663,9 +665,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      */
     // @formatter:on
     private void allocateQ8Scratch() {
-        boolean nativeLibraries =
-                org.beehive.jitllm.backend.tornado.NativePrefillSupport.nativeProjections(
-                        state.executionPolicy());
+        boolean nativeLibraries = NativePrefillSupport.nativeProjections(state.executionPolicy());
         int dim = config.dim();
         // Each projection's tensors with its (outputs, inputs).
         Object[][] projections = {
@@ -715,23 +715,21 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             FloatArray current = state.workspace.wrapDequantScratchF32;
             if (current == null || current.getSize() < widest) {
                 state.workspace.wrapDequantScratchF32 =
-                        org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces.floats(
-                                Math.toIntExact(widest));
+                        TornadoWorkspaces.floats(Math.toIntExact(widest));
             }
         }
         if (partials > 0) {
             FloatArray current = state.workspace.wrapQ8SplitPartial;
             if (current == null || current.getSize() < partials) {
                 state.workspace.wrapQ8SplitPartial =
-                        org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces.floats(
-                                Math.toIntExact(partials));
+                        TornadoWorkspaces.floats(Math.toIntExact(partials));
             }
         }
     }
 
     /** The streaming multiprocessors of the device this plan is built for; 0 when unknown. */
     private static int smCount() {
-        return org.beehive.jitllm.backend.tornado.device.TornadoDevices.target().computeUnits();
+        return TornadoDevices.target().computeUnits();
     }
 
     private static final int MAX_GEMM_SPLITS = 8;
@@ -1174,8 +1172,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         q8DequantTasks.put(qualified + "_dequant", n * d);
         graph.task(
                 task + "_dequant",
-                org.beehive.jitllm.backend.tornado.kernels.NativeProjectionKernels
-                        ::dequantizeQ8_0ToFP32,
+                NativeProjectionKernels::dequantizeQ8_0ToFP32,
                 context,
                 w.asByteArray(),
                 scratch,
@@ -2554,9 +2551,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     private boolean scoredAttention() {
         return fp16Kv()
                 && state.workspace.wrapAttnScoresBatch != null
-                && !org.beehive.jitllm.runtime.backend.BackendId.METAL.equals(
-                        org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
-                                .backend());
+                && !BackendId.METAL.equals(TornadoDevices.current().backend());
     }
 
     // ── worker grids ──────────────────────────────────────────────────────────

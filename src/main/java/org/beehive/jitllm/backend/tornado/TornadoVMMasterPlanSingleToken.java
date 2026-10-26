@@ -2,10 +2,12 @@ package org.beehive.jitllm.backend.tornado;
 
 import org.beehive.jitllm.auxiliary.RunMetrics;
 import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
+import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.plan.SingleTokenForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -28,7 +30,7 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
             System.getLogger(TornadoVMMasterPlanSingleToken.class.getName());
 
     @Override
-    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
+    public ExecutionInfo executionInfo() {
         return PlanDiagnostics.describe(
                 state, "single-token", 1, "JIT kernels (no tensor-core MMA)", "JIT kernels");
     }
@@ -72,7 +74,7 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
             executionPlan.withPreCompilation();
             long warmupTime = System.nanoTime();
 
-            org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(executionPlan, packedRepack);
+            PackedRepack.run(executionPlan, packedRepack);
             forceCopyInReadOnlyData();
             long copyTime = System.nanoTime();
 
@@ -128,7 +130,7 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
     }
 
     /** The graphs that repack the packed weights on the GPU before the warm-up, or null. */
-    private org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs packedRepack;
+    private PackedRepack.Graphs packedRepack;
 
     // @formatter:off
     @Override

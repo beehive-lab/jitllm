@@ -4,8 +4,10 @@ import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
+import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
@@ -178,13 +180,12 @@ public interface TornadoPlanProvider {
      * representation beyond the staging every family has, as the layer class it would build sizes
      * it — or empty when that class adds nothing the configuration does not already account.
      */
-    default Optional<org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
-            batchPrefillWorkspace(
-                    DataType weights,
-                    org.beehive.jitllm.model.Configuration config,
-                    int batchSize,
-                    ExecutionPolicy policy,
-                    boolean fp16Cache) {
+    default Optional<BatchPrefillWorkspace> batchPrefillWorkspace(
+            DataType weights,
+            Configuration config,
+            int batchSize,
+            ExecutionPolicy policy,
+            boolean fp16Cache) {
         return Optional.empty();
     }
 

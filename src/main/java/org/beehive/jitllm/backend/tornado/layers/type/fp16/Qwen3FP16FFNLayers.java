@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16FFNLayersDecode;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
@@ -690,13 +691,11 @@ public class Qwen3FP16FFNLayers
 
     /**
      * Layers per graph, single-token and batched decode alike: the count measured for the decode
-     * graphs, {@link
-     * org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16FFNLayersDecode#LAYERS_PER_GRAPH}.
+     * graphs, {@link Qwen3FP16FFNLayersDecode#LAYERS_PER_GRAPH}.
      */
     @Override
     protected int layersPerGraph() {
-        return org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16FFNLayersDecode
-                .LAYERS_PER_GRAPH;
+        return Qwen3FP16FFNLayersDecode.LAYERS_PER_GRAPH;
     }
 
     /**

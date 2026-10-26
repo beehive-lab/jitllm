@@ -5,6 +5,7 @@ import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.Qwen3FP16LayersBatchPrefillMMA;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
@@ -25,10 +26,9 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * Qwen3 batched-DECODE transformer-layer TaskGraphs: B independent sequences, each with its own KV
  * region and position.
  *
- * <p>Structurally identical to {@link
- * org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.Qwen3FP16LayersBatchPrefillMMA}
- * (13-task MMA pipeline including the Qwen3 per-head Q/K RMS norm). Swaps the two KV-addressing
- * kernels for the per-slot decode variants over a B-sized KV cache:
+ * <p>Structurally identical to {@link Qwen3FP16LayersBatchPrefillMMA} (13-task MMA pipeline
+ * including the Qwen3 per-head Q/K RMS norm). Swaps the two KV-addressing kernels for the per-slot
+ * decode variants over a B-sized KV cache:
  *
  * <ul>
  *   <li>{@code batch_rope_kv} → {@link Qwen3Kernels#batchedDecodeRopeWithKVCacheQwen3Packed}

@@ -5,6 +5,8 @@ import org.beehive.jitllm.backend.tornado.kernels.Phi3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
+import org.beehive.jitllm.backend.tornado.layers.phi3.Phi3MlxLayerWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
@@ -473,9 +475,7 @@ public class Phi3FP16FFNLayers
 
     /** Phi-3's fused QKV and gate/up tensors, which the MLX prefill multiplies as they are. */
     @Override
-    protected org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections.LayerWeights
-            mlxLayerWeights(int layerIndex) {
-        return org.beehive.jitllm.backend.tornado.layers.phi3.Phi3MlxLayerWeights.of(
-                (Phi3TornadoWeights) weights, layerIndex);
+    protected MlxPrefillProjections.LayerWeights mlxLayerWeights(int layerIndex) {
+        return Phi3MlxLayerWeights.of((Phi3TornadoWeights) weights, layerIndex);
     }
 }

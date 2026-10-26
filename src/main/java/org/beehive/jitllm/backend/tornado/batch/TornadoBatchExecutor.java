@@ -5,16 +5,20 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
+import org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kv.TornadoKvStore;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
 import org.beehive.jitllm.backend.tornado.plan.BatchDecode;
+import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.batch.BatchExecutor;
 import org.beehive.jitllm.runtime.batch.BatchSlots;
 import org.beehive.jitllm.runtime.kv.KvStorage;
@@ -79,13 +83,13 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
     /**
      * The continuous-batch plan compiles lazily on the first step, independently of master plans.
      */
-    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
+    public ExecutionInfo executionInfo() {
         var backend =
                 uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider.getTornadoRuntime()
                         .getBackend(0);
         var module = TornadoExecutionPlan.class.getModule().getDescriptor();
         String version = module == null ? "unknown" : module.rawVersion().orElse("unknown");
-        return new org.beehive.jitllm.runtime.backend.ExecutionInfo(
+        return new ExecutionInfo(
                 backend.getBackendType().name(),
                 backend.getDefaultDevice().getPhysicalDevice().getDeviceName(),
                 "TornadoVM " + version,
@@ -111,7 +115,7 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         Configuration config = model.configuration();
         TornadoWeights weights = (TornadoWeights) model.weights();
 
-        if (!org.beehive.jitllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend()) {
+        if (!TensorCoreSupport.isTensorCoreCapableBackend()) {
             throw new IllegalArgumentException(
                     "Continuous batching requires a CUDA device with tensor-core MMA support");
         }
@@ -241,23 +245,21 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         this.logitsGraphIndex = 1 + layerCount;
         var packedRepack = state.workspace.packedRepack.appendGraphs(all, schedule);
         this.plan = new TornadoExecutionPlan(all.toArray(new ImmutableTaskGraph[0]));
-        org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(plan, packedRepack);
+        PackedRepack.run(plan, packedRepack);
         var roles = new java.util.HashMap<Integer, String>();
         roles.put(0, "batch activation");
-        org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.label(
-                roles, 1, layerCount, "layers");
+        TaskGraphChainPrinter.label(roles, 1, layerCount, "layers");
         roles.put(logitsGraphIndex, "logits and sampling");
-        org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.printIfRequested(
-                new org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.Chain(
+        TaskGraphChainPrinter.printIfRequested(
+                new TaskGraphChainPrinter.Chain(
                         "continuous batching (" + batchSize + " slots)",
                         all,
                         schedule,
                         List.of(
-                                new org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.Phase(
+                                new TaskGraphChainPrinter.Phase(
                                         "engine step",
                                         "per engine step, all slots together",
-                                        org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter
-                                                .span(0, logitsGraphIndex))),
+                                        TaskGraphChainPrinter.span(0, logitsGraphIndex))),
                         roles),
                 model);
 

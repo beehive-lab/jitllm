@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode;
 
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanPrefillDecode;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LlamaQ8_0FFNLayers;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.LlamaState;
@@ -9,7 +10,7 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 
 /**
  * Decode transformer-layer TaskGraphs for the single-token prefill/decode plan ({@link
- * org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanPrefillDecode}).
+ * TornadoVMMasterPlanPrefillDecode}).
  *
  * <p>Layer 0 delegates to {@link LlamaQ8_0FFNLayers#configureLayerDataTransfers} which includes
  * {@code FIRST_EXECUTION} for {@code wrapKeyCache} and {@code wrapValueCache}, allocating the KV

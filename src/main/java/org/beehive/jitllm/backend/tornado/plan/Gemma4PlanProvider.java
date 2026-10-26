@@ -4,12 +4,15 @@ import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers;
+import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.fp16.Gemma4FP16PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.q8_0.Gemma4Q8_0PlanComponents;
 import org.beehive.jitllm.inference.state.Gemma4State;
 import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
@@ -161,14 +164,13 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
 
     /** The MLX projections' FP16 copies (or affine repack) and staging, on Metal. */
     @Override
-    public Optional<org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
-            batchPrefillWorkspace(
-                    DataType weights,
-                    org.beehive.jitllm.model.Configuration config,
-                    int batchSize,
-                    ExecutionPolicy policy,
-                    boolean fp16Cache) {
-        if (!(config instanceof org.beehive.jitllm.model.gemma4.Gemma4Configuration gemma4)) {
+    public Optional<BatchPrefillWorkspace> batchPrefillWorkspace(
+            DataType weights,
+            Configuration config,
+            int batchSize,
+            ExecutionPolicy policy,
+            boolean fp16Cache) {
+        if (!(config instanceof Gemma4Configuration gemma4)) {
             return Optional.empty();
         }
         return Gemma4BatchPrefillLayers.mlxPrefill(policy, weights, gemma4)

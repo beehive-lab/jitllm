@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.BatchMmaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.DeepSeek2BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
@@ -983,7 +984,7 @@ public class DeepSeek2BatchPrefillLayers implements BatchPrefillTransformerLayer
 
     /** The streaming multiprocessors of the device this plan is built for; 0 when unknown. */
     private static int smCount() {
-        return org.beehive.jitllm.backend.tornado.device.TornadoDevices.target().computeUnits();
+        return TornadoDevices.target().computeUnits();
     }
 
     private static WorkerGrid lanes(int count, int local) {

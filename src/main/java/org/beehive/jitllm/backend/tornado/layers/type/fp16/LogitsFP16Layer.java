@@ -12,6 +12,7 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
@@ -50,7 +51,7 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
      */
     private boolean deviceSample() {
         return state.executionPolicy().samplingResidency()
-                == org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency.DEVICE;
+                == ExecutionPolicy.SamplingResidency.DEVICE;
     }
 
     // @formatter:off

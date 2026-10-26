@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.granite;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.IntStream;
+import org.beehive.jitllm.backend.tornado.BatchPrefillSupport;
 import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.kernels.GraniteBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
@@ -27,11 +28,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 // @formatter:off
 /**
  * Granite batched-prefill transformer-layer TaskGraphs (Q8_0 weights), on the Metal SIMD-group
- * kernels only ({@link org.beehive.jitllm.backend.tornado.BatchPrefillSupport} refuses the family
- * elsewhere). Llama's layer with Granite's multipliers: the embedding multiplier is applied to the
- * batch by the first layer, the attention multiplier replaces {@code 1 / sqrt(headSize)}, and the
- * residual multiplier scales both projections that are added to the stream. RoPE rotates
- * interleaved pairs with the frequency computed from {@code ropeTheta}.
+ * kernels only ({@link BatchPrefillSupport} refuses the family elsewhere). Llama's layer with
+ * Granite's multipliers: the embedding multiplier is applied to the batch by the first layer, the
+ * attention multiplier replaces {@code 1 / sqrt(headSize)}, and the residual multiplier scales both
+ * projections that are added to the stream. RoPE rotates interleaved pairs with the frequency
+ * computed from {@code ropeTheta}.
  */
 // @formatter:on
 public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayerTaskGraphs {

@@ -1,17 +1,28 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 
+import org.beehive.jitllm.backend.cpu.InferenceCore;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4AttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0Packed;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.Activation;
+import org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers;
+import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Gemma4State;
 import org.beehive.jitllm.inference.weights.tornado.Gemma4TornadoWeights;
 import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -36,9 +47,8 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * between sliding-window and full-attention layers (and are baked into each layer's task graph as
  * compile-time constants -- see {@link Gemma4Configuration#headDim}), some layers reuse an earlier
  * layer's KV cache instead of computing their own, the FFN uses GeGLU, and every layer mixes in a
- * per-layer embedding (PLE) contribution. See {@link
- * org.beehive.jitllm.backend.cpu.InferenceCore#forwardJavaGemma4} for the reference computation
- * each task mirrors.
+ * per-layer embedding (PLE) contribution. See {@link InferenceCore#forwardJavaGemma4} for the
+ * reference computation each task mirrors.
  *
  * <p>Layer 0's task graph additionally carries one-time-per-token setup that the reference
  * implementation performs before the layer loop: scaling the token embedding by {@code sqrt(dim)},
@@ -211,9 +221,7 @@ public class Gemma4Q8_0FFNLayers
                 .equalsIgnoreCase(System.getProperty("jitllm.gemma4.packedIntegerDot", "true"))) {
             return false;
         }
-        return org.beehive.jitllm.backend.tornado.device.TornadoDevices.target()
-                .capabilities()
-                .supports(org.beehive.jitllm.runtime.backend.DeviceCapability.PACKED_INTEGER_DOT);
+        return TornadoDevices.target().capabilities().supports(DeviceCapability.PACKED_INTEGER_DOT);
     }
 
     /** How many slices the window is cut into, or 1 to run the single-pass kernel. */
@@ -353,8 +361,7 @@ public class Gemma4Q8_0FFNLayers
         if (packed) {
             unifiedLayer.task(
                     tn(layerIndex, "attn_quantize"),
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0
-                            ::quantizeActivationQ8Blocks,
+                    TransformerComputeKernelsQ4_0::quantizeActivationQ8Blocks,
                     context,
                     gemma4State.workspace.wrapXb,
                     gemma4State.workspace.wrapXbQuants,
@@ -613,8 +620,7 @@ public class Gemma4Q8_0FFNLayers
             // triple holds one activation at a time and attention has overwritten wrapXb since.
             unifiedLayer.task(
                     tn(layerIndex, "attn_out_quantize"),
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0
-                            ::quantizeActivationQ8Blocks,
+                    TransformerComputeKernelsQ4_0::quantizeActivationQ8Blocks,
                     context,
                     gemma4State.workspace.wrapXb,
                     gemma4State.workspace.wrapXbQuants,
@@ -657,8 +663,7 @@ public class Gemma4Q8_0FFNLayers
         if (packed) {
             unifiedLayer.task(
                     tn(layerIndex, "ffn_quantize"),
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0
-                            ::quantizeActivationQ8Blocks,
+                    TransformerComputeKernelsQ4_0::quantizeActivationQ8Blocks,
                     context,
                     gemma4State.workspace.wrapXb,
                     gemma4State.workspace.wrapXbQuants,
@@ -672,13 +677,11 @@ public class Gemma4Q8_0FFNLayers
             if (!packed
                     || !packedQ4(weights.w1Layered[layerIndex])
                     || !packedQ4(weights.w3Layered[layerIndex])) {
-                throw org.beehive.jitllm.backend.tornado.tensor.PackedWeights.noPackedKernel(
-                        "gemma4 layer " + layerIndex + " fused gate/up");
+                throw PackedWeights.noPackedKernel("gemma4 layer " + layerIndex + " fused gate/up");
             }
             unifiedLayer.task(
                     tn(layerIndex, "ffn_gate_up"),
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0Packed
-                            ::fusedFFNGateUpGeGLUQ4_0Packed,
+                    TransformerComputeKernelsQ4_0Packed::fusedFFNGateUpGeGLUQ4_0Packed,
                     context,
                     gemma4State.workspace.wrapXbQuants,
                     gemma4State.workspace.wrapXbScales,
@@ -690,8 +693,7 @@ public class Gemma4Q8_0FFNLayers
         } else if (packed && weights.w1Layered[layerIndex].dataType() == DataType.Q8_0) {
             unifiedLayer.task(
                     tn(layerIndex, "ffn_gate_up"),
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A
-                            ::fusedFFNGateUpGeGLUQ8_0DP4A,
+                    TransformerComputeKernelsQ8_0DP4A::fusedFFNGateUpGeGLUQ8_0DP4A,
                     context,
                     gemma4State.workspace.wrapXbQuants,
                     gemma4State.workspace.wrapXbScales,
@@ -704,8 +706,7 @@ public class Gemma4Q8_0FFNLayers
         } else if (packed && weights.w1Layered[layerIndex].dataType() == DataType.Q4_0) {
             unifiedLayer.task(
                     tn(layerIndex, "ffn_gate_up"),
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0
-                            ::fusedFFNGateUpGeGLUQ4_0DP4A,
+                    TransformerComputeKernelsQ4_0::fusedFFNGateUpGeGLUQ4_0DP4A,
                     context,
                     gemma4State.workspace.wrapXbQuants,
                     gemma4State.workspace.wrapXbScales,
@@ -719,8 +720,7 @@ public class Gemma4Q8_0FFNLayers
         } else if (weights.w1Layered[layerIndex].dataType() == DataType.Q4_0) {
             unifiedLayer.task(
                     tn(layerIndex, "ffn_gate_up"),
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0
-                            ::fusedFFNGateUpGeGLUQ4_0,
+                    TransformerComputeKernelsQ4_0::fusedFFNGateUpGeGLUQ4_0,
                     context,
                     gemma4State.workspace.wrapXb,
                     gemma4State.workspace.wrapHb,
@@ -747,8 +747,7 @@ public class Gemma4Q8_0FFNLayers
             // up to 12288 here against the embedding's 1536.
             unifiedLayer.task(
                     tn(layerIndex, "ffn_hidden_quantize"),
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0
-                            ::quantizeActivationQ8Blocks,
+                    TransformerComputeKernelsQ4_0::quantizeActivationQ8Blocks,
                     context,
                     gemma4State.workspace.wrapHb,
                     gemma4State.workspace.wrapXbQuants,
@@ -830,11 +829,10 @@ public class Gemma4Q8_0FFNLayers
 
     /**
      * One-time-per-token setup tasks, prepended to layer 0's graph: scales the token embedding by
-     * {@code sqrt(dim)} (Gemma4 scales embeddings on input -- the generic {@link
-     * org.beehive.jitllm.backend.tornado.layers.Activation} task graph that produced {@code wrapX}
-     * doesn't know about this), then computes the per-layer embedding inputs from the per-layer
-     * model projection and the (host-gathered) per-token per-layer-token-embedding row. Mirrors
-     * steps 1-2 of {@link org.beehive.jitllm.backend.cpu.InferenceCore#forwardJavaGemma4}.
+     * {@code sqrt(dim)} (Gemma4 scales embeddings on input -- the generic {@link Activation} task
+     * graph that produced {@code wrapX} doesn't know about this), then computes the per-layer
+     * embedding inputs from the per-layer model projection and the (host-gathered) per-token
+     * per-layer-token-embedding row. Mirrors steps 1-2 of {@link InferenceCore#forwardJavaGemma4}.
      */
     private void appendPLESetupTasks(TaskGraph unifiedLayer) {
         unifiedLayer.task(
@@ -922,9 +920,7 @@ public class Gemma4Q8_0FFNLayers
         projections.add(weights.w2Layered[layerIndex]);
         if (batchedPlan) {
             unifiedLayer.consumeFromDevice(
-                    "batchPrefillLayer_" + layerIndex,
-                    org.beehive.jitllm.backend.tornado.plan.PackedRepack.deviceArrays(
-                            shared.toArray()));
+                    "batchPrefillLayer_" + layerIndex, PackedRepack.deviceArrays(shared.toArray()));
         } else {
             own.addAll(shared);
         }
@@ -937,7 +933,7 @@ public class Gemma4Q8_0FFNLayers
 
     /** Whether the batched prefill multiplies the projections on MLX, in its own form of them. */
     private boolean mlxPrefill() {
-        return org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers.mlxPrefill(
+        return Gemma4BatchPrefillLayers.mlxPrefill(
                         gemma4State.executionPolicy(), weights.dataType(), config)
                 .isPresent();
     }
@@ -1260,8 +1256,7 @@ public class Gemma4Q8_0FFNLayers
         if (packedActivation && w.dataType() == DataType.Q8_0) {
             tg.task(
                     taskName,
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A
-                            ::matrixVectorGenericQ8_0DP4A,
+                    TransformerComputeKernelsQ8_0DP4A::matrixVectorGenericQ8_0DP4A,
                     context,
                     gemma4State.workspace.wrapXbQuants,
                     gemma4State.workspace.wrapXbScales,
@@ -1275,8 +1270,7 @@ public class Gemma4Q8_0FFNLayers
         if (packedActivation && w.dataType() == DataType.Q4_1) {
             tg.task(
                     taskName,
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1
-                            ::matrixVectorGenericQ4_1DP4A,
+                    TransformerComputeKernelsQ4_1::matrixVectorGenericQ4_1DP4A,
                     context,
                     gemma4State.workspace.wrapXbQuants,
                     gemma4State.workspace.wrapXbScales,
@@ -1291,8 +1285,7 @@ public class Gemma4Q8_0FFNLayers
         if (packedActivation && w.dataType() == DataType.Q4_0) {
             tg.task(
                     taskName,
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0
-                            ::matrixVectorGenericQ4_0DP4A,
+                    TransformerComputeKernelsQ4_0::matrixVectorGenericQ4_0DP4A,
                     context,
                     gemma4State.workspace.wrapXbQuants,
                     gemma4State.workspace.wrapXbScales,
@@ -1342,8 +1335,7 @@ public class Gemma4Q8_0FFNLayers
             case Q4_0 ->
                     tg.task(
                             taskName,
-                            org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0
-                                    ::matrixVectorGenericQ4_0,
+                            TransformerComputeKernelsQ4_0::matrixVectorGenericQ4_0,
                             context,
                             in,
                             out,
@@ -1356,8 +1348,7 @@ public class Gemma4Q8_0FFNLayers
             case Q4_1 ->
                     tg.task(
                             taskName,
-                            org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1
-                                    ::matrixVectorGenericQ4_1,
+                            TransformerComputeKernelsQ4_1::matrixVectorGenericQ4_1,
                             context,
                             in,
                             out,
@@ -1415,8 +1406,7 @@ public class Gemma4Q8_0FFNLayers
                             / 16
                             * org.beehive.jitllm.backend.tornado.kernels
                                     .TransformerComputeKernelsQ4_0Packed.LOCAL,
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0Packed
-                            .LOCAL);
+                    TransformerComputeKernelsQ4_0Packed.LOCAL);
         }
         if (warpProjection(w)) {
             int groups =

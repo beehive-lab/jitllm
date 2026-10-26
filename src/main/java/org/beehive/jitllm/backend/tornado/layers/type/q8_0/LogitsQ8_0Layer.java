@@ -2,7 +2,14 @@ package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.scheduling.LogitsWorkgroupPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -10,6 +17,8 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
@@ -110,7 +119,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
     /** Whether this session samples greedily on the device. Asked at each use, not cached. */
     private boolean deviceSample() {
         return state.executionPolicy().samplingResidency()
-                == org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency.DEVICE;
+                == ExecutionPolicy.SamplingResidency.DEVICE;
     }
 
     // @formatter:off
@@ -134,11 +143,9 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
      */
     // @formatter:on
     protected boolean packedVocabulary(TornadoWeights weights) {
-        return org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks.enabled()
-                && (weights.wclsByteArray.dataType()
-                                == org.beehive.jitllm.runtime.tensor.DataType.Q6_K
-                        || weights.wclsByteArray.dataType()
-                                == org.beehive.jitllm.runtime.tensor.DataType.Q4_K
+        return PackedActivationTasks.enabled()
+                && (weights.wclsByteArray.dataType() == DataType.Q6_K
+                        || weights.wclsByteArray.dataType() == DataType.Q4_K
                         || packedQ8_0Vocabulary(weights))
                 && state.workspace.wrapXbQuants != null;
     }
@@ -149,8 +156,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
      * family whose layers read Q8_0 in floating point keeps logits computed the same way as before.
      */
     private boolean packedQ8_0Vocabulary(TornadoWeights weights) {
-        return weights.wclsByteArray.dataType() == org.beehive.jitllm.runtime.tensor.DataType.Q8_0
-                && familyProjectsQ8_0Packed();
+        return weights.wclsByteArray.dataType() == DataType.Q8_0 && familyProjectsQ8_0Packed();
     }
 
     /**
@@ -179,13 +185,12 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
             // nothing wrote. A family that overrides setupLogitsTaskGraph — Gemma 4 does, for its
             // logit soft-cap — would otherwise have to remember to bring the quantize with it, and
             // one that forgot would get plausible logits off uninitialized quants.
-            org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks.quantize(
+            PackedActivationTasks.quantize(
                     logits, "vocab_quantize", context, state.workspace, state.workspace.wrapX);
             if (packedQ8_0Vocabulary(weights)) {
                 logits.task(
                         "vocab_proj",
-                        org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A
-                                ::matrixVectorGenericQ8_0DP4A,
+                        TransformerComputeKernelsQ8_0DP4A::matrixVectorGenericQ8_0DP4A,
                         context,
                         state.workspace.wrapXbQuants,
                         state.workspace.wrapXbScales,
@@ -196,11 +201,10 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
                         localSize);
                 return;
             }
-            if (w.dataType() == org.beehive.jitllm.runtime.tensor.DataType.Q4_K) {
+            if (w.dataType() == DataType.Q4_K) {
                 logits.task(
                         "vocab_proj",
-                        org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K
-                                ::matrixVectorGenericQ4_KDP4A,
+                        TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_KDP4A,
                         context,
                         state.workspace.wrapXbQuants,
                         state.workspace.wrapXbScales,
@@ -214,8 +218,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
             }
             logits.task(
                     "vocab_proj",
-                    org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K
-                            ::matrixVectorGenericQ6_KDP4A,
+                    TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_KDP4A,
                     context,
                     state.workspace.wrapXbQuants,
                     state.workspace.wrapXbScales,
@@ -242,8 +245,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
             case Q4_0 ->
                     logits.task(
                             "vocab_proj",
-                            org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0
-                                    ::matrixVectorGenericQ4_0,
+                            TransformerComputeKernelsQ4_0::matrixVectorGenericQ4_0,
                             context,
                             state.workspace.wrapX,
                             state.workspace.wrapLogits,
@@ -254,8 +256,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
             case Q4_1 ->
                     logits.task(
                             "vocab_proj",
-                            org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1
-                                    ::matrixVectorGenericQ4_1,
+                            TransformerComputeKernelsQ4_1::matrixVectorGenericQ4_1,
                             context,
                             state.workspace.wrapX,
                             state.workspace.wrapLogits,
@@ -266,8 +267,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
             case Q4_K ->
                     logits.task(
                             "vocab_proj",
-                            org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K
-                                    ::matrixVectorGenericQ4_K,
+                            TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_K,
                             context,
                             state.workspace.wrapX,
                             state.workspace.wrapLogits,
@@ -278,8 +278,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
             case Q5_K ->
                     logits.task(
                             "vocab_proj",
-                            org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K
-                                    ::matrixVectorGenericQ5_K,
+                            TransformerComputeKernelsQ5_K::matrixVectorGenericQ5_K,
                             context,
                             state.workspace.wrapX,
                             state.workspace.wrapLogits,
@@ -290,8 +289,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
             case Q6_K ->
                     logits.task(
                             "vocab_proj",
-                            org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K
-                                    ::matrixVectorGenericQ6_K,
+                            TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_K,
                             context,
                             state.workspace.wrapX,
                             state.workspace.wrapLogits,
@@ -328,9 +326,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
         }
         if (weights instanceof TornadoWeights tornadoWeights && packedVocabulary(tornadoWeights)) {
             tornadoForwardScheduler.addWorkerGrid(
-                    "logits.vocab_quantize",
-                    org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks.quantizeWorker(
-                            config.dim()));
+                    "logits.vocab_quantize", PackedActivationTasks.quantizeWorker(config.dim()));
         }
         return tornadoForwardScheduler;
     }

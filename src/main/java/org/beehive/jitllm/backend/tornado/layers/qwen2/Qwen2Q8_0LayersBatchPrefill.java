@@ -14,6 +14,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefill
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillAttention;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.LlamaFP16LayersBatchPrefill;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen2State;
@@ -30,9 +31,8 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
  * Qwen2 batched-prefill transformer-layer TaskGraphs (Llama's, with the Q/K/V biases and NeoX RoPE)
  * for the unified batched prefill-decode plan (Q8_0).
  *
- * <p>Mirrors {@link
- * org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.LlamaFP16LayersBatchPrefill} but uses
- * Q8_0 kernels with inline dequantization. Key differences from the FP16 path:
+ * <p>Mirrors {@link LlamaFP16LayersBatchPrefill} but uses Q8_0 kernels with inline dequantization.
+ * Key differences from the FP16 path:
  *
  * <ul>
  *   <li>{@code wrapXBatch} is filled with dequantized FP32 embeddings by the host before the

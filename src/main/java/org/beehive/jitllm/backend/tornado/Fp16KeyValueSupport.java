@@ -8,6 +8,7 @@ import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.policy.StorageOptions;
@@ -272,9 +273,7 @@ public final class Fp16KeyValueSupport {
 
     /** Whether the current device is NVIDIA-class, whatever the model. */
     public static boolean nvidiaDevice() {
-        return TornadoDevices.target()
-                .capabilities()
-                .supports(org.beehive.jitllm.runtime.backend.DeviceCapability.SINGLE_PASS_RMS);
+        return TornadoDevices.target().capabilities().supports(DeviceCapability.SINGLE_PASS_RMS);
     }
 
     private static ExecutionMode executionMode(ExecutionPolicy policy) {

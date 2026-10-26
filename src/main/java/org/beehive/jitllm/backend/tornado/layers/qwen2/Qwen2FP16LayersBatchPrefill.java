@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.MlxPrefill;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen2BatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
@@ -28,8 +29,7 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 
 /**
  * Qwen2 batched-prefill transformer-layer TaskGraphs (Llama's, with the Q/K/V biases and NeoX RoPE)
- * for the unified batched prefill-decode plan ({@link
- * org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode}).
+ * for the unified batched prefill-decode plan ({@link TornadoVMMasterPlanBatchPrefillDecode}).
  *
  * <p>One {@link ImmutableTaskGraph} per transformer layer, each processing {@code batchSize} tokens
  * simultaneously via {@link TransformerBatchPrefillKernels}.

@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 
+import org.beehive.jitllm.backend.cpu.InferenceCore;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
@@ -19,8 +20,7 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
  *
  * <p>Identical to {@link LogitsFP16Layer} except for one addition: Gemma4 applies a final logit
  * soft-cap, {@code logits = softcap * tanh(logits / softcap)}, after the vocabulary projection (see
- * {@code gemma4.final_logit_softcapping} and {@link
- * org.beehive.jitllm.backend.cpu.InferenceCore#forwardJavaGemma4}).
+ * {@code gemma4.final_logit_softcapping} and {@link InferenceCore#forwardJavaGemma4}).
  */
 public class Gemma4LogitsFP16Layer extends LogitsFP16Layer {
 

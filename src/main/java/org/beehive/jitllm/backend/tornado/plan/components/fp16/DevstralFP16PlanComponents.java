@@ -19,6 +19,7 @@ import org.beehive.jitllm.inference.state.DevstralState;
 import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.devstral.DevstralConfiguration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 public class DevstralFP16PlanComponents implements BatchPrefillDecodeForwardPlanComponents {
 
@@ -62,17 +63,13 @@ public class DevstralFP16PlanComponents implements BatchPrefillDecodeForwardPlan
      */
     @Override
     public ActivationTaskGraph batchPrefillActivation(int batchSize) {
-        boolean f16Embedding =
-                weights.getTokenEmbeddingTable().dataType()
-                        == org.beehive.jitllm.runtime.tensor.DataType.F16;
+        boolean f16Embedding = weights.getTokenEmbeddingTable().dataType() == DataType.F16;
         return new BatchPrefillActivation(state, config, batchSize, !f16Embedding);
     }
 
     @Override
     public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
-        boolean f16Embedding =
-                weights.getTokenEmbeddingTable().dataType()
-                        == org.beehive.jitllm.runtime.tensor.DataType.F16;
+        boolean f16Embedding = weights.getTokenEmbeddingTable().dataType() == DataType.F16;
         return new BatchDecodeActivation(state, config, lastBatchLayerId, !f16Embedding);
     }
 

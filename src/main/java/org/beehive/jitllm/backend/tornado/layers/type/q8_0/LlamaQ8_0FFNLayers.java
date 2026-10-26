@@ -6,6 +6,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0D
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
+import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.RmsReductionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
@@ -13,6 +14,7 @@ import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.SplitKvAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
 import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -177,9 +179,7 @@ public class LlamaQ8_0FFNLayers
         String weightSrc = weightSourceGraphName(layerIndex);
         Object[][] binding = weightBinding(weightSrc, layerIndex, layerWeights);
         if (binding[0].length > 0) {
-            unifiedLayer.consumeFromDevice(
-                    weightSrc,
-                    org.beehive.jitllm.backend.tornado.plan.PackedRepack.deviceArrays(binding[0]));
+            unifiedLayer.consumeFromDevice(weightSrc, PackedRepack.deviceArrays(binding[0]));
         }
         if (binding[1].length > 0) {
             state.workspace.packedRepack.upload(unifiedLayer, binding[1]);
@@ -700,8 +700,7 @@ public class LlamaQ8_0FFNLayers
     protected int attentionSplits() {
         if (!useFp16KVCache()) {
             return SplitKvAttentionPolicy.narrow()
-                    ? SplitKvAttentionPolicy.splits(
-                            org.beehive.jitllm.inference.state.State.SPLIT_KV)
+                    ? SplitKvAttentionPolicy.splits(State.SPLIT_KV)
                     : 0;
         }
         var partitions = state.executionPolicy().splitKvPartitions();
@@ -711,17 +710,15 @@ public class LlamaQ8_0FFNLayers
         if (partitions.isEmpty()) {
             // Split by default where the lane-cooperative kernel runs: one workgroup per head
             // leaves most of the device idle and walks the whole context serially.
-            return laneAttention(config.headSize())
-                    ? org.beehive.jitllm.inference.state.State.SPLIT_KV
-                    : 0;
+            return laneAttention(config.headSize()) ? State.SPLIT_KV : 0;
         }
         int splits = partitions.getAsInt();
-        if (splits > org.beehive.jitllm.inference.state.State.SPLIT_KV) {
+        if (splits > State.SPLIT_KV) {
             throw new IllegalArgumentException(
                     "split-KV working partitions "
                             + splits
                             + " exceed the "
-                            + org.beehive.jitllm.inference.state.State.SPLIT_KV
+                            + State.SPLIT_KV
                             + " the attention scratch was sized for;"
                             + " raise jitllm.attention.splitKv.count, which is the capacity");
         }

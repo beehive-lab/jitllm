@@ -4,7 +4,9 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -33,11 +35,9 @@ public class Activation extends AbstractLayer implements ActivationTaskGraph {
      * same reason; this is the other half of that.
      */
     protected TaskGraph setupActivationTaskGraph(String name) {
-        org.beehive.jitllm.runtime.tensor.DataType embedding =
-                weights instanceof org.beehive.jitllm.inference.weights.tornado.TornadoWeights t
-                        ? t.getTokenEmbeddingTable().dataType()
-                        : null;
-        if (embedding == org.beehive.jitllm.runtime.tensor.DataType.Q4_0) {
+        DataType embedding =
+                weights instanceof TornadoWeights t ? t.getTokenEmbeddingTable().dataType() : null;
+        if (embedding == DataType.Q4_0) {
             return new TaskGraph(name)
                     .transferToDevice(DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX)
                     .task(

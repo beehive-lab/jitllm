@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado.plan.components.activation;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
+import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
@@ -46,10 +47,9 @@ public class Gemma4BatchDecodeActivation implements ActivationTaskGraph {
 
     // @formatter:off
     /**
-     * The conversion comes from the embedding tensor's own representation, as {@link
-     * org.beehive.jitllm.backend.tornado.layers.Activation} takes it, and not from the model's. A
-     * mixed file holds them apart — staging 18-byte blocks to be read as 34-byte ones is a
-     * plausible activation and wrong output.
+     * The conversion comes from the embedding tensor's own representation, as {@link Activation}
+     * takes it, and not from the model's. A mixed file holds them apart — staging 18-byte blocks to
+     * be read as 34-byte ones is a plausible activation and wrong output.
      */
     // @formatter:on
     private TaskGraph buildGraph(

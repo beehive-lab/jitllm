@@ -16,6 +16,7 @@ import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -117,10 +118,7 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     /** What these layers allocate for one session at {@code batchSize}; see the constructor. */
     public static BatchPrefillWorkspace workspace(
-            Qwen3Configuration config,
-            int batchSize,
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy,
-            boolean fp16Cache) {
+            Qwen3Configuration config, int batchSize, ExecutionPolicy policy, boolean fp16Cache) {
         int padded = (batchSize + 127) & ~127;
         int headSize = config.numberOfHeadsValue();
         long attention =

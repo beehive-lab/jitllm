@@ -4,16 +4,20 @@ import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
+import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.LlamaFP16LayersBatchDecodeMMA;
 import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
+import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.fp16.LlamaFP16PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.q8_0.LlamaQ8_0PlanComponents;
 import org.beehive.jitllm.inference.state.LlamaState;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
+import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import org.beehive.jitllm.runtime.backend.BackendId;
@@ -157,23 +161,19 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
 
     /** The tensor-core layers' attention, split-K and decoded-projection buffers. */
     @Override
-    public Optional<org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
-            batchPrefillWorkspace(
-                    DataType weights,
-                    org.beehive.jitllm.model.Configuration config,
-                    int batchSize,
-                    org.beehive.jitllm.runtime.policy.ExecutionPolicy policy,
-                    boolean fp16Cache) {
+    public Optional<BatchPrefillWorkspace> batchPrefillWorkspace(
+            DataType weights,
+            Configuration config,
+            int batchSize,
+            ExecutionPolicy policy,
+            boolean fp16Cache) {
         var mlx =
-                org.beehive.jitllm.backend.tornado.MlxPrefill.resolve(policy, weights, config)
-                        .map(
-                                m ->
-                                        org.beehive.jitllm.backend.tornado.MlxPrefill.workspace(
-                                                weights, config, batchSize, false, false));
+                MlxPrefill.resolve(policy, weights, config)
+                        .map(m -> MlxPrefill.workspace(weights, config, batchSize, false, false));
         if (mlx.isPresent()) {
             return mlx;
         }
-        if (!org.beehive.jitllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend()) {
+        if (!TensorCoreSupport.isTensorCoreCapableBackend()) {
             return Optional.empty();
         }
         if (weights == DataType.F16) {

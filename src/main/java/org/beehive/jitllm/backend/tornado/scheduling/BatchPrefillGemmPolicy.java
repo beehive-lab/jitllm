@@ -1,6 +1,8 @@
 package org.beehive.jitllm.backend.tornado.scheduling;
 
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupKernels;
 import org.beehive.jitllm.runtime.backend.BackendId;
 
 // @formatter:off
@@ -28,9 +30,8 @@ public final class BatchPrefillGemmPolicy {
     // @formatter:off
     /**
      * Whether the tiled projections run on SIMD-group matrices ({@link
-     * org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels}) instead
-     * of scalar FMAs. On by default with {@link #tiled()}; {@code
-     * -Djitllm.metal.simdgroupGemm=false} selects the scalar kernels.
+     * TransformerBatchPrefillSimdgroupKernels}) instead of scalar FMAs. On by default with {@link
+     * #tiled()}; {@code -Djitllm.metal.simdgroupGemm=false} selects the scalar kernels.
      *
      * <p>Measured on an M4 Pro, Qwen3-0.6B, batch 256 (pp512 / pp2048 tok/s): F16 1965 / 1175
      * scalar, 2929 / 1461 SIMD-group; Q8_0 1944 / 1166 scalar, 2931 / 1462 SIMD-group. Greedy text
@@ -49,9 +50,9 @@ public final class BatchPrefillGemmPolicy {
     // @formatter:off
     /**
      * Whether batched-prefill attention over the FP32 cache runs on SIMD-group matrices ({@link
-     * org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupKernels})
-     * where the lane-cooperative kernel would otherwise run. On by default with {@link #tiled()};
-     * {@code -Djitllm.metal.simdgroupAttention=false} selects the lane-cooperative kernel.
+     * TransformerPagedKvBatchPrefillSimdgroupKernels}) where the lane-cooperative kernel would
+     * otherwise run. On by default with {@link #tiled()}; {@code
+     * -Djitllm.metal.simdgroupAttention=false} selects the lane-cooperative kernel.
      *
      * <p>Measured on an M4 Pro, Qwen3-0.6B, batch 256, SIMD-group projections (pp512 / pp2048
      * tok/s): F16 2913 / 1452 lane-cooperative, 3698 / 2645 SIMD-group; Q8_0 2912 / 1453

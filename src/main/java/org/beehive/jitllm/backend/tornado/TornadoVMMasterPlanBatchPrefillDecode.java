@@ -1,11 +1,15 @@
 package org.beehive.jitllm.backend.tornado;
 
 import org.beehive.jitllm.auxiliary.RunMetrics;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers;
 import org.beehive.jitllm.backend.tornado.plan.BatchPrefillDecodeForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
+import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.plan.layout.BatchPrefillDecodeForwardTaskGraphLayout;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -40,7 +44,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
             System.getLogger(TornadoVMMasterPlanBatchPrefillDecode.class.getName());
 
     @Override
-    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
+    public ExecutionInfo executionInfo() {
         var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
         return PlanDiagnostics.describe(
                 state,
@@ -84,7 +88,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
                 // The device the plan was built for and the kernel families it was granted, then
                 // the batched-prefill path the layer builder actually chose from them; the same
                 // facts the tests read off the plan, reported where a user can see them.
-                var device = org.beehive.jitllm.backend.tornado.device.TornadoDevices.current();
+                var device = TornadoDevices.current();
                 LOGGER.log(
                         System.Logger.Level.INFO,
                         "TornadoVM device: {0} ({1}) capabilities {2}",
@@ -92,9 +96,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
                         device.id().backend(),
                         device.capabilities());
                 var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
-                if (layers
-                        instanceof
-                        org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers q) {
+                if (layers instanceof Qwen35BatchPrefillLayers q) {
                     LOGGER.log(
                             System.Logger.Level.INFO,
                             "qwen35 batched prefill: {0}",
@@ -112,7 +114,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
             executionPlan.withPreCompilation();
             long warmupTime = System.nanoTime();
 
-            org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(executionPlan, packedRepack);
+            PackedRepack.run(executionPlan, packedRepack);
             forceCopyInReadOnlyData();
             long copyTime = System.nanoTime();
 
@@ -214,7 +216,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
     }
 
     /** The graphs that repack the packed weights on the GPU before the warm-up, or null. */
-    private org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs packedRepack;
+    private PackedRepack.Graphs packedRepack;
 
     // ── Initialisation ────────────────────────────────────────────────────────
 

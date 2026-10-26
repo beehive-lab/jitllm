@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 
+import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
@@ -387,7 +388,6 @@ public class MistralQ8_0FFNLayers
     @Override
     protected boolean useFp16KVCache() {
         return state.usesFp16KeyValueCache()
-                && (org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.nvidiaDevice()
-                        || metalBackend());
+                && (Fp16KeyValueSupport.nvidiaDevice() || metalBackend());
     }
 }

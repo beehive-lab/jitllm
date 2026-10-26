@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill;
 import java.util.List;
 import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
@@ -15,6 +16,7 @@ import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -28,7 +30,7 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 /**
  * Batched-prefill transformer-layer TaskGraphs for the unified batched prefill-decode plan ({@link
- * org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode}).
+ * TornadoVMMasterPlanBatchPrefillDecode}).
  *
  * <p>One {@link ImmutableTaskGraph} per transformer layer, each processing {@code batchSize} tokens
  * simultaneously via {@link TransformerBatchPrefillKernels}.
@@ -150,10 +152,7 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     /** What these layers allocate for one session at {@code batchSize}; see the constructor. */
     public static BatchPrefillWorkspace workspace(
-            Configuration config,
-            int batchSize,
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy,
-            boolean fp16Cache) {
+            Configuration config, int batchSize, ExecutionPolicy policy, boolean fp16Cache) {
         int padded = (batchSize + 127) & ~127;
         int qDim = config.numberOfHeads() * config.headSize();
         long attention =

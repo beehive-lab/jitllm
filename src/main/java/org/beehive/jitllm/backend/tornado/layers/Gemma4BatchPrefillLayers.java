@@ -4,6 +4,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.beehive.jitllm.backend.tornado.MlxPrefill;
+import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.BatchMmaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4AttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4BatchPrefillKernels;
@@ -17,6 +20,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgro
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.Gemma4State;
@@ -350,10 +354,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             buildMlxProjections();
         }
 
-        this.gemmAttention =
-                fp16KeyValue
-                        && org.beehive.jitllm.backend.tornado.TensorCoreSupport
-                                .isTensorCoreCapableBackend();
+        this.gemmAttention = fp16KeyValue && TensorCoreSupport.isTensorCoreCapableBackend();
         if (gemmAttention) {
             paddedPositions = (config.contextLength() + 127) / 128 * 128;
             headsPerPass = headsPerPass(nHead, paddedBatch, paddedPositions);
@@ -395,10 +396,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 return false;
             }
         }
-        return !nativeProjections
-                && mlx == null
-                && org.beehive.jitllm.backend.tornado.TensorCoreSupport
-                        .isTensorCoreCapableBackend();
+        return !nativeProjections && mlx == null && TensorCoreSupport.isTensorCoreCapableBackend();
     }
 
     /** The most query heads per attention pass whose scores fit in 64 MB, a divisor of all. */
@@ -628,7 +626,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     /** The streaming multiprocessors of the device this plan is built for; 0 when unknown. */
     private static int smCount() {
-        return org.beehive.jitllm.backend.tornado.device.TornadoDevices.target().computeUnits();
+        return TornadoDevices.target().computeUnits();
     }
 
     // @formatter:off
@@ -750,8 +748,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         if (w.isPackedQ4()) {
             // A packed weight has only the int8 GEMM (-Djitllm.gemma4.noInt8Prefill and native
             // projections are not open to it).
-            throw org.beehive.jitllm.backend.tornado.tensor.PackedWeights.noPackedKernel(
-                    "gemma4 batch-prefill task '" + taskName + "'");
+            throw PackedWeights.noPackedKernel("gemma4 batch-prefill task '" + taskName + "'");
         }
         switch (w.dataType()) {
             case Q8_0 ->
@@ -805,14 +802,12 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         }
         return fp16KeyValue
                 && config.headDim(layerIndex) % Gemma4AttentionKernels.TC_HEAD == 0
-                && org.beehive.jitllm.backend.tornado.TensorCoreSupport
-                        .isTensorCoreCapableBackend();
+                && TensorCoreSupport.isTensorCoreCapableBackend();
     }
 
     /** Whether this state's prefill projections are cuBLAS GEMMs: requested, and available. */
     static boolean nativeProjections(Gemma4State state) {
-        return org.beehive.jitllm.backend.tornado.NativePrefillSupport.nativeProjections(
-                state.executionPolicy());
+        return NativePrefillSupport.nativeProjections(state.executionPolicy());
     }
 
     // ── MLX projections ──────────────────────────────────────────────────────
@@ -925,8 +920,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     private TornadoTensor[] requireMlx(String name, TornadoTensor... tensors) {
         for (TornadoTensor t : tensors) {
             if (t.isPacked()) {
-                throw org.beehive.jitllm.backend.tornado.tensor.PackedWeights.noPackedKernel(
-                        "The gemma4 MLX batched prefill (" + name + ")");
+                throw PackedWeights.noPackedKernel("The gemma4 MLX batched prefill (" + name + ")");
             }
             if (t.dataType() != mlx.weights()) {
                 throw new IllegalStateException(

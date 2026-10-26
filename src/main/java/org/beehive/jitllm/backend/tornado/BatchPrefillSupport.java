@@ -2,12 +2,15 @@ package org.beehive.jitllm.backend.tornado;
 
 import java.util.Optional;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.DeviceSplit;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * Where a family's batched prefill ({@code --batch-prefill-size N}) cannot be built, whatever the
@@ -40,8 +43,7 @@ public final class BatchPrefillSupport {
                         model.architectureId().toString(),
                         model.weights().dataType(),
                         ExecutionMode.BATCH_PREFILL_DECODE,
-                        org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
-                                .backend(),
+                        TornadoDevices.current().backend(),
                         false,
                         TensorCoreSupport.isTensorCoreCapableBackend(),
                         Fp16KeyValueSupport.nvidiaDevice()));
@@ -127,12 +129,10 @@ public final class BatchPrefillSupport {
     // @formatter:on
     public static ExecutionPolicy defaultFor(Model model, ExecutionPolicy policy) {
         if (policy.phaseStrategy() != ExecutionPolicy.PhaseStrategy.SINGLE_TOKEN
-                || org.beehive.jitllm.runtime.backend.DeviceSplit.fromSystemProperties()
-                        .isPresent()) {
+                || DeviceSplit.fromSystemProperties().isPresent()) {
             return policy;
         }
-        BackendId backend =
-                org.beehive.jitllm.backend.tornado.device.TornadoDevices.current().backend();
+        BackendId backend = TornadoDevices.current().backend();
         if (BackendId.CPU.equals(backend)) {
             return policy;
         }
@@ -156,11 +156,9 @@ public final class BatchPrefillSupport {
         }
         var type = model.weights().dataType();
         boolean q4Batched =
-                type == org.beehive.jitllm.runtime.tensor.DataType.Q4_0
+                type == DataType.Q4_0
                         && java.util.Set.of("llama", "qwen35")
                                 .contains(model.architectureId().toString());
-        return type == org.beehive.jitllm.runtime.tensor.DataType.F16
-                || type == org.beehive.jitllm.runtime.tensor.DataType.Q8_0
-                || q4Batched;
+        return type == DataType.F16 || type == DataType.Q8_0 || q4Batched;
     }
 }

@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.pipeline;
 
+import org.beehive.jitllm.runtime.backend.DeviceSplit;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
@@ -109,10 +110,8 @@ public interface PipelineTransport extends AutoCloseable {
     }
 
     /** The transport {@code kind} names, for the stages on {@code devices}. */
-    static PipelineTransport create(
-            org.beehive.jitllm.runtime.backend.DeviceSplit.Transport kind,
-            TornadoDevice[] devices) {
-        if (kind == org.beehive.jitllm.runtime.backend.DeviceSplit.Transport.HOST) {
+    static PipelineTransport create(DeviceSplit.Transport kind, TornadoDevice[] devices) {
+        if (kind == DeviceSplit.Transport.HOST) {
             return new HostTransport(devices.length);
         }
         try {

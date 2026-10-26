@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.layers.granite;
 
 import org.beehive.jitllm.backend.tornado.kernels.GraniteKernels;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.granite.GraniteConfiguration;
@@ -14,9 +15,8 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 /**
- * {@link org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation} with
- * Granite's embedding multiplier applied as the embedding is converted: the decode activation graph
- * with KV-cache pass-through ("decodeActivation").
+ * {@link BatchDecodeActivation} with Granite's embedding multiplier applied as the embedding is
+ * converted: the decode activation graph with KV-cache pass-through ("decodeActivation").
  *
  * <p>Used in the 2N+3 batch-prefill/decode plan. Consumes {@code wrapKeyCache}/{@code
  * wrapValueCache} from the last batch-prefill layer, converts the single-token embedding to FP32,

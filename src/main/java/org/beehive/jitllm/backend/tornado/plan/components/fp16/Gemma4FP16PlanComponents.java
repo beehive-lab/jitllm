@@ -17,6 +17,7 @@ import org.beehive.jitllm.inference.state.Gemma4State;
 import org.beehive.jitllm.inference.weights.tornado.Gemma4TornadoWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * FP16 plan components for the Gemma 4 architecture.
@@ -66,9 +67,7 @@ public class Gemma4FP16PlanComponents implements BatchPrefillDecodeForwardPlanCo
      */
     @Override
     public ActivationTaskGraph batchPrefillActivation(int batchSize) {
-        boolean f16Embedding =
-                weights.getTokenEmbeddingTable().dataType()
-                        == org.beehive.jitllm.runtime.tensor.DataType.F16;
+        boolean f16Embedding = weights.getTokenEmbeddingTable().dataType() == DataType.F16;
         return new BatchPrefillActivation(state, config, batchSize, !f16Embedding);
     }
 

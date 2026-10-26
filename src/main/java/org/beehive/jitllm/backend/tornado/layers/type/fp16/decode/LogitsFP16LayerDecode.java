@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.fp16.decode;
 
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.LogitsFP16Layer;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.State;
@@ -9,7 +10,7 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 
 /**
  * Logits layer of the unified batched prefill-decode plan * ({@link
- * org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode}).
+ * TornadoVMMasterPlanBatchPrefillDecode}).
  *
  * <p>Extends {@link LogitsFP16Layer} with KV-cache pass-through so the device pointers for {@code
  * wrapKeyCache} and {@code wrapValueCache} survive the logits → decode-activation boundary across

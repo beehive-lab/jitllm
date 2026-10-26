@@ -6,6 +6,7 @@ import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
+import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
@@ -86,12 +87,9 @@ public final class NativeLibrarySupport {
     private static boolean packedAtLoad(Combination c) {
         return "gemma4".equals(c.architecture())
                 && c.weights() == DataType.Q4_0
-                && org.beehive.jitllm.backend.tornado.tensor.PackedWeights.packQ4(
-                        org.beehive.jitllm.backend.tornado.tensor.PackedWeights.packedIntegerDotOn(
-                                        "jitllm.gemma4.packedIntegerDot")
-                                && !org.beehive.jitllm.backend.tornado.tensor.PackedWeights
-                                        .loadPolicy()
-                                        .nativeLibraries());
+                && PackedWeights.packQ4(
+                        PackedWeights.packedIntegerDotOn("jitllm.gemma4.packedIntegerDot")
+                                && !PackedWeights.loadPolicy().nativeLibraries());
     }
 
     /** Whether a library probe answers yes; a library whose classes cannot be linked does not. */

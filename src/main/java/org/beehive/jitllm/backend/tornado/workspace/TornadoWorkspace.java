@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.workspace;
 
+import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.inference.Logits;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
@@ -29,8 +30,7 @@ public final class TornadoWorkspace {
      * The repack of this session's packed projections, collected from the layer graphs as they are
      * built and appended to the plan as graphs of its own.
      */
-    public final org.beehive.jitllm.backend.tornado.plan.PackedRepack packedRepack =
-            new org.beehive.jitllm.backend.tornado.plan.PackedRepack();
+    public final PackedRepack packedRepack = new PackedRepack();
 
     public FloatArray wrapAttSplit;
     public FloatArray

@@ -1,8 +1,15 @@
 package org.beehive.jitllm.backend.tornado;
 
+import org.beehive.jitllm.auxiliary.RunMetrics;
+import org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection;
+import org.beehive.jitllm.backend.tornado.lowering.LoweringQualification;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.DeviceSplit;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
+import org.beehive.jitllm.runtime.backend.ExecutionPath;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
@@ -89,9 +96,9 @@ public interface TornadoVMMasterPlan {
         BatchPrefillSupport.require(model, state.executionPolicy(), true);
 
         // A model split by layers across several devices: its own plan, one per device.
-        var split = org.beehive.jitllm.runtime.backend.DeviceSplit.fromSystemProperties();
+        var split = DeviceSplit.fromSystemProperties();
         if (split.isPresent()) {
-            reportPath(org.beehive.jitllm.runtime.backend.ExecutionPath.LEGACY, model, state);
+            reportPath(ExecutionPath.LEGACY, model, state);
             return new TornadoVMMasterPlanPipeline(state, model, split.get(), sink);
         }
 
@@ -101,21 +108,17 @@ public interface TornadoVMMasterPlan {
         // ran the legacy path however the flag was set: a paired A/B taken through the script was
         // measuring legacy against legacy. `handles` answers false unless the opt-in is set and the
         // tuple is the one the slice implements, so this costs a boolean read otherwise.
-        if (org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.handles(
-                model, state)) {
-            reportPath(org.beehive.jitllm.runtime.backend.ExecutionPath.LOWERED, model, state);
-            return org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.lower(
-                    model, state, sink);
+        if (LoweredPlanSelection.handles(model, state)) {
+            reportPath(ExecutionPath.LOWERED, model, state);
+            return LoweredPlanSelection.lower(model, state, sink);
         }
-        reportPath(org.beehive.jitllm.runtime.backend.ExecutionPath.LEGACY, model, state);
+        reportPath(ExecutionPath.LEGACY, model, state);
 
         // Resolved from the session's policy, once, here — not from a class constant read at
         // initialization.
         var policy = state.executionPolicy();
         boolean prefillDecode =
-                policy.phaseStrategy()
-                        == org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy
-                                .PREFILL_DECODE;
+                policy.phaseStrategy() == ExecutionPolicy.PhaseStrategy.PREFILL_DECODE;
         if (prefillDecode && policy.prefillBatchSize() > 1) {
             // GPU path with batched prefill/decode
             plan = new TornadoVMMasterPlanBatchPrefillDecode(state, model, sink);
@@ -136,7 +139,7 @@ public interface TornadoVMMasterPlan {
     // @formatter:on
 
     /** Describes an already prepared plan without executing a token. */
-    default org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
+    default ExecutionInfo executionInfo() {
         throw new UnsupportedOperationException("This plan does not expose execution diagnostics");
     }
 
@@ -195,23 +198,16 @@ public interface TornadoVMMasterPlan {
      * and the benchmark script all silently ran the legacy path however the flag was set. A report
      * emitted anywhere else would have the same hole.
      */
-    private static void reportPath(
-            org.beehive.jitllm.runtime.backend.ExecutionPath path,
-            org.beehive.jitllm.model.Model model,
-            org.beehive.jitllm.inference.state.State state) {
-        var combination =
-                org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.combinationOf(
-                        model, state);
+    private static void reportPath(ExecutionPath path, Model model, State state) {
+        var combination = LoweredPlanSelection.combinationOf(model, state);
         boolean qualified =
-                org.beehive.jitllm.backend.tornado.lowering.LoweringQualification.isQualified(
+                LoweringQualification.isQualified(
                         combination.architecture(), combination.dtype(), combination.mode());
-        org.beehive.jitllm.auxiliary.RunMetrics.setExecutionPath(
+        RunMetrics.setExecutionPath(
                 path.reportName(),
                 combination.toString(),
                 qualified,
-                org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.mode()
-                        .name()
-                        .toLowerCase(java.util.Locale.ROOT));
+                LoweredPlanSelection.mode().name().toLowerCase(java.util.Locale.ROOT));
     }
 
     /**
@@ -228,8 +224,7 @@ public interface TornadoVMMasterPlan {
      * without calling the supplier at all — and the question the field answers ("which path did
      * this run take") is a property of the run, not of the compile.
      */
-    public static void reportLoweredPath(
-            org.beehive.jitllm.model.Model model, org.beehive.jitllm.inference.state.State state) {
-        reportPath(org.beehive.jitllm.runtime.backend.ExecutionPath.LOWERED, model, state);
+    public static void reportLoweredPath(Model model, State state) {
+        reportPath(ExecutionPath.LOWERED, model, state);
     }
 }

@@ -12,6 +12,7 @@ import org.beehive.jitllm.backend.tornado.plan.components.PrefillDecodeForwardPl
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 
@@ -146,7 +147,7 @@ public final class TornadoPlanRegistry {
      * Where a native-library path exists on {@code backend}, for a message that must say so: "llama
      * Q4_0, ...".
      */
-    public static String nativeLibraryPaths(org.beehive.jitllm.runtime.backend.BackendId backend) {
+    public static String nativeLibraryPaths(BackendId backend) {
         return Index.BY_ID.values().stream()
                 .filter(provider -> !provider.nativeLibraryWeights(backend).isEmpty())
                 .map(

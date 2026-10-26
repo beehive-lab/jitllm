@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 
+import org.beehive.jitllm.backend.cpu.InferenceCore;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
@@ -11,6 +12,7 @@ import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
@@ -20,8 +22,7 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
  *
  * <p>Identical to {@link LogitsQ8_0Layer} except for one addition: Gemma4 applies a final logit
  * soft-cap, {@code logits = softcap * tanh(logits / softcap)}, after the vocabulary projection (see
- * {@code gemma4.final_logit_softcapping} and {@link
- * org.beehive.jitllm.backend.cpu.InferenceCore#forwardJavaGemma4}).
+ * {@code gemma4.final_logit_softcapping} and {@link InferenceCore#forwardJavaGemma4}).
  */
 public class Gemma4LogitsQ8_0Layer extends LogitsQ8_0Layer {
 
@@ -141,9 +142,8 @@ public class Gemma4LogitsQ8_0Layer extends LogitsQ8_0Layer {
      */
     // @formatter:on
     private boolean warpVocabulary(TornadoWeights weights) {
-        return weights.dataType() == org.beehive.jitllm.runtime.tensor.DataType.Q8_0
-                && weights.wclsByteArray.dataType()
-                        == org.beehive.jitllm.runtime.tensor.DataType.Q8_0
+        return weights.dataType() == DataType.Q8_0
+                && weights.wclsByteArray.dataType() == DataType.Q8_0
                 && config.dim() % 32 == 0
                 && schedulerType != SchedulerType.NON_NVIDIA
                 // An NVIDIA device through OpenCL is on the NVIDIA path as well, and that backend

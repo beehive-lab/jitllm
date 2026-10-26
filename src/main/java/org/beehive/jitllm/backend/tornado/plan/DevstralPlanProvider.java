@@ -4,14 +4,17 @@ import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
+import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.fp16.DevstralFP16PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.q8_0.DevstralQ8_0PlanComponents;
 import org.beehive.jitllm.inference.state.DevstralState;
 import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
@@ -91,13 +94,12 @@ public final class DevstralPlanProvider implements TornadoPlanProvider {
 
     /** Llama's tensor-core layers' attention, split-K and decoded-projection buffers. */
     @Override
-    public Optional<org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
-            batchPrefillWorkspace(
-                    DataType weights,
-                    org.beehive.jitllm.model.Configuration config,
-                    int batchSize,
-                    org.beehive.jitllm.runtime.policy.ExecutionPolicy policy,
-                    boolean fp16Cache) {
+    public Optional<BatchPrefillWorkspace> batchPrefillWorkspace(
+            DataType weights,
+            Configuration config,
+            int batchSize,
+            ExecutionPolicy policy,
+            boolean fp16Cache) {
         if (weights == DataType.F16) {
             return Optional.of(
                     org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill
