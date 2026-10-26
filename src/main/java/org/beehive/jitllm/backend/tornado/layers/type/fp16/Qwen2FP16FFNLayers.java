@@ -76,16 +76,19 @@ public class Qwen2FP16FFNLayers
         ropeWorker.setLocalWork(h / 2, ic / 2, 1);
 
         int configDimRowMajorGlobal = config.dim() * LOCAL_WORK_GROUP_SIZE_ALLOC;
-        WorkerGrid configDimRowMajorGlobalWorker = new WorkerGrid1D(configDimRowMajorGlobal);
-        configDimRowMajorGlobalWorker.setLocalWork(LOCAL_WORK_GROUP_SIZE_ALLOC, 1, 1);
+        WorkerGrid configDimRowMajorGlobalWorker =
+                WorkerGridFactory.genericWorker(
+                        configDimRowMajorGlobal, LOCAL_WORK_GROUP_SIZE_ALLOC);
 
         int configKvDimRowMajorGlobal = config.kvDim() * LOCAL_WORK_GROUP_SIZE_ALLOC;
-        WorkerGrid configKvDimRowMajorGlobalWorker = new WorkerGrid1D(configKvDimRowMajorGlobal);
-        configKvDimRowMajorGlobalWorker.setLocalWork(LOCAL_WORK_GROUP_SIZE_ALLOC, 1, 1);
+        WorkerGrid configKvDimRowMajorGlobalWorker =
+                WorkerGridFactory.genericWorker(
+                        configKvDimRowMajorGlobal, LOCAL_WORK_GROUP_SIZE_ALLOC);
 
         int configHiddenDimRowMajor = config.hiddenDim() * LOCAL_WORK_GROUP_SIZE_ALLOC;
-        WorkerGrid configHiddenDimRowMajorWorker = new WorkerGrid1D(configHiddenDimRowMajor);
-        configHiddenDimRowMajorWorker.setLocalWork(LOCAL_WORK_GROUP_SIZE_ALLOC, 1, 1);
+        WorkerGrid configHiddenDimRowMajorWorker =
+                WorkerGridFactory.genericWorker(
+                        configHiddenDimRowMajor, LOCAL_WORK_GROUP_SIZE_ALLOC);
 
         WorkerGrid rmsNormWorker = WorkerGridFactory.createRmsNormWorker(config.dim(), 32);
         // Race-free single-workgroup reduction on the NVIDIA path; see rmsReduceKernel().
@@ -114,8 +117,8 @@ public class Qwen2FP16FFNLayers
         parallelAttentionWorker.setLocalWork(optimalLocalSize, 1, 1);
 
         int fusedQKVGlobal = (config.dim() + 2 * config.kvDim()) * LOCAL_WORK_GROUP_SIZE_ALLOC;
-        WorkerGrid fusedQKVWorker = new WorkerGrid1D(fusedQKVGlobal);
-        fusedQKVWorker.setLocalWork(LOCAL_WORK_GROUP_SIZE_ALLOC, 1, 1);
+        WorkerGrid fusedQKVWorker =
+                WorkerGridFactory.genericWorker(fusedQKVGlobal, LOCAL_WORK_GROUP_SIZE_ALLOC);
 
         // Fused QKV bias worker (covers dimQ which is largest)
         WorkerGrid fusedQKVBiasWorkerNorm = new WorkerGrid1D(config.dim());

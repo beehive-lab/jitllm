@@ -70,7 +70,8 @@ public class WorkerGridFactory {
         return worker;
     }
 
-    private static int findOptimalLocalSize(int size) {
+    /** The largest local size up to 64 that divides {@code size}. */
+    public static int findOptimalLocalSize(int size) {
         int optimal = Math.min(size, 64);
         if (size % optimal != 0) {
             for (int s = 64; s >= 1; s--) {

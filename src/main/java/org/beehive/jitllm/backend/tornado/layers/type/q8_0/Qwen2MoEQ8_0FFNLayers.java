@@ -57,15 +57,17 @@ public class Qwen2MoEQ8_0FFNLayers
         ropeWorker.setLocalWork(1, 1, 1);
 
         int attentionLocalSize = Math.min(config.headSize(), 64);
-        WorkerGrid attentionWorker = new WorkerGrid1D(config.numberOfHeads() * attentionLocalSize);
-        attentionWorker.setLocalWork(attentionLocalSize, 1, 1);
+        WorkerGrid attentionWorker =
+                WorkerGridFactory.genericWorker(
+                        config.numberOfHeads() * attentionLocalSize, attentionLocalSize);
 
-        WorkerGrid dimElementWorker = new WorkerGrid1D(config.dim());
-        dimElementWorker.setLocalWork(LOCAL_WORK_GROUP_SIZE_ALLOC, 1, 1);
+        WorkerGrid dimElementWorker =
+                WorkerGridFactory.genericWorker(config.dim(), LOCAL_WORK_GROUP_SIZE_ALLOC);
         WorkerGrid dimWorker = workerForRows(config.dim());
         WorkerGrid routerWorker = workerForRows(config.numberOfExperts());
-        WorkerGrid topKWorker = new WorkerGrid1D(LOCAL_WORK_GROUP_SIZE_ALLOC);
-        topKWorker.setLocalWork(LOCAL_WORK_GROUP_SIZE_ALLOC, 1, 1);
+        WorkerGrid topKWorker =
+                WorkerGridFactory.genericWorker(
+                        LOCAL_WORK_GROUP_SIZE_ALLOC, LOCAL_WORK_GROUP_SIZE_ALLOC);
         // Fused routed-expert launch: the slot index is folded into the work-group id.
         WorkerGrid allExpertsHiddenWorker =
                 workerForRows(config.moeHiddenDim() * config.numberOfExpertsUsed());
@@ -94,8 +96,9 @@ public class Qwen2MoEQ8_0FFNLayers
 
     /** Creates a grid where one GPU work-group computes one output row. */
     private WorkerGrid workerForRows(int rows) {
-        WorkerGrid worker = new WorkerGrid1D(rows * LOCAL_WORK_GROUP_SIZE_ALLOC);
-        worker.setLocalWork(LOCAL_WORK_GROUP_SIZE_ALLOC, 1, 1);
+        WorkerGrid worker =
+                WorkerGridFactory.genericWorker(
+                        rows * LOCAL_WORK_GROUP_SIZE_ALLOC, LOCAL_WORK_GROUP_SIZE_ALLOC);
         return worker;
     }
 

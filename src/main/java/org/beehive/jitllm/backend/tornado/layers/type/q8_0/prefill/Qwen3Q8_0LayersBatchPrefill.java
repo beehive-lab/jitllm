@@ -462,7 +462,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         int optLocal =
                 laneAttention()
                         ? 32 * LaneAttentionPolicy.PREFILL_WARPS_PER_GROUP
-                        : findOptimalLocalSize(nEmbdHead);
+                        : WorkerGridFactory.findOptimalLocalSize(nEmbdHead);
         int attnTiles =
                 (batchSize + TransformerPagedKvBatchPrefillSimdgroupKernels.QUERY_TILE - 1)
                         / TransformerPagedKvBatchPrefillSimdgroupKernels.QUERY_TILE;
@@ -523,19 +523,6 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         p + "batch_ffn_down", tiledGemm() ? gemmDimWorker : matVecDimWorker);
             }
         }
-    }
-
-    private static int findOptimalLocalSize(int size) {
-        int optimal = Math.min(size, 64);
-        if (size % optimal != 0) {
-            for (int s = 64; s >= 1; s--) {
-                if (size % s == 0) {
-                    optimal = s;
-                    break;
-                }
-            }
-        }
-        return optimal;
     }
 
     public List<ImmutableTaskGraph> getLayerImmutableTaskGraphs() {

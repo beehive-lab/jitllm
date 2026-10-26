@@ -604,7 +604,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
             ropeLocal--;
         }
         WorkerGrid ropeWorker = WorkerGridFactory.genericWorker(ropeGlobal, ropeLocal);
-        int optLocal = findOptimalLocalSize(headSz);
+        int optLocal = WorkerGridFactory.findOptimalLocalSize(headSz);
         WorkerGrid attnWorker =
                 WorkerGridFactory.genericWorker(batchSize * nHeads * optLocal, optLocal);
         WorkerGrid matVecDimWorker =
@@ -675,19 +675,6 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         GraphNames.batchPrefillLayer(i) + ".batch_attention", sgAttn);
             }
         }
-    }
-
-    private static int findOptimalLocalSize(int size) {
-        int optimal = Math.min(size, 64);
-        if (size % optimal != 0) {
-            for (int s = 64; s >= 1; s--) {
-                if (size % s == 0) {
-                    optimal = s;
-                    break;
-                }
-            }
-        }
-        return optimal;
     }
 
     public List<ImmutableTaskGraph> getLayerImmutableTaskGraphs() {

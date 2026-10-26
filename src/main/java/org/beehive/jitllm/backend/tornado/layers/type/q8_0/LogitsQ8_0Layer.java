@@ -22,7 +22,7 @@ import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
-import uk.ac.manchester.tornado.api.WorkerGrid1D;
+import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 
 public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
@@ -315,14 +315,12 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
         var logitsRMS = WorkerGridFactory.createRmsNormWorker(config.dim(), rmsLocalSize());
         int vocabThreads = LogitsWorkgroupPolicy.q8Threads();
         var vocabSizeRowMajor = config.vocabularySize() * vocabThreads;
-        var vocabWorker = new WorkerGrid1D(vocabSizeRowMajor);
-        vocabWorker.setLocalWork(vocabThreads, 1, 1);
+        WorkerGrid vocabWorker = WorkerGridFactory.genericWorker(vocabSizeRowMajor, vocabThreads);
         tornadoForwardScheduler.addWorkerGrid("logits.vocab_proj", vocabWorker);
         tornadoForwardScheduler.addWorkerGrid("logits.rms_reduce", rmsReduceWorker(logitsRMS));
         tornadoForwardScheduler.addWorkerGrid("logits.mapContextLogits", logitsRMS);
         if (deviceSample()) {
-            var argmaxWorker = new WorkerGrid1D(SAMPLE_LOCAL);
-            argmaxWorker.setLocalWork(SAMPLE_LOCAL, 1, 1);
+            WorkerGrid argmaxWorker = WorkerGridFactory.genericWorker(SAMPLE_LOCAL, SAMPLE_LOCAL);
             tornadoForwardScheduler.addWorkerGrid("logits.argmax_sample", argmaxWorker);
         }
         if (weights instanceof TornadoWeights tornadoWeights && packedVocabulary(tornadoWeights)) {
