@@ -59,29 +59,39 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
 
         long startTime = System.nanoTime();
         this.executionPlan = createExecutionPlan();
-        // Before compilation and the weight upload, so a plan that fails either still prints.
-        TaskGraphChainPrinter.printIfRequested(taskGraphChain(), model);
-        metrics.enableOn(executionPlan);
-        long planCreationTime = System.nanoTime();
+        try {
+            // Before compilation and the weight upload, so a plan that fails either still prints.
+            TaskGraphChainPrinter.printIfRequested(taskGraphChain(), model);
+            metrics.enableOn(executionPlan);
+            long planCreationTime = System.nanoTime();
 
-        if (CUDA_GRAPHS) {
-            executionPlan.withAllGraphs().withCUDAGraph();
+            if (CUDA_GRAPHS) {
+                executionPlan.withAllGraphs().withCUDAGraph();
+            }
+            // Large one-shot uploads (the weights, below) chunked through pinned staging buffers
+            // instead of pinning each whole segment: measured 2.6 s off a 14.3 s cold start of the
+            // 27B model on CUDA, steady-state throughput unchanged; a no-op on the other backends.
+            executionPlan.withStagedTransfers();
+            executionPlan.withPreCompilation();
+            long warmupTime = System.nanoTime();
+
+            org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(executionPlan, packedRepack);
+            forceCopyInReadOnlyData();
+            long copyTime = System.nanoTime();
+
+            RunMetrics.setTornadoMetrics(
+                    planCreationTime - startTime,
+                    warmupTime - planCreationTime,
+                    copyTime - warmupTime);
+            metrics.reportSetUp(
+                    planCreationTime - startTime,
+                    warmupTime - planCreationTime,
+                    copyTime - warmupTime);
+        } catch (RuntimeException | Error failure) {
+            // Nobody else holds this plan yet, so nobody else can free its device memory.
+            ExecutionPlanRelease.closeAfter(failure, executionPlan);
+            throw failure;
         }
-        // Large one-shot uploads (the weights, below) chunked through pinned staging buffers
-        // instead of pinning each whole segment: measured 2.6 s off a 14.3 s cold start of the
-        // 27B model on CUDA, steady-state throughput unchanged; a no-op on the other backends.
-        executionPlan.withStagedTransfers();
-        executionPlan.withPreCompilation();
-        long warmupTime = System.nanoTime();
-
-        org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(executionPlan, packedRepack);
-        forceCopyInReadOnlyData();
-        long copyTime = System.nanoTime();
-
-        RunMetrics.setTornadoMetrics(
-                planCreationTime - startTime, warmupTime - planCreationTime, copyTime - warmupTime);
-        metrics.reportSetUp(
-                planCreationTime - startTime, warmupTime - planCreationTime, copyTime - warmupTime);
     }
 
     /** The graphs, when they run, and what each is, for {@code --print-taskgraph-chain}. */
