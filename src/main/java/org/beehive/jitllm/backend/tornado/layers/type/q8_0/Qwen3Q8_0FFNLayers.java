@@ -694,7 +694,6 @@ public class Qwen3Q8_0FFNLayers
         return (layerIndex == 0) ? "activationUpdate" : layerGraphName(layerIndex - 1);
     }
 
-    /** Configure data transfers for first and subsequent layers */
     /** The key cache every graph of this family binds: FP16 when the state holds one. */
     protected Object keyCache() {
         return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
@@ -707,6 +706,7 @@ public class Qwen3Q8_0FFNLayers
                 : state.workspace.wrapValueCache;
     }
 
+    /** Configure data transfers for first and subsequent layers */
     protected TaskGraph configureLayerDataTransfers(TaskGraph unifiedLayer, int layerIndex) {
         if (layerIndex == 0) {
             // First layer: Transfer temporary buffers and QKV state every execution

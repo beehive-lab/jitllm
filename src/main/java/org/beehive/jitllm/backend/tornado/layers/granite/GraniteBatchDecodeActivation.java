@@ -14,7 +14,9 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 /**
- * Decode activation graph with KV-cache pass-through ("decodeActivation").
+ * {@link org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation} with
+ * Granite's embedding multiplier applied as the embedding is converted: the decode activation graph
+ * with KV-cache pass-through ("decodeActivation").
  *
  * <p>Used in the 2N+3 batch-prefill/decode plan. Consumes {@code wrapKeyCache}/{@code
  * wrapValueCache} from the last batch-prefill layer, converts the single-token embedding to FP32,
@@ -33,12 +35,8 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  * plan is this graph itself from the second decode token onward — so decode layer 0 imported this
  * graph's null buffer and died in {@code executeAlloc} with {@code NullPointerException:
  * XPUDeviceBufferState.getXPUBuffer() is null}. Fixed upstream in {@code 8603a9fa2d} (PR #996),
- * released in 6.0.0, which is the pinned floor for batched prefill. Do not "simplify" these calls
- * away: they look inert in a bytecode trace and are not.
- */
-/**
- * {@link org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation} with
- * Granite's embedding multiplier applied as the embedding is converted.
+ * released in 6.0.0; jitllm now requires 7.3. Do not "simplify" these calls away: they look inert
+ * in a bytecode trace and are not.
  */
 public class GraniteBatchDecodeActivation implements ActivationTaskGraph {
 

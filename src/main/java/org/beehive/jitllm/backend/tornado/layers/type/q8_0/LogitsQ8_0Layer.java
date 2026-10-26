@@ -161,7 +161,6 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
         return false;
     }
 
-    /** The vocabulary projection task, chosen by what the output projection actually holds. */
     /**
      * The vocabulary projection, by the output tensor's own representation.
      *

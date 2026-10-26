@@ -1037,7 +1037,6 @@ public class Qwen35FFNLayers
                 .laneCooperativeAttentionHead256(config.headSize());
     }
 
-    /** Whether this state's key/value store is half precision. */
     /**
      * Whether decode attention takes 8-position key/value tiles: on Metal, where two 16-position
      * float tiles of this family's 256-wide head (32 KB) plus the query do not fit the 32 KB of
@@ -1050,6 +1049,7 @@ public class Qwen35FFNLayers
                 && (2 * 16 + 1) * config.headSize() * Float.BYTES > 32 * 1024;
     }
 
+    /** Whether this state's key/value store is half precision. */
     protected boolean fp16Kv() {
         return state.usesFp16KeyValueCache();
     }

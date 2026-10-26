@@ -42,10 +42,6 @@ public class LlamaFP16FFNLayersPrefillDecode extends LlamaFP16FFNLayers {
     }
 
     /**
-     * Layer 0 receives {@code wrapX} from the decode activation graph; layers 1+ receive it from
-     * the previous decode layer.
-     */
-    /**
      * One layer per graph: the sequential prefill-decode plan addresses its layer graphs by layer
      * index, so it cannot run grouped ones.
      */
@@ -54,6 +50,10 @@ public class LlamaFP16FFNLayersPrefillDecode extends LlamaFP16FFNLayers {
         return 1;
     }
 
+    /**
+     * Layer 0 receives {@code wrapX} from the decode activation graph; layers 1+ receive it from
+     * the previous decode layer.
+     */
     @Override
     protected String predecessorGraphName(int layerIndex) {
         return (layerIndex == 0) ? "decodeActivation" : layerGraphName(layerIndex - 1);

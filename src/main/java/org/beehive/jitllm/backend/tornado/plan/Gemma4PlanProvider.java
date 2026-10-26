@@ -62,8 +62,7 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
      * <p>The batched plan is declared for the family, not for a representation — {@code
      * supportedModes()} has no dtype to answer for. What decides per representation is whether that
      * representation's components implement the batched interface; the registry refuses the rest by
-     * name. Today Q8_0's do and Q4_0's do not, because the batched projections are tensor-core
-     * GEMMs over 34-byte blocks.
+     * name. Q8_0 and Q4_0 both route to {@code Gemma4Q8_0PlanComponents}, which does.
      */
     // @formatter:on
     @Override

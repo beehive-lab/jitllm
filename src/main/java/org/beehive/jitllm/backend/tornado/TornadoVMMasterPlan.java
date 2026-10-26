@@ -10,26 +10,17 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 /**
  * Common contract for all TornadoVM GPU execution plans.
  *
- * <p>Three concrete implementations exist:
+ * <p>{@link #initializeTornadoVMPlan} selects the implementation from the session's execution
+ * policy:
  *
  * <ul>
- *   <li>{@link TornadoVMMasterPlanSingleToken} — baseline single-token forward pass (preprocessing
- *       + N layers + logits).
- *   <li>{@link TornadoVMMasterPlanPrefillDecode} — sequential prefill/decode separation; reuses the
- *       same N layer graphs for both phases, skipping logits during prefill.
- *   <li>{@link TornadoVMMasterPlanBatchPrefillDecode} — batched prefill + single-token decode;
- *       holds 2N+3 graphs in one plan to keep the KV cache on device across phases.
- * </ul>
- *
- * <p>The {@link #initializeTornadoVMPlan} factory selects the implementation based on {@code
- * jitllm.withPrefillDecode} and {@code jitllm.prefillBatchSize}:
- *
- * <ul>
- *   <li>{@code withPrefillDecode=false} → {@link TornadoVMMasterPlanSingleToken}
- *   <li>{@code withPrefillDecode=true}, {@code prefillBatchSize=1} → {@link
- *       TornadoVMMasterPlanPrefillDecode}
- *   <li>{@code withPrefillDecode=true}, {@code prefillBatchSize>1} → {@link
- *       TornadoVMMasterPlanBatchPrefillDecode}
+ *   <li>{@link TornadoVMMasterPlanSingleToken}: single-token forward pass (activation, N layers,
+ *       logits), when the policy is not prefill/decode.
+ *   <li>{@link TornadoVMMasterPlanPrefillDecode}: sequential prefill/decode; reuses the same N
+ *       layer graphs for both phases, skipping logits during prefill. Prefill batch size 1.
+ *   <li>{@link TornadoVMMasterPlanBatchPrefillDecode}: batched prefill and single-token decode in
+ *       one plan, so the KV cache stays on the device across phases. Prefill batch size above 1.
+ *   <li>{@link TornadoVMMasterPlanPipeline}: a model split across devices ({@code --devices}).
  * </ul>
  */
 public interface TornadoVMMasterPlan {
@@ -144,15 +135,15 @@ public interface TornadoVMMasterPlan {
 
     // @formatter:on
 
-    /**
-     * Creates the appropriate {@link TornadoExecutionPlan} instance for the given {@link Model} and
-     * {@link State}.
-     */
     /** Describes an already prepared plan without executing a token. */
     default org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
         throw new UnsupportedOperationException("This plan does not expose execution diagnostics");
     }
 
+    /**
+     * Creates the appropriate {@link TornadoExecutionPlan} instance for the given {@link Model} and
+     * {@link State}.
+     */
     TornadoExecutionPlan createExecutionPlan();
 
     void forceCopyInReadOnlyData();

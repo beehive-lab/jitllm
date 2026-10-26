@@ -240,17 +240,6 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 && (long) n * k <= state.workspace.wrapDequantScratchFP16.getSize();
     }
 
-    /**
-     * A Q4_0 projection on the tensor cores: {@code out[batch][n] = a[batch][k] x w[n][k]}. The
-     * dequantize-then-GEMM pair where {@link #dequantGemmEligible} says so, otherwise the direct
-     * quantized kernel; either way the task named {@code task} is the one that writes {@code out}.
-     *
-     * <p>Every pair is the tiled one: the decoder writes the scratch in the GEMM's B-tile order,
-     * both nibbles of a packed byte from one lane, and the GEMM copies each tile global-to-shared
-     * as contiguous words. The Q4_1 ffn_down and the Q5_K ssm_out take the same GEMM with their own
-     * paired-nibble decoders; the scratch carries no layout of its own, each pair's two tasks agree
-     * between themselves, and no task reads what another family's decoder wrote.
-     */
     /** What a pair's GEMM does with its accumulators. */
     private enum Epilogue {
         /** Store the product to {@code out}. */
@@ -271,14 +260,6 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     }
 
     /**
-     * Whether a Q4_0 projection of this shape takes the int8 GEMM rather than the FP16 pair: the
-     * int8 activations were allocated (the width fills whole tiles), the FP16 pair's own
-     * eligibility holds, K is a whole number of 64-k rounds, and an activation the enclosing layer
-     * quantized for this K precedes it in task order (the caller's responsibility). Only Q4_0 asks;
-     * Q4_1 and Q5_K keep the FP16 pair, and the direct kernels keep every width the pairs do not
-     * take.
-     */
-    /**
      * Test seam: which projections (by task name) may take the int8 path. Production accepts all;
      * the topology tests narrow it to build the producer/consumer mixes that a shape-driven
      * eligibility never produces on the real model, and check the buffers still line up.
@@ -292,6 +273,14 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      */
     public static volatile boolean fakeQuantizeForTests = false;
 
+    /**
+     * Whether a Q4_0 projection of this shape takes the int8 GEMM rather than the FP16 pair: the
+     * int8 activations were allocated (the width fills whole tiles), the FP16 pair's own
+     * eligibility holds, K is a whole number of 64-k rounds, and an activation the enclosing layer
+     * quantized for this K precedes it in task order (the caller's responsibility). Only Q4_0 asks;
+     * Q4_1 and Q5_K keep the FP16 pair, and the direct kernels keep every width the pairs do not
+     * take.
+     */
     private boolean int8Eligible(String task, int n, int k) {
         return int8TaskFilterForTests.test(task) && int8Eligible(n, k);
     }
@@ -452,6 +441,17 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         }
     }
 
+    /**
+     * A Q4_0 projection on the tensor cores: {@code out[batch][n] = a[batch][k] x w[n][k]}. The
+     * dequantize-then-GEMM pair where {@link #dequantGemmEligible} says so, otherwise the direct
+     * quantized kernel; either way the task named {@code task} is the one that writes {@code out}.
+     *
+     * <p>Every pair is the tiled one: the decoder writes the scratch in the GEMM's B-tile order,
+     * both nibbles of a packed byte from one lane, and the GEMM copies each tile global-to-shared
+     * as contiguous words. The Q4_1 ffn_down and the Q5_K ssm_out take the same GEMM with their own
+     * paired-nibble decoders; the scratch carries no layout of its own, each pair's two tasks agree
+     * between themselves, and no task reads what another family's decoder wrote.
+     */
     private void q40Projection(
             TaskGraph graph,
             String qualified,
@@ -729,8 +729,6 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         }
     }
 
-    /** Streaming multiprocessors of the device, or 0 where it cannot say. */
-
     /** The streaming multiprocessors of the device this plan is built for; 0 when unknown. */
     private static int smCount() {
         return org.beehive.jitllm.backend.tornado.device.TornadoDevices.target().computeUnits();
@@ -791,7 +789,6 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     // ── validation and dispatch ───────────────────────────────────────────────
 
-    /** Whether this state's key/value store is half precision. */
     /**
      * Whether a Q4_0 or Q8_0 projection over {@code n} inputs runs on the Metal SIMD-group GEMMs,
      * which stage the contraction in 64-wide slices; see {@link
@@ -801,6 +798,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         return BatchPrefillGemmPolicy.simdgroup() && n % 64 == 0;
     }
 
+    /** Whether this state's key/value store is half precision. */
     private boolean fp16Kv() {
         return state.usesFp16KeyValueCache();
     }
@@ -2506,11 +2504,6 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         }
     }
 
-    /**
-     * Whether the batched attention is the tensor-core kernel: the scored path with its staging
-     * allocated (whole 16-query tiles), a 256-wide head, 128 lanes, a context of whole 32-key
-     * tiles, on CUDA (the tensor-core guard).
-     */
     /** Lanes of the 32-query tensor-core attention's workgroup. */
     private static final int TC32_LOCAL = Qwen35BatchKernels.TC32_LANES;
 
@@ -2519,6 +2512,11 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         return batchSize % Qwen35BatchKernels.TC32_QUERIES == 0;
     }
 
+    /**
+     * Whether the batched attention is the tensor-core kernel: the scored path with its staging
+     * allocated (whole 16-query tiles), a 256-wide head, 128 lanes, a context of whole 32-key
+     * tiles, on CUDA (the tensor-core guard).
+     */
     private boolean tensorCoreAttention(int headDim) {
         return scoredAttention()
                 && state.workspace.wrapAttnStageFP16 != null

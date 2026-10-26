@@ -626,8 +626,6 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         }
     }
 
-    /** Multiprocessors of the device, or 0 where it cannot say. */
-
     /** The streaming multiprocessors of the device this plan is built for; 0 when unknown. */
     private static int smCount() {
         return org.beehive.jitllm.backend.tornado.device.TornadoDevices.target().computeUnits();

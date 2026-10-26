@@ -67,6 +67,22 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
         super(state, weights, config, schedulerType, firstLayer, endLayer);
     }
 
+    /**
+     * Each layer names the graph it consumes from: the packed projections are consumed by name from
+     * their repack graph, and a graph that consumes anything by name takes nothing through an
+     * unnamed consume. The first layer takes its input from the activation graph, which is also the
+     * name of a later pipeline stage's receiving graph.
+     */
+    @Override
+    protected String predecessorGraphName(int layerIndex) {
+        return layerIndex > firstLayer ? layerGraphName(layerIndex - 1) : "activationUpdate";
+    }
+
+    @Override
+    protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
+        return appendFFNLayer(null, layerIndex);
+    }
+
     // @formatter:off
     /**
      * The Q8_0 layer's flow with four kernels replaced and one task added.
@@ -87,22 +103,6 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
      * </pre>
      */
     // @formatter:on
-    /**
-     * Each layer names the graph it consumes from: the packed projections are consumed by name from
-     * their repack graph, and a graph that consumes anything by name takes nothing through an
-     * unnamed consume. The first layer takes its input from the activation graph, which is also the
-     * name of a later pipeline stage's receiving graph.
-     */
-    @Override
-    protected String predecessorGraphName(int layerIndex) {
-        return layerIndex > firstLayer ? layerGraphName(layerIndex - 1) : "activationUpdate";
-    }
-
-    @Override
-    protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        return appendFFNLayer(null, layerIndex);
-    }
-
     @Override
     protected TaskGraph appendFFNLayer(TaskGraph existing, int layerIndex) {
         boolean firstInGraph = existing == null;

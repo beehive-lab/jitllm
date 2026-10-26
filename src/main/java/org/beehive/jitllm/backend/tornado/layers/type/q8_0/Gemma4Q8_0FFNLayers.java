@@ -1382,6 +1382,11 @@ public class Gemma4Q8_0FFNLayers
         }
     }
 
+    /** Whether {@code w} holds packed Q4_0 tiles ({@code -Djitllm.q4.packed=true}). */
+    private static boolean packedQ4(TornadoTensor w) {
+        return w != null && w.dataType() == DataType.Q4_0 && w.isPackedQ4();
+    }
+
     // @formatter:off
     /**
      * Whether a projection takes the warp-per-row Q8_0 kernel: Q8_0, on the NVIDIA path, on a
@@ -1394,11 +1399,6 @@ public class Gemma4Q8_0FFNLayers
      * every non-NVIDIA device. CUDA holds the capability, so its selection does not change.
      */
     // @formatter:on
-    /** Whether {@code w} holds packed Q4_0 tiles ({@code -Djitllm.q4.packed=true}). */
-    private static boolean packedQ4(TornadoTensor w) {
-        return w != null && w.dataType() == DataType.Q4_0 && w.isPackedQ4();
-    }
-
     private boolean warpProjection(TornadoTensor w) {
         // A Q8_0 projection takes the packed-integer kernel instead wherever that one runs.
         return w.dataType() == DataType.Q8_0

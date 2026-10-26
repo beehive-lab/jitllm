@@ -53,23 +53,6 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
                 == org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency.DEVICE;
     }
 
-    /**
-     * Vocabulary-projection reduction strategy: 32-lane subgroup shuffle where verified correct
-     * (Metal), shared-memory reduction elsewhere — the same selection {@code
-     * LlamaFP16FFNLayers.useSimd32Reduction} already uses for the per-layer QKV/residual/ FFN
-     * kernels, on the same {@code DeviceCapability.SUBGROUP_SHUFFLE_32} (Metal parity task 6
-     * follow-up: {@code matrixVectorGenericSimd32} is the vocabulary-shaped sibling, isolated and
-     * verified separately — see the accompanying review document).
-     *
-     * <p><b>Not cached in a field, deliberately.</b> {@link AbstractLogitsTaskGraph}'s constructor
-     * calls {@link #setupLogitsTaskGraph} — the overridden hook that reads this — through {@code
-     * super(.)}, which runs before this subclass's own field initializers do. A {@code private
-     * final boolean} field here would still hold its default {@code false} at that point, silently
-     * selecting the generic kernel even on Metal (caught by {@code
-     * MatrixVectorGenericSimd32AccelTest}'s sibling gate failing to reproduce the selection a full
-     * model run showed). Calling the (cheap, cached-inside) query directly at each use site avoids
-     * the ordering hazard entirely.
-     */
     // @formatter:off
     /**
      * Set by {@link #setupLogitsTaskGraph} when it installs the shuffle-reducing vocabulary kernel,
@@ -93,6 +76,23 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
     // @formatter:on
     private boolean vocabularyProjectionReducesWithShuffle;
 
+    /**
+     * Vocabulary-projection reduction strategy: 32-lane subgroup shuffle where verified correct
+     * (Metal), shared-memory reduction elsewhere — the same selection {@code
+     * LlamaFP16FFNLayers.useSimd32Reduction} already uses for the per-layer QKV/residual/ FFN
+     * kernels, on the same {@code DeviceCapability.SUBGROUP_SHUFFLE_32} (Metal parity task 6
+     * follow-up: {@code matrixVectorGenericSimd32} is the vocabulary-shaped sibling, isolated and
+     * verified separately — see the accompanying review document).
+     *
+     * <p><b>Not cached in a field, deliberately.</b> {@link AbstractLogitsTaskGraph}'s constructor
+     * calls {@link #setupLogitsTaskGraph} — the overridden hook that reads this — through {@code
+     * super(.)}, which runs before this subclass's own field initializers do. A {@code private
+     * final boolean} field here would still hold its default {@code false} at that point, silently
+     * selecting the generic kernel even on Metal (caught by {@code
+     * MatrixVectorGenericSimd32AccelTest}'s sibling gate failing to reproduce the selection a full
+     * model run showed). Calling the (cheap, cached-inside) query directly at each use site avoids
+     * the ordering hazard entirely.
+     */
     private static boolean useSimd32Reduction() {
         return SchedulerDetectionService.isSubgroupShuffle32Supported()
                 // The decode-shaped preference. This class is shared, so the preference reaches

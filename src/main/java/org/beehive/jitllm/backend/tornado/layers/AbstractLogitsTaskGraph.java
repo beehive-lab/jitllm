@@ -18,9 +18,9 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 /**
  * Abstract base for all logits task graphs (final vocabulary projection step).
  *
- * <p>Holds the shared fields and calls the protected buildLogitsTaskGraph() hook once during
- * construction. Subclasses implement buildLogitsTaskGraph() to define the quantization-specific
- * task sequence; Granite variants override it to swap in their scaled kernel.
+ * <p>Holds the shared fields and calls the protected {@code setupLogitsTaskGraph} hook once during
+ * construction. Subclasses implement it to define the quantization-specific task sequence; Granite
+ * variants override it to swap in their scaled kernel.
  */
 public abstract class AbstractLogitsTaskGraph extends AbstractLayer {
 

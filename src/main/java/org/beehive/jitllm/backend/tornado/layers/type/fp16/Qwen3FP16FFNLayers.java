@@ -123,19 +123,6 @@ public class Qwen3FP16FFNLayers
 
     // @formatter:off
     /**
-     * The task name for one of the four matrix-vector kernels this family selects by reduction
-     * strategy, suffixed when the shuffle-reducing variant is the one installed.
-     *
-     * <p>The two variants used to share a task name and a worker grid, which made the selection
-     * invisible: nothing in a built plan, a profile or a grid scheduler could say which kernel a
-     * run had installed, so a build that quietly stopped selecting the shuffle went on reporting
-     * the same evidence while being a fifth slower. The suffix is what makes the selection a fact
-     * about the plan rather than a re-derivation of the policy that chose it, and it is why {@code
-     * Qwen3DecodeDispatchAccelTest} can assert on the kernels themselves.
-     */
-    // @formatter:on
-    // @formatter:off
-    /**
      * The attention task's name, suffixed when the lane-cooperative kernel is the one installed.
      *
      * <p>Same reason as {@link #reductionVariant}: two kernels that share a task name are two
@@ -147,6 +134,19 @@ public class Qwen3FP16FFNLayers
         return laneAttention ? "attention_lane" : "attention";
     }
 
+    // @formatter:off
+    /**
+     * The task name for one of the four matrix-vector kernels this family selects by reduction
+     * strategy, suffixed when the shuffle-reducing variant is the one installed.
+     *
+     * <p>The two variants used to share a task name and a worker grid, which made the selection
+     * invisible: nothing in a built plan, a profile or a grid scheduler could say which kernel a
+     * run had installed, so a build that quietly stopped selecting the shuffle went on reporting
+     * the same evidence while being a fifth slower. The suffix is what makes the selection a fact
+     * about the plan rather than a re-derivation of the policy that chose it, and it is why {@code
+     * Qwen3DecodeDispatchAccelTest} can assert on the kernels themselves.
+     */
+    // @formatter:on
     protected final String reductionVariant(String taskName) {
         return useWarpMatmul ? taskName + "_warp" : taskName;
     }
