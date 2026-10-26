@@ -164,46 +164,42 @@ public final class Fp16KeyValueSupport {
         if (noBatchedPrefill.isPresent()) {
             return noBatchedPrefill;
         }
-        boolean f16OrQ8 = c.weights() == DataType.F16 || c.weights() == DataType.Q8_0;
-        switch (c.architecture()) {
-            case "qwen35" -> {
-                return c.weights() == DataType.Q4_0 || c.weights() == DataType.Q8_0
-                        ? Optional.empty()
-                        : Optional.of(
-                                "the qwen35 " + c.weights() + " layers are not verified on Metal");
-            }
-            case "gemma4" -> {
-                return c.weights() == DataType.Q8_0
-                        ? Optional.empty()
-                        : Optional.of(
-                                "the gemma4 "
-                                        + c.weights()
-                                        + " FP16 cache is not verified on Metal");
-            }
-            case "llama", "qwen3" -> {
-                boolean q4Llama = c.weights() == DataType.Q4_0 && c.architecture().equals("llama");
-                if (!f16OrQ8 && !q4Llama) {
-                    return Optional.of("the " + c.weights() + " layers keep an FP32 cache");
-                }
-                return q4Llama && c.mode() == ExecutionMode.PREFILL_DECODE
-                        ? Optional.of("Q4_0 has no sequential prefill/decode plan")
-                        : Optional.empty();
-            }
-            case "mistral", "qwen2", "deepseek-r1-distill-qwen", "phi3", "granite" -> {
-                if (!f16OrQ8) {
-                    return Optional.of("the " + c.weights() + " layers keep an FP32 cache");
-                }
-                return c.mode() == ExecutionMode.PREFILL_DECODE
-                        ? Optional.of(
-                                c.architecture()
-                                        + " has no verified FP16 sequential prefill/decode path on"
-                                        + " Metal")
-                        : Optional.empty();
-            }
-            default -> {
-                return Optional.of("the " + c.architecture() + " layers keep an FP32 cache");
-            }
+        return TornadoPlanRegistry.provider(c.architecture())
+                .map(provider -> provider.metalFp16KeyValueUnsupported(c))
+                .orElseGet(
+                        () ->
+                                Optional.of(
+                                        "the " + c.architecture() + " layers keep an FP32 cache"));
+    }
+
+    /**
+     * The Metal answer of a family whose single-token and batched layers write an FP16 cache in F16
+     * and Q8_0, with no verified sequential prefill/decode path there.
+     */
+    public static Optional<String> metalSingleTokenAndBatchedLayers(Combination c) {
+        if (c.weights() != DataType.F16 && c.weights() != DataType.Q8_0) {
+            return Optional.of("the " + c.weights() + " layers keep an FP32 cache");
         }
+        return c.mode() == ExecutionMode.PREFILL_DECODE
+                ? Optional.of(
+                        c.architecture()
+                                + " has no verified FP16 sequential prefill/decode path on Metal")
+                : Optional.empty();
+    }
+
+    /**
+     * The Metal answer of Llama's and Qwen3's layers: F16 and Q8_0 in every mode, and Q4_0 too when
+     * {@code q4_0}, except in sequential prefill/decode, which Q4_0 has no plan for.
+     */
+    public static Optional<String> metalDecodeLayers(Combination c, boolean q4_0) {
+        boolean f16OrQ8 = c.weights() == DataType.F16 || c.weights() == DataType.Q8_0;
+        boolean q4 = q4_0 && c.weights() == DataType.Q4_0;
+        if (!f16OrQ8 && !q4) {
+            return Optional.of("the " + c.weights() + " layers keep an FP32 cache");
+        }
+        return q4 && c.mode() == ExecutionMode.PREFILL_DECODE
+                ? Optional.of("Q4_0 has no sequential prefill/decode plan")
+                : Optional.empty();
     }
 
     /**

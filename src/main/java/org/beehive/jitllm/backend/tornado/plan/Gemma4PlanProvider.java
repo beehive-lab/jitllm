@@ -150,6 +150,18 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
         return Optional.empty();
     }
 
+    @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return c.weights() == DataType.Q8_0
+                ? Optional.empty()
+                : Optional.of("the gemma4 " + c.weights() + " FP16 cache is not verified on Metal");
+    }
+
+    @Override
+    public boolean metalBatchedPrefillDefault(DataType weights) {
+        return weights == DataType.F16 || weights == DataType.Q8_0;
+    }
+
     /**
      * CUDA: the projections through cuBLAS over the weights decoded to FP16. Metal: the Q8_0
      * projections on Apple MLX, attention kept on the SIMD-group kernels.

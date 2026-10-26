@@ -86,6 +86,16 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
         return Fp16KeyValueSupport.nvidiaDecodeLayers(c, false);
     }
 
+    @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return Fp16KeyValueSupport.metalDecodeLayers(c, false);
+    }
+
+    @Override
+    public boolean metalBatchedPrefillDefault(DataType weights) {
+        return weights == DataType.F16 || weights == DataType.Q8_0;
+    }
+
     /**
      * F16: projections through cuBLAS, the first chunk's attention through cuDNN. Q8_0: projections
      * through cuBLAS over the weights decoded to FP16.

@@ -147,6 +147,16 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
     }
 
     @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return Fp16KeyValueSupport.metalDecodeLayers(c, true);
+    }
+
+    @Override
+    public boolean metalBatchedPrefillDefault(DataType weights) {
+        return weights == DataType.F16 || weights == DataType.Q8_0 || weights == DataType.Q4_0;
+    }
+
+    @Override
     public Set<DataType> nativeLibraryWeights(BackendId backend) {
         if (BackendId.METAL.equals(backend)) {
             // Batched prefill attention and projections on Apple MLX (MlxPrefill).

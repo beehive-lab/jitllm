@@ -53,6 +53,16 @@ public final class GranitePlanProvider implements TornadoPlanProvider {
         return Fp16KeyValueSupport.singleTokenAndBatchedNvidiaLayers(c);
     }
 
+    @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return Fp16KeyValueSupport.metalSingleTokenAndBatchedLayers(c);
+    }
+
+    @Override
+    public boolean metalBatchedPrefillDefault(DataType weights) {
+        return weights == DataType.F16 || weights == DataType.Q8_0;
+    }
+
     /**
      * The batched prefill runs the Metal SIMD-group kernels or the CUDA tensor cores, for its
      * scaled residual and attention; there is no scalar path.

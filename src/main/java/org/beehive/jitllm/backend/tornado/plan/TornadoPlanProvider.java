@@ -213,4 +213,21 @@ public interface TornadoPlanProvider {
     default Optional<String> fp16KeyValueUnsupported(Combination c) {
         return Optional.of("the " + c.architecture() + " layers keep an FP32 cache");
     }
+
+    /**
+     * {@link #fp16KeyValueUnsupported} on Metal, once the plan is known to build. A family keeps an
+     * FP32 cache there unless it says otherwise.
+     */
+    default Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return Optional.of("the " + c.architecture() + " layers keep an FP32 cache");
+    }
+
+    /**
+     * Whether this family's batched prefill is the default on Metal for {@code weights}: its
+     * SIMD-group kernels are tuned there. A family prefills one token at a time on Metal unless it
+     * says otherwise.
+     */
+    default boolean metalBatchedPrefillDefault(DataType weights) {
+        return false;
+    }
 }

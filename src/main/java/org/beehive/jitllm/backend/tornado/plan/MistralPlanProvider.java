@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.plan;
 
 import java.util.Optional;
 import java.util.Set;
+import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
@@ -74,6 +75,16 @@ public final class MistralPlanProvider implements TornadoPlanProvider {
         return c.mode() == ExecutionMode.PREFILL_DECODE
                 ? Optional.of("mistral's sequential prefill/decode plan keeps an FP32 cache")
                 : Optional.empty();
+    }
+
+    @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return Fp16KeyValueSupport.metalSingleTokenAndBatchedLayers(c);
+    }
+
+    @Override
+    public boolean metalBatchedPrefillDefault(DataType weights) {
+        return weights == DataType.F16 || weights == DataType.Q8_0;
     }
 
     /**

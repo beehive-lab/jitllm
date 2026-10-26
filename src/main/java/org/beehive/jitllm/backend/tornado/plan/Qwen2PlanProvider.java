@@ -53,6 +53,16 @@ public final class Qwen2PlanProvider implements TornadoPlanProvider {
         return Fp16KeyValueSupport.singleTokenAndBatchedNvidiaLayers(c);
     }
 
+    @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return Fp16KeyValueSupport.metalSingleTokenAndBatchedLayers(c);
+    }
+
+    @Override
+    public boolean metalBatchedPrefillDefault(DataType weights) {
+        return weights == DataType.F16 || weights == DataType.Q8_0;
+    }
+
     /**
      * The batched prefill's projections through cuBLAS: Q8_0 weights decoded to FP16 first; F16
      * weights' output and down projections.
