@@ -377,15 +377,6 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
 
     @Override
     public void freeTornadoExecutionPlan() {
-        // Free the buffers, then close the plan. freeDeviceMemory() alone returns the device
-        // allocations but leaves the plan — and its compiled code and task graphs — alive, so a
-        // process that opens and closes several plans keeps accumulating them until the device
-        // budget runs out. A session that has been closed must cost nothing.
-        executionPlan.freeDeviceMemory();
-        try {
-            executionPlan.close();
-        } catch (Exception e) {
-            throw new IllegalStateException("failed to close the TornadoVM execution plan", e);
-        }
+        ExecutionPlanRelease.close(executionPlan);
     }
 }

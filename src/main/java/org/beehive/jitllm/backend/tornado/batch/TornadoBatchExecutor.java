@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
+import org.beehive.jitllm.backend.tornado.ExecutionPlanRelease;
 import org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter;
 import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
@@ -345,7 +346,7 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
     public void close() {
         if (!closed) {
             closed = true;
-            plan.freeDeviceMemory();
+            ExecutionPlanRelease.close(plan);
         }
     }
 
