@@ -282,10 +282,10 @@ public class DependencyRulesTest {
 
     @Test
     public void rule15_modelTypeDispatchStaysInTheProviders() {
-        assertMatchesAllowlist(
-                "Rule 15 (dispatch on ModelType outside the providers)",
-                ArchRules.rule15ModelTypeDispatchOutsideProviders(classes()),
-                Allowlists.RULE_15);
+        Set<String> violations = ArchRules.rule15ModelTypeDispatchOutsideProviders(classes());
+        assertTrue(
+                "Rule 15 passes today and must stay passing; new violations: " + violations,
+                violations.isEmpty());
     }
 
     @Test

@@ -89,17 +89,6 @@ public final class Allowlists {
                     "org.beehive.jitllm.tensor.standard.Q4_1FloatTensor");
 
     /**
-     * Rule 15 — classes outside the provider package that still dispatch on {@code ModelType}.
-     *
-     * <p>What remains is the legacy load path, kept selectable with {@code
-     * -Djitllm.providers=false} for one release. Adding a <i>new</i> family no longer lands here:
-     * it is a new provider file plus one service line. The CLI left this list when it moved onto
-     * the public facade — it now reads {@code ModelInfo.architecture()} rather than naming a {@code
-     * ModelType}.
-     */
-    public static final Set<String> RULE_15 = frozen("org.beehive.jitllm.model.loader.ModelLoader");
-
-    /**
      * Rule 16 — console I/O in library code.
      *
      * <p>{@code JitllmApp} and {@code Options} are today's CLI integration and are excluded by the
@@ -120,27 +109,10 @@ public final class Allowlists {
     /**
      * Rule 4 — classes outside the format layer and the loaders that still name GGUF's types.
      *
-     * <ul>
-     *   <li>{@code ModelType} and its enum-constant bodies take a {@code GGUF} in {@code
-     *   <li>The {@code tensor.standard} and {@code tensor.tornado} classes decode GGML block
-     * </ul>
+     * <p>The {@code tensor.standard} and {@code tensor.tornado} classes decode GGML block layouts.
      */
     public static final Set<String> RULE_4 =
             frozen(
-                    "org.beehive.jitllm.model.ModelType",
-                    "org.beehive.jitllm.model.ModelType$1",
-                    "org.beehive.jitllm.model.ModelType$2",
-                    "org.beehive.jitllm.model.ModelType$3",
-                    "org.beehive.jitllm.model.ModelType$4",
-                    "org.beehive.jitllm.model.ModelType$5",
-                    "org.beehive.jitllm.model.ModelType$6",
-                    "org.beehive.jitllm.model.ModelType$7",
-                    "org.beehive.jitllm.model.ModelType$8",
-                    "org.beehive.jitllm.model.ModelType$9",
-                    "org.beehive.jitllm.model.ModelType$10",
-                    "org.beehive.jitllm.model.ModelType$11",
-                    "org.beehive.jitllm.model.ModelType$12",
-                    "org.beehive.jitllm.model.ModelType$13",
                     "org.beehive.jitllm.tensor.standard.ArrayFloatTensor",
                     "org.beehive.jitllm.tensor.standard.ArrayHalfFloatTensor",
                     "org.beehive.jitllm.tensor.standard.BF16FloatTensor",
