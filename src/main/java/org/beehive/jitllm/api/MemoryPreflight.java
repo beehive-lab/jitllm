@@ -54,10 +54,17 @@ final class MemoryPreflight {
         //
         // The footprint has to know which representations this family keeps as they are, or it
         // predicts every quantized weight at its Q8_0 size — nearly double for a 4-bit file, which
-        // is the difference between refusing a 27B model on a 24 GB device and running it.
+        // is the difference between refusing a 27B model on a 24 GB device and running it. The
+        // family decides from the file's own representations, as its loader does.
         var weights =
                 ModelLoader.weightFootprint(
-                        modelFile, TornadoPlanRegistry.nativeDeviceTypes(model.architecture()));
+                        modelFile,
+                        sourceTypes ->
+                                TornadoPlanRegistry.deviceRetention(
+                                        model.architecture(),
+                                        sourceTypes,
+                                        config.numberOfLayers(),
+                                        TornadoDevices.current().backend()));
         return TornadoMemoryModel.predict(
                 weights,
                 config,

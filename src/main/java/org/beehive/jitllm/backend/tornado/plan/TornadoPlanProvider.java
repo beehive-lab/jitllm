@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
@@ -10,6 +11,7 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -78,6 +80,23 @@ public interface TornadoPlanProvider {
      */
     default Set<DataType> nativeTensorTypes() {
         return supportedDataTypes();
+    }
+
+    /**
+     * What representation each tensor of a file will occupy on the device, as this family's loader
+     * decides it. Read by the memory preflight, from the file's descriptors.
+     *
+     * <p>Defaults to keeping {@link #nativeTensorTypes()} and materializing the rest as Q8_0, which
+     * is right for a family whose loader decides per tensor. A family whose loader decides for the
+     * whole model overrides it with that same rule.
+     *
+     * @param sourceTypes each tensor's representation in the file, by tensor name
+     * @param layers the number of transformer blocks
+     * @param backend the device's backend
+     */
+    default DeviceRetention deviceRetention(
+            Map<String, DataType> sourceTypes, int layers, BackendId backend) {
+        return DeviceRetention.retaining(nativeTensorTypes());
     }
 
     /** The execution modes this family has plans for. */

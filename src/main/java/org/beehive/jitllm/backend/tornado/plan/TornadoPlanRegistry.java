@@ -13,6 +13,7 @@ import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlan
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 
@@ -82,21 +83,25 @@ public final class TornadoPlanRegistry {
     }
 
     /**
-     * The representations this architecture's plans read <b>as they are</b>, without
-     * materialization.
-     *
-     * <p>The provider's own {@code nativeTensorTypes}, which is the declaration that answers this
-     * per tensor. It is separate from {@code supportedDataTypes} because that one admits a plan for
-     * a model-wide representation, and a mixed model holds several: reading admission as retention
+     * What representation each tensor of a file of this architecture will occupy on the device: the
+     * provider's own {@code deviceRetention}, which by default keeps its {@code nativeTensorTypes}.
+     * That is separate from {@code supportedDataTypes} because that one admits a plan for a
+     * model-wide representation, and a mixed model holds several: reading admission as retention
      * under-predicts every tensor whose representation is not the model's.
      *
      * <p>Read by the memory preflight, which would otherwise predict every quantized weight at its
      * Q8_0 size and refuse a configuration that fits. An architecture with no provider retains
      * nothing, which is the right answer for it: nothing will build it a plan either.
      */
-    public static java.util.Set<DataType> nativeDeviceTypes(ArchitectureId architecture) {
+    public static DeviceRetention deviceRetention(
+            ArchitectureId architecture,
+            Map<String, DataType> sourceTypes,
+            int layers,
+            BackendId backend) {
         TornadoPlanProvider provider = Index.BY_ID.get(architecture);
-        return provider == null ? java.util.Set.of() : provider.nativeTensorTypes();
+        return provider == null
+                ? DeviceRetention.converting()
+                : provider.deviceRetention(sourceTypes, layers, backend);
     }
 
     /** The provider registered for {@code architecture}, if any. */

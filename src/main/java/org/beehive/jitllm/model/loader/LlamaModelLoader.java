@@ -3,9 +3,11 @@ package org.beehive.jitllm.model.loader;
 import static org.beehive.jitllm.model.loader.ModelLoader.*;
 
 import java.nio.channels.FileChannel;
+import java.util.HashMap;
 import java.util.Map;
 import org.beehive.jitllm.auxiliary.Pair;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.plan.LlamaPlanProvider;
 import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
@@ -19,7 +21,6 @@ import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
 import org.beehive.jitllm.model.format.LlamaChatFormat;
 import org.beehive.jitllm.model.llama.Llama;
 import org.beehive.jitllm.model.llama.LlamaConfiguration;
-import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
@@ -144,7 +145,9 @@ public class LlamaModelLoader extends AbstractModelLoader<Llama, LlamaConfigurat
         // are what the layer graph reads. A Q4_0 file leaves token_embd — the output projection
         // too, when they are tied — as Q6_K, so the output weight alone would say Q8_0 and select
         // the wrong plan.
-        boolean retainQ4_0 = RETAIN_Q4_0 && allQ4_0(tensorEntries, nl);
+        boolean retainQ4_0 =
+                LlamaPlanProvider.retainsQ4_0(
+                        sourceTypes(tensorEntries), nl, TornadoDevices.current().backend());
         boolean pack = retainQ4_0 && PackedWeights.packQ4(true);
         if (retainQ4_0) {
             weightType = DataType.Q4_0;
@@ -245,18 +248,6 @@ public class LlamaModelLoader extends AbstractModelLoader<Llama, LlamaConfigurat
     // @formatter:on
 
     /**
-     * Whether a Q4_0 file's weights are kept as they are, rather than materialized as Q8_0.
-     *
-     * <p>On by default — retaining is the point. It is switchable so the two can be measured
-     * against each other on <b>one file</b>, which is the only comparison that isolates the
-     * representation: comparing a Q4_0 model against a separately quantized Q8_0 one measures the
-     * quantization as well. It is also the fallback if a device turns out to miscompile the Q4_0
-     * kernels, the way the warp path did on OpenCL.
-     */
-    private static final boolean RETAIN_Q4_0 =
-            !"false".equalsIgnoreCase(System.getProperty("jitllm.q4_0.retain", "true"));
-
-    /**
      * A per-layer weight array, retaining Q4_0 when the whole layer stack is Q4_0.
      *
      * <p>All or nothing on purpose. A graph that mixed a retained Q4_0 tensor into a plan whose
@@ -272,36 +263,11 @@ public class LlamaModelLoader extends AbstractModelLoader<Llama, LlamaConfigurat
                 : loadArrayOfTornadoTensors(layers, entry);
     }
 
-    /**
-     * Whether every per-layer weight the Q4_0 layer graph reads is Q4_0, except {@code ffn_down},
-     * which may also be Q4_1.
-     *
-     * <p>The norms are F32 and are read by dtype-independent kernels, so they are not consulted;
-     * these seven are the ones a Q4_0 kernel would decode. {@code llama-quantize ... Q4_0} gives
-     * some layers' {@code ffn_down} more bits as Q4_1 (10 of 80 in Llama-3.3-70B, 2 of 16 in
-     * Llama-3.2-1B), and the layer graph has a Q4_1 kernel for exactly that projection.
-     *
-     * <p>Not on Metal: there a Q4_0 model's prompt is read by the SIMD-group batched prefill, which
-     * has Q4_0 kernels only, so a file with Q4_1 layers is materialized as Q8_0 instead.
-     */
-    private static boolean allQ4_0(Map<String, GGMLTensorEntry> tensorEntries, int layers) {
-        boolean q4_1DownAllowed = !BackendId.METAL.equals(TornadoDevices.current().backend());
-        String[] kinds = {
-            "attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_down", "ffn_up"
-        };
-        for (int layer = 0; layer < layers; layer++) {
-            for (String kind : kinds) {
-                GGMLTensorEntry entry = tensorEntries.get("blk." + layer + "." + kind + ".weight");
-                boolean q4_1Down =
-                        q4_1DownAllowed
-                                && kind.equals("ffn_down")
-                                && entry != null
-                                && entry.ggmlType() == GGMLType.Q4_1;
-                if (entry == null || (entry.ggmlType() != GGMLType.Q4_0 && !q4_1Down)) {
-                    return false;
-                }
-            }
-        }
-        return layers > 0;
+    /** Each tensor's representation in the file, by name: what the retention rule reads. */
+    private static Map<String, DataType> sourceTypes(Map<String, GGMLTensorEntry> tensorEntries) {
+        Map<String, DataType> types = new HashMap<>();
+        tensorEntries.forEach(
+                (name, entry) -> types.put(name, DataTypeMapping.sourceType(entry.ggmlType())));
+        return types;
     }
 }

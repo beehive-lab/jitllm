@@ -3,6 +3,9 @@ package org.beehive.jitllm.model.loader;
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Function;
 import java.util.function.IntFunction;
 import org.beehive.jitllm.Options;
 import org.beehive.jitllm.auxiliary.RunMetrics;
@@ -162,32 +165,43 @@ public final class ModelLoader {
         return weightFootprint(ggufPath, DeviceRetention.retaining(nativeDeviceTypes));
     }
 
-    // @formatter:off
     /**
      * The device footprint of a file's weights, given the representations the target family reads
      * without materializing.
      *
      * <p>Descriptors only — no tensor data is touched, which is what makes this usable before a
-     * load rather than after one.
-     *
-     * <p><b>It can under-estimate a mixed file.</b> The decision is taken per tensor here, where a
-     * loader may take it for the whole model: Llama retains Q4_0 only when every per-layer
-     * projection is Q4_0, and materializes all of them otherwise, because a fused kernel reading
-     * two block layouts would read 18-byte blocks as 34-byte ones. A file mixing Q4_0 with another
-     * quantization in its layers would therefore be predicted smaller than it loads.
-     *
-     * <p>That is the tolerable direction. This prediction is used to <b>refuse</b> a load, and a
-     * refusal cannot be overruled by the caller — so an over-estimate blocks a configuration that
-     * would have run, where an under-estimate lets it proceed to the backend's own allocation
-     * error. No quantizer produces such a file today; a real one would be a reason to move the
-     * whole-model rule here rather than to reverse this.
+     * load rather than after one. The decision is taken per tensor; for a family whose loader
+     * decides for the whole model, see {@link #weightFootprint(Path, Function)}.
      *
      * @param retention what representation each tensor will occupy on the device
      */
-    // @formatter:on
     public static WeightFootprint weightFootprint(Path ggufPath, DeviceRetention retention)
             throws IOException {
+        return weightFootprint(GGUF.loadGGUFMetadata(ggufPath), retention);
+    }
+
+    /**
+     * {@link #weightFootprint(Path, DeviceRetention)} with the retention decided from the file
+     * itself: {@code retention} is given every tensor's representation, by name, and answers what
+     * each will occupy. That is what a loader that decides for the whole model reads — Llama keeps
+     * Q4_0 only when every per-layer projection is Q4_0, and materializes all of them otherwise —
+     * so the prediction follows the same rule as the load.
+     *
+     * @param retention the device representation of each tensor, given every tensor's
+     *     representation in the file
+     */
+    public static WeightFootprint weightFootprint(
+            Path ggufPath, Function<Map<String, DataType>, DeviceRetention> retention)
+            throws IOException {
         GGUF gguf = GGUF.loadGGUFMetadata(ggufPath);
+        Map<String, DataType> sourceTypes = new HashMap<>();
+        for (GGUF.GGUFTensorInfo info : gguf.getTensorInfos().values()) {
+            sourceTypes.put(info.name(), DataTypeMapping.sourceType(info.ggmlType()));
+        }
+        return weightFootprint(gguf, retention.apply(sourceTypes));
+    }
+
+    private static WeightFootprint weightFootprint(GGUF gguf, DeviceRetention retention) {
         long perLayer = 0;
         long global = 0;
         int perLayerTensors = 0;
