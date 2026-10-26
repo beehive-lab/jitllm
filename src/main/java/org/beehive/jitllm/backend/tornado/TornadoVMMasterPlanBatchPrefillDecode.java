@@ -5,7 +5,6 @@ import org.beehive.jitllm.backend.tornado.plan.BatchPrefillDecodeForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
 import org.beehive.jitllm.backend.tornado.plan.layout.BatchPrefillDecodeForwardTaskGraphLayout;
 import org.beehive.jitllm.inference.state.State;
-import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -54,7 +53,6 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
 
     private final State state;
     private final Model model;
-    private final Configuration config;
 
     BatchPrefillDecodeForwardPlan batchPrefillDecodeForwardPlan;
     BatchPrefillDecodeForwardTaskGraphLayout taskGraphLayout;
@@ -73,7 +71,6 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
 
         this.state = initialState;
         this.model = model;
-        this.config = model.configuration();
         this.metrics = new TornadoMetricsReporter(sink);
 
         long startTime = System.nanoTime();

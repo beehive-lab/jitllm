@@ -47,19 +47,6 @@ public interface TornadoVMMasterPlan {
     boolean CUDA_GRAPHS = CudaGraphDefault.enabled();
 
     /**
-     * @deprecated Replaced by {@code state.executionPolicy()}. This constant survives only for
-     *     {@code State} and {@code Qwen2MoEState}, which use the batch size to <b>size arrays</b> —
-     *     a capacity input, not policy — and for the bench harness. It is not read on any execution
-     *     path.
-     */
-    @Deprecated boolean WITH_PREFILL_DECODE = Boolean.getBoolean("jitllm.withPrefillDecode");
-
-    /**
-     * @deprecated see {@link #WITH_PREFILL_DECODE}. Capacity input only.
-     */
-    @Deprecated int PREFILL_BATCH_SIZE = Integer.getInteger("jitllm.prefillBatchSize", 1);
-
-    /**
      * Factory: creates, JIT-compiles, and warms up the appropriate TornadoVMMasterPlan.
      *
      * <p>When {@code jitllm.withPrefillDecode=true} and {@code jitllm.prefillBatchSize > 1}, a

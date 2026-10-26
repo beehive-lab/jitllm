@@ -5,7 +5,6 @@ import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
 import org.beehive.jitllm.backend.tornado.plan.SingleTokenForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout;
 import org.beehive.jitllm.inference.state.State;
-import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -36,7 +35,6 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
 
     private final State state;
     private final Model model;
-    private final Configuration config;
 
     SingleTokenForwardPlan tornadoVMForwardPlan;
     SingleTokenForwardTaskGraphLayout taskGraphLayout;
@@ -54,7 +52,6 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
 
         this.state = state;
         this.model = model;
-        this.config = model.configuration();
         this.metrics = new TornadoMetricsReporter(sink);
 
         long startTime = System.nanoTime();

@@ -23,14 +23,6 @@ public class WorkerGridFactory {
         return worker;
     }
 
-    /** QKV matmul worker: combined projection output */
-    public static WorkerGrid createQkvMatmulWorker(int opSize) {
-        int global = opSize * DEFAULT_WORK_GROUP_SIZE;
-        WorkerGrid worker = new WorkerGrid1D(global);
-        worker.setLocalWork(DEFAULT_WORK_GROUP_SIZE, 1, 1);
-        return worker;
-    }
-
     public static WorkerGrid genericWorker(int globalWorkSize, int localWorkSize) {
         WorkerGrid worker = new WorkerGrid1D(globalWorkSize);
         worker.setLocalWork(localWorkSize, 1, 1);
@@ -75,22 +67,6 @@ public class WorkerGridFactory {
         WorkerGrid worker = new WorkerGrid1D(groups * local);
         worker.setGlobalWork(groups * local, 1, 1);
         worker.setLocalWork(local, 1, 1);
-        return worker;
-    }
-
-    /** FFN gate+up worker: combined projection */
-    public static WorkerGrid createGateUpWorker(int hiddenDim) {
-        int global = (2 * hiddenDim) * DEFAULT_WORK_GROUP_SIZE;
-        WorkerGrid worker = new WorkerGrid1D(global);
-        worker.setLocalWork(DEFAULT_WORK_GROUP_SIZE, 1, 1);
-        return worker;
-    }
-
-    /** FFN down worker: final projection */
-    public static WorkerGrid createDownWorker(int dim) {
-        int global = dim * DEFAULT_WORK_GROUP_SIZE;
-        WorkerGrid worker = new WorkerGrid1D(global);
-        worker.setLocalWork(DEFAULT_WORK_GROUP_SIZE, 1, 1);
         return worker;
     }
 

@@ -102,10 +102,7 @@ public final class BatchPrefillSupport {
                     "qwen35",
                     "gemma4");
 
-    /** The batched-prefill chunk Metal runs by default; see {@link #defaultFor}. */
-    public static final int METAL_DEFAULT_PREFILL_BATCH = 512;
-
-    /** The batched-prefill chunk the other accelerator backends run by default. */
+    /** The batched-prefill chunk every accelerator backend runs by default. */
     public static final int DEFAULT_PREFILL_BATCH = 512;
 
     // @formatter:off
@@ -114,7 +111,7 @@ public final class BatchPrefillSupport {
      * accelerator backend where the family's batched prefill can be built, the given policy
      * otherwise.
      *
-     * <p>CUDA and OpenCL prefill in chunks of {@value #DEFAULT_PREFILL_BATCH}. On Metal, the
+     * <p>Every backend prefills in chunks of {@value #DEFAULT_PREFILL_BATCH}. On Metal, the
      * families in {@link #METAL_BATCHED_FAMILIES}, in F16 and Q8_0, prefill an order of magnitude
      * faster in batches than one token at a time on an Apple GPU (M4 Pro, pp512 in chunks of 256:
      * Qwen3-0.6B F16 151 to 4171 tok/s; Llama-3.2-1B F16 40 to 2372, Q8_0 45 to 2075; Qwen3.5-0.8B
@@ -148,7 +145,7 @@ public final class BatchPrefillSupport {
         }
         return ExecutionPolicy.from(policy)
                 .phaseStrategy(ExecutionPolicy.PhaseStrategy.PREFILL_DECODE)
-                .prefillBatchSize(metal ? METAL_DEFAULT_PREFILL_BATCH : DEFAULT_PREFILL_BATCH)
+                .prefillBatchSize(DEFAULT_PREFILL_BATCH)
                 .build();
     }
 
