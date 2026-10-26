@@ -173,6 +173,25 @@ public final class TornadoPlanRegistry {
     }
 
     /**
+     * Why {@code model}'s provider declines {@code weights} or {@code mode}, or empty when it
+     * supports both or no provider is registered. Needs no state, so admission asks it at load.
+     */
+    public static Optional<String> unsupported(Model model, DataType weights, ExecutionMode mode) {
+        TornadoPlanProvider provider = Index.BY_ID.get(model.architectureId());
+        if (provider == null) {
+            return Optional.empty();
+        }
+        if (!provider.supportedDataTypes().contains(weights)) {
+            return Optional.of(weights + " not supported for model: " + model.getModelType());
+        }
+        if (!provider.supportedModes().contains(mode)) {
+            return Optional.of(
+                    mode + " not yet supported for " + model.getModelType() + " + " + weights);
+        }
+        return Optional.empty();
+    }
+
+    /**
      * The components for a migrated architecture in {@code mode}, admitted as {@link #create}
      * admits them: an unsupported representation or mode is refused by name.
      */
@@ -182,14 +201,11 @@ public final class TornadoPlanRegistry {
         if (provider == null) {
             return Optional.empty();
         }
-        if (!provider.supportedDataTypes().contains(quantization)) {
-            throw new UnsupportedOperationException(
-                    quantization + " not supported for model: " + model.getModelType());
-        }
-        if (!provider.supportedModes().contains(mode)) {
-            throw new UnsupportedOperationException(
-                    mode + " not yet supported for " + model.getModelType() + " + " + quantization);
-        }
+        unsupported(model, quantization, mode)
+                .ifPresent(
+                        reason -> {
+                            throw new UnsupportedOperationException(reason);
+                        });
 
         SingleTokenForwardPlanComponents components =
                 provider.components(quantization, state, model);

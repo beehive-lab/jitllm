@@ -85,15 +85,10 @@ public interface TornadoVMMasterPlan {
     private static TornadoVMMasterPlan buildPlan(State state, Model model, MetricsSink sink) {
         TornadoVMMasterPlan plan;
 
-        // Every GPU plan passes here, the facade's and the harness's alike, so an FP16 cache the
-        // selected layers do not implement is refused before any device buffer exists. The facade
-        // has already asked at load; this covers the callers that build a state themselves.
-        // A device or split the family's plans cannot run on at all, before any cache check.
-        PlanSupport.require(model, state.executionPolicy(), true);
-        Fp16KeyValueSupport.require(model, state.executionPolicy(), state.storageOptions(), true);
-        NativeLibrarySupport.require(model, state.executionPolicy(), true);
-        // A batched prefill the family cannot build on this device, with either cache.
-        BatchPrefillSupport.require(model, state.executionPolicy(), true);
+        // Every GPU plan passes here, the facade's and the harness's alike, so a configuration the
+        // plans cannot run is refused before any device buffer exists. The facade has already
+        // asked at load; this covers the callers that build a state themselves.
+        PlanSupport.require(model, state.executionPolicy(), state.storageOptions(), true);
 
         // A model split by layers across several devices: its own plan, one per device.
         var split = DeviceSplit.fromSystemProperties();

@@ -285,7 +285,11 @@ public class JitllmBench {
             }
         }
         org.beehive.jitllm.integration.cli.StartupDiagnostics.installTaskGraphChainOutput();
-        org.beehive.jitllm.backend.tornado.NativeLibrarySupport.require(model, benchPolicy, !cpu);
+        org.beehive.jitllm.backend.tornado.PlanSupport.require(
+                model,
+                benchPolicy,
+                org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties(),
+                !cpu);
         long loadNs = System.nanoTime() - startedNs;
         State state = State.withPrefillBatchSize(batch, model::createNewState);
         state.resolveExecutionPolicy(benchPolicy);
