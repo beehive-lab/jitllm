@@ -92,12 +92,11 @@ public class MistralQ8_0PlanComponents implements BatchPrefillDecodeForwardPlanC
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new MistralQ8_0FFNLayers("mistralFFN", state, weights, config, schedulerType);
+        return new MistralQ8_0FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsQ8_0Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsQ8_0Layer(state, weights, config, previousGraphId, schedulerType);
     }
 }

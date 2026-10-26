@@ -98,31 +98,20 @@ public class Gemma4Q8_0FFNLayers
     private final String stageInput;
 
     public Gemma4Q8_0FFNLayers(
-            String taskGraphName,
             Gemma4State state,
             Gemma4TornadoWeights weights,
             Gemma4Configuration config,
             SchedulerType schedulerType) {
-        this(taskGraphName, state, weights, config, schedulerType, false);
+        this(state, weights, config, schedulerType, false);
     }
 
     public Gemma4Q8_0FFNLayers(
-            String taskGraphName,
             Gemma4State state,
             Gemma4TornadoWeights weights,
             Gemma4Configuration config,
             SchedulerType schedulerType,
             boolean batchedPlan) {
-        this(
-                taskGraphName,
-                state,
-                weights,
-                config,
-                schedulerType,
-                batchedPlan,
-                0,
-                config.numberOfLayers(),
-                null);
+        this(state, weights, config, schedulerType, batchedPlan, 0, config.numberOfLayers(), null);
     }
 
     // @formatter:off
@@ -137,7 +126,6 @@ public class Gemma4Q8_0FFNLayers
      */
     // @formatter:on
     public Gemma4Q8_0FFNLayers(
-            String taskGraphName,
             Gemma4State state,
             Gemma4TornadoWeights weights,
             Gemma4Configuration config,
@@ -146,7 +134,7 @@ public class Gemma4Q8_0FFNLayers
             int firstLayer,
             int endLayer,
             String stageInput) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         if (firstLayer > 0 && config.hasPerLayerEmbeddings()) {
             throw new UnsupportedOperationException(
                     "a gemma4 model with per-layer input embeddings is not split across devices:"

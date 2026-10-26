@@ -22,12 +22,11 @@ public class DevstralFP16FFNLayers
         extends AbstractTransformerLayerTaskGraphs<LlamaTornadoWeights, DevstralConfiguration> {
 
     public DevstralFP16FFNLayers(
-            String taskGraph,
             State state,
             LlamaTornadoWeights weights,
             DevstralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         setupFFNLayers();
     }
 

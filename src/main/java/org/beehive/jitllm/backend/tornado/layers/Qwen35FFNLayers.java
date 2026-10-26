@@ -124,23 +124,20 @@ public class Qwen35FFNLayers
     protected final Qwen35FeedForward feedForward;
 
     public Qwen35FFNLayers(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
             SchedulerType schedulerType) {
-        this(taskGraphName, state, weights, config, schedulerType, "activationUpdate");
+        this(state, weights, config, schedulerType, "activationUpdate");
     }
 
     public Qwen35FFNLayers(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
             SchedulerType schedulerType,
             String activationGraphName) {
         this(
-                taskGraphName,
                 state,
                 weights,
                 config,
@@ -157,7 +154,6 @@ public class Qwen35FFNLayers
      * room for every layer and uses its own.
      */
     public Qwen35FFNLayers(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
@@ -166,7 +162,6 @@ public class Qwen35FFNLayers
             int firstLayer,
             int endLayer) {
         this(
-                taskGraphName,
                 state,
                 weights,
                 config,
@@ -182,7 +177,6 @@ public class Qwen35FFNLayers
      * the dense SwiGLU when it is not null: a family built on this one.
      */
     public Qwen35FFNLayers(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
@@ -191,7 +185,7 @@ public class Qwen35FFNLayers
             int firstLayer,
             int endLayer,
             Qwen35FeedForward feedForward) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         if (feedForward != null && !dp4a()) {
             throw new UnsupportedOperationException(
                     "this feed-forward reads a quantized activation, which needs a device with"

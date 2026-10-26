@@ -18,12 +18,11 @@ public class MistralQ8_0FFNLayers
 
     // @formatter:off
     public MistralQ8_0FFNLayers(
-            String taskGraphName,
             LlamaState state,
             LlamaTornadoWeights weights,
             MistralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         setupFFNLayers();
     }
 

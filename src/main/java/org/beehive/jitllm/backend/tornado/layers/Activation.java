@@ -17,7 +17,7 @@ public class Activation extends AbstractLayer implements ActivationTaskGraph {
     private final TaskGraph activationTaskGraph;
 
     public Activation(String name, State state, Weights weights, Configuration config) {
-        super(name, state, weights, config);
+        super(state, weights, config);
         this.activationTaskGraph = setupActivationTaskGraph(name);
     }
 

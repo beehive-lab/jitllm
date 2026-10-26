@@ -31,12 +31,11 @@ public class Qwen2MoEQ8_0FFNLayers
     protected final Qwen2MoEState moeState;
 
     public Qwen2MoEQ8_0FFNLayers(
-            String taskGraphName,
             Qwen2MoEState state,
             Qwen2MoETornadoWeights weights,
             Qwen2MoEConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.moeState = state;
         setupFFNLayers();
     }

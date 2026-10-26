@@ -49,24 +49,22 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
 
     public LlamaQ4_0FFNLayers(
-            String taskGraphName,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     /** The layers {@code [firstLayer, endLayer)} only; see the Q8_0 constructor. */
     public LlamaQ4_0FFNLayers(
-            String taskGraphName,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType,
             int firstLayer,
             int endLayer) {
-        super(taskGraphName, state, weights, config, schedulerType, firstLayer, endLayer);
+        super(state, weights, config, schedulerType, firstLayer, endLayer);
     }
 
     // @formatter:off

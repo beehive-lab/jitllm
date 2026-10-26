@@ -29,13 +29,12 @@ public abstract class AbstractLogitsTaskGraph extends AbstractLayer {
     private final TaskGraph logitsTaskGraph;
 
     protected AbstractLogitsTaskGraph(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config);
+        super(state, weights, config);
         this.lastTaskGraphID = lastTaskGraphID;
         this.schedulerType = schedulerType;
         TornadoWeights tornadoWeights =

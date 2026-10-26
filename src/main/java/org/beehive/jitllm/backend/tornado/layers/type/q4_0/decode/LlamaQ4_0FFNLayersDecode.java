@@ -19,26 +19,24 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class LlamaQ4_0FFNLayersDecode extends LlamaQ4_0FFNLayers {
 
     public LlamaQ4_0FFNLayersDecode(
-            String taskGraph,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     /**
      * The layers {@code [firstLayer, endLayer)} only: one stage of a model split across devices.
      */
     public LlamaQ4_0FFNLayersDecode(
-            String taskGraph,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType,
             int firstLayer,
             int endLayer) {
-        super(taskGraph, state, weights, config, schedulerType, firstLayer, endLayer);
+        super(state, weights, config, schedulerType, firstLayer, endLayer);
     }
 
     @Override

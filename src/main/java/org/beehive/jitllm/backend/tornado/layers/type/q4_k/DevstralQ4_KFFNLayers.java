@@ -42,12 +42,11 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
 
     public DevstralQ4_KFFNLayers(
-            String taskGraphName,
             State state,
             LlamaTornadoWeights weights,
             DevstralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         setupFFNLayers();
     }
 

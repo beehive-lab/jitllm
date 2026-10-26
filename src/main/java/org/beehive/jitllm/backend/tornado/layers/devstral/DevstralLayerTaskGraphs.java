@@ -43,12 +43,11 @@ public abstract class DevstralLayerTaskGraphs
     protected static final int PACKED_LOCAL = 64;
 
     protected DevstralLayerTaskGraphs(
-            String taskGraphName,
             State state,
             LlamaTornadoWeights weights,
             DevstralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     /**

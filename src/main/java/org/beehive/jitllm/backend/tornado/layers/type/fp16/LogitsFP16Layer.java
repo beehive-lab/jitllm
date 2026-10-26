@@ -102,13 +102,12 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
     }
 
     public LogitsFP16Layer(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config, lastTaskGraphID, schedulerType);
+        super(state, weights, config, lastTaskGraphID, schedulerType);
     }
 
     /**

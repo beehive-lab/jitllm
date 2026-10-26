@@ -43,13 +43,12 @@ public class Phi3Q8_0PlanComponents implements BatchPrefillDecodeForwardPlanComp
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new Phi3Q8_0FFNLayers("phi3FFN", state, weights, config, schedulerType);
+        return new Phi3Q8_0FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new PackedQ8_0LogitsLayer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new PackedQ8_0LogitsLayer(state, weights, config, previousGraphId, schedulerType);
     }
 
     @Override
@@ -69,12 +68,12 @@ public class Phi3Q8_0PlanComponents implements BatchPrefillDecodeForwardPlanComp
 
     @Override
     public TransformerLayerTaskGraphs prefillDecodeTransformerLayers() {
-        return new Phi3Q8_0FFNLayers("decode", state, weights, config, schedulerType);
+        return new Phi3Q8_0FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new Phi3Q8_0FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new Phi3Q8_0FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
@@ -88,6 +87,6 @@ public class Phi3Q8_0PlanComponents implements BatchPrefillDecodeForwardPlanComp
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
         return new PackedQ8_0LogitsLayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+                state, weights, config, previousGraphId, schedulerType);
     }
 }

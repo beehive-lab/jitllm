@@ -43,13 +43,12 @@ public class GraniteFP16PlanComponents implements BatchPrefillDecodeForwardPlanC
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new GraniteFP16FFNLayers("graniteFFN", state, weights, config, schedulerType);
+        return new GraniteFP16FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsGraniteFP16Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsGraniteFP16Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     /** Sequential prefill/decode has no Granite layers. */
@@ -76,7 +75,7 @@ public class GraniteFP16PlanComponents implements BatchPrefillDecodeForwardPlanC
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new GraniteFP16FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new GraniteFP16FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
@@ -90,6 +89,6 @@ public class GraniteFP16PlanComponents implements BatchPrefillDecodeForwardPlanC
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
         return new LogitsGraniteFP16LayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+                state, weights, config, previousGraphId, schedulerType);
     }
 }

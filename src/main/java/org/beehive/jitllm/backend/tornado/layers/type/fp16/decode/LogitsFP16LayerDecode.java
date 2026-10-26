@@ -28,13 +28,12 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 public class LogitsFP16LayerDecode extends LogitsFP16Layer {
 
     public LogitsFP16LayerDecode(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config, lastTaskGraphID, schedulerType);
+        super(state, weights, config, lastTaskGraphID, schedulerType);
     }
 
     /** The KV cache objects the decode layers actually persist (FP16 when that path is active). */

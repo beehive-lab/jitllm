@@ -17,12 +17,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class Qwen2FP16FFNLayersDecode extends Qwen2FP16FFNLayers {
 
     public Qwen2FP16FFNLayersDecode(
-            String taskGraph,
             Qwen2State state,
             Qwen2TornadoWeights weights,
             Qwen2Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     @Override

@@ -17,12 +17,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class DevstralQ4_KFFNLayersDecode extends DevstralQ4_KFFNLayers {
 
     public DevstralQ4_KFFNLayersDecode(
-            String taskGraph,
             State state,
             LlamaTornadoWeights weights,
             DevstralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     @Override

@@ -71,12 +71,11 @@ public class Gemma4FP16FFNLayers
     private final boolean fp16KeyValue;
 
     public Gemma4FP16FFNLayers(
-            String taskGraphName,
             Gemma4State state,
             Gemma4TornadoWeights weights,
             Gemma4Configuration config,
             SchedulerType schedulerType) {
-        this(taskGraphName, state, weights, config, schedulerType, false);
+        this(state, weights, config, schedulerType, false);
     }
 
     /**
@@ -86,13 +85,12 @@ public class Gemma4FP16FFNLayers
      *     batch-prefill graphs already uploaded
      */
     public Gemma4FP16FFNLayers(
-            String taskGraphName,
             Gemma4State state,
             Gemma4TornadoWeights weights,
             Gemma4Configuration config,
             SchedulerType schedulerType,
             boolean batchedPlan) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.batchedPlan = batchedPlan;
         this.gemma4State = state;
         this.fp16KeyValue = state.usesFp16KeyValueCache();

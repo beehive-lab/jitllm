@@ -34,12 +34,11 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 public class LlamaFP16FFNLayersPrefillDecode extends LlamaFP16FFNLayers {
 
     public LlamaFP16FFNLayersPrefillDecode(
-            String taskGraph,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     /**

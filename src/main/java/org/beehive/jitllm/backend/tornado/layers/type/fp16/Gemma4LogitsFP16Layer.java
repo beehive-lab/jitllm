@@ -27,13 +27,12 @@ public class Gemma4LogitsFP16Layer extends LogitsFP16Layer {
     private static final String SOFTCAP_TASK = "logit_softcap";
 
     public Gemma4LogitsFP16Layer(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config, lastTaskGraphID, schedulerType);
+        super(state, weights, config, lastTaskGraphID, schedulerType);
     }
 
     private float softcap() {

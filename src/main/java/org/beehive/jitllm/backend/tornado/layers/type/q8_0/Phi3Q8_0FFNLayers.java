@@ -37,12 +37,11 @@ public class Phi3Q8_0FFNLayers
     private final int opSize;
 
     public Phi3Q8_0FFNLayers(
-            String taskGraphName,
             Phi3State state,
             Phi3TornadoWeights weights,
             Phi3Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.phi3State = state;
         this.opSize = config.dim() + 2 * (config.numberOfKeyValueHeads() * config.headSize());
         setupFFNLayers();

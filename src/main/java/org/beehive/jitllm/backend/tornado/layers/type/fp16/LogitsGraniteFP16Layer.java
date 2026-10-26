@@ -19,13 +19,12 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class LogitsGraniteFP16Layer extends LogitsFP16Layer {
 
     public LogitsGraniteFP16Layer(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config, lastTaskGraphID, schedulerType);
+        super(state, weights, config, lastTaskGraphID, schedulerType);
     }
 
     // @formatter:off

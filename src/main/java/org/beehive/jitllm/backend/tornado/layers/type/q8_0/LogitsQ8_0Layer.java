@@ -19,13 +19,12 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
 
     // @formatter:off
     public LogitsQ8_0Layer(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config, lastTaskGraphID, schedulerType);
+        super(state, weights, config, lastTaskGraphID, schedulerType);
     }
 
     // @formatter:on

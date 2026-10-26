@@ -20,12 +20,11 @@ public class LlamaQ8_0FFNLayersPrefillDecode extends LlamaQ8_0FFNLayers {
 
     // @formatter:off
     public LlamaQ8_0FFNLayersPrefillDecode(
-            String taskGraph,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     // @formatter:on

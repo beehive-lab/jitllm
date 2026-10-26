@@ -37,12 +37,11 @@ public class Qwen2Q8_0FFNLayers
     private final Qwen2State qwen2State;
 
     public Qwen2Q8_0FFNLayers(
-            String taskGraphName,
             Qwen2State state,
             Qwen2TornadoWeights weights,
             Qwen2Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.qwen2State = state;
         setupFFNLayers();
     }

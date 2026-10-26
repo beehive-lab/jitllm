@@ -12,12 +12,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public final class Qwen2MoEQ8_0FFNLayersDecode extends Qwen2MoEQ8_0FFNLayers {
 
     public Qwen2MoEQ8_0FFNLayersDecode(
-            String taskGraph,
             Qwen2MoEState state,
             Qwen2MoETornadoWeights weights,
             Qwen2MoEConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     /** Connects decode layer 0 to the decode activation and later layers in order. */

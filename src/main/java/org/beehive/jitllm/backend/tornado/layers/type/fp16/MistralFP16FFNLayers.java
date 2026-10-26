@@ -27,12 +27,11 @@ public class MistralFP16FFNLayers
             SchedulerDetectionService.isSubgroupShuffle32Supported();
 
     public MistralFP16FFNLayers(
-            String taskGraph,
             State state,
             LlamaTornadoWeights weights,
             MistralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         setupFFNLayers();
     }
 

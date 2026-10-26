@@ -17,12 +17,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class DevstralQ8_0FFNLayersDecode extends DevstralQ8_0FFNLayers {
 
     public DevstralQ8_0FFNLayersDecode(
-            String taskGraph,
             State state,
             LlamaTornadoWeights weights,
             DevstralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     @Override

@@ -68,8 +68,7 @@ public class Qwen35PlanComponents
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new PackedQ8_0LogitsLayer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new PackedQ8_0LogitsLayer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── Sequential prefill/decode ─────────────────────────────────────────────
@@ -82,7 +81,6 @@ public class Qwen35PlanComponents
     @Override
     public TransformerLayerTaskGraphs prefillDecodeTransformerLayers() {
         return new Qwen35FFNLayers(
-                "qwen35FFN",
                 state,
                 weights,
                 config,
@@ -138,14 +136,7 @@ public class Qwen35PlanComponents
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
         return new Qwen35FFNLayersBatchDecode(
-                "qwen35FFN",
-                state,
-                weights,
-                config,
-                schedulerType,
-                0,
-                config.numberOfLayers(),
-                feedForward());
+                state, weights, config, schedulerType, 0, config.numberOfLayers(), feedForward());
     }
 
     // ── A family built on this one ────────────────────────────────────────────
@@ -169,7 +160,6 @@ public class Qwen35PlanComponents
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers(int firstLayer, int endLayer) {
         return new Qwen35FFNLayersGrouped(
-                "qwen35FFN",
                 state,
                 weights,
                 config,
@@ -196,13 +186,6 @@ public class Qwen35PlanComponents
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers(int firstLayer, int endLayer) {
         return new Qwen35FFNLayersBatchDecode(
-                "decode",
-                state,
-                weights,
-                config,
-                schedulerType,
-                firstLayer,
-                endLayer,
-                feedForward());
+                state, weights, config, schedulerType, firstLayer, endLayer, feedForward());
     }
 }

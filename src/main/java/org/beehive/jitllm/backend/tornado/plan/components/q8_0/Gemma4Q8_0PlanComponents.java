@@ -50,13 +50,12 @@ public class Gemma4Q8_0PlanComponents
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new Gemma4Q8_0FFNLayers("gemma4FFN", state, weights, config, schedulerType);
+        return new Gemma4Q8_0FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new Gemma4LogitsQ8_0Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new Gemma4LogitsQ8_0Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── The batched prefill/decode plan ───────────────────────────────────────
@@ -96,13 +95,12 @@ public class Gemma4Q8_0PlanComponents
     // @formatter:on
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new Gemma4Q8_0FFNLayers("gemma4FFN", state, weights, config, schedulerType, true);
+        return new Gemma4Q8_0FFNLayers(state, weights, config, schedulerType, true);
     }
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
-        return new Gemma4LogitsQ8_0Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new Gemma4LogitsQ8_0Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // @formatter:off
@@ -130,7 +128,6 @@ public class Gemma4Q8_0PlanComponents
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers(int firstLayer, int endLayer) {
         return new Gemma4Q8_0FFNLayers(
-                "gemma4FFN",
                 state,
                 weights,
                 config,
@@ -151,7 +148,6 @@ public class Gemma4Q8_0PlanComponents
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers(int firstLayer, int endLayer) {
         return new Gemma4Q8_0FFNLayers(
-                "gemma4FFN",
                 state,
                 weights,
                 config,

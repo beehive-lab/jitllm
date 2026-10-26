@@ -22,12 +22,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
  */
 public class LlamaFP16FFNLayersDecode extends LlamaFP16FFNLayers {
     public LlamaFP16FFNLayersDecode(
-            String taskGraph,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     /**

@@ -51,13 +51,12 @@ public class DeepSeek2PlanComponents
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new DeepSeek2Layers("deepseek2", state, weights, config, schedulerType);
+        return new DeepSeek2Layers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new PackedQ8_0LogitsLayer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new PackedQ8_0LogitsLayer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── Sequential prefill/decode ─────────────────────────────────────────────
@@ -70,7 +69,6 @@ public class DeepSeek2PlanComponents
     @Override
     public TransformerLayerTaskGraphs prefillDecodeTransformerLayers() {
         return new DeepSeek2Layers(
-                "deepseek2",
                 state,
                 weights,
                 config,
@@ -114,14 +112,7 @@ public class DeepSeek2PlanComponents
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers(int firstLayer, int endLayer) {
         return new DeepSeek2Layers(
-                "deepseek2",
-                state,
-                weights,
-                config,
-                schedulerType,
-                "activationUpdate",
-                firstLayer,
-                endLayer);
+                state, weights, config, schedulerType, "activationUpdate", firstLayer, endLayer);
     }
 
     @Override
@@ -140,7 +131,6 @@ public class DeepSeek2PlanComponents
                     "the deepseek2 batched decode layers are built after the prefill layers");
         }
         return new DeepSeek2Layers(
-                "deepseek2",
                 state,
                 weights,
                 config,

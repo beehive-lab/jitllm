@@ -16,12 +16,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class GraniteQ8_0FFNLayersDecode extends GraniteQ8_0FFNLayers {
 
     public GraniteQ8_0FFNLayersDecode(
-            String taskGraph,
             GraniteState state,
             GraniteTornadoWeights weights,
             GraniteConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     @Override

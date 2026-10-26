@@ -71,20 +71,11 @@ public class DeepSeek2Layers
     private final Map<String, WorkerGrid> grids = new LinkedHashMap<>();
 
     public DeepSeek2Layers(
-            String taskGraphName,
             DeepSeek2State state,
             DeepSeek2TornadoWeights weights,
             DeepSeek2Configuration config,
             SchedulerType schedulerType) {
-        this(
-                taskGraphName,
-                state,
-                weights,
-                config,
-                schedulerType,
-                "activationUpdate",
-                0,
-                config.numberOfLayers());
+        this(state, weights, config, schedulerType, "activationUpdate", 0, config.numberOfLayers());
     }
 
     /**
@@ -92,7 +83,6 @@ public class DeepSeek2Layers
      * The first of them takes its activation from the graph named {@code activationGraphName}.
      */
     public DeepSeek2Layers(
-            String taskGraphName,
             DeepSeek2State state,
             DeepSeek2TornadoWeights weights,
             DeepSeek2Configuration config,
@@ -101,7 +91,6 @@ public class DeepSeek2Layers
             int firstLayer,
             int endLayer) {
         this(
-                taskGraphName,
                 state,
                 weights,
                 config,
@@ -117,7 +106,6 @@ public class DeepSeek2Layers
      * weight the prefill graphs bind from those graphs, so the plan holds one copy of each.
      */
     public DeepSeek2Layers(
-            String taskGraphName,
             DeepSeek2State state,
             DeepSeek2TornadoWeights weights,
             DeepSeek2Configuration config,
@@ -126,7 +114,7 @@ public class DeepSeek2Layers
             int firstLayer,
             int endLayer,
             DeepSeek2BatchPrefillLayers prefill) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.prefill = prefill;
         this.ds = state;
         this.fp16Cache = state.usesFp16KeyValueCache();

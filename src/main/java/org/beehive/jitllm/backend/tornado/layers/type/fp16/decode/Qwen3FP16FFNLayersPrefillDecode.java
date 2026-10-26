@@ -20,12 +20,11 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 public class Qwen3FP16FFNLayersPrefillDecode extends Qwen3FP16FFNLayers {
 
     public Qwen3FP16FFNLayersPrefillDecode(
-            String taskGraph,
             Qwen3State state,
             Qwen3TornadoWeights weights,
             Qwen3Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     /**

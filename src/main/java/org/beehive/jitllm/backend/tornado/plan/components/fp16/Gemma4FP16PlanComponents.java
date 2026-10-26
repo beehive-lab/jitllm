@@ -50,13 +50,12 @@ public class Gemma4FP16PlanComponents implements BatchPrefillDecodeForwardPlanCo
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new Gemma4FP16FFNLayers("gemma4FFN", state, weights, config, schedulerType);
+        return new Gemma4FP16FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new Gemma4LogitsFP16Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new Gemma4LogitsFP16Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── The batched prefill/decode plan ───────────────────────────────────────
@@ -85,13 +84,12 @@ public class Gemma4FP16PlanComponents implements BatchPrefillDecodeForwardPlanCo
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new Gemma4FP16FFNLayers("gemma4FFN", state, weights, config, schedulerType, true);
+        return new Gemma4FP16FFNLayers(state, weights, config, schedulerType, true);
     }
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
-        return new Gemma4LogitsFP16Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new Gemma4LogitsFP16Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     /** Not declared by the provider: the batched plan is this family's prefill path. */

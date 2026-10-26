@@ -93,12 +93,11 @@ public class Qwen3Q8_0FFNLayers
     }
 
     public Qwen3Q8_0FFNLayers(
-            String taskGraphName,
             Qwen3State state,
             Qwen3TornadoWeights weights,
             Qwen3Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.qwen3State = state;
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHeadK = config.numberOfHeadsKey();

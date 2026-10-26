@@ -16,12 +16,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class Phi3FP16FFNLayersDecode extends Phi3FP16FFNLayers {
 
     public Phi3FP16FFNLayersDecode(
-            String taskGraph,
             Phi3State state,
             Phi3TornadoWeights weights,
             Phi3Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     @Override

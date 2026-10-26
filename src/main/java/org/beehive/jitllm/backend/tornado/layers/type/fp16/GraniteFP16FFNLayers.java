@@ -32,12 +32,11 @@ public class GraniteFP16FFNLayers
     private final boolean packedHalf2Math = SchedulerDetectionService.isPackedHalf2MathSupported();
 
     public GraniteFP16FFNLayers(
-            String taskGraph,
             State state,
             GraniteTornadoWeights weights,
             GraniteConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         setupFFNLayers();
     }
 

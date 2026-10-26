@@ -25,12 +25,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class DevstralQ8_0FFNLayers extends DevstralLayerTaskGraphs {
 
     public DevstralQ8_0FFNLayers(
-            String taskGraphName,
             State state,
             LlamaTornadoWeights weights,
             DevstralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         setupFFNLayers();
     }
 

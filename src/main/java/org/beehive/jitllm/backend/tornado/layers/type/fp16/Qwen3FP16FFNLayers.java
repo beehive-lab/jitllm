@@ -94,12 +94,11 @@ public class Qwen3FP16FFNLayers
     private final boolean laneAttention;
 
     public Qwen3FP16FFNLayers(
-            String taskGraphName,
             Qwen3State state,
             Qwen3TornadoWeights weights,
             Qwen3Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.qwen3State = state;
 
         // Initialize GQA parameters from Qwen3Config

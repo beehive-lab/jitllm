@@ -92,12 +92,11 @@ public class MistralFP16PlanComponents implements BatchPrefillDecodeForwardPlanC
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new MistralFP16FFNLayers("mistralFFN", state, weights, config, schedulerType);
+        return new MistralFP16FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsFP16Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsFP16Layer(state, weights, config, previousGraphId, schedulerType);
     }
 }

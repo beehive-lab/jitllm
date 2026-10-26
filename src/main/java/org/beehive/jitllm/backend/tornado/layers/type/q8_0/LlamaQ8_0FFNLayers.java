@@ -24,12 +24,11 @@ public class LlamaQ8_0FFNLayers
         extends AbstractTransformerLayerTaskGraphs<LlamaTornadoWeights, LlamaConfiguration> {
 
     public LlamaQ8_0FFNLayers(
-            String taskGraphName,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType) {
-        this(taskGraphName, state, weights, config, schedulerType, 0, config.numberOfLayers());
+        this(state, weights, config, schedulerType, 0, config.numberOfLayers());
     }
 
     /**
@@ -38,14 +37,13 @@ public class LlamaQ8_0FFNLayers
      * the key/value cache of {@code state} holds just these layers.
      */
     public LlamaQ8_0FFNLayers(
-            String taskGraphName,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType,
             int firstLayer,
             int endLayer) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         restrictToLayers(firstLayer, endLayer);
         setupFFNLayers();
     }

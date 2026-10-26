@@ -86,24 +86,23 @@ public class LlamaQ8_0PlanComponents
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new LlamaQ8_0FFNLayers("llamaFFN", state, weights, config, schedulerType);
+        return new LlamaQ8_0FFNLayers(state, weights, config, schedulerType);
     }
 
     /** One stage's layers; the batched prefill of this representation is not split. */
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers(int firstLayer, int endLayer) {
-        return new LlamaQ8_0FFNLayers(
-                "llamaFFN", state, weights, config, schedulerType, firstLayer, endLayer);
+        return new LlamaQ8_0FFNLayers(state, weights, config, schedulerType, firstLayer, endLayer);
     }
 
     @Override
     public TransformerLayerTaskGraphs prefillDecodeTransformerLayers() {
-        return new LlamaQ8_0FFNLayersPrefillDecode("decode", state, weights, config, schedulerType);
+        return new LlamaQ8_0FFNLayersPrefillDecode(state, weights, config, schedulerType);
     }
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new LlamaQ8_0FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new LlamaQ8_0FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
@@ -118,13 +117,12 @@ public class LlamaQ8_0PlanComponents
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new PackedQ8_0LogitsLayer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new PackedQ8_0LogitsLayer(state, weights, config, previousGraphId, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
         return new PackedQ8_0LogitsLayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+                state, weights, config, previousGraphId, schedulerType);
     }
 }

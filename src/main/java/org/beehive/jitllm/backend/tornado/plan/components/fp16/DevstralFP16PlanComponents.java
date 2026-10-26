@@ -41,13 +41,12 @@ public class DevstralFP16PlanComponents implements BatchPrefillDecodeForwardPlan
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new DevstralFP16FFNLayers("devstralFFN", state, weights, config, schedulerType);
+        return new DevstralFP16FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsFP16Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsFP16Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── Batched prefill/decode ───────────────────────────────────────────────
@@ -79,13 +78,12 @@ public class DevstralFP16PlanComponents implements BatchPrefillDecodeForwardPlan
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new DevstralFP16FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new DevstralFP16FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
-        return new LogitsFP16LayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsFP16LayerDecode(state, weights, config, previousGraphId, schedulerType);
     }
 
     /** Devstral has no sequential prefill/decode plan; its provider refuses the mode. */

@@ -31,12 +31,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
 
     public Qwen35FFNLayersBatchDecode(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType, "decodeActivation");
+        super(state, weights, config, schedulerType, "decodeActivation");
     }
 
     /**
@@ -44,14 +43,13 @@ public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
      * Graphs group layers counted from the stage's first one.
      */
     public Qwen35FFNLayersBatchDecode(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
             SchedulerType schedulerType,
             int firstLayer,
             int endLayer) {
-        this(taskGraphName, state, weights, config, schedulerType, firstLayer, endLayer, null);
+        this(state, weights, config, schedulerType, firstLayer, endLayer, null);
     }
 
     /**
@@ -59,7 +57,6 @@ public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
      * one.
      */
     public Qwen35FFNLayersBatchDecode(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
@@ -68,7 +65,6 @@ public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
             int endLayer,
             Qwen35FeedForward feedForward) {
         super(
-                taskGraphName,
                 state,
                 weights,
                 config,

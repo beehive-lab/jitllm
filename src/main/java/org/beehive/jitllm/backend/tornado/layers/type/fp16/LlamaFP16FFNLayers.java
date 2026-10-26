@@ -59,12 +59,11 @@ public class LlamaFP16FFNLayers
     private final LlamaState llamaState;
 
     public LlamaFP16FFNLayers(
-            String taskGraph,
             State state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.llamaState = (LlamaState) state;
         var partitions = state.executionPolicy().splitKvPartitions();
         // Split by default where the lane-cooperative kernel runs (CUDA, FP16 cache) and where the

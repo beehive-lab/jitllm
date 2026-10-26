@@ -58,12 +58,11 @@ public class Qwen2FP16FFNLayers
             SchedulerDetectionService.isSubgroupShuffle32Supported();
 
     public Qwen2FP16FFNLayers(
-            String taskGraphName,
             Qwen2State state,
             Qwen2TornadoWeights weights,
             Qwen2Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.qwen2State = state;
         setupFFNLayers();
     }
