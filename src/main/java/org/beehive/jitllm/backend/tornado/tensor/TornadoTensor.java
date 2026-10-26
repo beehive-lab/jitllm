@@ -1,8 +1,10 @@
 package org.beehive.jitllm.backend.tornado.tensor;
 
+import java.util.Objects;
 import org.beehive.jitllm.format.DataTypeMapping;
 import org.beehive.jitllm.format.GGMLType;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
@@ -13,6 +15,18 @@ import uk.ac.manchester.tornado.api.types.arrays.Int8Array;
  * GPU execution.
  */
 public abstract class TornadoTensor {
+
+    /** The tensor's dimensions, in GGUF {@code ne} order: dimension 0 is the length of a row. */
+    private final Shape shape;
+
+    protected TornadoTensor(Shape shape) {
+        this.shape = Objects.requireNonNull(shape, "a device tensor states its shape");
+    }
+
+    /** The tensor's dimensions, in GGUF {@code ne} order: dimension 0 is the length of a row. */
+    public final Shape shape() {
+        return shape;
+    }
 
     /**
      * @deprecated Use {@link #dataType()}. A materialized device tensor is not a file type — a

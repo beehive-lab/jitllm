@@ -19,6 +19,7 @@ import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
@@ -55,7 +56,7 @@ public class MlxPrefillProjectionsTest {
                 bytes.set(b * 34 + 2 + j, values[b][j]);
             }
         }
-        return new Q8_0TornadoTensor(bytes);
+        return new Q8_0TornadoTensor(bytes, Shape.of(scales.length * GROUP));
     }
 
     /**
@@ -74,7 +75,7 @@ public class MlxPrefillProjectionsTest {
                 bytes.set(b * 18 + 2 + j, (byte) (nibbles[b][j] | (nibbles[b][j + 16] << 4)));
             }
         }
-        return new Q4_0TornadoTensor(bytes);
+        return new Q4_0TornadoTensor(bytes, Shape.of(scales.length * GROUP));
     }
 
     /** Every signed byte at least once across the blocks, extremes first. */
@@ -374,7 +375,7 @@ public class MlxPrefillProjectionsTest {
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private static FP16TornadoTensor fp16(int elements) {
-        return new FP16TornadoTensor(new HalfFloatArray(elements));
+        return new FP16TornadoTensor(new HalfFloatArray(elements), Shape.of(elements));
     }
 
     private static LayerWeights llamaStyle(DataType type) {

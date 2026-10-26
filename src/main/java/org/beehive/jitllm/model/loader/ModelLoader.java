@@ -38,6 +38,7 @@ import org.beehive.jitllm.runtime.memory.WeightFootprint;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import org.beehive.jitllm.runtime.tensor.TensorDescriptor;
 import org.beehive.jitllm.tensor.standard.*;
 
@@ -293,10 +294,12 @@ public final class ModelLoader {
     /** Loads a tensor for the device <b>retaining Q4_K</b> rather than materializing it as Q8_0. */
     public static TornadoTensor loadTornadoTensorRetainingQ4_K(GGMLTensorEntry entry) {
         if (entry.ggmlType() == GGMLType.Q4_K) {
-            return Q4_KTornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
+            return Q4_KTornadoTensor.fromTornadoMemorySegment(
+                    entry.memorySegment(), shapeOf(entry));
         }
         if (entry.ggmlType() == GGMLType.Q6_K) {
-            return Q6_KTornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
+            return Q6_KTornadoTensor.fromTornadoMemorySegment(
+                    entry.memorySegment(), shapeOf(entry));
         }
         return loadTornadoTensor(entry);
     }
@@ -312,7 +315,8 @@ public final class ModelLoader {
      */
     public static TornadoTensor loadTornadoTensorRetainingQ4_0(GGMLTensorEntry entry) {
         if (entry.ggmlType() == GGMLType.Q4_0) {
-            return Q4_0TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
+            return Q4_0TornadoTensor.fromTornadoMemorySegment(
+                    entry.memorySegment(), shapeOf(entry));
         }
         return loadTornadoTensor(entry);
     }
@@ -330,15 +334,32 @@ public final class ModelLoader {
      */
     public static TornadoTensor loadTornadoTensorNative(GGMLTensorEntry entry) {
         return switch (entry.ggmlType()) {
-            case F32 -> FP32TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case F16 -> FP16TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case Q8_0 -> Q8_0TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case Q4_0 -> Q4_0TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case Q4_1 -> Q4_1TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case Q4_K -> Q4_KTornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case Q5_K -> Q5_KTornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case Q6_K -> Q6_KTornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case BF16 -> TornadoTensorLoader.convertBF16ToFP16(rawTensorData(entry));
+            case F32 ->
+                    FP32TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case F16 ->
+                    FP16TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q8_0 ->
+                    Q8_0TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q4_0 ->
+                    Q4_0TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q4_1 ->
+                    Q4_1TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q4_K ->
+                    Q4_KTornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q5_K ->
+                    Q5_KTornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q6_K ->
+                    Q6_KTornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case BF16 ->
+                    TornadoTensorLoader.convertBF16ToFP16(rawTensorData(entry), shapeOf(entry));
             default ->
                     throw new ModelLoadException(
                             DiagnosticCode.MODEL_MALFORMED.prefix()
@@ -378,19 +399,31 @@ public final class ModelLoader {
         TensorDescriptor descriptor = TensorDescriptors.describe(entry, ExecutionTarget.GPU);
         descriptor.shape().elementCountAsInt(descriptor.name());
         return switch (entry.ggmlType()) {
-            case F32 -> FP32TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case F16 -> FP16TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case BF16 -> TornadoTensorLoader.convertBF16ToFP16(rawTensorData(entry));
-            case Q8_0 -> Q8_0TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
+            case F32 ->
+                    FP32TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case F16 ->
+                    FP16TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case BF16 ->
+                    TornadoTensorLoader.convertBF16ToFP16(rawTensorData(entry), shapeOf(entry));
+            case Q8_0 ->
+                    Q8_0TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
                 // A representation the device has no kernel for is materialized as Q8_0 at load
                 // The conversion reads through the CPU tensor for that format, which
                 // already knows how to decode it.
             case Q4_0, Q4_1, Q4_K, Q5_K, Q6_K ->
-                    TornadoTensorLoader.dequantizeToQ8_0(rawTensorData(entry));
+                    TornadoTensorLoader.dequantizeToQ8_0(rawTensorData(entry), shapeOf(entry));
             default ->
                     throw new UnsupportedOperationException(
                             "Quantization format " + entry.ggmlType());
         };
+    }
+
+    /** The dimensions the file gives {@code entry}, recorded on the device tensor built from it. */
+    private static Shape shapeOf(GGMLTensorEntry entry) {
+        return Shape.of(entry.shape());
     }
 
     /**

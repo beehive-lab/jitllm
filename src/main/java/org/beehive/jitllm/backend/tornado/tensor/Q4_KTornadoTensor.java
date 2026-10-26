@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.tensor;
 import java.lang.foreign.MemorySegment;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 
 /**
@@ -45,12 +46,13 @@ public class Q4_KTornadoTensor extends TornadoTensor {
 
     private final ByteArray tornadoNativeArray;
 
-    public Q4_KTornadoTensor(ByteArray byteArray) {
+    public Q4_KTornadoTensor(ByteArray byteArray, Shape shape) {
+        super(shape);
         this.tornadoNativeArray = byteArray;
     }
 
-    public static Q4_KTornadoTensor fromTornadoMemorySegment(MemorySegment segment) {
-        return new Q4_KTornadoTensor(ByteArray.fromSegmentShallow(segment));
+    public static Q4_KTornadoTensor fromTornadoMemorySegment(MemorySegment segment, Shape shape) {
+        return new Q4_KTornadoTensor(ByteArray.fromSegmentShallow(segment), shape);
     }
 
     @Override

@@ -26,7 +26,7 @@ public class DataTypeAccessorsTest {
 
     @Test
     public void aDeviceTensorReportsItsRuntimeRepresentation() {
-        Q8_0TornadoTensor tensor = new Q8_0TornadoTensor(new ByteArray(34));
+        Q8_0TornadoTensor tensor = new Q8_0TornadoTensor(new ByteArray(34), Shape.of(32));
         assertSame(DataType.Q8_0, tensor.dataType());
         assertEquals("the old accessor still answers, and agrees", GGMLType.Q8_0, tensor.type());
     }
