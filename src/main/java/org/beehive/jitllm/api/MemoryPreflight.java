@@ -2,12 +2,19 @@ package org.beehive.jitllm.api;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.memory.TornadoMemoryModel;
+import org.beehive.jitllm.backend.tornado.plan.TornadoPlanProvider;
+import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
+import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.loader.ModelLoader;
 import org.beehive.jitllm.runtime.memory.MemoryPlan;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * Builds a {@link MemoryPlan} from a model file, and refuses a load that cannot fit.
@@ -62,7 +69,35 @@ final class MemoryPreflight {
                 keyValueReservation(model, modelFile, options),
                 withWorkspace
                         ? workspace(model, modelFile, options, policy)
-                        : java.util.Optional.empty());
+                        : java.util.Optional.empty(),
+                packedRepackScratchBytes(modelFile, model.architectureId(), policy));
+    }
+
+    /**
+     * The scratch a load under {@code policy} repacks its packed projections through, or 0 when it
+     * packs none. The family names what its loader packs, and {@link PackedWeights} answers whether
+     * packing is on for this policy and device, as it does for the load itself.
+     */
+    private static long packedRepackScratchBytes(
+            Path modelFile, ArchitectureId architecture, ExecutionPolicy policy)
+            throws IOException {
+        Set<DataType> packed =
+                PackedWeights.loading(
+                        policy,
+                        () ->
+                                TornadoPlanRegistry.provider(architecture)
+                                        .map(TornadoPlanProvider::packedProjectionTypes)
+                                        .orElse(Set.of())
+                                        .stream()
+                                        .filter(
+                                                type ->
+                                                        switch (type) {
+                                                            case Q8_0 -> PackedWeights.packQ8(true);
+                                                            case Q4_0 -> PackedWeights.packQ4(true);
+                                                            default -> false;
+                                                        })
+                                        .collect(Collectors.toSet()));
+        return ModelLoader.packedProjectionBytes(modelFile, packed);
     }
 
     private static org.beehive.jitllm.runtime.memory.KeyValueReservation keyValueReservation(

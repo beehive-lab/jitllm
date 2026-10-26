@@ -156,6 +156,28 @@ public final class TornadoMemoryModel {
             long configuredBudgetBytes,
             KeyValueReservation keyValue,
             java.util.Optional<BatchPrefillWorkspace> prefill) {
+        return predict(
+                weights, config, policy, device, configuredBudgetBytes, keyValue, prefill, 0);
+    }
+
+    /**
+     * {@link #predict(WeightFootprint, Configuration, ExecutionPolicy, Device, long,
+     * KeyValueReservation, java.util.Optional)} for a model whose projections are packed: each
+     * session's plan repacks them on the device through one scratch buffer as large as the largest
+     * ({@code PackedRepack}), and keeps it for the plan's lifetime.
+     *
+     * @param packedRepackScratchBytes the largest packed projection's bytes, or 0 when the load
+     *     packs none
+     */
+    public static MemoryPlan predict(
+            WeightFootprint weights,
+            Configuration config,
+            ExecutionPolicy policy,
+            Device device,
+            long configuredBudgetBytes,
+            KeyValueReservation keyValue,
+            java.util.Optional<BatchPrefillWorkspace> prefill,
+            long packedRepackScratchBytes) {
         long header = device.nativeArrayHeaderBytes();
         int layoutFamilies = layerGraphFamilies(policy, config.numberOfLayers());
         // How many of those families upload the weights, which is what costs memory. A family
@@ -225,6 +247,19 @@ public final class TornadoMemoryModel {
                             config.recurrentStateBytes(),
                             1,
                             2 * header));
+        }
+
+        // ── the repack scratch, for a load that packs its projections ────────
+        // One per session, because each session's plan appends its own repack graphs; the scratch
+        // and the flag that makes a second repack a no-op stay on the device with the plan.
+        if (packedRepackScratchBytes > 0) {
+            components.add(
+                    new MemoryComponent(
+                            "packed-weight repack scratch",
+                            BufferClass.ACTIVATION_WORKSPACE,
+                            packedRepackScratchBytes + Integer.BYTES,
+                            keyValue.sessions(),
+                            2L * keyValue.sessions() * header));
         }
 
         // ── batch staging, only when a batched capacity is configured ────────

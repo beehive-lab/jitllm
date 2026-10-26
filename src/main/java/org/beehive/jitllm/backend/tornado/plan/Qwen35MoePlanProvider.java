@@ -35,6 +35,12 @@ public final class Qwen35MoePlanProvider implements TornadoPlanProvider {
         return Set.of(DataType.F32, DataType.F16, DataType.Q8_0);
     }
 
+    /** The trunk projections, which load as Qwen3.5's do ({@code Qwen35MoeModelLoader}). */
+    @Override
+    public Set<DataType> packedProjectionTypes() {
+        return Set.of(DataType.Q8_0, DataType.Q4_0);
+    }
+
     @Override
     public Set<ExecutionMode> supportedModes() {
         return Set.of(ExecutionMode.values());

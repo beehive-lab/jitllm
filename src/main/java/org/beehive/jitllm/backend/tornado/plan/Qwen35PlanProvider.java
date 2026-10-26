@@ -62,6 +62,12 @@ public final class Qwen35PlanProvider implements TornadoPlanProvider {
                 DataType.Q8_0);
     }
 
+    /** The Q8_0 and Q4_0 trunk projections ({@code Qwen35ModelLoader.projectionTensor}). */
+    @Override
+    public Set<DataType> packedProjectionTypes() {
+        return Set.of(DataType.Q8_0, DataType.Q4_0);
+    }
+
     @Override
     public Set<ExecutionMode> supportedModes() {
         return Set.of(ExecutionMode.values());

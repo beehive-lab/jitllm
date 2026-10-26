@@ -58,6 +58,15 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
                 DataType.Q8_0);
     }
 
+    /**
+     * The Q4_0 trunk projections, unless the packed-integer kernels are off or the load is for
+     * native libraries ({@code Gemma4ModelLoader}).
+     */
+    @Override
+    public Set<DataType> packedProjectionTypes() {
+        return Set.of(DataType.Q4_0);
+    }
+
     // @formatter:off
     /**
      * Single-token everywhere, and the batched prefill/decode plan as well.

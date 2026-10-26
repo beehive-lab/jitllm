@@ -197,6 +197,36 @@ public final class ModelLoader {
         return new WeightFootprint(perLayer, perLayerTensors, global, globalTensors);
     }
 
+    /**
+     * The bytes of the largest per-layer projection a load would pack, given the representations
+     * the family packs: a two-dimensional {@code blk.*} tensor of one of {@code packed} whose shape
+     * packs ({@link PackedTiles#fits}). Zero when there is none.
+     *
+     * <p>Descriptors only, like {@link #weightFootprint}. It is the size of the scratch buffer the
+     * packed weights are repacked through on the device, which is as large as the largest of them.
+     */
+    public static long packedProjectionBytes(Path ggufPath, java.util.Set<DataType> packed)
+            throws IOException {
+        if (packed.isEmpty()) {
+            return 0;
+        }
+        GGUF gguf = GGUF.loadGGUFMetadata(ggufPath);
+        long largest = 0;
+        for (GGUF.GGUFTensorInfo info : gguf.getTensorInfos().values()) {
+            DataType source = DataTypeMapping.sourceType(info.ggmlType());
+            int[] shape = info.dimensions();
+            if (!info.name().startsWith("blk.")
+                    || !packed.contains(source)
+                    || shape.length != 2
+                    || !PackedTiles.fits(shape[1], shape[0])) {
+                continue;
+            }
+            long bytes = TensorDescriptors.layoutOf(source).byteSize((long) shape[0] * shape[1]);
+            largest = Math.max(largest, bytes);
+        }
+        return largest;
+    }
+
     public static FloatTensor loadTensor(GGMLTensorEntry entry) {
         TensorDescriptor descriptor = TensorDescriptors.describeSource(entry);
         int size = descriptor.shape().elementCountAsInt(descriptor.name());

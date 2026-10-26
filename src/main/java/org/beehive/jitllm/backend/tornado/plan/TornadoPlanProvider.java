@@ -176,6 +176,18 @@ public interface TornadoPlanProvider {
     }
 
     /**
+     * The representations this family's loader packs into tiles ({@code PackedTiles}) when packing
+     * is on for the load, or none. Read by the memory preflight, which charges the scratch buffer
+     * the packed weights are repacked through ({@code PackedRepack}).
+     *
+     * <p>A loader may still decline to pack, by a rule of its own; the preflight then charges a
+     * scratch that is never allocated, which is the safe direction.
+     */
+    default Set<DataType> packedProjectionTypes() {
+        return Set.of();
+    }
+
+    /**
      * What one session's batched prefill of this family allocates for its {@code weights}
      * representation beyond the staging every family has, as the layer class it would build sizes
      * it — or empty when that class adds nothing the configuration does not already account.
