@@ -10,6 +10,7 @@ import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.SplitKGemm;
 import org.beehive.jitllm.backend.tornado.layers.TensorCoreBatchAttention;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
@@ -241,7 +242,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     /** The batch-prefill graph that owns {@code layerIndex}'s weights. */
     public static String prefillGraphOwning(int layerIndex) {
         int g = prefillLayersPerGraph();
-        return "batchPrefillLayer_" + (layerIndex / g) * g;
+        return GraphNames.batchPrefillLayer((layerIndex / g) * g);
     }
 
     /**
@@ -581,7 +582,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // there is no second allocation and no copy between the two families. Declarations for
         // objects it does not actually use (w1/w3/wq/wk/wv under native projections) reach no task
         // and therefore emit no bytecode, exactly as they already do in the primary.
-        String primaryGroup = "batchPrefillLayer_" + firstLayer;
+        String primaryGroup = GraphNames.batchPrefillLayer(firstLayer);
         if (consumeFromPrimary) {
             // The fallback family allocates nothing: every FIRST_EXECUTION buffer is bound from
             // the primary graph that owns it. But the two EVERY_EXECUTION uploads are not
@@ -614,7 +615,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 batchPrefillLayer.transferToDevice(
                         DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
                 batchPrefillLayer.consumeFromDevice(
-                        "prefillActivation", state.workspace.wrapXBatch);
+                        GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
                 if (tcAttention != null) {
                     batchPrefillLayer.transferToDevice(
                             DataTransferMode.FIRST_EXECUTION, tcAttention.buffers());
@@ -666,7 +667,8 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             // the kernels reading a mapping that no longer exists, silently.
             batchPrefillLayer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
-            batchPrefillLayer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            batchPrefillLayer.consumeFromDevice(
+                    GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
             if (useCudnnAttention) {
                 // The one allocation of the staging quartet: scratch, private to this execution
                 // plan, owned by the first batch-prefill graph and bound by every later one.
@@ -1146,7 +1148,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     /** The PRIMARY family's graph that owns this layer's weights and stacked weights. */
     private String primaryGraphOwning(int layerIndex) {
-        return "batchPrefillLayer_" + (layerIndex / layersPerGraph) * layersPerGraph;
+        return GraphNames.batchPrefillLayer((layerIndex / layersPerGraph) * layersPerGraph);
     }
 
     /** Empty while a graph holds one layer, so the existing ids are untouched. */

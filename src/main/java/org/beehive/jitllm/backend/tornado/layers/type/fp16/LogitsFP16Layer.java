@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
@@ -127,7 +128,7 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
     // @formatter:off
     @Override
     protected TaskGraph setupLogitsTaskGraph(TornadoWeights weights, Configuration config) {
-        var logits = new TaskGraph("logits");
+        var logits = new TaskGraph(GraphNames.LOGITS);
         // === Data Setup ===
         configureAdditionalConsumes(logits);
         logits.consumeFromDevice(lastTaskGraphID, state.workspace.wrapX);

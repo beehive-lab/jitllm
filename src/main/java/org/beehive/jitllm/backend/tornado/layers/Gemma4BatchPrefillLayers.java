@@ -979,7 +979,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             if (firstUser == l) {
                 layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, buffer);
             } else {
-                layer.consumeFromDevice("batchPrefillLayer_" + firstUser, buffer);
+                layer.consumeFromDevice(GraphNames.batchPrefillLayer(firstUser), buffer);
             }
         }
     }
@@ -1124,10 +1124,11 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             }
         }
         String graphName = layer.getTaskGraphName();
-        if (graphName.equals("batchPrefillLayer_" + firstUser)) {
+        if (graphName.equals(GraphNames.batchPrefillLayer(firstUser))) {
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, freqCisReal, freqCisImag);
         } else {
-            layer.consumeFromDevice("batchPrefillLayer_" + firstUser, freqCisReal, freqCisImag);
+            layer.consumeFromDevice(
+                    GraphNames.batchPrefillLayer(firstUser), freqCisReal, freqCisImag);
         }
     }
 
@@ -1142,7 +1143,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     // @formatter:off
     private TaskGraph createBatchPrefillLayerTaskGraph(int layerIndex) {
-        String graphName = "batchPrefillLayer_" + layerIndex;
+        String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == endLayer - 1) {
             lastLayerTaskGraphID = graphName;
         }
@@ -1228,9 +1229,9 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                         pleModelProjF16,
                         weights.perLayerProjNorm.asFloatArray());
             }
-            layer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            layer.consumeFromDevice(GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
         } else {
-            String pred = "batchPrefillLayer_" + (layerIndex - 1);
+            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
             layer.consumeFromDevice(
                     pred,
                     context,
@@ -1266,7 +1267,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 // From the graph that allocated them, not the previous one: the full-attention
                 // layers never hand them to a task.
                 layer.consumeFromDevice(
-                        "batchPrefillLayer_" + firstLayer,
+                        GraphNames.batchPrefillLayer(firstLayer),
                         state.workspace.attnOutF32Batch,
                         state.workspace.attnProbStageBatch);
             }
@@ -2344,7 +2345,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         WorkerGrid reduceWorker = elementwise(paddedBatch * dim, 256);
 
         for (int l = firstLayer; l < endLayer; l++) {
-            String p = "batchPrefillLayer_" + l + ".";
+            String p = GraphNames.batchPrefillLayer(l) + ".";
             int headDim = config.headDim(l);
             int nHeadKv = config.keyValueHeads(l);
             int qDim = nHead * headDim;

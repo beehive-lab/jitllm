@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16FFNLayersDecode;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
@@ -709,7 +710,7 @@ public class Qwen3FP16FFNLayers
      * (OOM) on long generations. Decode subclasses override this with their own predecessor names.
      */
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "activationUpdate" : layerGraphName(layerIndex - 1);
+        return (layerIndex == 0) ? GraphNames.ACTIVATION_UPDATE : layerGraphName(layerIndex - 1);
     }
 
     /** The key cache every graph of this family binds: FP16 when the state holds one. */

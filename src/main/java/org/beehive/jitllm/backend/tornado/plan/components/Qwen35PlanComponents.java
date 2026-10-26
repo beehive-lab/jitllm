@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedQ8_0LogitsLayer;
 import org.beehive.jitllm.backend.tornado.layers.Qwen35BatchDecodeActivation;
 import org.beehive.jitllm.backend.tornado.layers.Qwen35BatchFeedForward;
@@ -57,7 +58,7 @@ public class Qwen35PlanComponents
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
@@ -75,7 +76,7 @@ public class Qwen35PlanComponents
 
     @Override
     public ActivationTaskGraph prefillDecodeActivation() {
-        return new Activation("decodeActivation", state, weights, config);
+        return new Activation(GraphNames.DECODE_ACTIVATION, state, weights, config);
     }
 
     @Override
@@ -85,7 +86,7 @@ public class Qwen35PlanComponents
                 weights,
                 config,
                 schedulerType,
-                "decodeActivation",
+                GraphNames.DECODE_ACTIVATION,
                 0,
                 config.numberOfLayers(),
                 feedForward());
@@ -164,7 +165,7 @@ public class Qwen35PlanComponents
                 weights,
                 config,
                 schedulerType,
-                "activationUpdate",
+                GraphNames.ACTIVATION_UPDATE,
                 firstLayer,
                 endLayer,
                 feedForward());

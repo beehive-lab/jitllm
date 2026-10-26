@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.kernels.Qwen2PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen2MoEState;
 import org.beehive.jitllm.inference.weights.tornado.Qwen2MoETornadoWeights;
@@ -58,7 +59,7 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
 
     /** Creates the complete batch-prefill TaskGraph for one Transformer layer. */
     private TaskGraph createBatchPrefillLayerTaskGraph(int layerIndex) {
-        String graphName = "batchPrefillLayer_" + layerIndex;
+        String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == config.numberOfLayers() - 1) {
             lastLayerTaskGraphID = graphName;
         }
@@ -123,9 +124,9 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
             // the kernels reading a mapping that no longer exists, silently.
             layer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
-            layer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            layer.consumeFromDevice(GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
         } else {
-            String predecessor = "batchPrefillLayer_" + (layerIndex - 1);
+            String predecessor = GraphNames.batchPrefillLayer(layerIndex - 1);
             layer.consumeFromDevice(
                     predecessor,
                     context,
@@ -447,7 +448,7 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
         WorkerGrid sharedWeightWorker = groupedRowsWorker(batchSize);
 
         for (int layer = 0; layer < config.numberOfLayers(); layer++) {
-            String prefix = "batchPrefillLayer_" + layer + ".";
+            String prefix = GraphNames.batchPrefillLayer(layer) + ".";
             scheduler.addWorkerGrid(prefix + "batch_attn_rms", rmsWorker);
             scheduler.addWorkerGrid(prefix + "batch_attn_rms_apply", batchElementWorker);
             scheduler.addWorkerGrid(prefix + "batch_qkv", qkvWorker);

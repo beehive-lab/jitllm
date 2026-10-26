@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.kernels.GranitePagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -68,23 +69,24 @@ public class GraniteFP16FFNLayers
         for (int i = 0; i < config.numberOfLayers(); i++) {
             // === Attention Block ===
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_rms_reduce", rmsReduceWorker);
+                    GraphNames.layer(i) + ".attn_rms_reduce", rmsReduceWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_rms_apply_fp16", rmsNormWorker);
-            tornadoForwardScheduler.addWorkerGrid("layer_" + i + ".qkv_projection", fusedQKVWorker);
+                    GraphNames.layer(i) + ".attn_rms_apply_fp16", rmsNormWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".rope_and_kv_cache", ropeWithCacheWorker);
+                    GraphNames.layer(i) + ".qkv_projection", fusedQKVWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attention", parallelAttentionWorker);
+                    GraphNames.layer(i) + ".rope_and_kv_cache", ropeWithCacheWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_output_proj", configDimRowMajorGlobalWorker);
+                    GraphNames.layer(i) + ".attention", parallelAttentionWorker);
+            tornadoForwardScheduler.addWorkerGrid(
+                    GraphNames.layer(i) + ".attn_output_proj", configDimRowMajorGlobalWorker);
             // === FFN Block ===
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".ffn_rms_reduce", rmsReduceWorker);
+                    GraphNames.layer(i) + ".ffn_rms_reduce", rmsReduceWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".rms_ffn_gate_up", configHiddenDimRowMajorWorker);
+                    GraphNames.layer(i) + ".rms_ffn_gate_up", configHiddenDimRowMajorWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".ffn_down_proj", configDimRowMajorGlobalWorker);
+                    GraphNames.layer(i) + ".ffn_down_proj", configDimRowMajorGlobalWorker);
         }
         return tornadoForwardScheduler;
     }
@@ -128,7 +130,7 @@ public class GraniteFP16FFNLayers
      */
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        var layerTaskGraphName = "layer_" + layerIndex;
+        var layerTaskGraphName = GraphNames.layer(layerIndex);
         TaskGraph unifiedLayer = new TaskGraph(layerTaskGraphName);
 
         // === Data Setup ===

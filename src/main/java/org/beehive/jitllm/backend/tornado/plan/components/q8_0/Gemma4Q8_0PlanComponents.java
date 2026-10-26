@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.Gemma4LogitsQ8_0Layer;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.Gemma4Q8_0FFNLayers;
@@ -45,7 +46,7 @@ public class Gemma4Q8_0PlanComponents
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
@@ -135,7 +136,7 @@ public class Gemma4Q8_0PlanComponents
                 false,
                 firstLayer,
                 endLayer,
-                firstLayer == 0 ? null : "activationUpdate");
+                firstLayer == 0 ? null : GraphNames.ACTIVATION_UPDATE);
     }
 
     @Override
@@ -155,6 +156,6 @@ public class Gemma4Q8_0PlanComponents
                 true,
                 firstLayer,
                 endLayer,
-                firstLayer == 0 ? null : "decodeActivation");
+                firstLayer == 0 ? null : GraphNames.DECODE_ACTIVATION);
     }
 }

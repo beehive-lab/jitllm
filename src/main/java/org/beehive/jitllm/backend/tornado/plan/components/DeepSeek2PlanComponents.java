@@ -6,6 +6,7 @@ import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.DeepSeek2BatchPrefillLayers;
 import org.beehive.jitllm.backend.tornado.layers.DeepSeek2Layers;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedQ8_0LogitsLayer;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillQ8DeviceActivation;
@@ -46,7 +47,7 @@ public class DeepSeek2PlanComponents
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
@@ -63,7 +64,7 @@ public class DeepSeek2PlanComponents
 
     @Override
     public ActivationTaskGraph prefillDecodeActivation() {
-        return new Activation("decodeActivation", state, weights, config);
+        return new Activation(GraphNames.DECODE_ACTIVATION, state, weights, config);
     }
 
     @Override
@@ -73,7 +74,7 @@ public class DeepSeek2PlanComponents
                 weights,
                 config,
                 schedulerType,
-                "decodeActivation",
+                GraphNames.DECODE_ACTIVATION,
                 0,
                 config.numberOfLayers());
     }
@@ -99,7 +100,7 @@ public class DeepSeek2PlanComponents
     /** The decode layers bind the cache from the prefill graphs directly; no pass-through. */
     @Override
     public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
-        return new Activation("decodeActivation", state, weights, config);
+        return new Activation(GraphNames.DECODE_ACTIVATION, state, weights, config);
     }
 
     @Override
@@ -112,7 +113,13 @@ public class DeepSeek2PlanComponents
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers(int firstLayer, int endLayer) {
         return new DeepSeek2Layers(
-                state, weights, config, schedulerType, "activationUpdate", firstLayer, endLayer);
+                state,
+                weights,
+                config,
+                schedulerType,
+                GraphNames.ACTIVATION_UPDATE,
+                firstLayer,
+                endLayer);
     }
 
     @Override
@@ -135,7 +142,7 @@ public class DeepSeek2PlanComponents
                 weights,
                 config,
                 schedulerType,
-                "decodeActivation",
+                GraphNames.DECODE_ACTIVATION,
                 firstLayer,
                 endLayer,
                 prefill);

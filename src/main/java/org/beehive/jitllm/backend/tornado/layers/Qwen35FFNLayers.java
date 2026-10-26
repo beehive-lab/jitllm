@@ -133,7 +133,7 @@ public class Qwen35FFNLayers
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
             SchedulerType schedulerType) {
-        this(state, weights, config, schedulerType, "activationUpdate");
+        this(state, weights, config, schedulerType, GraphNames.ACTIVATION_UPDATE);
     }
 
     public Qwen35FFNLayers(

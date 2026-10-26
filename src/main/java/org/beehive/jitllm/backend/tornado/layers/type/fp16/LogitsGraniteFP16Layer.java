@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 import org.beehive.jitllm.backend.tornado.kernels.GraniteKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
@@ -31,7 +32,7 @@ public class LogitsGraniteFP16Layer extends LogitsFP16Layer {
     @Override
     protected TaskGraph setupLogitsTaskGraph(TornadoWeights weights, Configuration config) {
         GraniteConfiguration graniteCfg = (GraniteConfiguration) config;
-        var logits = new TaskGraph("logits");
+        var logits = new TaskGraph(GraphNames.LOGITS);
 
         // === Data Setup ===
         logits.consumeFromDevice(lastTaskGraphID, state.workspace.wrapX);

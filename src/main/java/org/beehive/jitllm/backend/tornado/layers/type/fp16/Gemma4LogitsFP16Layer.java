@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.cpu.InferenceCore;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
@@ -42,7 +43,7 @@ public class Gemma4LogitsFP16Layer extends LogitsFP16Layer {
     // @formatter:off
     @Override
     protected TaskGraph setupLogitsTaskGraph(TornadoWeights weights, Configuration config) {
-        var logits = new TaskGraph("logits");
+        var logits = new TaskGraph(GraphNames.LOGITS);
         // === Data Setup ===
         logits.consumeFromDevice(lastTaskGraphID, state.workspace.wrapX);
         logits.transferToDevice(DataTransferMode.EVERY_EXECUTION, state.workspace.tempLogits);

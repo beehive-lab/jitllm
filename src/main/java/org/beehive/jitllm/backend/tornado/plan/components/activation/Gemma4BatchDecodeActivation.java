@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.plan.components.activation;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
@@ -57,7 +58,7 @@ public class Gemma4BatchDecodeActivation implements ActivationTaskGraph {
         DataType embedding =
                 weights instanceof TornadoWeights t ? t.getTokenEmbeddingTable().dataType() : null;
         TaskGraph tg =
-                new TaskGraph("decodeActivation")
+                new TaskGraph(GraphNames.DECODE_ACTIVATION)
                         .consumeFromDevice(lastBatchLayerId, keyCache(state), valueCache(state))
                         .transferToDevice(
                                 DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX);

@@ -9,6 +9,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.scheduling.LogitsWorkgroupPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
@@ -45,7 +46,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
     // @formatter:off
     @Override
     protected TaskGraph setupLogitsTaskGraph(TornadoWeights weights, Configuration config) {
-        var logits = new TaskGraph("logits");
+        var logits = new TaskGraph(GraphNames.LOGITS);
 
         // === Data Setup ===
         configureAdditionalConsumes(logits);

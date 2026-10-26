@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Gemma4State;
@@ -119,7 +120,7 @@ public class Gemma4FP16FFNLayers
 
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        var taskGraphName = "layer_" + layerIndex;
+        var taskGraphName = GraphNames.layer(layerIndex);
         final int headDim = config.headDim(layerIndex);
         final boolean isSwa = config.isSwa(layerIndex);
         final boolean hasOwnKv = config.hasOwnKv(layerIndex);
@@ -138,7 +139,9 @@ public class Gemma4FP16FFNLayers
         if (batchedPlan) {
             // A graph that consumes anything by name takes nothing through an unnamed consume.
             unifiedLayer.consumeFromDevice(
-                    layerIndex == 0 ? "decodeActivation" : "layer_" + (layerIndex - 1),
+                    layerIndex == 0
+                            ? GraphNames.DECODE_ACTIVATION
+                            : GraphNames.layer(layerIndex - 1),
                     gemma4State.workspace.wrapX);
             // The projections the batch-prefill graph of this layer already uploaded; K and V
             // only where the layer has its own, as there.
@@ -157,7 +160,8 @@ public class Gemma4FP16FFNLayers
                         weights.wkLayered[layerIndex].asHalfFloatArray(),
                         weights.wvLayered[layerIndex].asHalfFloatArray());
             }
-            unifiedLayer.consumeFromDevice("batchPrefillLayer_" + layerIndex, shared.toArray());
+            unifiedLayer.consumeFromDevice(
+                    GraphNames.batchPrefillLayer(layerIndex), shared.toArray());
         } else {
             unifiedLayer.consumeFromDevice(gemma4State.workspace.wrapX);
             unifiedLayer.transferToDevice(
@@ -691,14 +695,15 @@ public class Gemma4FP16FFNLayers
                 unifiedLayer.consumeFromDevice(
                         "batchPrefillLayer_0", weights.perLayerProjNorm.asFloatArray());
                 unifiedLayer.consumeFromDevice(
-                        "batchPrefillLayer_" + firstLayerOfKind(true),
+                        GraphNames.batchPrefillLayer(firstLayerOfKind(true)),
                         weights.freqCisRealSwa.asFloatArray(),
                         weights.freqCisImagSwa.asFloatArray());
                 unifiedLayer.consumeFromDevice(
-                        "batchPrefillLayer_" + firstLayerOfKind(false),
+                        GraphNames.batchPrefillLayer(firstLayerOfKind(false)),
                         weights.freqCisRealFull.asFloatArray(),
                         weights.freqCisImagFull.asFloatArray());
-                unifiedLayer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
+                unifiedLayer.consumeFromDevice(
+                        GraphNames.DECODE_ACTIVATION, keyCache(), valueCache());
             } else {
                 unifiedLayer.transferToDevice(
                         DataTransferMode.FIRST_EXECUTION,
@@ -726,7 +731,7 @@ public class Gemma4FP16FFNLayers
                     gemma4State.workspace.wrapPerLayerOut);
         } else if (batchedPlan) {
             unifiedLayer.consumeFromDevice(
-                    "layer_" + (layerIndex - 1),
+                    GraphNames.layer(layerIndex - 1),
                     context,
                     gemma4State.workspace.wrapXb,
                     gemma4State.workspace.wrapXb2,
@@ -797,7 +802,7 @@ public class Gemma4FP16FFNLayers
                 WorkerGridFactory.genericWorker(perLayerTotal, LOCAL_WORK_GROUP_SIZE_ALLOC));
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String prefix = "layer_" + i + ".";
+            String prefix = GraphNames.layer(i) + ".";
             int headDim = config.headDim(i);
             boolean hasOwnKv = config.hasOwnKv(i);
             int qDim = nHead * headDim;

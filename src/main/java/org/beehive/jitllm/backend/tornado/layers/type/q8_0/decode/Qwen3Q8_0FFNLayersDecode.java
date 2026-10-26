@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode;
 
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.Qwen3Q8_0FFNLayers;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.Qwen3State;
@@ -26,7 +27,7 @@ public class Qwen3Q8_0FFNLayersDecode extends Qwen3Q8_0FFNLayers {
 
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "decodeActivation" : layerGraphName(layerIndex - 1);
+        return (layerIndex == 0) ? GraphNames.DECODE_ACTIVATION : layerGraphName(layerIndex - 1);
     }
 
     @Override
@@ -53,8 +54,8 @@ public class Qwen3Q8_0FFNLayersDecode extends Qwen3Q8_0FFNLayers {
                     qwen3State.workspace.wrapHb);
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, state.workspace.wrapAttSplit);
             // KV cache already allocated by batch prefill; relay from decode activation graph.
-            layer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
-            layer.consumeFromDevice("decodeActivation", state.workspace.wrapBlockTable);
+            layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, keyCache(), valueCache());
+            layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, state.workspace.wrapBlockTable);
         } else {
             String pred = layerGraphName(layerIndex - 1);
             layer.consumeFromDevice(
@@ -86,6 +87,6 @@ public class Qwen3Q8_0FFNLayersDecode extends Qwen3Q8_0FFNLayers {
      */
     @Override
     protected String weightSourceGraphName(int layerIndex) {
-        return "batchPrefillLayer_" + layerIndex;
+        return GraphNames.batchPrefillLayer(layerIndex);
     }
 }

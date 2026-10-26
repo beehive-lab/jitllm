@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.ActivationGranite;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.granite.GraniteBatchDecodeActivation;
 import org.beehive.jitllm.backend.tornado.layers.granite.GraniteQ8_0FFNLayersDecode;
@@ -38,7 +39,7 @@ public class GraniteQ8_0PlanComponents implements BatchPrefillDecodeForwardPlanC
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new ActivationGranite("activationUpdate", state, weights, config);
+        return new ActivationGranite(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override

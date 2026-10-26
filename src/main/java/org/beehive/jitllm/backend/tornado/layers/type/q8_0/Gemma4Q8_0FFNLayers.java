@@ -13,6 +13,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0D
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
@@ -920,7 +921,8 @@ public class Gemma4Q8_0FFNLayers
         projections.add(weights.w2Layered[layerIndex]);
         if (batchedPlan) {
             unifiedLayer.consumeFromDevice(
-                    "batchPrefillLayer_" + layerIndex, PackedRepack.deviceArrays(shared.toArray()));
+                    GraphNames.batchPrefillLayer(layerIndex),
+                    PackedRepack.deviceArrays(shared.toArray()));
         } else {
             own.addAll(shared);
         }
@@ -971,7 +973,7 @@ public class Gemma4Q8_0FFNLayers
                         };
         int firstUser = firstLayerOfKind(isSwa);
         if (batchedPlan) {
-            unifiedLayer.consumeFromDevice("batchPrefillLayer_" + firstUser, pair);
+            unifiedLayer.consumeFromDevice(GraphNames.batchPrefillLayer(firstUser), pair);
         } else if (layerGraphName(firstUser).equals(layerGraphName(layerIndex))) {
             unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, pair);
         } else {
@@ -1129,7 +1131,7 @@ public class Gemma4Q8_0FFNLayers
      */
     // @formatter:on
     private String activationGraphName() {
-        return batchedPlan ? "decodeActivation" : "activationUpdate";
+        return batchedPlan ? GraphNames.DECODE_ACTIVATION : GraphNames.ACTIVATION_UPDATE;
     }
 
     // @formatter:off
@@ -1149,8 +1151,8 @@ public class Gemma4Q8_0FFNLayers
             // its prefill filled is in that prefill's last graph on the same device.
             String source =
                     firstLayer == 0
-                            ? "decodeActivation"
-                            : "batchPrefillLayer_" + (endLayer(config.numberOfLayers()) - 1);
+                            ? GraphNames.DECODE_ACTIVATION
+                            : GraphNames.batchPrefillLayer(endLayer(config.numberOfLayers()) - 1);
             unifiedLayer.consumeFromDevice(source, keyCache(), valueCache());
             return;
         }

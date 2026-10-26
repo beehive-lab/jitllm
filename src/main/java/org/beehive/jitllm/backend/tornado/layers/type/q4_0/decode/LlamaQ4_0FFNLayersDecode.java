@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q4_0.decode;
 
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.type.q4_0.LlamaQ4_0FFNLayers;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.LlamaState;
@@ -41,7 +42,9 @@ public class LlamaQ4_0FFNLayersDecode extends LlamaQ4_0FFNLayers {
 
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == firstLayer) ? "decodeActivation" : layerGraphName(layerIndex - 1);
+        return (layerIndex == firstLayer)
+                ? GraphNames.DECODE_ACTIVATION
+                : layerGraphName(layerIndex - 1);
     }
 
     // @formatter:off
@@ -99,13 +102,13 @@ public class LlamaQ4_0FFNLayersDecode extends LlamaQ4_0FFNLayers {
      */
     private String cacheSource() {
         return firstLayer == 0
-                ? "decodeActivation"
-                : "batchPrefillLayer_" + (endLayer(config.numberOfLayers()) - 1);
+                ? GraphNames.DECODE_ACTIVATION
+                : GraphNames.batchPrefillLayer(endLayer(config.numberOfLayers()) - 1);
     }
 
     /** The matching prefill graph has uploaded this layer's weights and always runs first. */
     @Override
     protected String weightSourceGraphName(int layerIndex) {
-        return "batchPrefillLayer_" + layerIndex;
+        return GraphNames.batchPrefillLayer(layerIndex);
     }
 }

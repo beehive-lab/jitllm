@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0Packed;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LlamaQ8_0FFNLayers;
 import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
@@ -76,7 +77,9 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
      */
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return layerIndex > firstLayer ? layerGraphName(layerIndex - 1) : "activationUpdate";
+        return layerIndex > firstLayer
+                ? layerGraphName(layerIndex - 1)
+                : GraphNames.ACTIVATION_UPDATE;
     }
 
     @Override

@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado.layers.llama;
 
 import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.type.q4_0.LlamaQ4_0FFNLayers;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.LlamaState;
@@ -32,7 +33,7 @@ public class LlamaQ4_0FFNLayersDecode extends LlamaQ4_0FFNLayers {
 
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "decodeActivation" : layerGraphName(layerIndex - 1);
+        return (layerIndex == 0) ? GraphNames.DECODE_ACTIVATION : layerGraphName(layerIndex - 1);
     }
 
     // @formatter:off
@@ -54,8 +55,8 @@ public class LlamaQ4_0FFNLayersDecode extends LlamaQ4_0FFNLayers {
                     state.workspace.wrapV,
                     state.workspace.wrapAtt,
                     state.workspace.wrapHb);
-            layer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
-            layer.consumeFromDevice("decodeActivation", state.workspace.wrapBlockTable);
+            layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, keyCache(), valueCache());
+            layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, state.workspace.wrapBlockTable);
         } else {
             String pred = layerGraphName(layerIndex - 1);
             layer.consumeFromDevice(
@@ -85,6 +86,6 @@ public class LlamaQ4_0FFNLayersDecode extends LlamaQ4_0FFNLayers {
      */
     @Override
     protected String weightSourceGraphName(int layerIndex) {
-        return "batchPrefillLayer_" + layerIndex;
+        return GraphNames.batchPrefillLayer(layerIndex);
     }
 }

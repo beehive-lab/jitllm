@@ -115,7 +115,7 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
 
     /** The graph holding {@code layerIndex}, named for the first layer in it. */
     protected String layerGraphName(int layerIndex) {
-        return "layer_" + (layerIndex - (layerIndex - firstLayer) % layersPerGraph());
+        return GraphNames.layer(layerIndex - (layerIndex - firstLayer) % layersPerGraph());
     }
 
     /**

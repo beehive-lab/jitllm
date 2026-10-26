@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.pipeline.PipelineTransport;
 import org.beehive.jitllm.backend.tornado.pipeline.StageOwnership;
@@ -177,7 +178,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
         if (s == 0) {
             add(components.singleTokenActivation(), graphs, scheduler);
         } else {
-            TaskGraph receive = new TaskGraph("activationUpdate");
+            TaskGraph receive = new TaskGraph(GraphNames.ACTIVATION_UPDATE);
             transport.addTokenReceive(receive, s, stageState.workspace.wrapX, s - 1);
             graphs.add(receive.snapshot());
         }
@@ -232,7 +233,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                 state.workspace.embeddingQ8Batch = stageState.workspace.embeddingQ8Batch;
             }
         } else {
-            TaskGraph receive = new TaskGraph("prefillActivation");
+            TaskGraph receive = new TaskGraph(GraphNames.PREFILL_ACTIVATION);
             transport.addReceive(receive, s, stageState.workspace.wrapXBatch, s - 1);
             graphs.add(receive.snapshot());
         }
@@ -257,7 +258,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
         } else {
             // Only the hidden state: the first decode layer takes this stage's cache straight
             // from its last prefill layer.
-            TaskGraph receive = new TaskGraph("decodeActivation");
+            TaskGraph receive = new TaskGraph(GraphNames.DECODE_ACTIVATION);
             transport.addTokenReceive(receive, s, stageState.workspace.wrapX, s - 1);
             graphs.add(receive.snapshot());
         }

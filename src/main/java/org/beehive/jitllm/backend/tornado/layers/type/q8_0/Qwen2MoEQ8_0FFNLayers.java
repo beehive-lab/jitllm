@@ -6,6 +6,7 @@ import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen2MoEState;
@@ -71,7 +72,7 @@ public class Qwen2MoEQ8_0FFNLayers
         WorkerGrid sharedHiddenWorker = workerForRows(config.sharedExpertHiddenDim());
 
         for (int layer = 0; layer < config.numberOfLayers(); layer++) {
-            String prefix = "layer_" + layer + ".";
+            String prefix = GraphNames.layer(layer) + ".";
             scheduler.addWorkerGrid(prefix + "attn_rms_reduce", rmsNormWorker);
             scheduler.addWorkerGrid(prefix + "attn_rms_qkv_projection", qkvWorker);
             scheduler.addWorkerGrid(prefix + "fused_qkv_bias", qkvBiasWorker);
@@ -104,7 +105,7 @@ public class Qwen2MoEQ8_0FFNLayers
      */
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        TaskGraph layer = new TaskGraph("layer_" + layerIndex);
+        TaskGraph layer = new TaskGraph(GraphNames.layer(layerIndex));
         // Reuse wrapX produced by the previous TaskGraph on the GPU.
         String predecessor = predecessorGraphName(layerIndex);
         if (predecessor == null) {

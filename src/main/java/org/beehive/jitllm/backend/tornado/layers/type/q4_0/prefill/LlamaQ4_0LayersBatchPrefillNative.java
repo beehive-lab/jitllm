@@ -12,6 +12,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TensorCoreAttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -224,7 +225,7 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
 
     // @formatter:off
     private TaskGraph createLayer(int layerIndex) {
-        String graphName = "batchPrefillLayer_" + layerIndex;
+        String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == endLayer - 1) {
             lastLayerTaskGraphID = graphName;
         }
@@ -266,12 +267,12 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
             layer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.batchStartPosHolder);
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, intermediates);
-            layer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            layer.consumeFromDevice(GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
             // Every execution: a lease change rewrites the table.
             layer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
         } else {
-            String pred = "batchPrefillLayer_" + (layerIndex - 1);
+            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
             layer.consumeFromDevice(pred, intermediates);
             layer.consumeFromDevice(
                     pred,
@@ -911,7 +912,7 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
                 WorkerGridFactory.genericWorker(batchSize * nHeads * attnLocal, attnLocal);
 
         for (int i = firstLayer; i < endLayer; i++) {
-            String p = "batchPrefillLayer_" + i + ".";
+            String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_attn_rms", rms);
             scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApply);
             if (!int8(i, weights.wqLayered, weights.wkLayered, weights.wvLayered)) {

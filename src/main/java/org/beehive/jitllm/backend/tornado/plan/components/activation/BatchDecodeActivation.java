@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.plan.components.activation;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
@@ -73,7 +74,7 @@ public class BatchDecodeActivation implements ActivationTaskGraph {
         Object valueCache =
                 fp16KV ? state.workspace.wrapValueCacheFP16 : state.workspace.wrapValueCache;
         TaskGraph tg =
-                new TaskGraph("decodeActivation")
+                new TaskGraph(GraphNames.DECODE_ACTIVATION)
                         .consumeFromDevice(lastBatchLayerId, keyCache, valueCache)
                         .transferToDevice(
                                 DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX);

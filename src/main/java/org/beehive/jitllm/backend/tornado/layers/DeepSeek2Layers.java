@@ -75,7 +75,14 @@ public class DeepSeek2Layers
             DeepSeek2TornadoWeights weights,
             DeepSeek2Configuration config,
             SchedulerType schedulerType) {
-        this(state, weights, config, schedulerType, "activationUpdate", 0, config.numberOfLayers());
+        this(
+                state,
+                weights,
+                config,
+                schedulerType,
+                GraphNames.ACTIVATION_UPDATE,
+                0,
+                config.numberOfLayers());
     }
 
     /**

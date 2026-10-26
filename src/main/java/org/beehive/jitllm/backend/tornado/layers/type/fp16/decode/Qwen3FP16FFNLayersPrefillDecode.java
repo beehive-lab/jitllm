@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.fp16.decode;
 
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.Qwen3FP16FFNLayers;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.Qwen3State;
@@ -38,7 +39,7 @@ public class Qwen3FP16FFNLayersPrefillDecode extends Qwen3FP16FFNLayers {
 
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "decodeActivation" : layerGraphName(layerIndex - 1);
+        return (layerIndex == 0) ? GraphNames.DECODE_ACTIVATION : layerGraphName(layerIndex - 1);
     }
 
     @Override

@@ -116,7 +116,7 @@ public class DeepSeek2BatchPrefillLayers implements BatchPrefillTransformerLayer
      */
     public String graphName(int l) {
         int offset = l - firstLayer;
-        return "batchPrefillLayer_" + (firstLayer + offset - offset % LAYERS_PER_GRAPH);
+        return GraphNames.batchPrefillLayer(firstLayer + offset - offset % LAYERS_PER_GRAPH);
     }
 
     @Override
@@ -271,7 +271,7 @@ public class DeepSeek2BatchPrefillLayers implements BatchPrefillTransformerLayer
 
         if ((l - firstLayer) % LAYERS_PER_GRAPH == 0) {
             if (l == firstLayer) {
-                g.consumeFromDevice("prefillActivation", ws.wrapXBatch);
+                g.consumeFromDevice(GraphNames.PREFILL_ACTIVATION, ws.wrapXBatch);
                 g.transferToDevice(DataTransferMode.EVERY_EXECUTION, ws.batchStartPosHolder);
                 g.transferToDevice(DataTransferMode.FIRST_EXECUTION, scratch());
             } else {

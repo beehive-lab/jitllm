@@ -74,7 +74,8 @@ public abstract class DequantizingFP16LayersBatchPrefillMMA extends LlamaFP16Lay
         if (layerIndex == 0) {
             batchPrefillLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, scratch());
         } else {
-            batchPrefillLayer.consumeFromDevice("batchPrefillLayer_" + (layerIndex - 1), scratch());
+            batchPrefillLayer.consumeFromDevice(
+                    GraphNames.batchPrefillLayer(layerIndex - 1), scratch());
         }
     }
 

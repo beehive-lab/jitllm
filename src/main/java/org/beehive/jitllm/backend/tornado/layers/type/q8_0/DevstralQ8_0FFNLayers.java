@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.layers.devstral.DevstralLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
@@ -36,7 +37,7 @@ public class DevstralQ8_0FFNLayers extends DevstralLayerTaskGraphs {
     // @formatter:off
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        var layerTaskGraphName = "layer_" + layerIndex;
+        var layerTaskGraphName = GraphNames.layer(layerIndex);
         TaskGraph unifiedLayer = new TaskGraph(layerTaskGraphName);
 
         String wrapXSrc = predecessorGraphName(layerIndex);
@@ -320,7 +321,7 @@ public class DevstralQ8_0FFNLayers extends DevstralLayerTaskGraphs {
         if (packed()) {
             int qkvRows = config.qDim() + 2 * config.kvDim();
             for (int i = 0; i < config.numberOfLayers(); i++) {
-                String l = "layer_" + i + ".";
+                String l = GraphNames.layer(i) + ".";
                 tornadoForwardScheduler.addWorkerGrid(
                         l + "attn_rms_apply", PackedActivationTasks.quantizeWorker(config.dim()));
                 tornadoForwardScheduler.addWorkerGrid(
@@ -364,7 +365,7 @@ public class DevstralQ8_0FFNLayers extends DevstralLayerTaskGraphs {
                 WorkerGridFactory.genericWorker(fusedQkvGlobal, LOCAL_WORK_GROUP_SIZE_ALLOC);
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String l = "layer_" + i + ".";
+            String l = GraphNames.layer(i) + ".";
             tornadoForwardScheduler.addWorkerGrid(l + "attn_rms_apply", rmsNormWorker);
             tornadoForwardScheduler.addWorkerGrid(l + "qkv_projection", fusedQkvWorker);
             tornadoForwardScheduler.addWorkerGrid(

@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode;
 
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.Qwen2MoEQ8_0FFNLayers;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.Qwen2MoEState;
@@ -22,14 +23,14 @@ public final class Qwen2MoEQ8_0FFNLayersDecode extends Qwen2MoEQ8_0FFNLayers {
     /** Connects decode layer 0 to the decode activation and later layers in order. */
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return layerIndex == 0 ? "decodeActivation" : "layer_" + (layerIndex - 1);
+        return layerIndex == 0 ? GraphNames.DECODE_ACTIVATION : GraphNames.layer(layerIndex - 1);
     }
 
     /** Reuses the weights already uploaded by the corresponding batch-prefill layer. */
     @Override
     protected TaskGraph configureLayerWeights(TaskGraph layer, int layerIndex) {
         return layer.consumeFromDevice(
-                "batchPrefillLayer_" + layerIndex,
+                GraphNames.batchPrefillLayer(layerIndex),
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 weights.wqLayered[layerIndex].asByteArray(),
                 weights.wkLayered[layerIndex].asByteArray(),
@@ -73,10 +74,10 @@ public final class Qwen2MoEQ8_0FFNLayersDecode extends Qwen2MoEQ8_0FFNLayers {
                     moeState.workspace.wrapExpertGate,
                     moeState.workspace.wrapSharedGate,
                     moeState.workspace.wrapSharedOutput);
-            layer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
-            layer.consumeFromDevice("decodeActivation", state.workspace.wrapBlockTable);
+            layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, keyCache(), valueCache());
+            layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, state.workspace.wrapBlockTable);
         } else {
-            String predecessor = "layer_" + (layerIndex - 1);
+            String predecessor = GraphNames.layer(layerIndex - 1);
             layer.consumeFromDevice(
                     predecessor,
                     context,
