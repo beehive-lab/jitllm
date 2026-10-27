@@ -166,48 +166,4 @@ public class PlanSupportTest {
                 Optional.empty(),
                 check("deepseek2", BATCHED, true, BackendId.CUDA, BackendId.CUDA));
     }
-
-    private static ExecutionPolicy batched(int width, boolean nativeLibraries) {
-        return ExecutionPolicy.builder()
-                .phaseStrategy(ExecutionPolicy.PhaseStrategy.PREFILL_DECODE)
-                .prefillBatchSize(width)
-                .nativeLibraries(nativeLibraries)
-                .build();
-    }
-
-    @Test
-    public void unpackedWeightsServeEveryPolicy() {
-        for (ExecutionPolicy policy :
-                List.of(SINGLE_TOKEN, batched(64, true), batched(96, false))) {
-            assertEquals(Optional.empty(), PlanSupport.packedUnsupported("gemma4", false, policy));
-        }
-    }
-
-    @Test
-    public void packedWeightsNeedATiledPrefillWidth() {
-        for (String architecture : List.of("llama", "qwen35", "gemma4")) {
-            for (ExecutionPolicy policy :
-                    List.of(SINGLE_TOKEN, SEQUENTIAL, BATCHED, batched(256, false))) {
-                assertEquals(
-                        architecture,
-                        Optional.empty(),
-                        PlanSupport.packedUnsupported(architecture, true, policy));
-            }
-            Optional<String> reason =
-                    PlanSupport.packedUnsupported(architecture, true, batched(64, false));
-            assertTrue(architecture, reason.isPresent());
-            assertTrue(reason.get(), reason.get().contains("multiple of 128"));
-        }
-    }
-
-    @Test
-    public void packedGemma4WeightsRefuseNativeProjections() {
-        Optional<String> reason = PlanSupport.packedUnsupported("gemma4", true, batched(128, true));
-        assertTrue(reason.isPresent());
-        assertTrue(reason.get(), reason.get().contains("cuBLAS"));
-        assertTrue(reason.get(), reason.get().contains("ModelOptions.executionPolicy"));
-        // Llama's native prefill takes its int8 GEMM over packed tiles.
-        assertEquals(
-                Optional.empty(), PlanSupport.packedUnsupported("llama", true, batched(128, true)));
-    }
 }

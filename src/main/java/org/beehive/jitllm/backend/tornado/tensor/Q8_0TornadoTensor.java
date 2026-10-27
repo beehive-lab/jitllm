@@ -18,28 +18,8 @@ public class Q8_0TornadoTensor extends TornadoTensor {
             tornadoNativeArray; // Unified Q8_0 tensor in the memorySegment of the ByteArray
 
     public Q8_0TornadoTensor(ByteArray byteArray, Shape shape) {
-        this(byteArray, shape, null);
-    }
-
-    /**
-     * The file's bytes, which the device holds in the {@code packed} tile layout once uploaded; the
-     * tiles state the dimensions.
-     */
-    public Q8_0TornadoTensor(ByteArray byteArray, PackedTiles packed) {
-        this(byteArray, Shape.of(packed.cols(), packed.rows()), packed);
-    }
-
-    private Q8_0TornadoTensor(ByteArray byteArray, Shape shape, PackedTiles packed) {
         super(shape);
         this.tornadoNativeArray = byteArray;
-        this.packedTiles = packed;
-    }
-
-    private final PackedTiles packedTiles;
-
-    @Override
-    public PackedTiles packedTiles() {
-        return packedTiles;
     }
 
     public static Q8_0TornadoTensor fromTornadoMemorySegment(MemorySegment segment, Shape shape) {

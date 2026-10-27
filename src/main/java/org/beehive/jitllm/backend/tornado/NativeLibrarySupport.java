@@ -5,13 +5,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
+import org.beehive.jitllm.backend.tornado.plan.TileLayout;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
-import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * Where vendor native libraries ({@code --with-native-libraries}) have an implementation.
@@ -50,7 +49,7 @@ public final class NativeLibrarySupport {
             return policy;
         }
         Combination combination = Fp16KeyValueSupport.resolve(model, policy, true);
-        if (unsupported(combination).isPresent() || packedAtLoad(combination)) {
+        if (unsupported(combination).isPresent() || losesTiles(combination, policy)) {
             return policy;
         }
         boolean metal = BackendId.METAL.equals(combination.backend());
@@ -80,16 +79,20 @@ public final class NativeLibrarySupport {
     }
 
     /**
-     * Whether Gemma 4 Q4_0 packed its projections at load, which it decides from the load policy
-     * before any default applies: the cuBLAS path reads no packed tiles, so such a load keeps the
-     * JIT kernels. The same question the loader asked, so the same answer.
+     * Whether native libraries would give up tiles the JIT plan holds the weights in under {@code
+     * policy} ({@link TileLayout#tiledTypes}): Gemma 4's cuBLAS projections read none, so its Q4_0
+     * keeps the packed JIT kernels by default.
      */
-    private static boolean packedAtLoad(Combination c) {
-        return "gemma4".equals(c.architecture())
-                && c.weights() == DataType.Q4_0
-                && PackedWeights.packQ4(
-                        PackedWeights.packedIntegerDotOn("jitllm.gemma4.packedIntegerDot")
-                                && !PackedWeights.loadPolicy().nativeLibraries());
+    private static boolean losesTiles(Combination c, ExecutionPolicy policy) {
+        ExecutionPolicy nativeLibraries =
+                ExecutionPolicy.from(policy).nativeLibraries(true).build();
+        return TornadoPlanRegistry.provider(c.architecture())
+                .map(
+                        provider ->
+                                TileLayout.tiledTypes(provider, policy).contains(c.weights())
+                                        && !TileLayout.tiledTypes(provider, nativeLibraries)
+                                                .contains(c.weights()))
+                .orElse(false);
     }
 
     /** Whether a library probe answers yes; a library whose classes cannot be linked does not. */

@@ -67,12 +67,7 @@ public final class LocalModels {
         }
         Model model;
         try {
-            // Representations are chosen for the policy this model is loaded with, not for the
-            // process's properties.
-            model =
-                    org.beehive.jitllm.backend.tornado.tensor.PackedWeights.loading(
-                            options.executionPolicy(),
-                            () -> ModelLoader.loadModel(modelFile, contextLength, true, gpu));
+            model = ModelLoader.loadModel(modelFile, contextLength, true, gpu);
         } catch (RuntimeException | OutOfMemoryError exhaustion) {
             if (gpu && isDeviceMemoryExhaustion(exhaustion)) {
                 throw deviceMemoryExhausted(modelFile, options, exhaustion);

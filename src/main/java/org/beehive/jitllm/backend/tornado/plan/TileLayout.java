@@ -7,7 +7,6 @@ import java.util.EnumSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
-import org.beehive.jitllm.backend.tornado.tensor.PackedTiles;
 import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
@@ -17,9 +16,8 @@ import org.beehive.jitllm.runtime.tensor.Shape;
 
 // @formatter:off
 /**
- * Which projection weights one execution plan holds on the device in the packed tile layout ({@link
- * PackedTiles}): 128 rows by 64 inputs, in the order the int8 prefill GEMM and the packed decode
- * kernels read them.
+ * Which projection weights one execution plan holds on the device in the packed tile layout: 128
+ * rows by 64 inputs, in the order the int8 prefill GEMM and the packed decode kernels read them.
  *
  * <p>Decided once per plan, when it is built, from the plan's execution policy, the device and the
  * representations the family's kernels read as tiles ({@link TornadoPlanProvider#tileTypes}). The
@@ -90,9 +88,12 @@ public final class TileLayout {
         return types;
     }
 
-    /** Whether a weight of {@code shape} divides into tiles: two dimensions, 128 rows by 64. */
+    /**
+     * Whether a weight of {@code shape} divides into tiles: two dimensions, in GGUF order (inputs,
+     * then rows), with rows a multiple of 128 and inputs a multiple of 64.
+     */
     public static boolean fits(Shape shape) {
-        return shape.rank() == 2 && PackedTiles.fits(shape.dimension(1), shape.dimension(0));
+        return shape.rank() == 2 && shape.dimension(1) % 128 == 0 && shape.dimension(0) % 64 == 0;
     }
 
     /** Whether the plan holds {@code w} in tiles. */

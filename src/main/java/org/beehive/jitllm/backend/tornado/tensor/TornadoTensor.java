@@ -91,29 +91,6 @@ public abstract class TornadoTensor {
                 "Not a quantized tensor: " + this.getClass().getSimpleName());
     }
 
-    /**
-     * The tile layout this projection is packed into on the device, or {@code null} when the device
-     * holds it as the file stores it. Only Q8_0 and Q4_0 projections are packed.
-     */
-    public PackedTiles packedTiles() {
-        return null;
-    }
-
-    /** Whether the device holds this tensor in a {@link PackedTiles} layout. */
-    public final boolean isPacked() {
-        return packedTiles() != null;
-    }
-
-    /** Whether the device holds this Q4_0 projection packed. */
-    public final boolean isPackedQ4() {
-        return isPacked() && dataType() == DataType.Q4_0;
-    }
-
-    /** Whether the device holds this Q8_0 projection packed. */
-    public final boolean isPackedQ8() {
-        return isPacked() && dataType() == DataType.Q8_0;
-    }
-
     /** The device array the layer graphs bind for this tensor, whatever its representation. */
     public Object deviceArray() {
         return switch (dataType()) {

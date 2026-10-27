@@ -1,8 +1,7 @@
 package org.beehive.jitllm.api;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
@@ -14,10 +13,10 @@ import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 /**
- * A load packs its projections for the execution policy it is given through the API, not for the
+ * A plan tiles its projections for its own execution policy, given through the API, not for the
  * process's properties: Gemma 4 Q4_0 with native projections chosen in {@link ModelOptions} keeps
- * the blocks cuBLAS's decode reads, with no packing property set. A session that later asks for a
- * policy its model's representation cannot serve is refused when it is opened.
+ * the blocks cuBLAS's decode reads, with no packing property set. A session that asks for a policy
+ * tiles cannot serve builds its plan without them, over the same loaded weights.
  */
 public class PackedWeightsPolicyAccelTest {
 
@@ -76,31 +75,28 @@ public class PackedWeightsPolicyAccelTest {
     }
 
     @Test
-    public void aSessionThePackedRepresentationCannotServeIsRefused() throws Exception {
+    public void aSessionTilesForItsOwnPolicy() throws Exception {
         Path gemma = locate(Fixture.GEMMA_4_E2B_Q4_0);
         assumeTrue("needs int8 tensor cores", TensorCoreSupport.isInt8MmaCapable());
         withGpu(
                 () -> {
+                    String untiled;
+                    try (LocalModel narrow = LocalModels.load(gemma, options(64, false))) {
+                        untiled = generate((TextGenerationModel) narrow);
+                    }
                     try (LocalModel loaded = LocalModels.load(gemma, options(128, false))) {
                         TextGenerationModel model = (TextGenerationModel) loaded;
-                        assertRefused(
-                                model, ExecutionPolicy.Overrides.builder().nativeLibraries(true));
-                        assertRefused(
-                                model, ExecutionPolicy.Overrides.builder().prefillBatchSize(64));
-                        // The refusals took no lease: the model's own policy still runs.
-                        assertFalse(generate(model).isBlank());
+                        String tiled = generate(model);
+                        // A width the int8 GEMM does not tile: no tiles, over the same weights a
+                        // tiled plan has repacked on its own device copy.
+                        assertEquals(
+                                untiled,
+                                generate(
+                                        model,
+                                        ExecutionPolicy.Overrides.builder().prefillBatchSize(64)));
+                        assertEquals(tiled, generate(model));
                     }
                 });
-    }
-
-    private static void assertRefused(
-            TextGenerationModel model, ExecutionPolicy.Overrides.Builder override) {
-        SessionOptions session = SessionOptions.builder().executionPolicy(override.build()).build();
-        UnsupportedOperationException refused =
-                assertThrows(UnsupportedOperationException.class, () -> model.newSession(session));
-        String message = refused.getMessage();
-        assertTrue(message, message.startsWith("[GPUL-CFG-002]"));
-        assertTrue(message, message.contains("packed projections"));
     }
 
     private static ModelOptions options(int width, boolean nativeLibraries) {
@@ -117,15 +113,28 @@ public class PackedWeightsPolicyAccelTest {
 
     private static String generate(TextGenerationModel model) throws Exception {
         try (GenerationSession session = model.newSession()) {
-            return session.generate(
-                            GenerationRequest.builder()
-                                    .prompt("What colour is the sky on a clear day?")
-                                    .maxNewTokens(8)
-                                    .temperature(0.0f)
-                                    .seed(42L)
-                                    .build())
-                    .text();
+            return generate(session);
         }
+    }
+
+    private static String generate(
+            TextGenerationModel model, ExecutionPolicy.Overrides.Builder override)
+            throws Exception {
+        SessionOptions options = SessionOptions.builder().executionPolicy(override.build()).build();
+        try (GenerationSession session = model.newSession(options)) {
+            return generate(session);
+        }
+    }
+
+    private static String generate(GenerationSession session) throws Exception {
+        return session.generate(
+                        GenerationRequest.builder()
+                                .prompt("What colour is the sky on a clear day?")
+                                .maxNewTokens(8)
+                                .temperature(0.0f)
+                                .seed(42L)
+                                .build())
+                .text();
     }
 
     private static void assumeNativeLibraries() {

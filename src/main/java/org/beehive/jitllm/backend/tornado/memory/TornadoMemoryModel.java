@@ -162,12 +162,12 @@ public final class TornadoMemoryModel {
 
     /**
      * {@link #predict(WeightFootprint, Configuration, ExecutionPolicy, Device, long,
-     * KeyValueReservation, java.util.Optional)} for a model whose projections are packed: each
+     * KeyValueReservation, java.util.Optional)} for a model whose plans tile projections: each
      * session's plan repacks them on the device through one scratch buffer as large as the largest
      * ({@code PackedRepack}), and keeps it for the plan's lifetime.
      *
-     * @param packedRepackScratchBytes the largest packed projection's bytes, or 0 when the load
-     *     packs none
+     * @param packedRepackScratchBytes the largest tiled projection's bytes, or 0 when the plan
+     *     tiles none
      */
     public static MemoryPlan predict(
             WeightFootprint weights,
@@ -249,7 +249,7 @@ public final class TornadoMemoryModel {
                             2 * header));
         }
 
-        // ── the repack scratch, for a load that packs its projections ────────
+        // ── the repack scratch, for a plan that tiles its projections ────────
         // One per session, because each session's plan appends its own repack graphs; the scratch
         // and the flag that makes a second repack a no-op stay on the device with the plan.
         if (packedRepackScratchBytes > 0) {

@@ -201,14 +201,4 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
         return Gemma4BatchPrefillLayers.mlxPrefill(policy, weights, gemma4)
                 .map(m -> Gemma4BatchPrefillLayers.mlxWorkspace(weights, gemma4, batchSize));
     }
-
-    /** The native-library prefill decodes each projection for cuBLAS, from blocks, not tiles. */
-    @Override
-    public Optional<String> packedWeightsUnsupported(ExecutionPolicy policy) {
-        return policy.nativeLibraries()
-                ? Optional.of(
-                        "its native-library prefill decodes the weights for cuBLAS and reads no"
-                                + " packed projections")
-                : Optional.empty();
-    }
 }

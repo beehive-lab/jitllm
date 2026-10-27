@@ -3,7 +3,6 @@ package org.beehive.jitllm.model.loader;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.assertTrue;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -66,33 +65,6 @@ public class DeviceTensorShapeTest {
 
             assertEquals(DataType.Q8_0, converted.dataType());
             assertShape(converted);
-        }
-    }
-
-    /**
-     * A packed projection is re-wrapped with its tiles, the CUDA-only path that cannot run on a
-     * Metal or CPU test machine. It must keep the shape the file gives it.
-     */
-    @Test
-    public void aPackedProjectionKeepsTheFileShape() {
-        int[] tileShape = {64, 128}; // 128 rows of 64 inputs: one tile
-        try (Arena arena = Arena.ofConfined()) {
-            long dataBytes = GGMLType.Q4_0.byteSizeFor(tileShape[0] * tileShape[1]);
-            long header = TornadoNativeArray.ARRAY_HEADER;
-            MemorySegment withHeader = arena.allocate(header + dataBytes);
-            GGMLTensorEntry entry =
-                    new GGMLTensorEntry(
-                            withHeader,
-                            "blk.0.ffn_up.weight",
-                            GGMLType.Q4_0,
-                            tileShape,
-                            withHeader);
-            TornadoTensor[] loaded = {ModelLoader.loadTornadoTensorRetainingQ4_0(entry)};
-
-            TornadoTensor packed = ModelLoader.packQ4(loaded, i -> entry, true)[0];
-
-            assertTrue("a 128 x 64 Q4_0 projection packs", packed.isPacked());
-            assertArrayEquals(new long[] {64, 128}, packed.shape().dimensions());
         }
     }
 

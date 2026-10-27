@@ -5,7 +5,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.PackedRepackKernels;
-import org.beehive.jitllm.backend.tornado.tensor.PackedTiles;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -21,9 +20,9 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 // @formatter:off
 /**
- * Packing on the GPU for every plan: a projection the plan's {@link TileLayout} tiles ({@link
- * PackedTiles}) is uploaded as the file stores it and repacked on the device, so the host never
- * holds or writes the packed form.
+ * Packing on the GPU for every plan: a projection the plan's {@link TileLayout} tiles is uploaded
+ * as the file stores it and repacked on the device, so the host never holds or writes the packed
+ * form.
  *
  * <p>One instance per session, on its workspace. A layer graph hands its weights to {@link
  * #upload}, tiled ones among them: those are uploaded by a repack graph of their own, {@code
