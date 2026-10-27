@@ -19,8 +19,8 @@ import org.junit.Test;
  *
  * <ol>
  *   <li>each layout declares its own family count beside its graph indices;
- *   <li>{@code totalGraphs == sum(layerFamilyGraphCounts) + nonLayerGraphs}, together with one
- *       count per declared family, is checked — so a layout cannot grow a family without either
+ *   <li>{@code inferenceGraphCount == sum(layerFamilyGraphCounts) + nonLayerGraphs}, together with
+ *       one count per declared family, is checked — so a layout cannot grow a family without either
  *       stating its graphs or failing here. A family need not build one graph per layer: grouping
  *       layers changes that term without changing the family count, which is what the memory model
  *       multiplies by;
@@ -39,8 +39,8 @@ public class GraphTopologyConsistencyTest {
                         mode
                                 + " at "
                                 + layers
-                                + " layers: totalGraphs ("
-                                + TornadoGraphTopology.totalGraphs(mode, layers)
+                                + " layers: inferenceGraphCount ("
+                                + TornadoGraphTopology.inferenceGraphCount(mode, layers)
                                 + ") must equal the graphs its families contribute ("
                                 + java.util.Arrays.toString(
                                         TornadoGraphTopology.layerFamilyGraphCounts(mode, layers))
@@ -90,12 +90,12 @@ public class GraphTopologyConsistencyTest {
     @Test
     public void sequentialPrefillLaysOutTheSameGraphsAsSingleToken() {
         assertEquals(
-                TornadoGraphTopology.totalGraphs(ExecutionMode.STANDARD, 16),
-                TornadoGraphTopology.totalGraphs(ExecutionMode.PREFILL_DECODE, 16));
+                TornadoGraphTopology.inferenceGraphCount(ExecutionMode.STANDARD, 16),
+                TornadoGraphTopology.inferenceGraphCount(ExecutionMode.PREFILL_DECODE, 16));
         assertEquals(
                 "batched prefill is the topology that differs",
                 2 * 16 + 3,
-                TornadoGraphTopology.totalGraphs(ExecutionMode.BATCH_PREFILL_DECODE, 16));
+                TornadoGraphTopology.inferenceGraphCount(ExecutionMode.BATCH_PREFILL_DECODE, 16));
     }
 
     // @formatter:off
@@ -119,7 +119,7 @@ public class GraphTopologyConsistencyTest {
                 assertEquals(
                         "graphs each family contributes must sum with the non-layer graphs",
                         layers + decodeGraphs + layout.nonLayerGraphs(),
-                        layout.totalGraphs());
+                        layout.inferenceGraphCount());
                 assertEquals(
                         "a term per family",
                         layout.layerGraphFamilies(),
@@ -155,7 +155,7 @@ public class GraphTopologyConsistencyTest {
     public void anOddLayerCountIsLaidOutExplicitly() {
         var layout = new BatchPrefillDecodeForwardTaskGraphLayout(65, 33);
         assertEquals("33 graphs for 65 layers paired", 33, layout.decodeLayerGraphs());
-        assertEquals(65 + 33 + 3, layout.totalGraphs());
+        assertEquals(65 + 33 + 3, layout.inferenceGraphCount());
         assertEquals(65 + 2 + 33, layout.logitsIdx());
     }
 
@@ -165,7 +165,7 @@ public class GraphTopologyConsistencyTest {
         for (int layers : new int[] {1, 16, 32, 80}) {
             var layout = new BatchPrefillDecodeForwardTaskGraphLayout(layers);
             assertEquals(layers, layout.decodeLayerGraphs());
-            assertEquals(2 * layers + 3, layout.totalGraphs());
+            assertEquals(2 * layers + 3, layout.inferenceGraphCount());
             assertEquals(2 * layers + 2, layout.logitsIdx());
             assertEquals(layers + 2, layout.decodeLayerGraphIdx(0));
             assertTrue(
@@ -207,7 +207,7 @@ public class GraphTopologyConsistencyTest {
                     TornadoGraphTopology.layerGraphFamilies(mode, 16) >= 1);
             assertTrue(
                     mode + " must lay out more graphs than it has layers",
-                    TornadoGraphTopology.totalGraphs(mode, 16) > 16);
+                    TornadoGraphTopology.inferenceGraphCount(mode, 16) > 16);
         }
         assertEquals(
                 "ExecutionMode gained a constant; TornadoGraphTopology and the memory model"

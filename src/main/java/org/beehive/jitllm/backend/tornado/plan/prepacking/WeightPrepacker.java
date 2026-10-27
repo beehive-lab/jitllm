@@ -10,7 +10,6 @@ import java.util.Set;
 import org.beehive.jitllm.backend.tornado.kernels.PackedRepackKernels;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.runtime.tensor.DataType;
-import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -24,7 +23,8 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 // @formatter:off
 /**
  * Prepacks, on the GPU and before inference, the weights a plan's {@link WeightPrepacking} selects.
- * Each session has its own instance, in {@code TornadoWorkspace.prepacker}.
+ * This is achieved by placing prepacking graphs first in the {@link TornadoExecutionPlan}'s list of
+ * {@link TaskGraph}s. Each session has its own instance, in {@code TornadoWorkspace.prepacker}.
  *
  * <p>For each layer graph that reads selected weights, a separate prepacking graph uploads their
  * original GGUF bytes and rearranges them on the GPU into the prepacked layout. The layer graph
@@ -43,15 +43,20 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * </pre>
  *
  * <p>TornadoVM graphs only declare transfers and kernels; nothing moves until a graph executes. So
- * the layer builders declare their inputs through {@link #configureGraphInputs}, {@link
- * #appendGraphs} then creates the prepacking graphs, and {@link #run} executes them before the
- * layer graphs run. A completion flag on the device stops the weights from being rearranged again
- * if those graphs execute later.
+ * the orders differ:
+ *
+ * <ul>
+ *   <li><b>construction:</b> the layer builders declare their inputs through {@link
+ *       #configureGraphInputs}, which registers the weights to prepack; then {@link
+ *       #buildTaskGraphs} builds the prepacking graphs from those registrations;
+ *   <li><b>plan assembly:</b> the plan lists the prepacking graphs first, its initialization, then
+ *       its inference graphs, and merges their grids into its scheduler;
+ *   <li><b>execution:</b> the plan runs them once, before its warm-up, and its inference steps
+ *       never select them ({@link WeightPrepackingTaskGraphs#run}).
+ * </ul>
  */
 // @formatter:on
 public final class WeightPrepacker {
-
-    private static final System.Logger LOGGER = System.getLogger(WeightPrepacker.class.getName());
 
     /** Prefix of a prepacking graph's name: {@code prepack_layer_3} serves {@code layer_3}. */
     private static final String PREFIX = "prepack_";
@@ -69,31 +74,9 @@ public final class WeightPrepacker {
         }
     }
 
-    // @formatter:off
-    /**
-     * Identifies the prepacking graphs {@link #appendGraphs} added to an execution plan, for {@link
-     * #run}.
-     *
-     * <p>For example, after {@link #appendGraphs} on a plan with two layer graphs:
-     *
-     * <pre>
-     *   index   graph
-     *   0       layer_0
-     *   1       layer_1
-     *   2       prepack_layer_0     firstGraphIndex = 2
-     *   3       prepack_layer_1     graphCount      = 2
-     * </pre>
-     *
-     * @param firstGraphIndex position of the first prepacking graph in the plan's graph list
-     * @param graphCount number of prepacking graphs, which follow one another
-     * @param scheduler the work grids their kernels run with
-     */
-    // @formatter:on
-    public record PrepackGraphs(int firstGraphIndex, int graphCount, GridScheduler scheduler) {}
-
     /**
      * Selected weights declared by {@link #configureGraphInputs} and still waiting for {@link
-     * #appendGraphs} to create their prepacking graphs, by the name of the layer graph that
+     * #buildTaskGraphs} to build their prepacking graphs, by the name of the layer graph that
      * consumes them, in the order the layer graphs were built.
      */
     private final Map<String, List<Weight>> pendingWeightsByGraph = new LinkedHashMap<>();
@@ -163,8 +146,11 @@ public final class WeightPrepacker {
     }
 
     /**
-     * Creates the prepacking graphs for the weights registered since the last call, and appends
-     * them to {@code graphs}, with their work grids in {@code scheduler}.
+     * Builds the prepacking graphs for the weights registered since the last call, one per layer
+     * graph that registered any, and returns them with their work grids; the plan then lists them
+     * first and merges the grids into its scheduler. Call it once the plan's layer graphs are
+     * built, since they register the weights. With no weight registered it allocates nothing and
+     * returns {@link WeightPrepackingTaskGraphs#NONE}.
      *
      * <p>Each graph uploads its weights in the original layout, then, for each weight, copies it
      * into a scratch buffer and rearranges it from there back into its own device buffer: the
@@ -172,14 +158,12 @@ public final class WeightPrepacker {
      * bytes not yet read. The prepacked buffers stay on the device for the layer graphs to consume.
      *
      * <p>All graphs created by one call share one scratch buffer, as large as the largest weight,
-     * and one completion flag.
-     *
-     * @return where the graphs are in {@code graphs}, or {@code null} when no weight was registered
+     * and one completion flag, which the last of them sets once every weight is prepacked; from
+     * then on, any execution of these graphs skips the work.
      */
-    public synchronized PrepackGraphs appendGraphs(
-            List<ImmutableTaskGraph> graphs, GridScheduler scheduler) {
+    public synchronized WeightPrepackingTaskGraphs buildTaskGraphs() {
         if (pendingWeightsByGraph.isEmpty()) {
-            return null;
+            return WeightPrepackingTaskGraphs.NONE;
         }
         int scratchBytes = 0;
         for (List<Weight> ws : pendingWeightsByGraph.values()) {
@@ -189,8 +173,9 @@ public final class WeightPrepacker {
         }
         ByteArray scratch = new ByteArray(scratchBytes);
         IntArray done = new IntArray(1);
-        List<String> names = new ArrayList<>();
-        int first = graphs.size();
+        List<ImmutableTaskGraph> graphs = new ArrayList<>();
+        Map<String, WorkerGrid> grids = new LinkedHashMap<>();
+        String firstName = null;
         int remaining = pendingWeightsByGraph.size();
         for (Map.Entry<String, List<Weight>> e : pendingWeightsByGraph.entrySet()) {
             String name = PREFIX + e.getKey();
@@ -200,10 +185,11 @@ public final class WeightPrepacker {
                     new TaskGraph(name).transferToDevice(DataTransferMode.FIRST_EXECUTION, bytes);
             // The first graph uploads the scratch buffer and the flag; the others consume them
             // from it, so the device holds one of each.
-            if (names.isEmpty()) {
+            if (firstName == null) {
                 g.transferToDevice(DataTransferMode.FIRST_EXECUTION, scratch, done);
+                firstName = name;
             } else {
-                g.consumeFromDevice(names.get(0), scratch, done);
+                g.consumeFromDevice(firstName, scratch, done);
             }
             for (int i = 0; i < ws.size(); i++) {
                 Weight w = ws.get(i);
@@ -240,8 +226,8 @@ public final class WeightPrepacker {
                 }
                 // The rearranging kernels run a fixed number of lanes per 128 x 64 group.
                 int groups = (w.rows() / 128) * (w.cols() / 64);
-                scheduler.addWorkerGrid(name + "." + copy, grid((w.size() + 7) / 8));
-                scheduler.addWorkerGrid(
+                grids.put(name + "." + copy, grid((w.size() + 7) / 8));
+                grids.put(
                         name + "." + prepack,
                         grid(
                                 groups
@@ -254,40 +240,15 @@ public final class WeightPrepacker {
                 // rearrange kernels skip their work, so a later execution of any prepacking graph
                 // cannot rearrange prepacked bytes again, which would scramble them.
                 g.task("markDone", PackedRepackKernels::markDone, new KernelContext(), done);
-                scheduler.addWorkerGrid(name + ".markDone", grid(1));
+                grids.put(name + ".markDone", grid(1));
             }
             g.persistOnDevice(bytes);
             g.persistOnDevice(scratch, done);
             graphs.add(g.snapshot());
-            names.add(name);
         }
-        int count = pendingWeightsByGraph.size();
         pendingWeightsByGraph.clear();
         registered.clear();
-        return new PrepackGraphs(first, count, scheduler);
-    }
-
-    /**
-     * Executes the prepacking graphs of {@code plan} before inference: each uploads its weights and
-     * rearranges them into the prepacked layout. Afterwards the plan selects all its graphs again.
-     * Does nothing when {@code prepack} is {@code null}.
-     */
-    public static void run(TornadoExecutionPlan plan, PrepackGraphs prepack) {
-        if (prepack == null) {
-            return;
-        }
-        long t0 = System.nanoTime();
-        for (int i = 0; i < prepack.graphCount(); i++) {
-            plan.withGraph(prepack.firstGraphIndex() + i)
-                    .withGridScheduler(prepack.scheduler())
-                    .execute();
-        }
-        LOGGER.log(
-                System.Logger.Level.INFO,
-                String.format(
-                        "weights prepacked on the GPU in %.1f ms (%d graphs)",
-                        (System.nanoTime() - t0) / 1e6, prepack.graphCount()));
-        plan.withAllGraphs();
+        return new WeightPrepackingTaskGraphs(graphs, grids);
     }
 
     /** A one-dimensional grid of at least {@code lanes} lanes, in whole workgroups. */

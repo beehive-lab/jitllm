@@ -135,18 +135,21 @@ public final class TornadoPlanRegistry {
                 .map(
                         components ->
                                 switch (mode) {
-                                    case STANDARD -> new SingleTokenForwardPlan(model, components);
+                                    case STANDARD ->
+                                            new SingleTokenForwardPlan(
+                                                    model, components, state.workspace.prepacker);
                                     case PREFILL_DECODE ->
                                             new PrefillDecodeForwardPlan(
                                                     model,
-                                                    (PrefillDecodeForwardPlanComponents)
-                                                            components);
+                                                    (PrefillDecodeForwardPlanComponents) components,
+                                                    state.workspace.prepacker);
                                     case BATCH_PREFILL_DECODE ->
                                             new BatchPrefillDecodeForwardPlan(
                                                     model,
                                                     (BatchPrefillDecodeForwardPlanComponents)
                                                             components,
-                                                    state.executionPolicy().prefillBatchSize());
+                                                    state.executionPolicy().prefillBatchSize(),
+                                                    state.workspace.prepacker);
                                 });
     }
 

@@ -4,7 +4,6 @@ import org.beehive.jitllm.auxiliary.RunMetrics;
 import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
 import org.beehive.jitllm.backend.tornado.plan.PrefillDecodeForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.layout.PrefillDecodeForwardTaskGraphLayout;
-import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
@@ -99,7 +98,7 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
             executionPlan.withPreCompilation();
             long warmupTime = System.nanoTime();
 
-            WeightPrepacker.run(executionPlan, prepack);
+            prefillDecodeForwardPlan.runWeightPrepacking(executionPlan);
             forceCopyInReadOnlyData();
             long copyTime = System.nanoTime();
 
@@ -132,19 +131,22 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
         var prefill =
                 TaskGraphChainPrinter.concat(java.util.List.of(layout.activationIdx()), layers);
         var decode = TaskGraphChainPrinter.concat(prefill, java.util.List.of(layout.logitsIdx()));
+        var phases =
+                new java.util.ArrayList<>(
+                        TaskGraphChainPrinter.prepacking(roles, layout.prepackingGraphs()));
+        phases.add(
+                new TaskGraphChainPrinter.Phase(
+                        "warm-up",
+                        "once, at plan build",
+                        TaskGraphChainPrinter.span(
+                                layout.firstInferenceIdx(), layout.logitsIdx())));
+        phases.add(new TaskGraphChainPrinter.Phase("prefill token", "per prompt token", prefill));
+        phases.add(new TaskGraphChainPrinter.Phase("decode token", "per generated token", decode));
         return new TaskGraphChainPrinter.Chain(
                 "prefill-decode",
                 prefillDecodeForwardPlan.getImmutableTaskGraphs(),
                 prefillDecodeForwardPlan.getGridScheduler(),
-                java.util.List.of(
-                        new TaskGraphChainPrinter.Phase(
-                                "warm-up",
-                                "once, at plan build",
-                                TaskGraphChainPrinter.span(0, layout.logitsIdx())),
-                        new TaskGraphChainPrinter.Phase(
-                                "prefill token", "per prompt token", prefill),
-                        new TaskGraphChainPrinter.Phase(
-                                "decode token", "per generated token", decode)),
+                phases,
                 roles);
     }
 
@@ -154,16 +156,11 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
         this.prefillDecodeForwardPlan =
                 ForwardPlanFactory.createPrefillDecode(weightType, state, model);
         this.taskGraphLayout = prefillDecodeForwardPlan.getTaskGraphLayout();
-        var taskGraphs =
-                new java.util.ArrayList<>(prefillDecodeForwardPlan.getImmutableTaskGraphs());
-        prepack =
-                state.workspace.prepacker.appendGraphs(
-                        taskGraphs, prefillDecodeForwardPlan.getGridScheduler());
-        return new TornadoExecutionPlan(taskGraphs.toArray(new ImmutableTaskGraph[0]));
+        return new TornadoExecutionPlan(
+                prefillDecodeForwardPlan
+                        .getImmutableTaskGraphs()
+                        .toArray(new ImmutableTaskGraph[0]));
     }
-
-    /** The graphs that prepack the weights on the GPU before the warm-up, or null. */
-    private WeightPrepacker.PrepackGraphs prepack;
 
     // ── Initialisation ────────────────────────────────────────────────────────
 
@@ -179,7 +176,7 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
         state.workspace.wrapX.clear();
         state.resetPositionHolder();
 
-        for (int i = 0; i <= taskGraphLayout.logitsIdx(); i++) {
+        for (int i = taskGraphLayout.firstInferenceIdx(); i <= taskGraphLayout.logitsIdx(); i++) {
             var g =
                     executionPlan
                             .withGraph(i)

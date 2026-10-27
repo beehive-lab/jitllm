@@ -17,14 +17,15 @@ import org.beehive.jitllm.runtime.backend.DeviceCapability;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.runtime.tensor.Shape;
+import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 
 // @formatter:off
 /**
- * Selects which projection weights an execution plan prepacks.
+ * Prepacking rearranges the bytes of a Q8_0 or Q4_0 weight tensor from the original GGUF layout
+ * into the prepacked layout, which optimized CUDA kernels read. The weight's values and its size
+ * stay the same; only the order of its bytes changes.
  *
- * <p>Prepacking rearranges the bytes of a Q8_0 or Q4_0 weight from the original GGUF layout into
- * the prepacked layout, which optimized CUDA kernels read. The weight's values and its size stay
- * the same; only the order of its bytes changes.
+ * <p>This class selects which projection weights a {@link TornadoExecutionPlan} should prepack.
  *
  * <p>The selection is made once, when the plan is built ({@link #forPlan}), from the kernels the
  * model family has, the device, the plan's execution policy and each weight's shape. System

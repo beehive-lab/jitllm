@@ -105,12 +105,12 @@ public final class TaskGraphChainPrinter {
                 .append('\n');
         List<String[]> runs = new ArrayList<>();
         for (Phase phase : chain.phases()) {
-            // Warm-up runs everything once; its sequence would only repeat the others.
+            // Warm-up runs every inference graph once; its sequence would only repeat the others.
             boolean everything = phase.name().equals("warm-up");
             runs.add(
                     new String[] {
                         phase.name(),
-                        everything ? "every graph" : sequence(phase, chain),
+                        everything ? "every inference graph" : sequence(phase, chain),
                         phase.when()
                     });
         }
@@ -392,6 +392,20 @@ public final class TaskGraphChainPrinter {
         for (int g = 0; g < count; g++) {
             roles.put(first + g, count == 1 ? family : family + " " + (g + 1) + "/" + count);
         }
+    }
+
+    /**
+     * Labels the {@code count} prepacking graphs, the plan's first graphs, in {@code roles} and
+     * returns the phase that runs them; no phase when {@code count} is 0, for a plan that does not
+     * use weight prepacking.
+     */
+    public static List<Phase> prepacking(Map<Integer, String> roles, int count) {
+        if (count == 0) {
+            return List.of();
+        }
+        label(roles, 0, count, "prepacking");
+        return List.of(
+                new Phase("prepacking", "once, before any inference graph", span(0, count - 1)));
     }
 
     static String ranges(List<Integer> graphs) {

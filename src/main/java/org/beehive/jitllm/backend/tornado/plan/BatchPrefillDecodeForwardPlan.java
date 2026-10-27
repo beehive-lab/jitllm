@@ -8,6 +8,7 @@ import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTas
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.layout.BatchPrefillDecodeForwardTaskGraphLayout;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.model.Model;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -19,14 +20,18 @@ import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
  * <p>Graph layout:
  *
  * <pre>
- *   [0]         batch activation    ← batchPrefillActivation(int)
- *   [1.N]      batch layers        ← batchPrefillTransformerLayers(int)
- *   [N+1]       decode activation   ← batchDecodeActivation(String)
- *   [N+2.2N+1] decode layers       ← batchDecodeTransformerLayers()
- *   [2N+2]      logits              ← decodeLogits(String)
+ *   [0 .. P-1]           prepacking          ← the session's prepacker, only with weight prepacking
+ *   [P]                  batch activation    ← batchPrefillActivation(int)
+ *   [P+1 .. P+N]         batch layers        ← batchPrefillTransformerLayers(int)
+ *   [P+N+1]              decode activation   ← batchDecodeActivation(String)
+ *   [P+N+2 .. P+2N+1]    decode layers       ← batchDecodeTransformerLayers()
+ *   [P+2N+2]             logits              ← decodeLogits(String)
  * </pre>
  *
- * <p>During batch prefill, the master plan executes graphs 0.N. During decode, graphs N+1.2N+2 run.
+ * <p>The prepacking graphs initialize the plan, once. During batch prefill, the master plan
+ * executes the batch activation and layers; during decode, the decode activation, layers and
+ * logits. The indices, including those of a fallback family, come from {@link
+ * BatchPrefillDecodeForwardTaskGraphLayout}.
  */
 // @formatter:on
 public class BatchPrefillDecodeForwardPlan extends ForwardPlan {
@@ -37,21 +42,25 @@ public class BatchPrefillDecodeForwardPlan extends ForwardPlan {
     private final BatchPrefillTransformerLayerTaskGraphs batchPrefillLayers;
 
     public BatchPrefillDecodeForwardPlan(
-            Model model, BatchPrefillDecodeForwardPlanComponents components, int batchSize) {
+            Model model,
+            BatchPrefillDecodeForwardPlanComponents components,
+            int batchSize,
+            WeightPrepacker prepacker) {
+        super(prepacker);
         int N = model.configuration().numberOfLayers();
 
-        List<ImmutableTaskGraph> all = new ArrayList<>(2 * N + 3);
+        List<ImmutableTaskGraph> inference = new ArrayList<>(2 * N + 3);
         GridScheduler scheduler = new GridScheduler();
 
         ActivationTaskGraph batchAct = components.batchPrefillActivation(batchSize);
-        all.add(batchAct.getImmutableTaskGraph());
+        inference.add(batchAct.getImmutableTaskGraph());
         batchAct.updateGridScheduler(scheduler);
 
         BatchPrefillTransformerLayerTaskGraphs batchLayers =
                 components.batchPrefillTransformerLayers(batchSize);
         this.batchPrefillLayers = batchLayers;
         List<ImmutableTaskGraph> batchLayerGraphs = batchLayers.getLayerImmutableTaskGraphs();
-        all.addAll(batchLayerGraphs);
+        inference.addAll(batchLayerGraphs);
         batchLayers.updateGridScheduler(scheduler);
 
         // The fallback family, when the primary builds one: the same layers with an attention
@@ -60,18 +69,26 @@ public class BatchPrefillDecodeForwardPlan extends ForwardPlan {
         // the primary so the decode side's producer names are unaffected.
         List<ImmutableTaskGraph> fallbackLayerGraphs =
                 batchLayers.getFallbackLayerImmutableTaskGraphs();
-        all.addAll(fallbackLayerGraphs);
+        inference.addAll(fallbackLayerGraphs);
         batchLayers.updateFallbackGridScheduler(scheduler);
 
         ActivationTaskGraph decodeAct =
                 components.batchDecodeActivation(batchLayers.getLastLayerTaskGraphID());
-        all.add(decodeAct.getImmutableTaskGraph());
+        inference.add(decodeAct.getImmutableTaskGraph());
         decodeAct.updateGridScheduler(scheduler);
 
         TransformerLayerTaskGraphs decodeLayers = components.batchDecodeTransformerLayers();
         List<ImmutableTaskGraph> decodeLayerGraphs = decodeLayers.getFFNLayerImmutableTaskGraphs();
-        all.addAll(decodeLayerGraphs);
+        inference.addAll(decodeLayerGraphs);
         decodeLayers.updateGridScheduler(scheduler);
+        AbstractLogitsTaskGraph logits =
+                components.decodeLogits(decodeLayers.getLastFFNLayerTaskGraphID());
+        inference.add(logits.getImmutableTaskGraph());
+        logits.updateGridScheduler(scheduler);
+
+        // The prepacking graphs, when the plan uses weight prepacking, come first: built from the
+        // weights the layer graphs above registered. The layout puts every inference index after.
+        int prepackingGraphs = assembleGraphs(inference, scheduler);
         // Read from the graphs each family actually built rather than assumed to be one per
         // layer: either side may hold several layers in one graph, and every index after them
         // depends on how many there are.
@@ -80,14 +97,8 @@ public class BatchPrefillDecodeForwardPlan extends ForwardPlan {
                         N,
                         batchLayerGraphs.size(),
                         fallbackLayerGraphs.size(),
-                        decodeLayerGraphs.size());
-
-        AbstractLogitsTaskGraph logits =
-                components.decodeLogits(decodeLayers.getLastFFNLayerTaskGraphID());
-        all.add(logits.getImmutableTaskGraph());
-        logits.updateGridScheduler(scheduler);
-
-        setGraphs(all, scheduler);
+                        decodeLayerGraphs.size(),
+                        prepackingGraphs);
     }
 
     public BatchPrefillDecodeForwardTaskGraphLayout getTaskGraphLayout() {

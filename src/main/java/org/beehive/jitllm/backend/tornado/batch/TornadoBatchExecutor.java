@@ -14,7 +14,7 @@ import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
 import org.beehive.jitllm.backend.tornado.plan.BatchDecode;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
-import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepackingTaskGraphs;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
@@ -68,6 +68,12 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
 
     private final TornadoExecutionPlan plan;
     private final GridScheduler gridScheduler;
+
+    /**
+     * The batch activation, the first inference graph: the prepacking graphs, if any, precede it.
+     */
+    private final int activationGraphIndex;
+
     private final int layerCount;
     private final int logitsGraphIndex;
 
@@ -229,7 +235,14 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
                                 vocab)
                         .transferToHost(DataTransferMode.EVERY_EXECUTION, sampledTokens);
 
+        // Initialization, when the session uses weight prepacking: built now, after the layer
+        // graphs
+        // that register its weights, but listed first and run first. Every inference index below
+        // starts after it.
+        WeightPrepackingTaskGraphs prepacking = state.workspace.prepacker.buildTaskGraphs();
+
         GridScheduler schedule = new GridScheduler();
+        prepacking.updateGridScheduler(schedule);
         activation.updateGridScheduler(schedule);
         updateLayerSchedule.accept(schedule);
         schedule.addWorkerGrid("batchLogits.rms_reduce", worker(batchSize * RMS_LOCAL, RMS_LOCAL));
@@ -239,28 +252,33 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         this.gridScheduler = schedule;
 
         List<ImmutableTaskGraph> all = new ArrayList<>();
+        all.addAll(prepacking.getImmutableTaskGraphs());
         all.add(activation.getImmutableTaskGraph());
         all.addAll(layerGraphs);
         all.add(logits.snapshot());
+        this.activationGraphIndex = prepacking.graphCount();
         this.layerCount = layerGraphs.size();
-        this.logitsGraphIndex = 1 + layerCount;
-        var prepack = state.workspace.prepacker.appendGraphs(all, schedule);
+        this.logitsGraphIndex = activationGraphIndex + 1 + layerCount;
         this.plan = new TornadoExecutionPlan(all.toArray(new ImmutableTaskGraph[0]));
-        WeightPrepacker.run(plan, prepack);
+        prepacking.run(plan, schedule);
         var roles = new java.util.HashMap<Integer, String>();
-        roles.put(0, "batch activation");
-        TaskGraphChainPrinter.label(roles, 1, layerCount, "layers");
+        roles.put(activationGraphIndex, "batch activation");
+        TaskGraphChainPrinter.label(roles, activationGraphIndex + 1, layerCount, "layers");
         roles.put(logitsGraphIndex, "logits and sampling");
+        var phases =
+                new java.util.ArrayList<>(
+                        TaskGraphChainPrinter.prepacking(roles, activationGraphIndex));
+        phases.add(
+                new TaskGraphChainPrinter.Phase(
+                        "engine step",
+                        "per engine step, all slots together",
+                        TaskGraphChainPrinter.span(activationGraphIndex, logitsGraphIndex)));
         TaskGraphChainPrinter.printIfRequested(
                 new TaskGraphChainPrinter.Chain(
                         "continuous batching (" + batchSize + " slots)",
                         all,
                         schedule,
-                        List.of(
-                                new TaskGraphChainPrinter.Phase(
-                                        "engine step",
-                                        "per engine step, all slots together",
-                                        TaskGraphChainPrinter.span(0, logitsGraphIndex))),
+                        phases,
                         roles),
                 model);
 
@@ -315,9 +333,11 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
             }
         }
 
-        plan.withGraph(0).withGridScheduler(gridScheduler).execute();
+        plan.withGraph(activationGraphIndex).withGridScheduler(gridScheduler).execute();
         for (int layer = 0; layer < layerCount; layer++) {
-            plan.withGraph(1 + layer).withGridScheduler(gridScheduler).execute();
+            plan.withGraph(activationGraphIndex + 1 + layer)
+                    .withGridScheduler(gridScheduler)
+                    .execute();
         }
         plan.withGraph(logitsGraphIndex).withGridScheduler(gridScheduler).execute();
 

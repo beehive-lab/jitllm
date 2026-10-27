@@ -2,15 +2,20 @@ package org.beehive.jitllm.backend.tornado.plan.layout;
 
 // @formatter:off
 /**
- * Graph-index arithmetic for the batch-prefill/decode forward plan.
+ * Graph-index arithmetic for the batch-prefill/decode forward plan: P prepacking graphs,
+ * initialization, then the inference graphs.
  *
  * <pre>
- *   [0]                         batchPrefillActivation
- *   [1..N]                      batchPrefillLayer_0 .. batchPrefillLayer_{N-1}
- *   [N+1]                       decodeActivation    (consumes + re-persists KV cache)
- *   [N+2..N+1+D]                decode layer graphs, D of them
- *   [N+2+D]                     logits
+ *   [0 .. P-1]                  prepacking graphs (P = prepackingGraphs, 0 if none)
+ *   [P]                         batchPrefillActivation
+ *   [P+1 .. P+N]                batchPrefillLayer_0 .. batchPrefillLayer_{N-1}
+ *   [P+N+1]                     decodeActivation    (consumes + re-persists KV cache)
+ *   [P+N+2 .. P+N+1+D]          decode layer graphs, D of them
+ *   [P+N+2+D]                   logits
  * </pre>
+ *
+ * <p>With a fallback family its F graphs follow the batch-prefill layers and move every later index
+ * by F. Every index is computed here from P, so no caller adds an offset of its own.
  *
  * <p><b>{@code D} is not always {@code N}.</b> A family may put more than one transformer layer in
  * a decode graph, which costs one graph submission instead of several. The logical layer count and
@@ -20,19 +25,33 @@ package org.beehive.jitllm.backend.tornado.plan.layout;
  */
 // @formatter:on
 public record BatchPrefillDecodeForwardTaskGraphLayout(
-        int N, int batchLayerGraphs, int fallbackLayerGraphs, int decodeLayerGraphs) {
+        int N,
+        int batchLayerGraphs,
+        int fallbackLayerGraphs,
+        int decodeLayerGraphs,
+        int prepackingGraphs) {
+
+    /** The layout as given, with no prepacking graphs. */
+    public BatchPrefillDecodeForwardTaskGraphLayout(
+            int N, int batchLayerGraphs, int fallbackLayerGraphs, int decodeLayerGraphs) {
+        this(N, batchLayerGraphs, fallbackLayerGraphs, decodeLayerGraphs, 0);
+    }
 
     /** The fully ungrouped layout, no fallback family: one graph per layer on both sides. */
     public BatchPrefillDecodeForwardTaskGraphLayout(int N) {
-        this(N, N, 0, N);
+        this(N, N, 0, N, 0);
     }
 
     /** The batch-prefill side ungrouped, the decode side as given. */
     public BatchPrefillDecodeForwardTaskGraphLayout(int N, int decodeLayerGraphs) {
-        this(N, N, 0, decodeLayerGraphs);
+        this(N, N, 0, decodeLayerGraphs, 0);
     }
 
     public BatchPrefillDecodeForwardTaskGraphLayout {
+        if (prepackingGraphs < 0) {
+            throw new IllegalArgumentException(
+                    "prepacking graphs must not be negative, got " + prepackingGraphs);
+        }
         if (batchLayerGraphs < 1 || batchLayerGraphs > N) {
             throw new IllegalArgumentException(
                     "batch-prefill layer graphs must be between 1 and "
@@ -56,21 +75,34 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
         }
     }
 
+    /**
+     * The index of the {@code i}-th prepacking graph. They come first and run once, before the
+     * warm-up; no inference step selects them.
+     */
+    public int prepackingIdx(int i) {
+        return i;
+    }
+
+    /** The index of the first inference graph, right after the prepacking graphs. */
+    public int firstInferenceIdx() {
+        return prepackingGraphs;
+    }
+
     public int batchActivationIdx() {
-        return 0;
+        return firstInferenceIdx();
     }
 
     public int batchLayerIdx(int i) {
-        return 1 + i;
+        return firstInferenceIdx() + 1 + i;
     }
 
     /** The index of the {@code g}-th FALLBACK batch-prefill layer graph. */
     public int fallbackLayerIdx(int g) {
-        return 1 + batchLayerGraphs + g;
+        return firstInferenceIdx() + 1 + batchLayerGraphs + g;
     }
 
     public int decodeActivationIdx() {
-        return batchLayerGraphs + fallbackLayerGraphs + 1;
+        return firstInferenceIdx() + batchLayerGraphs + fallbackLayerGraphs + 1;
     }
 
     /**
@@ -80,11 +112,11 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
      * graph may hold more than one layer.
      */
     public int decodeLayerGraphIdx(int g) {
-        return batchLayerGraphs + fallbackLayerGraphs + 2 + g;
+        return firstInferenceIdx() + batchLayerGraphs + fallbackLayerGraphs + 2 + g;
     }
 
     public int logitsIdx() {
-        return batchLayerGraphs + fallbackLayerGraphs + 2 + decodeLayerGraphs;
+        return firstInferenceIdx() + batchLayerGraphs + fallbackLayerGraphs + 2 + decodeLayerGraphs;
     }
 
     // @formatter:off
@@ -118,7 +150,13 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
         return 3;
     }
 
-    public int totalGraphs() {
+    /** The inference graphs, without the prepacking graphs. */
+    public int inferenceGraphCount() {
         return batchLayerGraphs + fallbackLayerGraphs + decodeLayerGraphs + nonLayerGraphs();
+    }
+
+    /** Every graph of the plan: the prepacking graphs and the inference graphs. */
+    public int totalGraphs() {
+        return prepackingGraphs + inferenceGraphCount();
     }
 }

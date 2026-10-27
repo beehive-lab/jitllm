@@ -18,17 +18,17 @@ import org.beehive.jitllm.backend.tornado.plan.layout.BatchPrefillDecodeForwardT
  * TornadoVM TaskGraphs. The components of this chain are represented by the following components:
  *
  * <ul>
- *   <li>{@link #batchPrefillActivation(int)} — B×dim embedding → FP32 batch activation (graph 0)
- *   <li>{@link #batchPrefillTransformerLayers(int)} — N batch transformer layer TaskGraphs (graphs
- *       1.N)
- *   <li>{@link #batchDecodeActivation(String)} — single-token decode activation (graph N+1)
- *   <li>{@link #batchDecodeTransformerLayers()} — N decode transformer layer TaskGraphs (graphs
- *       N+2.2N+1)
- *   <li>{@link #decodeLogits(String)} (inherited) — final RMSNorm + vocabulary projection (graph
- *       2N+2)
+ *   <li>{@link #batchPrefillActivation(int)} — B×dim embedding → FP32 batch activation (the first
+ *       inference graph)
+ *   <li>{@link #batchPrefillTransformerLayers(int)} — N batch transformer layer TaskGraphs
+ *   <li>{@link #batchDecodeActivation(String)} — single-token decode activation
+ *   <li>{@link #batchDecodeTransformerLayers()} — N decode transformer layer TaskGraphs
+ *   <li>{@link #decodeLogits(String)} (inherited) — final RMSNorm + vocabulary projection (the last
+ *       graph)
  * </ul>
  *
- * Note: Consult also the {@link BatchPrefillDecodeForwardTaskGraphLayout}
+ * <p>The prepacking graphs, when the plan uses weight prepacking, come before them; {@link
+ * BatchPrefillDecodeForwardTaskGraphLayout} gives every position, including a fallback family's.
  */
 // @formatter:on
 public interface BatchPrefillDecodeForwardPlanComponents

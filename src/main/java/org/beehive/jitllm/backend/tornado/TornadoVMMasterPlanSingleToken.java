@@ -4,7 +4,6 @@ import org.beehive.jitllm.auxiliary.RunMetrics;
 import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
 import org.beehive.jitllm.backend.tornado.plan.SingleTokenForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout;
-import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.ExecutionInfo;
@@ -74,7 +73,7 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
             executionPlan.withPreCompilation();
             long warmupTime = System.nanoTime();
 
-            WeightPrepacker.run(executionPlan, prepack);
+            tornadoVMForwardPlan.runWeightPrepacking(executionPlan);
             forceCopyInReadOnlyData();
             long copyTime = System.nanoTime();
 
@@ -106,14 +105,18 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
                         TaskGraphChainPrinter.span(
                                 layout.layerIdx(0), layout.layerIdx(layout.N() - 1)),
                         java.util.List.of(layout.logitsIdx()));
+        var phases =
+                new java.util.ArrayList<>(
+                        TaskGraphChainPrinter.prepacking(roles, layout.prepackingGraphs()));
+        phases.add(new TaskGraphChainPrinter.Phase("warm-up", "once, at plan build", token));
+        phases.add(
+                new TaskGraphChainPrinter.Phase(
+                        "token", "per prompt token and per generated token", token));
         return new TaskGraphChainPrinter.Chain(
                 "single-token",
                 tornadoVMForwardPlan.getImmutableTaskGraphs(),
                 tornadoVMForwardPlan.getGridScheduler(),
-                java.util.List.of(
-                        new TaskGraphChainPrinter.Phase("warm-up", "once, at plan build", token),
-                        new TaskGraphChainPrinter.Phase(
-                                "token", "per prompt token and per generated token", token)),
+                phases,
                 roles);
     }
 
@@ -122,15 +125,9 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
         DataType weightType = model.weights().dataType();
         this.tornadoVMForwardPlan = ForwardPlanFactory.createSingleToken(weightType, state, model);
         this.taskGraphLayout = tornadoVMForwardPlan.getTaskGraphLayout();
-        var taskGraphs = new java.util.ArrayList<>(tornadoVMForwardPlan.getImmutableTaskGraphs());
-        prepack =
-                state.workspace.prepacker.appendGraphs(
-                        taskGraphs, tornadoVMForwardPlan.getGridScheduler());
-        return new TornadoExecutionPlan(taskGraphs.toArray(new ImmutableTaskGraph[0]));
+        return new TornadoExecutionPlan(
+                tornadoVMForwardPlan.getImmutableTaskGraphs().toArray(new ImmutableTaskGraph[0]));
     }
-
-    /** The graphs that prepack the weights on the GPU before the warm-up, or null. */
-    private WeightPrepacker.PrepackGraphs prepack;
 
     // @formatter:off
     @Override

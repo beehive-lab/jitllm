@@ -272,7 +272,7 @@ public class CompiledProgramIdentityAccelTest {
             state.workspace.wrapX.clear();
             state.resetPositionHolder();
             TornadoExecutionResult result = null;
-            for (int graph = 0; graph < layout.totalGraphs(); graph++) {
+            for (int graph = layout.firstInferenceIdx(); graph < layout.totalGraphs(); graph++) {
                 result =
                         executionPlan
                                 .withGraph(graph)
