@@ -186,6 +186,38 @@ public final class TransformerComputeKernelsQ4_K {
     }
 
     /**
+     * The dot product of the eight weights in four consecutive bytes of one 32-byte nibble run with
+     * {@code x}. The bytes start at {@code posInRun}, a multiple of four below 32, of run {@code
+     * pairIndex}: their low nibbles are four weights of sub-block {@code 2 * pairIndex} and their
+     * high nibbles the same four of sub-block {@code 2 * pairIndex + 1}, 32 weights later. The
+     * bytes, {@code d}, {@code dmin} and both sub-blocks' scales and minimums are read once rather
+     * than once per weight. Each weight is still {@code d * sc * q - dmin * m} as {@link #decode}
+     * computes it.
+     */
+    private static float dot8(
+            ByteArray w, int blockByteOffset, int pairIndex, int posInRun, FloatArray x, int xAt) {
+        float d = w.getHalfFloat(blockByteOffset).getFloat32();
+        float dmin = w.getHalfFloat(blockByteOffset + 2).getFloat32();
+
+        int scalesBase = blockByteOffset + SCALES_OFFSET;
+        int lowPacked = scaleAndMin(w, scalesBase, pairIndex * 2);
+        int highPacked = scaleAndMin(w, scalesBase, pairIndex * 2 + 1);
+        float dScLow = d * (lowPacked >> 8);
+        float dminMLow = dmin * (lowPacked & 0xFF);
+        float dScHigh = d * (highPacked >> 8);
+        float dminMHigh = dmin * (highPacked & 0xFF);
+
+        int qAt = blockByteOffset + QS_OFFSET + pairIndex * 32 + posInRun;
+        float sum = 0.0f;
+        for (int k = 0; k < 4; k++) {
+            int qByte = w.get(qAt + k) & 0xFF;
+            sum += (dScLow * (qByte & 0xF) - dminMLow) * x.get(xAt + k);
+            sum += (dScHigh * (qByte >> 4) - dminMHigh) * x.get(xAt + 32 + k);
+        }
+        return sum;
+    }
+
+    /**
      * One row's dot product against {@code x}, reduced across a 32-lane subgroup.
      *
      * <p>The Q4_K counterpart of {@code matrixVectorRowMajorOptimizedQ8_0Byte}'s reduction, in the
@@ -217,22 +249,30 @@ public final class TransformerComputeKernelsQ4_K {
      * One row's dot product against {@code x}, reduced through shared memory.
      *
      * <p>The portable form, for devices without a verified 32-lane shuffle — the same choice {@code
-     * matrixVectorRowMajorOptimizedQ8_0Byte} makes.
+     * matrixVectorRowMajorOptimizedQ8_0Byte} makes. A thread takes eight weights per step, the two
+     * nibbles of four consecutive bytes, through {@link #dot8}. {@code n} is a multiple of 256.
      */
     private static float rowDotShared(
             KernelContext context, int localSize, FloatArray x, ByteArray w, int n, int rowId) {
         int localId = context.localIdx;
         float[] localSums = context.allocateFloatLocalArray(localSize);
 
-        int blocksPerRow = (n + QK_K - 1) / QK_K;
-        int rowBlockOffset = rowId * blocksPerRow;
+        int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
 
         float partialSum = 0.0f;
-        for (int j = localId; j < n; j += localSize) {
-            int blockIdx = j / QK_K;
-            int withinBlock = j - blockIdx * QK_K;
-            int blockByteOffset = (rowBlockOffset + blockIdx) * BLOCK_BYTES;
-            partialSum += decode(w, blockByteOffset, withinBlock) * x.get(j);
+        for (int unit = localId; unit < n / 8; unit += localSize) {
+            int blockIdx = unit / 32;
+            int unitInBlock = unit - blockIdx * 32;
+            int pairIndex = unitInBlock / 8;
+            int posInRun = (unitInBlock - pairIndex * 8) * 4;
+            partialSum +=
+                    dot8(
+                            w,
+                            rowByteOffset + blockIdx * BLOCK_BYTES,
+                            pairIndex,
+                            posInRun,
+                            x,
+                            blockIdx * QK_K + pairIndex * 64 + posInRun);
         }
 
         localSums[localId] = partialSum;
@@ -624,18 +664,20 @@ public final class TransformerComputeKernelsQ4_K {
         // would have to interleave their barriers correctly to be safe. Gate occupies the first
         // half, up the second, and one tree reduces both.
         float[] localSums = context.allocateFloatLocalArray(localWorkGroupSize * 2);
-        int blocksPerRow = (n + QK_K - 1) / QK_K;
-        int rowBlockOffset = rowId * blocksPerRow;
+        int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
 
+        // Eight weights per step, as rowDotShared takes them.
         float gate = 0.0f;
         float up = 0.0f;
-        for (int j = localId; j < n; j += localWorkGroupSize) {
-            int blockIdx = j / QK_K;
-            int withinBlock = j - blockIdx * QK_K;
-            int blockByteOffset = (rowBlockOffset + blockIdx) * BLOCK_BYTES;
-            float activation = x.get(j);
-            gate += decode(w1, blockByteOffset, withinBlock) * activation;
-            up += decode(w3, blockByteOffset, withinBlock) * activation;
+        for (int unit = localId; unit < n / 8; unit += localWorkGroupSize) {
+            int blockIdx = unit / 32;
+            int unitInBlock = unit - blockIdx * 32;
+            int pairIndex = unitInBlock / 8;
+            int posInRun = (unitInBlock - pairIndex * 8) * 4;
+            int blockByteOffset = rowByteOffset + blockIdx * BLOCK_BYTES;
+            int xAt = blockIdx * QK_K + pairIndex * 64 + posInRun;
+            gate += dot8(w1, blockByteOffset, pairIndex, posInRun, x, xAt);
+            up += dot8(w3, blockByteOffset, pairIndex, posInRun, x, xAt);
         }
         localSums[localId] = gate;
         localSums[localWorkGroupSize + localId] = up;

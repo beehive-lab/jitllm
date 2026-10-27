@@ -224,21 +224,63 @@ public final class TransformerComputeKernelsQ6_K {
         return d * scale * qValue;
     }
 
-    /** One row's dot product against {@code x}, reduced through shared memory. */
+    /** The byte at {@code index} as a signed scale, read as {@link #decode} reads it. */
+    private static int signedByte(ByteArray w, int index) {
+        int value = w.get(index) & 0xFF;
+        if (value > 127) {
+            value = value - 256;
+        }
+        return value;
+    }
+
+    /**
+     * One row's dot product against {@code x}, reduced through shared memory.
+     *
+     * <p>A thread takes sixteen weights per step: four consecutive positions of a half-block's
+     * thirty-two, in each of its four groups, as llama.cpp's Metal {@code kernel_mul_mv_q6_K_f32}
+     * does. The four groups at one position are built from the same {@code qh} byte and two {@code
+     * ql} bytes, so twelve byte loads cover sixteen weights, where reading weights one at a time
+     * costs two per weight. Each weight is still {@code d * scale * q} as {@link #decode} computes
+     * it; only the order of the summation differs. {@code n} is a multiple of 256.
+     */
     private static float rowDotShared(
             KernelContext context, int localSize, FloatArray x, ByteArray w, int n, int rowId) {
         int localId = context.localIdx;
         float[] localSums = context.allocateFloatLocalArray(localSize);
 
-        int blocksPerRow = (n + QK_K - 1) / QK_K;
-        int rowBlockOffset = rowId * blocksPerRow;
+        int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
 
         float partialSum = 0.0f;
-        for (int j = localId; j < n; j += localSize) {
-            int blockIdx = j / QK_K;
-            int withinBlock = j - blockIdx * QK_K;
-            int blockByteOffset = (rowBlockOffset + blockIdx) * BLOCK_BYTES;
-            partialSum += decode(w, blockByteOffset, withinBlock) * x.get(j);
+        for (int unit = localId; unit < n / 16; unit += localSize) {
+            int half = unit / 8;
+            int posInGroup = (unit - half * 8) * 4;
+            int blockIdx = half / 2;
+            int halfIndex = half - blockIdx * 2;
+            int blockByteOffset = rowByteOffset + blockIdx * BLOCK_BYTES;
+            float d = w.getHalfFloat(blockByteOffset + D_OFFSET).getFloat32();
+
+            int scaleAt = blockByteOffset + SCALES_OFFSET + halfIndex * 8 + posInGroup / 16;
+            float dScale0 = d * signedByte(w, scaleAt);
+            float dScale1 = d * signedByte(w, scaleAt + 2);
+            float dScale2 = d * signedByte(w, scaleAt + 4);
+            float dScale3 = d * signedByte(w, scaleAt + 6);
+
+            int qlAt = blockByteOffset + halfIndex * 64 + posInGroup;
+            int qhAt = blockByteOffset + QH_OFFSET + halfIndex * 32 + posInGroup;
+            int xAt = blockIdx * QK_K + halfIndex * 128 + posInGroup;
+            for (int k = 0; k < 4; k++) {
+                int ql1 = w.get(qlAt + k) & 0xFF;
+                int ql2 = w.get(qlAt + 32 + k) & 0xFF;
+                int qh = w.get(qhAt + k) & 0xFF;
+                int q0 = ((ql1 & 0xF) | ((qh & 3) << 4)) - 32;
+                int q1 = ((ql2 & 0xF) | (((qh >> 2) & 3) << 4)) - 32;
+                int q2 = ((ql1 >> 4) | (((qh >> 4) & 3) << 4)) - 32;
+                int q3 = ((ql2 >> 4) | ((qh >> 6) << 4)) - 32;
+                partialSum += dScale0 * q0 * x.get(xAt + k);
+                partialSum += dScale1 * q1 * x.get(xAt + 32 + k);
+                partialSum += dScale2 * q2 * x.get(xAt + 64 + k);
+                partialSum += dScale3 * q3 * x.get(xAt + 96 + k);
+            }
         }
 
         localSums[localId] = partialSum;
