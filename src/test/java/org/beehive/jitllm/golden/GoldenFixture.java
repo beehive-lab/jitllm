@@ -90,6 +90,16 @@ public final class GoldenFixture {
                 "Q8_0",
                 "84c0dbe606526d5907251d88ea88b41457f46ce456e9a333d5d2b6245a95cafe",
                 "qwen3-0.6b"),
+        QWEN3_0_6B_Q4_K_M(
+                "Qwen3-0.6B-Q4_K_M.gguf",
+                "Q4_K_M",
+                "ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a",
+                "qwen3-0.6b"),
+        QWEN3_1_7B_Q4_K_M(
+                "Qwen3-1.7B-Q4_K_M.gguf",
+                "Q4_K_M",
+                "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5",
+                "qwen3-1.7b"),
 
         PHI3_MINI_4K_F16(
                 "Phi-3-mini-4k-instruct-fp16.gguf",

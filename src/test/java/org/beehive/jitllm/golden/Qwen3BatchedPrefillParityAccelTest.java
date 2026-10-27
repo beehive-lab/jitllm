@@ -27,4 +27,14 @@ public class Qwen3BatchedPrefillParityAccelTest extends CpuGpuParity {
     public void qwen3_0_6b_f16_batchedPrefillParity() throws Exception {
         assertParityBatched(Fixture.QWEN3_0_6B_F16, FP16, BATCH);
     }
+
+    @Test
+    public void qwen3_0_6b_q4_k_m_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.QWEN3_0_6B_Q4_K_M, Q8_0, BATCH);
+    }
+
+    @Test
+    public void qwen3_1_7b_q4_k_m_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.QWEN3_1_7B_Q4_K_M, Q8_0, BATCH);
+    }
 }

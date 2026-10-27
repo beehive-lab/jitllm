@@ -20,4 +20,20 @@ public class Qwen3CpuGpuParityAccelTest extends CpuGpuParity {
     public void qwen3_0_6b_q8_0_cpuGpuParity() throws Exception {
         assertParity(Fixture.QWEN3_0_6B_Q8_0, Q8_0);
     }
+
+    /** A Q4_K_M file kept as it is: Q4_K and Q6_K read per tensor. */
+    @Test
+    public void qwen3_0_6b_q4_k_m_cpuGpuParity() throws Exception {
+        assertParity(Fixture.QWEN3_0_6B_Q4_K_M, Q8_0);
+    }
+
+    @Test
+    public void qwen3_1_7b_q4_k_m_cpuGpuParity() throws Exception {
+        assertParity(Fixture.QWEN3_1_7B_Q4_K_M, Q8_0);
+    }
+
+    @Test
+    public void qwen3_0_6b_q4_k_m_prefillDecodeParity() throws Exception {
+        assertParityPrefillDecode(Fixture.QWEN3_0_6B_Q4_K_M, Q8_0);
+    }
 }

@@ -2,6 +2,7 @@ package org.beehive.jitllm.model.loader;
 
 import java.io.IOException;
 import java.nio.channels.FileChannel;
+import java.util.HashMap;
 import java.util.Map;
 import org.beehive.jitllm.auxiliary.Pair;
 import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
@@ -14,6 +15,7 @@ import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.tokenizer.Tokenizer;
 import org.beehive.jitllm.tokenizer.Vocabulary;
@@ -48,6 +50,14 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
         this.gguf = gguf;
         this.contextLength = contextLength;
         this.useTornadovm = useTornadovm;
+    }
+
+    /** Each tensor's representation in the file, by name: what the retention rule reads. */
+    protected static Map<String, DataType> sourceTypes(Map<String, GGMLTensorEntry> tensorEntries) {
+        Map<String, DataType> types = new HashMap<>();
+        tensorEntries.forEach(
+                (name, entry) -> types.put(name, DataTypeMapping.sourceType(entry.ggmlType())));
+        return types;
     }
 
     /**

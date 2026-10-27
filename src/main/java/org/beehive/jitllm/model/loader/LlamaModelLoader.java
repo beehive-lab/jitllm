@@ -3,7 +3,6 @@ package org.beehive.jitllm.model.loader;
 import static org.beehive.jitllm.model.loader.ModelLoader.*;
 
 import java.nio.channels.FileChannel;
-import java.util.HashMap;
 import java.util.Map;
 import org.beehive.jitllm.auxiliary.Pair;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
@@ -233,13 +232,5 @@ public class LlamaModelLoader extends AbstractModelLoader<Llama, LlamaConfigurat
         return retainQ4_0
                 ? loadArrayOfTornadoTensorsRetainingQ4_0(layers, entry)
                 : loadArrayOfTornadoTensors(layers, entry);
-    }
-
-    /** Each tensor's representation in the file, by name: what the retention rule reads. */
-    private static Map<String, DataType> sourceTypes(Map<String, GGMLTensorEntry> tensorEntries) {
-        Map<String, DataType> types = new HashMap<>();
-        tensorEntries.forEach(
-                (name, entry) -> types.put(name, DataTypeMapping.sourceType(entry.ggmlType())));
-        return types;
     }
 }
