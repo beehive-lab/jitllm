@@ -7,6 +7,7 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * The accelerated forward pass: stage the token's embedding, then run the plan.
@@ -96,6 +97,21 @@ public final class TornadoForwardPass {
                 int blocksPerToken = (configuration.dim() + blockSize - 1) / blockSize;
                 long bytesPerToken = (long) blocksPerToken * Q4_0_BLOCK_BYTES;
 
+                MemorySegment.copy(
+                        tokenEmbeddings,
+                        (long) token * bytesPerToken,
+                        state.workspace.embeddingX.getSegment(),
+                        0,
+                        bytesPerToken);
+            }
+            case Q4_K, Q6_K -> {
+                // Kept as the file stores it: 144 (Q4_K) or 210 (Q6_K) bytes per 256 weights,
+                // decoded on the device.
+                MemorySegment tokenEmbeddings =
+                        weights.getTokenEmbeddingTable().asByteArray().getSegment();
+                int blockBytes =
+                        weights.getTokenEmbeddingTable().dataType() == DataType.Q4_K ? 144 : 210;
+                long bytesPerToken = (long) (configuration.dim() / 256) * blockBytes;
                 MemorySegment.copy(
                         tokenEmbeddings,
                         (long) token * bytesPerToken,
