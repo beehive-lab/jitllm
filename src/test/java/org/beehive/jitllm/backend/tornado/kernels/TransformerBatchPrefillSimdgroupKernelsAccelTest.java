@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.kernels;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assume.assumeTrue;
 
+import java.util.Random;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -779,5 +780,214 @@ public class TransformerBatchPrefillSimdgroupKernelsAccelTest {
     @Test
     public void halfActivationsFP16Strided() {
         checkHalfStrided(false);
+    }
+
+    /**
+     * K-quant rows of {@code n} columns: random bytes, with each super-block's fp16 scales set to
+     * about 0.06 so that every weight is finite.
+     */
+    private static ByteArray kQuantWeights(boolean q4k, int rows, int n, long seed) {
+        int blockBytes = q4k ? 144 : 210;
+        int blocks = rows * (n / 256);
+        byte[] raw = new byte[blocks * blockBytes];
+        new Random(seed).nextBytes(raw);
+        int[] scaleOffsets = q4k ? new int[] {0, 2} : new int[] {208};
+        for (int b = 0; b < blocks; b++) {
+            for (int offset : scaleOffsets) {
+                raw[b * blockBytes + offset] = (byte) (b & 0xFF);
+                raw[b * blockBytes + offset + 1] = 0x2C;
+            }
+        }
+        return ByteArray.fromArray(raw);
+    }
+
+    /** A K-quant weight, through the decode the device kernels are held against. */
+    private static Weights kQuantWeight(boolean q4k, ByteArray w, int n) {
+        return (row, k) -> {
+            int block = row * (n / 256) + k / 256;
+            return q4k
+                    ? TransformerComputeKernelsQ4_K.decode(w, block * 144, k % 256)
+                    : TransformerComputeKernelsQ6_K.decode(w, block * 210, k % 256);
+        };
+    }
+
+    /** {@code sum |x * w|}, the scale of the rounding a reordered sum can differ by. */
+    private static float absDot(FloatArray x, int b, int n, Weights w, int row) {
+        float sum = 0.0f;
+        for (int k = 0; k < n; k++) {
+            sum += Math.abs(x.get(b * n + k) * w.at(row, k));
+        }
+        return sum;
+    }
+
+    /**
+     * The plain and residual K-quant projections, partial tiles included: the plain one overwrites
+     * every element, the residual one adds to what is there.
+     */
+    private static void checkKQuantProjection(boolean q4k, boolean residual) {
+        assumeMetal();
+        int n = 512;
+        int d = 72;
+        int batch = 70;
+        FloatArray x = activations(batch, n);
+        FloatArray out = new FloatArray(batch * d);
+        for (int i = 0; i < batch * d; i++) {
+            out.set(i, residual ? value(i % d, i / d + 1) : UNTOUCHED);
+        }
+        ByteArray w = kQuantWeights(q4k, d, n, q4k ? 41 : 61);
+        String name = "simdgroup" + (q4k ? "Q4_K" : "Q6_K") + (residual ? "Residual" : "");
+        TaskGraph graph = new TaskGraph(name).transferToDevice(DataTransferMode.EVERY_EXECUTION, x);
+        graph.transferToDevice(DataTransferMode.EVERY_EXECUTION, out);
+        graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, w);
+        if (q4k && residual) {
+            graph.task(
+                    "t",
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_KWithResidual,
+                    new KernelContext(),
+                    x,
+                    out,
+                    w,
+                    n,
+                    d,
+                    batch);
+        } else if (q4k) {
+            graph.task(
+                    "t",
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_K,
+                    new KernelContext(),
+                    x,
+                    out,
+                    w,
+                    n,
+                    d,
+                    batch);
+        } else if (residual) {
+            graph.task(
+                    "t",
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ6_KWithResidual,
+                    new KernelContext(),
+                    x,
+                    out,
+                    w,
+                    n,
+                    d,
+                    batch);
+        } else {
+            graph.task(
+                    "t",
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ6_K,
+                    new KernelContext(),
+                    x,
+                    out,
+                    w,
+                    n,
+                    d,
+                    batch);
+        }
+        graph.transferToHost(DataTransferMode.EVERY_EXECUTION, out);
+        run(graph, name, ((d + 63) / 64) * ((batch + 63) / 64));
+        Weights weights = kQuantWeight(q4k, w, n);
+        for (int b = 0; b < batch; b++) {
+            for (int r = 0; r < d; r++) {
+                float expected = (residual ? value(r, b + 1) : 0.0f) + dot(x, b, n, weights, r);
+                float tolerance = 1e-5f * absDot(x, b, n, weights, r) + 1e-4f;
+                assertEquals(
+                        name + " token " + b + " row " + r,
+                        expected,
+                        out.get(b * d + r),
+                        tolerance);
+            }
+        }
+    }
+
+    @Test
+    public void q4kProjection() {
+        checkKQuantProjection(true, false);
+    }
+
+    @Test
+    public void q4kResidual() {
+        checkKQuantProjection(true, true);
+    }
+
+    @Test
+    public void q6kProjection() {
+        checkKQuantProjection(false, false);
+    }
+
+    @Test
+    public void q6kResidual() {
+        checkKQuantProjection(false, true);
+    }
+
+    /**
+     * The Q4_K gate/up projection with the RMS weights and per-token scales applied as the
+     * activations are staged, partial tiles included.
+     */
+    @Test
+    public void q4kGateUp() {
+        assumeMetal();
+        int dim = 512;
+        int hiddenDim = 40;
+        int batch = 70;
+        FloatArray x = activations(batch, dim);
+        FloatArray rms = new FloatArray(dim);
+        for (int k = 0; k < dim; k++) {
+            rms.set(k, 0.5f + (k % 5) * 0.25f);
+        }
+        FloatArray scale = new FloatArray(batch);
+        for (int b = 0; b < batch; b++) {
+            scale.set(b, 0.75f + (b % 3) * 0.25f);
+        }
+        FloatArray normed = new FloatArray(batch * dim);
+        for (int b = 0; b < batch; b++) {
+            for (int k = 0; k < dim; k++) {
+                normed.set(b * dim + k, rms.get(k) * scale.get(b) * x.get(b * dim + k));
+            }
+        }
+        FloatArray hb = new FloatArray(batch * hiddenDim);
+        hb.init(UNTOUCHED);
+        ByteArray w1 = kQuantWeights(true, hiddenDim, dim, 71);
+        ByteArray w3 = kQuantWeights(true, hiddenDim, dim, 73);
+        String name = "simdgroupGateUpQ4_K";
+        TaskGraph graph =
+                new TaskGraph(name)
+                        .transferToDevice(DataTransferMode.EVERY_EXECUTION, x, rms, scale, hb);
+        graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, w1, w3);
+        graph.task(
+                "t",
+                TransformerBatchPrefillSimdgroupKernels::batchedGemmRmsNormFFNGateUpQ4_K,
+                new KernelContext(),
+                x,
+                hb,
+                rms,
+                scale,
+                w1,
+                w3,
+                dim,
+                hiddenDim,
+                batch);
+        graph.transferToHost(DataTransferMode.EVERY_EXECUTION, hb);
+        run(graph, name, ((hiddenDim + 31) / 32) * ((batch + 63) / 64));
+        Weights gateWeights = kQuantWeight(true, w1, dim);
+        Weights upWeights = kQuantWeight(true, w3, dim);
+        for (int b = 0; b < batch; b++) {
+            for (int r = 0; r < hiddenDim; r++) {
+                float gate = dot(normed, b, dim, gateWeights, r);
+                float up = dot(normed, b, dim, upWeights, r);
+                float expected = (gate / (1.0f + (float) Math.exp(-gate))) * up;
+                float gateError = 1e-5f * absDot(normed, b, dim, gateWeights, r) + 1e-4f;
+                float upError = 1e-5f * absDot(normed, b, dim, upWeights, r) + 1e-4f;
+                float tolerance =
+                        Math.abs(up) * gateError * 1.1f
+                                + Math.abs(gate) * upError
+                                + 1e-4f * Math.max(1.0f, Math.abs(expected));
+                assertEquals(
+                        name + " token " + b + " row " + r,
+                        expected,
+                        hb.get(b * hiddenDim + r),
+                        tolerance);
+            }
+        }
     }
 }

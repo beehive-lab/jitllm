@@ -13,6 +13,7 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 /**
  * The Q4_K, Q6_K and packed Q4_0 to FP16 decodes on the device against the host decode, element by
@@ -25,9 +26,13 @@ public class KQuantDequantFP16AccelTest {
     private static final int N = BLOCKS * 256;
 
     private static ByteArray randomBlocks(int blockBytes, int scaleOffset, long seed) {
-        byte[] raw = new byte[BLOCKS * blockBytes];
+        return randomBlocks(BLOCKS, blockBytes, scaleOffset, seed);
+    }
+
+    private static ByteArray randomBlocks(int blocks, int blockBytes, int scaleOffset, long seed) {
+        byte[] raw = new byte[blocks * blockBytes];
         new Random(seed).nextBytes(raw);
-        for (int b = 0; b < BLOCKS; b++) {
+        for (int b = 0; b < blocks; b++) {
             int base = b * blockBytes + scaleOffset;
             raw[base] = (byte) (b * 13);
             raw[base + 1] = (byte) (0x24 | (b & 1) << 7);
@@ -154,6 +159,138 @@ public class KQuantDequantFP16AccelTest {
                     new HalfFloat(expected).getFloat32(),
                     out.get(i).getFloat32(),
                     0f);
+        }
+    }
+
+    /**
+     * The decode-once forms: with the flag clear they write what the per-chunk decode writes; with
+     * it set they leave the copy as it was.
+     */
+    @Test
+    public void theDecodeOnceFormsDecodeOnlyUntilTheFlagIsSet() {
+        for (boolean q4k : new boolean[] {true, false}) {
+            ByteArray w = q4k ? randomBlocks(144, 0, 5) : randomBlocks(210, 208, 6);
+            HalfFloatArray expected = run(q4k ? "q4kRef" : "q6kRef", w, q4k);
+            for (int flagValue : new int[] {0, 1}) {
+                HalfFloatArray out = new HalfFloatArray(N);
+                out.init(new HalfFloat(-7.0f));
+                IntArray done = new IntArray(1);
+                done.set(0, flagValue);
+                String name = (q4k ? "q4kOnce" : "q6kOnce") + flagValue;
+                TaskGraph graph =
+                        new TaskGraph(name)
+                                .transferToDevice(DataTransferMode.FIRST_EXECUTION, w, out, done);
+                if (q4k) {
+                    graph.task(
+                            "decode",
+                            TransformerComputeKernelsQ4_K::dequantizeQ4_KToFP16Once,
+                            new KernelContext(),
+                            w,
+                            out,
+                            0,
+                            N,
+                            done,
+                            0);
+                } else {
+                    graph.task(
+                            "decode",
+                            TransformerComputeKernelsQ6_K::dequantizeQ6_KToFP16Once,
+                            new KernelContext(),
+                            w,
+                            out,
+                            0,
+                            N,
+                            done,
+                            0);
+                }
+                graph.transferToHost(DataTransferMode.EVERY_EXECUTION, out);
+                WorkerGrid1D grid = new WorkerGrid1D(N);
+                grid.setLocalWork(256, 1, 1);
+                try (TornadoExecutionPlan plan = new TornadoExecutionPlan(graph.snapshot())) {
+                    plan.withGridScheduler(new GridScheduler(name + ".decode", grid)).execute();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+                for (int i = 0; i < N; i++) {
+                    float want = flagValue == 0 ? expected.get(i).getFloat32() : -7.0f;
+                    assertEquals(name + " element " + i, want, out.get(i).getFloat32(), 0f);
+                }
+            }
+        }
+    }
+
+    /**
+     * The tiled forms write, at every half position, the host decode of the element the {@code
+     * gemmMMATiledB} tile order puts there, and the positions cover every element once.
+     */
+    @Test
+    public void theTiledFormsWriteTheHostDecodeInTileOrder() {
+        int rows = 256;
+        int k = 512;
+        int n = rows * k;
+        int kSteps = k / 16;
+        for (boolean q4k : new boolean[] {true, false}) {
+            int blockBytes = q4k ? 144 : 210;
+            ByteArray w = randomBlocks(n / 256, blockBytes, q4k ? 0 : 208, q4k ? 7 : 8);
+            HalfFloatArray out = new HalfFloatArray(n);
+            IntArray done = new IntArray(1);
+            String name = q4k ? "q4kTiled" : "q6kTiled";
+            TaskGraph graph =
+                    new TaskGraph(name)
+                            .transferToDevice(DataTransferMode.FIRST_EXECUTION, w, out, done);
+            if (q4k) {
+                graph.task(
+                        "decode",
+                        Qwen35MMAKernels::dequantizeQ4_KToFP16Tiled,
+                        new KernelContext(),
+                        w,
+                        out,
+                        0,
+                        n,
+                        k,
+                        done,
+                        0);
+            } else {
+                graph.task(
+                        "decode",
+                        Qwen35MMAKernels::dequantizeQ6_KToFP16Tiled,
+                        new KernelContext(),
+                        w,
+                        out,
+                        0,
+                        n,
+                        k,
+                        done,
+                        0);
+            }
+            graph.transferToHost(DataTransferMode.EVERY_EXECUTION, out);
+            WorkerGrid1D grid = new WorkerGrid1D(Math.min(n, Qwen35MMAKernels.TILED_DECODE_LANES));
+            grid.setLocalWork(256, 1, 1);
+            try (TornadoExecutionPlan plan = new TornadoExecutionPlan(graph.snapshot())) {
+                plan.withGridScheduler(new GridScheduler(name + ".decode", grid)).execute();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            boolean[] seen = new boolean[n];
+            for (int h = 0; h < n; h++) {
+                int tile = h >>> 11;
+                int idx = (h >>> 1) & 1023;
+                int row = (tile / kSteps) * 128 + ((idx >>> 6) << 3) + ((idx & 3) << 1) + (h & 1);
+                int kk = (tile % kSteps) * 16 + ((idx & 63) >>> 2);
+                assertEquals(name + " position " + h + " covered twice", false, seen[row * k + kk]);
+                seen[row * k + kk] = true;
+                int blockByteOffset = (row * (k / 256) + kk / 256) * blockBytes;
+                float expected =
+                        q4k
+                                ? TransformerComputeKernelsQ4_K.decode(w, blockByteOffset, kk % 256)
+                                : TransformerComputeKernelsQ6_K.decode(
+                                        w, blockByteOffset, kk % 256);
+                assertEquals(
+                        name + " position " + h,
+                        new HalfFloat(expected).getFloat32(),
+                        out.get(h).getFloat32(),
+                        0f);
+            }
         }
     }
 }
