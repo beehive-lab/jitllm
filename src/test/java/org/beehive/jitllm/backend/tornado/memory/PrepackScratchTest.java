@@ -17,11 +17,11 @@ import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 /**
- * The scratch buffer packed projections are repacked through ({@code PackedRepack}), as the
- * prediction charges it: absent when nothing is packed, and otherwise one per session, the largest
- * packed projection plus the flag beside it.
+ * The scratch buffer projections are prepacked through ({@code WeightPrepacker}), as the prediction
+ * charges it: absent when nothing is prepacked, and otherwise one per session, the largest
+ * prepacked projection plus the flag beside it.
  */
-public class PackedRepackScratchTest {
+public class PrepackScratchTest {
 
     /** Llama-3.2-1B's shape. */
     private static final LlamaConfiguration LLAMA_1B =
@@ -66,17 +66,17 @@ public class PackedRepackScratchTest {
 
     private static Optional<MemoryComponent> scratchComponent(MemoryPlan plan) {
         return plan.components().stream()
-                .filter(c -> c.name().equals("packed-weight repack scratch"))
+                .filter(c -> c.name().equals("weight prepack scratch"))
                 .findFirst();
     }
 
     @Test
-    public void aLoadThatPacksNothingHasNoScratch() {
+    public void aPlanThatPrepacksNothingHasNoScratch() {
         assertTrue(scratchComponent(predict(1, 0)).isEmpty());
     }
 
     @Test
-    public void theScratchIsTheLargestPackedProjectionPlusItsFlag() {
+    public void theScratchIsTheLargestPrepackedProjectionPlusItsFlag() {
         MemoryComponent scratch = scratchComponent(predict(1, LARGEST_Q4_0_PROJECTION)).get();
 
         assertEquals(LARGEST_Q4_0_PROJECTION + Integer.BYTES, scratch.logicalBytes());
@@ -84,7 +84,7 @@ public class PackedRepackScratchTest {
     }
 
     @Test
-    public void eachSessionRepacksThroughItsOwnScratch() {
+    public void eachSessionPrepacksThroughItsOwnScratch() {
         long one = predict(1, 0).predictedBudgetBytes();
         long withOne = predict(1, LARGEST_Q4_0_PROJECTION).predictedBudgetBytes();
         long withThree = predict(3, LARGEST_Q4_0_PROJECTION).predictedBudgetBytes();

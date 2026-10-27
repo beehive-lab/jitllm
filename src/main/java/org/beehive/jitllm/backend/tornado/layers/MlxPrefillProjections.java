@@ -8,8 +8,8 @@ import java.util.function.IntFunction;
 import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.kernels.MlxPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
@@ -41,9 +41,9 @@ import uk.ac.manchester.tornado.mlx.Mlx;
  * FP16.
  *
  * <p>Built from an {@link MlxPrefill} the caller resolved, and only from it: a tensor that does not
- * match it — another type, or packed tiles — is refused, never handed back to the JIT kernels, so
- * the decode graphs that ask the same {@link MlxPrefill} which weights these graphs bind ({@link
- * #notBound}) are always right.
+ * match it — another type, or a prepacked weight — is refused, never handed back to the JIT
+ * kernels, so the decode graphs that ask the same {@link MlxPrefill} which weights these graphs
+ * bind ({@link #notBound}) are always right.
  *
  * <p>The family keeps its RMS reductions ({@code batch_attn_rms}, {@code batch_ffn_rms}), RoPE and
  * attention; this replaces the RMS applies and the projection tasks around them. The FP16 operands
@@ -248,8 +248,7 @@ public final class MlxPrefillProjections {
      * for a family whose layer weights {@code layerWeights} supplies, and whose projections are
      * added into the residual stream scaled by {@code residualScale}.
      *
-     * @throws UnsupportedOperationException if a projection is held in packed tiles, which MLX does
-     *     not read
+     * @throws UnsupportedOperationException if a projection is prepacked, which MLX does not read
      * @throws IllegalStateException if a projection is not of {@code mlx}'s weight type
      */
     public static MlxPrefillProjections of(
@@ -269,8 +268,8 @@ public final class MlxPrefillProjections {
         for (int i = 0; i < layers; i++) {
             perLayer[i] = layerWeights.apply(i);
             for (TornadoTensor t : perLayer[i].all()) {
-                if (state.workspace.tileLayout.tiled(t)) {
-                    throw PackedWeights.noPackedKernel("The MLX batched prefill");
+                if (state.workspace.prepacking.prepacked(t)) {
+                    throw WeightPrepacking.noPrepackedKernel("The MLX batched prefill");
                 }
                 if (t.dataType() != mlx.weights()) {
                     throw new IllegalStateException(

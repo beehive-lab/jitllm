@@ -13,12 +13,12 @@ import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 /**
- * A plan tiles its projections for its own execution policy, given through the API, not for the
+ * A plan prepacks its projections for its own execution policy, given through the API, not for the
  * process's properties: Gemma 4 Q4_0 with native projections chosen in {@link ModelOptions} keeps
- * the blocks cuBLAS's decode reads, with no packing property set. A session that asks for a policy
- * tiles cannot serve builds its plan without them, over the same loaded weights.
+ * the blocks cuBLAS's decode reads, with no prepacking property set. A session whose policy
+ * prepacking cannot serve builds its plan without it, over the same loaded weights.
  */
-public class PackedWeightsPolicyAccelTest {
+public class WeightPrepackingPolicyAccelTest {
 
     private static final String WIDTH = "jitllm.prefillBatchSize";
     private static final String PREFILL_DECODE = "jitllm.withPrefillDecode";
@@ -56,7 +56,7 @@ public class PackedWeightsPolicyAccelTest {
         Path gemma = locate(Fixture.GEMMA_4_E2B_Q4_0);
         withGpu(
                 () ->
-                        // The properties ask for a width the packed GEMM tiles and no native
+                        // The properties ask for a width the int8 GEMM covers and no native
                         // libraries; the API asks for a width it does not.
                         withProperties(
                                 () -> {
@@ -75,26 +75,26 @@ public class PackedWeightsPolicyAccelTest {
     }
 
     @Test
-    public void aSessionTilesForItsOwnPolicy() throws Exception {
+    public void aSessionPrepacksForItsOwnPolicy() throws Exception {
         Path gemma = locate(Fixture.GEMMA_4_E2B_Q4_0);
         assumeTrue("needs int8 tensor cores", TensorCoreSupport.isInt8MmaCapable());
         withGpu(
                 () -> {
-                    String untiled;
+                    String unprepacked;
                     try (LocalModel narrow = LocalModels.load(gemma, options(64, false))) {
-                        untiled = generate((TextGenerationModel) narrow);
+                        unprepacked = generate((TextGenerationModel) narrow);
                     }
                     try (LocalModel loaded = LocalModels.load(gemma, options(128, false))) {
                         TextGenerationModel model = (TextGenerationModel) loaded;
-                        String tiled = generate(model);
-                        // A width the int8 GEMM does not tile: no tiles, over the same weights a
-                        // tiled plan has repacked on its own device copy.
+                        String prepacked = generate(model);
+                        // A width the int8 GEMM does not cover: nothing prepacked, over the same
+                        // weights a prepacking plan has prepacked on its own device copy.
                         assertEquals(
-                                untiled,
+                                unprepacked,
                                 generate(
                                         model,
                                         ExecutionPolicy.Overrides.builder().prefillBatchSize(64)));
-                        assertEquals(tiled, generate(model));
+                        assertEquals(prepacked, generate(model));
                     }
                 });
     }

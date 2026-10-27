@@ -2,9 +2,9 @@ package org.beehive.jitllm.backend.tornado;
 
 import org.beehive.jitllm.auxiliary.RunMetrics;
 import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
-import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.plan.SingleTokenForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.ExecutionInfo;
@@ -74,7 +74,7 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
             executionPlan.withPreCompilation();
             long warmupTime = System.nanoTime();
 
-            PackedRepack.run(executionPlan, packedRepack);
+            WeightPrepacker.run(executionPlan, prepack);
             forceCopyInReadOnlyData();
             long copyTime = System.nanoTime();
 
@@ -123,14 +123,14 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
         this.tornadoVMForwardPlan = ForwardPlanFactory.createSingleToken(weightType, state, model);
         this.taskGraphLayout = tornadoVMForwardPlan.getTaskGraphLayout();
         var taskGraphs = new java.util.ArrayList<>(tornadoVMForwardPlan.getImmutableTaskGraphs());
-        packedRepack =
-                state.workspace.packedRepack.appendGraphs(
+        prepack =
+                state.workspace.prepacker.appendGraphs(
                         taskGraphs, tornadoVMForwardPlan.getGridScheduler());
         return new TornadoExecutionPlan(taskGraphs.toArray(new ImmutableTaskGraph[0]));
     }
 
-    /** The graphs that repack the packed weights on the GPU before the warm-up, or null. */
-    private PackedRepack.Graphs packedRepack;
+    /** The graphs that prepack the weights on the GPU before the warm-up, or null. */
+    private WeightPrepacker.PrepackGraphs prepack;
 
     // @formatter:off
     @Override

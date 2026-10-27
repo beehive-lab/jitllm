@@ -8,7 +8,6 @@ import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.fp16.Gemma4FP16PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.q8_0.Gemma4Q8_0PlanComponents;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.inference.state.Gemma4State;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
@@ -60,13 +59,15 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
     }
 
     /**
-     * Q4_0 trunk projections, read as tiles by the packed-integer kernels. Not when those are
-     * switched off, and not under native libraries, whose cuBLAS projections read no tiles.
+     * Q4_0 trunk projections, read prepacked by the packed-integer kernels. Not when those are
+     * switched off, and not under native libraries, whose cuBLAS projections read none prepacked.
      */
     @Override
-    public Set<DataType> tileTypes(ExecutionPolicy policy) {
+    public Set<DataType> prepackableTypes(ExecutionPolicy policy) {
         return policy.nativeLibraries()
-                        || !PackedWeights.packedIntegerDotOn("jitllm.gemma4.packedIntegerDot")
+                        || "false"
+                                .equalsIgnoreCase(
+                                        System.getProperty("jitllm.gemma4.packedIntegerDot"))
                 ? Set.of()
                 : Set.of(DataType.Q4_0);
     }

@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
@@ -186,11 +187,11 @@ public interface TornadoPlanProvider {
     }
 
     /**
-     * The representations this family's kernels read as tiles under {@code policy}, or none. A plan
-     * holds a projection of one of them in tiles where packing is on and its shape divides into
-     * tiles ({@link TileLayout}).
+     * The representations this family's kernels read prepacked under {@code policy}, or none. A
+     * plan prepacks a projection of one of them where prepacking is on and its shape fits ({@link
+     * WeightPrepacking}).
      */
-    default Set<DataType> tileTypes(ExecutionPolicy policy) {
+    default Set<DataType> prepackableTypes(ExecutionPolicy policy) {
         return Set.of();
     }
 

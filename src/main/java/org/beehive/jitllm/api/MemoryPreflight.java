@@ -5,8 +5,8 @@ import java.nio.file.Path;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.memory.TornadoMemoryModel;
-import org.beehive.jitllm.backend.tornado.plan.TileLayout;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.loader.ModelLoader;
 import org.beehive.jitllm.runtime.memory.MemoryPlan;
@@ -73,22 +73,22 @@ final class MemoryPreflight {
                 withWorkspace
                         ? workspace(model, modelFile, options, policy)
                         : java.util.Optional.empty(),
-                packedRepackScratchBytes(modelFile, model.architecture(), policy));
+                prepackScratchBytes(modelFile, model.architecture(), policy));
     }
 
     /**
-     * The scratch a plan under {@code policy} repacks its tiled projections through, or 0 when it
-     * tiles none: the same rule a plan applies ({@link TileLayout#tiledTypes}), asked of the file's
-     * descriptors.
+     * The scratch a plan under {@code policy} prepacks its projections through, or 0 when it
+     * prepacks none: the same rule a plan applies ({@link WeightPrepacking#prepackedTypes}), asked
+     * of the file's descriptors.
      */
-    private static long packedRepackScratchBytes(
+    private static long prepackScratchBytes(
             Path modelFile, ArchitectureId architecture, ExecutionPolicy policy)
             throws IOException {
-        Set<DataType> tiled =
+        Set<DataType> prepacked =
                 TornadoPlanRegistry.provider(architecture)
-                        .map(provider -> TileLayout.tiledTypes(provider, policy))
+                        .map(provider -> WeightPrepacking.prepackedTypes(provider, policy))
                         .orElse(Set.of());
-        return ModelLoader.packedProjectionBytes(modelFile, tiled);
+        return ModelLoader.prepackedProjectionBytes(modelFile, prepacked);
     }
 
     private static org.beehive.jitllm.runtime.memory.KeyValueReservation keyValueReservation(

@@ -12,9 +12,9 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels
 import org.beehive.jitllm.backend.tornado.kv.TornadoKvStore;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
 import org.beehive.jitllm.backend.tornado.plan.BatchDecode;
-import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
@@ -244,9 +244,9 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         all.add(logits.snapshot());
         this.layerCount = layerGraphs.size();
         this.logitsGraphIndex = 1 + layerCount;
-        var packedRepack = state.workspace.packedRepack.appendGraphs(all, schedule);
+        var prepack = state.workspace.prepacker.appendGraphs(all, schedule);
         this.plan = new TornadoExecutionPlan(all.toArray(new ImmutableTaskGraph[0]));
-        PackedRepack.run(plan, packedRepack);
+        WeightPrepacker.run(plan, prepack);
         var roles = new java.util.HashMap<Integer, String>();
         roles.put(0, "batch activation");
         TaskGraphChainPrinter.label(roles, 1, layerCount, "layers");

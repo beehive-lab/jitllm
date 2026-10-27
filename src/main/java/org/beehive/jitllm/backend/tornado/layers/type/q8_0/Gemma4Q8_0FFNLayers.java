@@ -14,11 +14,11 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGra
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
-import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Gemma4State;
 import org.beehive.jitllm.inference.weights.tornado.Gemma4TornadoWeights;
@@ -674,11 +674,13 @@ public class Gemma4Q8_0FFNLayers
         // Gate and up share one pass over one local array and one tree reduction, so the pair has
         // to be dispatched together rather than tensor by tensor. They are the same representation
         // in every file this family loads -- projectionType() refuses a trunk that disagrees.
-        if (packedQ4(weights.w1Layered[layerIndex]) || packedQ4(weights.w3Layered[layerIndex])) {
+        if (prepackedQ4(weights.w1Layered[layerIndex])
+                || prepackedQ4(weights.w3Layered[layerIndex])) {
             if (!packed
-                    || !packedQ4(weights.w1Layered[layerIndex])
-                    || !packedQ4(weights.w3Layered[layerIndex])) {
-                throw PackedWeights.noPackedKernel("gemma4 layer " + layerIndex + " fused gate/up");
+                    || !prepackedQ4(weights.w1Layered[layerIndex])
+                    || !prepackedQ4(weights.w3Layered[layerIndex])) {
+                throw WeightPrepacking.noPrepackedKernel(
+                        "gemma4 layer " + layerIndex + " fused gate/up");
             }
             unifiedLayer.task(
                     tn(layerIndex, "ffn_gate_up"),
@@ -922,7 +924,7 @@ public class Gemma4Q8_0FFNLayers
         if (batchedPlan) {
             unifiedLayer.consumeFromDevice(
                     GraphNames.batchPrefillLayer(layerIndex),
-                    PackedRepack.deviceArrays(shared.toArray()));
+                    WeightPrepacker.deviceArrays(shared.toArray()));
         } else {
             own.addAll(shared);
         }
@@ -930,8 +932,8 @@ public class Gemma4Q8_0FFNLayers
             own.add(weights.perLayerInpGate[layerIndex]);
             own.add(weights.perLayerProj[layerIndex]);
         }
-        gemma4State.workspace.packedRepack.upload(
-                unifiedLayer, state.workspace.tileLayout, own.toArray());
+        gemma4State.workspace.prepacker.configureGraphInputs(
+                unifiedLayer, state.workspace.prepacking, own.toArray());
     }
 
     /** Whether the batched prefill multiplies the projections on MLX, in its own form of them. */
@@ -1127,7 +1129,7 @@ public class Gemma4Q8_0FFNLayers
      * and layer 0, and layer 0 that does not name its producer imports a buffer nobody wrote —
      * measured as an activation of exactly zero out of every decode layer, with the model still
      * emitting fluent tokens off the resulting logits. In the single-token plan the activation
-     * graph runs just before, but layer 0 also consumes its packed weights by name, and a graph
+     * graph runs just before, but layer 0 also consumes its prepacked weights by name, and a graph
      * that consumes anything by name takes nothing through an unnamed consume.
      */
     // @formatter:on
@@ -1225,7 +1227,7 @@ public class Gemma4Q8_0FFNLayers
             int n,
             int d,
             boolean packedActivation) {
-        if (packedQ4(w)) {
+        if (prepackedQ4(w)) {
             if (packedActivation) {
                 tg.task(
                         taskName,
@@ -1376,9 +1378,9 @@ public class Gemma4Q8_0FFNLayers
         }
     }
 
-    /** Whether the plan holds {@code w} as Q4_0 tiles. */
-    private boolean packedQ4(TornadoTensor w) {
-        return state.workspace.tileLayout.tiledQ4(w);
+    /** Whether the plan prepacks {@code w} as Q4_0. */
+    private boolean prepackedQ4(TornadoTensor w) {
+        return state.workspace.prepacking.prepackedQ4(w);
     }
 
     // @formatter:off
@@ -1403,7 +1405,7 @@ public class Gemma4Q8_0FFNLayers
 
     /** The worker grid of a projection of {@code rows} outputs, matching its kernel. */
     private WorkerGrid projectionGrid(TornadoTensor w, int rows) {
-        if (packedQ4(w)) {
+        if (prepackedQ4(w)) {
             return WorkerGridFactory.genericWorker(
                     rows
                             / 16
@@ -1493,7 +1495,7 @@ public class Gemma4Q8_0FFNLayers
             WorkerGrid ropeWorker = WorkerGridFactory.createRoPEWorker(nHead, headDim);
             WorkerGrid attentionWorker = WorkerGridFactory.createAttentionWorker(nHead, headDim);
             WorkerGrid ffnGateUpWorker =
-                    packedQ4(weights.w1Layered[i])
+                    prepackedQ4(weights.w1Layered[i])
                             ? WorkerGridFactory.genericWorker(
                                     ffnLen
                                             / 16

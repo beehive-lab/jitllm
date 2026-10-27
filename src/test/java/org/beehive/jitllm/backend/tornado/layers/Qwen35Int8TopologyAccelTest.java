@@ -10,7 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
-import org.beehive.jitllm.backend.tornado.plan.TileLayout;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_1TornadoTensor;
@@ -222,12 +222,14 @@ public class Qwen35Int8TopologyAccelTest {
             List<TornadoTensor> tiled = new ArrayList<>();
             for (TornadoTensor[] role : weights.projections()) {
                 for (TornadoTensor w : role) {
-                    if (w != null && w.dataType() == DataType.Q4_0 && TileLayout.fits(w.shape())) {
+                    if (w != null
+                            && w.dataType() == DataType.Q4_0
+                            && WeightPrepacking.fits(w.shape())) {
                         tiled.add(w);
                     }
                 }
             }
-            state.workspace.tileLayout = TileLayout.of(tiled);
+            state.workspace.prepacking = WeightPrepacking.of(tiled);
         }
         return new Qwen35BatchPrefillLayers(state, weights, config, WIDTH);
     }

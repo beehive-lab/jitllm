@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections.LayerWeights;
-import org.beehive.jitllm.backend.tornado.plan.TileLayout;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor;
@@ -319,7 +319,7 @@ public class MlxPrefillProjectionsTest {
                 new LayerWeights(
                         new TornadoTensor[] {packed}, packed, new TornadoTensor[] {packed}, packed);
         State state = new LlamaState(TINY_LLAMA, -1);
-        state.workspace.tileLayout = TileLayout.of(List.of(packed));
+        state.workspace.prepacking = WeightPrepacking.of(List.of(packed));
         UnsupportedOperationException e =
                 assertThrows(
                         UnsupportedOperationException.class,

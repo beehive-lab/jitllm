@@ -10,6 +10,7 @@ import java.util.ServiceLoader;
 import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.PrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Model;
@@ -214,10 +215,10 @@ public final class TornadoPlanRegistry {
                         });
 
         // Decided before the components build their layer graphs, which read it.
-        state.workspace.tileLayout =
+        state.workspace.prepacking =
                 model.weights() instanceof TornadoWeights weights
-                        ? TileLayout.forPlan(provider, weights, state.executionPolicy())
-                        : TileLayout.NONE;
+                        ? WeightPrepacking.forPlan(provider, weights, state.executionPolicy())
+                        : WeightPrepacking.NONE;
         SingleTokenForwardPlanComponents components =
                 provider.components(quantization, state, model);
         // A provider may support a mode for one representation and not for another — Llama has

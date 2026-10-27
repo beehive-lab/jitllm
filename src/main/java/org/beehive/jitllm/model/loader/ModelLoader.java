@@ -10,7 +10,7 @@ import java.util.function.IntFunction;
 import org.beehive.jitllm.Options;
 import org.beehive.jitllm.auxiliary.RunMetrics;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jitllm.backend.tornado.plan.TileLayout;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
@@ -231,16 +231,17 @@ public final class ModelLoader {
     }
 
     /**
-     * The bytes of the largest per-layer projection a plan would tile, given the representations it
-     * tiles: a two-dimensional {@code blk.*} tensor of one of {@code tiled} whose shape divides
-     * into tiles ({@link TileLayout#fits}). Zero when there is none.
+     * The bytes of the largest per-layer projection a plan would prepack, given the representations
+     * it prepacks: a two-dimensional {@code blk.*} tensor of one of {@code prepacked} whose shape
+     * fits ({@link WeightPrepacking#fits}). Zero when there is none.
      *
      * <p>Descriptors only, like {@link #weightFootprint}. It is the size of the scratch buffer the
-     * tiled weights are repacked through on the device, which is as large as the largest of them.
+     * prepacked weights are prepacked through on the device, which is as large as the largest of
+     * them.
      */
-    public static long packedProjectionBytes(Path ggufPath, java.util.Set<DataType> tiled)
+    public static long prepackedProjectionBytes(Path ggufPath, java.util.Set<DataType> prepacked)
             throws IOException {
-        if (tiled.isEmpty()) {
+        if (prepacked.isEmpty()) {
             return 0;
         }
         GGUF gguf = GGUF.loadGGUFMetadata(ggufPath);
@@ -249,8 +250,8 @@ public final class ModelLoader {
             DataType source = DataTypeMapping.sourceType(info.ggmlType());
             int[] shape = info.dimensions();
             if (!info.name().startsWith("blk.")
-                    || !tiled.contains(source)
-                    || !TileLayout.fits(Shape.of(shape))) {
+                    || !prepacked.contains(source)
+                    || !WeightPrepacking.fits(Shape.of(shape))) {
                 continue;
             }
             long bytes = TensorDescriptors.layoutOf(source).byteSize((long) shape[0] * shape[1]);

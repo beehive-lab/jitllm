@@ -5,8 +5,8 @@ import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers;
 import org.beehive.jitllm.backend.tornado.plan.BatchPrefillDecodeForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
-import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.plan.layout.BatchPrefillDecodeForwardTaskGraphLayout;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.ExecutionInfo;
@@ -114,7 +114,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
             executionPlan.withPreCompilation();
             long warmupTime = System.nanoTime();
 
-            PackedRepack.run(executionPlan, packedRepack);
+            WeightPrepacker.run(executionPlan, prepack);
             forceCopyInReadOnlyData();
             long copyTime = System.nanoTime();
 
@@ -209,14 +209,14 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
         this.taskGraphLayout = batchPrefillDecodeForwardPlan.getTaskGraphLayout();
         var taskGraphs =
                 new java.util.ArrayList<>(batchPrefillDecodeForwardPlan.getImmutableTaskGraphs());
-        packedRepack =
-                state.workspace.packedRepack.appendGraphs(
+        prepack =
+                state.workspace.prepacker.appendGraphs(
                         taskGraphs, batchPrefillDecodeForwardPlan.getGridScheduler());
         return new TornadoExecutionPlan(taskGraphs.toArray(new ImmutableTaskGraph[0]));
     }
 
-    /** The graphs that repack the packed weights on the GPU before the warm-up, or null. */
-    private PackedRepack.Graphs packedRepack;
+    /** The graphs that prepack the weights on the GPU before the warm-up, or null. */
+    private WeightPrepacker.PrepackGraphs prepack;
 
     // ── Initialisation ────────────────────────────────────────────────────────
 

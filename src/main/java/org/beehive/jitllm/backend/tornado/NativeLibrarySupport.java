@@ -5,8 +5,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
-import org.beehive.jitllm.backend.tornado.plan.TileLayout;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
@@ -49,7 +49,7 @@ public final class NativeLibrarySupport {
             return policy;
         }
         Combination combination = Fp16KeyValueSupport.resolve(model, policy, true);
-        if (unsupported(combination).isPresent() || losesTiles(combination, policy)) {
+        if (unsupported(combination).isPresent() || losesPrepacking(combination, policy)) {
             return policy;
         }
         boolean metal = BackendId.METAL.equals(combination.backend());
@@ -79,18 +79,20 @@ public final class NativeLibrarySupport {
     }
 
     /**
-     * Whether native libraries would give up tiles the JIT plan holds the weights in under {@code
-     * policy} ({@link TileLayout#tiledTypes}): Gemma 4's cuBLAS projections read none, so its Q4_0
-     * keeps the packed JIT kernels by default.
+     * Whether native libraries would give up the weight prepacking the JIT plan does under {@code
+     * policy} ({@link WeightPrepacking#prepackedTypes}): Gemma 4's cuBLAS projections read nothing
+     * prepacked, so its Q4_0 keeps the prepacked JIT kernels by default.
      */
-    private static boolean losesTiles(Combination c, ExecutionPolicy policy) {
+    private static boolean losesPrepacking(Combination c, ExecutionPolicy policy) {
         ExecutionPolicy nativeLibraries =
                 ExecutionPolicy.from(policy).nativeLibraries(true).build();
         return TornadoPlanRegistry.provider(c.architecture())
                 .map(
                         provider ->
-                                TileLayout.tiledTypes(provider, policy).contains(c.weights())
-                                        && !TileLayout.tiledTypes(provider, nativeLibraries)
+                                WeightPrepacking.prepackedTypes(provider, policy)
+                                                .contains(c.weights())
+                                        && !WeightPrepacking.prepackedTypes(
+                                                        provider, nativeLibraries)
                                                 .contains(c.weights()))
                 .orElse(false);
     }

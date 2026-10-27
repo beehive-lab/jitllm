@@ -162,12 +162,12 @@ public final class TornadoMemoryModel {
 
     /**
      * {@link #predict(WeightFootprint, Configuration, ExecutionPolicy, Device, long,
-     * KeyValueReservation, java.util.Optional)} for a model whose plans tile projections: each
-     * session's plan repacks them on the device through one scratch buffer as large as the largest
-     * ({@code PackedRepack}), and keeps it for the plan's lifetime.
+     * KeyValueReservation, java.util.Optional)} for a model whose plans prepack projections: each
+     * session's plan prepacks them on the device through one scratch buffer as large as the largest
+     * ({@code WeightPrepacker}), and keeps it for the plan's lifetime.
      *
-     * @param packedRepackScratchBytes the largest tiled projection's bytes, or 0 when the plan
-     *     tiles none
+     * @param prepackScratchBytes the largest prepacked projection's bytes, or 0 when the plan
+     *     prepacks none
      */
     public static MemoryPlan predict(
             WeightFootprint weights,
@@ -177,7 +177,7 @@ public final class TornadoMemoryModel {
             long configuredBudgetBytes,
             KeyValueReservation keyValue,
             java.util.Optional<BatchPrefillWorkspace> prefill,
-            long packedRepackScratchBytes) {
+            long prepackScratchBytes) {
         long header = device.nativeArrayHeaderBytes();
         int layoutFamilies = layerGraphFamilies(policy, config.numberOfLayers());
         // How many of those families upload the weights, which is what costs memory. A family
@@ -249,15 +249,16 @@ public final class TornadoMemoryModel {
                             2 * header));
         }
 
-        // ── the repack scratch, for a plan that tiles its projections ────────
-        // One per session, because each session's plan appends its own repack graphs; the scratch
-        // and the flag that makes a second repack a no-op stay on the device with the plan.
-        if (packedRepackScratchBytes > 0) {
+        // ── the prepack scratch, for a plan that prepacks its projections ────
+        // One per session, because each session's plan appends its own prepacking graphs; the
+        // scratch
+        // and the flag that makes a second prepack a no-op stay on the device with the plan.
+        if (prepackScratchBytes > 0) {
             components.add(
                     new MemoryComponent(
-                            "packed-weight repack scratch",
+                            "weight prepack scratch",
                             BufferClass.ACTIVATION_WORKSPACE,
-                            packedRepackScratchBytes + Integer.BYTES,
+                            prepackScratchBytes + Integer.BYTES,
                             keyValue.sessions(),
                             2L * keyValue.sessions() * header));
         }

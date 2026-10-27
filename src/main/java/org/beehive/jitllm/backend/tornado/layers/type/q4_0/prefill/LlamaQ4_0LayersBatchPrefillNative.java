@@ -13,8 +13,8 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.LlamaState;
@@ -281,9 +281,9 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
                     state.workspace.wrapBlockTable);
         }
 
-        state.workspace.packedRepack.upload(
+        state.workspace.prepacker.configureGraphInputs(
                 layer,
-                state.workspace.tileLayout,
+                state.workspace.prepacking,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 weights.wqLayered[layerIndex],
                 weights.wkLayered[layerIndex],
@@ -788,7 +788,7 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
         FloatArray partial = splits > 1 ? splitPartial : out;
         layer.task(
                 name,
-                state.workspace.tileLayout.tiledQ4(w)
+                state.workspace.prepacking.prepackedQ4(w)
                         ? Int8GemmKernels::gemmInt8Q4_0Packed
                         : Int8GemmKernels::gemmInt8Q4_0,
                 context,
@@ -831,9 +831,9 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
 
     /** Decodes {@code w} into the scratch at {@code offset}, by the tensor's own representation. */
     private void dequantize(TaskGraph layer, String name, TornadoTensor w, int offset) {
-        if (state.workspace.tileLayout.tiledQ4(w)) {
-            // A packed weight has only the int8 GEMM.
-            throw PackedWeights.noPackedKernel("llama batch-prefill task '" + name + "'");
+        if (state.workspace.prepacking.prepackedQ4(w)) {
+            // A prepacked weight has only the int8 GEMM.
+            throw WeightPrepacking.noPrepackedKernel("llama batch-prefill task '" + name + "'");
         }
         DataType type = w.dataType();
         if (type == DataType.Q4_0) {
