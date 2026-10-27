@@ -8,6 +8,8 @@ import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupFP16Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupKernels;
@@ -18,15 +20,18 @@ import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
+import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 /**
  * Batched-prefill transformer-layer TaskGraphs for the Qwen3 Q8_0 unified batched prefill-decode
@@ -58,6 +63,9 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
     }
 
     static final int LOCAL_WORK_GROUP_SIZE = 32;
+
+    /** Lanes per workgroup of the tiled K-quant projections, as Qwen3.5's batched prefill uses. */
+    private static final int TILED_LOCAL = 128;
 
     private final Qwen3State state;
     private final Qwen3TornadoWeights weights;
@@ -218,25 +226,56 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.workspace.attnScaleBatch,
                     dim);
 
-            layer.task(
-                    "batch_qkv",
-                    tiledQkv()
-                            ? (simdgroupGemm()
-                                    ? TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8
-                                    : TransformerBatchPrefillKernels::batchedGemmQKVQ8)
-                            : Qwen3Kernels::batchedFusedQKVMatmulQ8_0,
-                    context,
-                    state.workspace.wrapXbBatch,
-                    state.workspace.wrapQBatch,
-                    state.workspace.wrapKBatch,
-                    state.workspace.wrapVBatch,
-                    weights.wqLayered[layerIndex].asByteArray(),
-                    weights.wkLayered[layerIndex].asByteArray(),
-                    weights.wvLayered[layerIndex].asByteArray(),
-                    dim,
-                    qDim,
-                    kvDim,
-                    tiledQkv() ? batchSize : LOCAL_WORK_GROUP_SIZE);
+            if (kQuantLayer(layerIndex)) {
+                // One projection each: wq, wk and wv can be different representations.
+                kQuantProjection(
+                        layer,
+                        "batch_q",
+                        state.workspace.wrapXbBatch,
+                        state.workspace.wrapQBatch,
+                        weights.wqLayered[layerIndex],
+                        dim,
+                        qDim,
+                        false);
+                kQuantProjection(
+                        layer,
+                        "batch_k",
+                        state.workspace.wrapXbBatch,
+                        state.workspace.wrapKBatch,
+                        weights.wkLayered[layerIndex],
+                        dim,
+                        kvDim,
+                        false);
+                kQuantProjection(
+                        layer,
+                        "batch_v",
+                        state.workspace.wrapXbBatch,
+                        state.workspace.wrapVBatch,
+                        weights.wvLayered[layerIndex],
+                        dim,
+                        kvDim,
+                        false);
+            } else {
+                layer.task(
+                        "batch_qkv",
+                        tiledQkv()
+                                ? (simdgroupGemm()
+                                        ? TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8
+                                        : TransformerBatchPrefillKernels::batchedGemmQKVQ8)
+                                : Qwen3Kernels::batchedFusedQKVMatmulQ8_0,
+                        context,
+                        state.workspace.wrapXbBatch,
+                        state.workspace.wrapQBatch,
+                        state.workspace.wrapKBatch,
+                        state.workspace.wrapVBatch,
+                        weights.wqLayered[layerIndex].asByteArray(),
+                        weights.wkLayered[layerIndex].asByteArray(),
+                        weights.wvLayered[layerIndex].asByteArray(),
+                        dim,
+                        qDim,
+                        kvDim,
+                        tiledQkv() ? batchSize : LOCAL_WORK_GROUP_SIZE);
+            }
         }
 
         layer.task(
@@ -358,6 +397,16 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         // Output projection (Q8_0): n=qDim, d=dim
         if (mlxProjections != null) {
             mlxProjections.attentionOutput(layer, layerIndex);
+        } else if (kQuantLayer(layerIndex)) {
+            kQuantProjection(
+                    layer,
+                    "batch_attn_out",
+                    state.workspace.wrapXbBatch,
+                    state.workspace.wrapXBatch,
+                    weights.woLayered[layerIndex],
+                    qDim,
+                    dim,
+                    true);
         } else {
             layer.task(
                     "batch_attn_out",
@@ -388,6 +437,17 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
         if (mlxProjections != null) {
             mlxProjections.ffn(layer, layerIndex);
+        } else if (kQuantLayer(layerIndex)) {
+            kQuantGateUp(layer, layerIndex, dim, hidDim);
+            kQuantProjection(
+                    layer,
+                    "batch_ffn_down",
+                    state.workspace.wrapHbBatch,
+                    state.workspace.wrapXBatch,
+                    weights.w2Layered[layerIndex],
+                    hidDim,
+                    dim,
+                    true);
         } else {
             layer.task(
                     "batch_ffn_gate_up",
@@ -500,6 +560,11 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             if (mlxProjections != null) {
                 mlxProjections.addGrids(scheduler, p);
+            } else if (kQuantLayer(i)) {
+                scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApplyWorker);
+                scheduler.addWorkerGrid(p + "batch_q", kQuantWorker(qDim));
+                scheduler.addWorkerGrid(p + "batch_k", kQuantWorker(kvDim));
+                scheduler.addWorkerGrid(p + "batch_v", kQuantWorker(kvDim));
             } else {
                 scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApplyWorker);
                 scheduler.addWorkerGrid(p + "batch_qkv", tiledQkv() ? gemmQkvWorker : qkvWorker);
@@ -511,12 +576,22 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
             } else {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }
-            if (mlxProjections == null) {
+            if (mlxProjections == null && kQuantLayer(i)) {
+                scheduler.addWorkerGrid(p + "batch_attn_out", kQuantWorker(dim));
+            } else if (mlxProjections == null) {
                 scheduler.addWorkerGrid(
                         p + "batch_attn_out", tiledGemm() ? gemmDimWorker : matVecDimWorker);
             }
             scheduler.addWorkerGrid(p + "batch_ffn_rms", rmsWorker);
-            if (mlxProjections == null) {
+            if (mlxProjections == null && kQuantLayer(i)) {
+                if (simdgroupGemm()) {
+                    scheduler.addWorkerGrid(p + "batch_ffn_gate_up", gemmHidWorker);
+                } else {
+                    scheduler.addWorkerGrid(p + "batch_ffn_rms_apply", rmsApplyWorker);
+                    scheduler.addWorkerGrid(p + "batch_ffn_gate_up", kQuantWorker(hidDim));
+                }
+                scheduler.addWorkerGrid(p + "batch_ffn_down", kQuantWorker(dim));
+            } else if (mlxProjections == null) {
                 scheduler.addWorkerGrid(
                         p + "batch_ffn_gate_up", tiledGemm() ? gemmHidWorker : matVecHidWorker);
                 scheduler.addWorkerGrid(
@@ -535,6 +610,129 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
     public KernelContext getContext() {
         return context;
+    }
+
+    /**
+     * Whether a layer reads its projections as K-quants: a Q4_K_M file whose tensors are kept as
+     * the file stores them. Each projection then runs on its own tensor's kernel, on SIMD-group
+     * matrices where {@link #simdgroupGemm()} holds and as tiled batch projections elsewhere.
+     */
+    private boolean kQuantLayer(int layerIndex) {
+        return weights.wqLayered[layerIndex].dataType() == DataType.Q4_K;
+    }
+
+    /** {@code out = w·x} over the batch, or {@code out += w·x} with {@code residual}. */
+    private void kQuantProjection(
+            TaskGraph layer,
+            String name,
+            FloatArray x,
+            FloatArray out,
+            TornadoTensor w,
+            int n,
+            int d,
+            boolean residual) {
+        boolean q4k = w.dataType() == DataType.Q4_K;
+        if (simdgroupGemm()) {
+            layer.task(
+                    name,
+                    residual
+                            ? (q4k
+                                    ? TransformerBatchPrefillSimdgroupKernels
+                                            ::batchedGemmQ4_KWithResidual
+                                    : TransformerBatchPrefillSimdgroupKernels
+                                            ::batchedGemmQ6_KWithResidual)
+                            : (q4k
+                                    ? TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_K
+                                    : TransformerBatchPrefillSimdgroupKernels::batchedGemmQ6_K),
+                    context,
+                    x,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d,
+                    batchSize);
+        } else {
+            layer.task(
+                    name,
+                    residual
+                            ? (q4k
+                                    ? TransformerComputeKernelsQ4_K
+                                            ::matrixVectorTiledBatchWithResidualQ4_K
+                                    : TransformerComputeKernelsQ6_K
+                                            ::matrixVectorTiledBatchWithResidualQ6_K)
+                            : (q4k
+                                    ? TransformerComputeKernelsQ4_K::matrixVectorTiledBatchQ4_K
+                                    : TransformerComputeKernelsQ6_K::matrixVectorTiledBatchQ6_K),
+                    context,
+                    x,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d,
+                    batchSize,
+                    TILED_LOCAL);
+        }
+    }
+
+    /**
+     * {@code hb = SiLU(w1·x) * (w3·x)} with {@code x} the FFN-normalized activations: the norm
+     * applied as the SIMD-group kernel stages them, or by its own task before the tiled one.
+     */
+    private void kQuantGateUp(TaskGraph layer, int layerIndex, int dim, int hidDim) {
+        if (simdgroupGemm()) {
+            layer.task(
+                    "batch_ffn_gate_up",
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmRmsNormFFNGateUpQ4_K,
+                    context,
+                    state.workspace.wrapXBatch,
+                    state.workspace.wrapHbBatch,
+                    weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                    state.workspace.ffnScaleBatch,
+                    weights.w1Layered[layerIndex].asByteArray(),
+                    weights.w3Layered[layerIndex].asByteArray(),
+                    dim,
+                    hidDim,
+                    batchSize);
+            return;
+        }
+        layer.task(
+                "batch_ffn_rms_apply",
+                TransformerBatchPrefillKernels::batchedRmsApplyFP32,
+                context,
+                state.workspace.wrapXbBatch,
+                state.workspace.wrapXBatch,
+                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                state.workspace.ffnScaleBatch,
+                dim);
+        layer.task(
+                "batch_ffn_gate_up",
+                TransformerComputeKernelsQ4_K::fusedFFNGateUpSiLUTiledBatchQ4_K,
+                context,
+                state.workspace.wrapXbBatch,
+                state.workspace.wrapHbBatch,
+                weights.w1Layered[layerIndex].asByteArray(),
+                weights.w3Layered[layerIndex].asByteArray(),
+                dim,
+                hidDim,
+                batchSize,
+                TILED_LOCAL);
+    }
+
+    /** The grid of a K-quant projection to {@code rows} outputs, SIMD-group or tiled. */
+    private WorkerGrid kQuantWorker(int rows) {
+        int batchTiles = (batchSize + 63) / 64;
+        if (simdgroupGemm()) {
+            int threads = TransformerBatchPrefillSimdgroupKernels.THREADS;
+            return WorkerGridFactory.genericWorker(
+                    ((rows + 63) / 64) * batchTiles * threads, threads);
+        }
+        int rowGroups =
+                (batchSize + TransformerComputeKernelsQ4_K.rowTile() - 1)
+                        / TransformerComputeKernelsQ4_K.rowTile();
+        int colGroups =
+                (rows + TransformerComputeKernelsQ4_K.colTile() - 1)
+                        / TransformerComputeKernelsQ4_K.colTile();
+        return WorkerGridFactory.genericWorker(rowGroups * colGroups * TILED_LOCAL, TILED_LOCAL);
     }
 
     /**
