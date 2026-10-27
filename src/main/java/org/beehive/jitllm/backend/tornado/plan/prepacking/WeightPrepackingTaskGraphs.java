@@ -10,8 +10,8 @@ import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.WorkerGrid;
 
 /**
- * The prepacking {@link TaskGraphs} of one plan, built by {@link WeightPrepacker#buildTaskGraphs}: the plan's
- * initialization, which the plan lists ahead of its inference graphs.
+ * The prepacking {@link TaskGraphs} of one plan, built by {@link WeightPrepacker#buildTaskGraphs}:
+ * the plan's initialization, which the plan lists ahead of its inference graphs.
  *
  * <p>They are created after the layer graphs, which register the weights to prepack, but they come
  * first in the list and run first: the plan runs them once, before its warm-up ({@link #run}), and
