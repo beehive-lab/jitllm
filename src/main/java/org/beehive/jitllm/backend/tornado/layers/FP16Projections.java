@@ -4,6 +4,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -158,11 +160,14 @@ public final class FP16Projections {
             wholeRowBlocks &= (elements / k) % 128 == 0;
         }
         int columns = Math.toIntExact(total / k);
-        boolean allQ8 = true;
+        boolean tileDecodable = true;
         for (TornadoTensor w : ws) {
-            allQ8 &= w.dataType() == DataType.Q8_0;
+            tileDecodable &=
+                    w.dataType() == DataType.Q8_0
+                            || w.dataType() == DataType.Q4_K
+                            || w.dataType() == DataType.Q6_K;
         }
-        if (allQ8
+        if (tileDecodable
                 && !gemm.nativeGemm()
                 && wholeRowBlocks
                 && m % 128 == 0
@@ -188,6 +193,33 @@ public final class FP16Projections {
                         n,
                         decoded,
                         resident ? flag : neverDecoded);
+            } else if (ws[i].dataType() == DataType.Q4_K || ws[i].dataType() == DataType.Q6_K) {
+                boolean q4k = ws[i].dataType() == DataType.Q4_K;
+                if (resident) {
+                    layer.task(
+                            decode,
+                            q4k
+                                    ? TransformerComputeKernelsQ4_K::dequantizeQ4_KToFP16Once
+                                    : TransformerComputeKernelsQ6_K::dequantizeQ6_KToFP16Once,
+                            context,
+                            ws[i].asByteArray(),
+                            b,
+                            offset,
+                            n,
+                            decoded,
+                            flag);
+                } else {
+                    layer.task(
+                            decode,
+                            q4k
+                                    ? TransformerComputeKernelsQ4_K::dequantizeQ4_KToFP16
+                                    : TransformerComputeKernelsQ6_K::dequantizeQ6_KToFP16,
+                            context,
+                            ws[i].asByteArray(),
+                            b,
+                            offset,
+                            n);
+                }
             } else if (resident) {
                 layer.task(
                         decode,
@@ -223,14 +255,23 @@ public final class FP16Projections {
         gemm.gemm(layer, task, a, b, c, m, offset / k, k);
     }
 
-    /** Weights in {@code w}: FP16, or Q8_0 at 34 bytes to 32 weights. */
+    /**
+     * Weights in {@code w}: FP16, Q8_0 at 34 bytes to 32 weights, or Q4_K and Q6_K at 144 and 210
+     * bytes to 256.
+     */
     private static long elements(TornadoTensor w) {
-        return w.dataType() == DataType.F16
-                ? w.asHalfFloatArray().getSize()
-                : (long) w.asByteArray().getSize() / 34 * 32;
+        return switch (w.dataType()) {
+            case F16 -> w.asHalfFloatArray().getSize();
+            case Q4_K -> (long) w.asByteArray().getSize() / 144 * 256;
+            case Q6_K -> (long) w.asByteArray().getSize() / 210 * 256;
+            default -> (long) w.asByteArray().getSize() / 34 * 32;
+        };
     }
 
-    /** The tile-order decodes of {@code ws} into {@code b}, then {@code gemmMMATiledB}. */
+    /**
+     * The tile-order decodes of {@code ws} (Q8_0, Q4_K or Q6_K) into {@code b}, then {@code
+     * gemmMMATiledB}.
+     */
     private void projectTiled(
             TaskGraph layer,
             String task,
@@ -243,11 +284,15 @@ public final class FP16Projections {
             TornadoTensor... ws) {
         int offset = 0;
         for (int i = 0; i < ws.length; i++) {
-            int n = ws[i].asByteArray().getSize() / 34 * 32;
+            int n = (int) elements(ws[i]);
             String decode = task + "Decode" + i;
             layer.task(
                     decode,
-                    Qwen35MMAKernels::dequantizeQ8_0ToFP16Tiled,
+                    switch (ws[i].dataType()) {
+                        case Q4_K -> Qwen35MMAKernels::dequantizeQ4_KToFP16Tiled;
+                        case Q6_K -> Qwen35MMAKernels::dequantizeQ6_KToFP16Tiled;
+                        default -> Qwen35MMAKernels::dequantizeQ8_0ToFP16Tiled;
+                    },
                     context,
                     ws[i].asByteArray(),
                     b,
