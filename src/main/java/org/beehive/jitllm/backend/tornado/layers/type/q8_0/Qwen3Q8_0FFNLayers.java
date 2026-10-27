@@ -3,6 +3,8 @@ package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
@@ -14,14 +16,17 @@ import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.SplitKvAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
+import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 /**
  * Qwen3Q8_0FFNLayers: Q8_0 transformer-layer TaskGraphs for Qwen3 with Group Query Attention (GQA)
@@ -171,7 +176,9 @@ public class Qwen3Q8_0FFNLayers
         for (int i = 0; i < config.numberOfLayers(); i++) {
             String l = layerGraphName(i) + "." + layerTaskPrefix(i);
             gridScheduler.addWorkerGrid(l + "attn_rms_reduce", rmsReduceWorker);
-            if (packed) {
+            if (kQuantLayer(i)) {
+                addKQuantWorkerGrids(gridScheduler, l, packed, qDim0, kvDim0);
+            } else if (packed) {
                 gridScheduler.addWorkerGrid(
                         l + "attn_rms_apply", PackedActivationTasks.quantizeWorker(config.dim()));
                 gridScheduler.addWorkerGrid(l + "qkv_projection", packedWorker(fusedQKVRows));
@@ -300,7 +307,36 @@ public class Qwen3Q8_0FFNLayers
         }
 
         // Fused RMS Apply + QKV Projection
-        if (PackedActivationTasks.enabled()) {
+        if (kQuantLayer(layerIndex)) {
+            kQuantRmsApply(
+                    unifiedLayer,
+                    tp + "attn_rms_apply",
+                    weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                    qwen3State.workspace.temp);
+            // Three projections rather than one fused kernel: wq, wk and wv can be different
+            // representations in the same layer, and one kernel cannot decode two block formats.
+            kQuantMatvec(
+                    unifiedLayer,
+                    tp + "q_proj",
+                    qwen3State.workspace.wrapQ,
+                    weights.wqLayered[layerIndex],
+                    inputDim,
+                    qDim);
+            kQuantMatvec(
+                    unifiedLayer,
+                    tp + "k_proj",
+                    qwen3State.workspace.wrapK,
+                    weights.wkLayered[layerIndex],
+                    inputDim,
+                    kvDim);
+            kQuantMatvec(
+                    unifiedLayer,
+                    tp + "v_proj",
+                    qwen3State.workspace.wrapV,
+                    weights.wvLayered[layerIndex],
+                    inputDim,
+                    kvDim);
+        } else if (PackedActivationTasks.enabled()) {
             PackedActivationTasks.rmsApplyAndQuantize(
                     unifiedLayer,
                     tp + "attn_rms_apply",
@@ -513,7 +549,16 @@ public class Qwen3Q8_0FFNLayers
         }
 
         // Output Projection with Residual
-        if (PackedActivationTasks.enabled()) {
+        if (kQuantLayer(layerIndex)) {
+            kQuantResidualMatvec(
+                    unifiedLayer,
+                    tp + "attn_out_quantize",
+                    tp + "attn_output_proj",
+                    qwen3State.workspace.wrapXb,
+                    weights.woLayered[layerIndex],
+                    qDim,
+                    config.dim());
+        } else if (PackedActivationTasks.enabled()) {
             // The attention output is a new activation: quantized fresh for the projection.
             PackedActivationTasks.quantize(
                     unifiedLayer,
@@ -582,7 +627,14 @@ public class Qwen3Q8_0FFNLayers
         }
 
         // Fused RMS Apply + Gate/Up Projection + SiLU + GLU
-        if (PackedActivationTasks.enabled()) {
+        if (kQuantLayer(layerIndex)) {
+            kQuantRmsApply(
+                    unifiedLayer,
+                    tp + "ffn_rms_apply",
+                    weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                    qwen3State.workspace.tempFFN);
+            kQuantGateUp(unifiedLayer, tp + "ffn_gate_up", layerIndex);
+        } else if (PackedActivationTasks.enabled()) {
             PackedActivationTasks.rmsApplyAndQuantize(
                     unifiedLayer,
                     tp + "ffn_rms_apply",
@@ -633,7 +685,16 @@ public class Qwen3Q8_0FFNLayers
         }
 
         // Down Projection with Residual
-        if (PackedActivationTasks.enabled()) {
+        if (kQuantLayer(layerIndex)) {
+            kQuantResidualMatvec(
+                    unifiedLayer,
+                    tp + "ffn_down_quantize",
+                    tp + "ffn_down_proj",
+                    qwen3State.workspace.wrapHb,
+                    weights.w2Layered[layerIndex],
+                    config.hiddenDim(),
+                    config.dim());
+        } else if (PackedActivationTasks.enabled()) {
             // SwiGLU's output, quantized fresh for the down projection.
             PackedActivationTasks.quantize(
                     unifiedLayer,
@@ -681,6 +742,176 @@ public class Qwen3Q8_0FFNLayers
     }
 
     // @formatter:on
+
+    /**
+     * Whether a layer reads its projections as K-quants: a Q4_K_M file whose tensors are kept as
+     * the file stores them. Such a layer applies each norm once and selects every projection's
+     * kernel from its own tensor's type, as Devstral's do; a Q8_0 layer keeps its fused kernels.
+     */
+    private boolean kQuantLayer(int layerIndex) {
+        return weights.wqLayered[layerIndex].dataType() == DataType.Q4_K;
+    }
+
+    /** {@code wrapXb = rms * temp[0] * wrapX}, quantized as well where projections are packed. */
+    private void kQuantRmsApply(TaskGraph graph, String name, FloatArray rms, FloatArray temp) {
+        if (PackedActivationTasks.enabled()) {
+            PackedActivationTasks.rmsApplyAndQuantize(
+                    graph, name, context, qwen3State.workspace, rms, temp);
+        } else {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsLayered::reductionOneBlock2WithLayer,
+                    context,
+                    qwen3State.workspace.wrapXb,
+                    qwen3State.workspace.wrapX,
+                    rms,
+                    temp);
+        }
+    }
+
+    /** {@code out = w·wrapXb}, the kernel chosen by what {@code w} holds. */
+    private void kQuantMatvec(
+            TaskGraph graph, String name, FloatArray out, TornadoTensor w, int n, int d) {
+        boolean q4k = w.dataType() == DataType.Q4_K;
+        if (PackedActivationTasks.enabled()) {
+            graph.task(
+                    name,
+                    q4k
+                            ? TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_KDP4A
+                            : TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_KDP4A,
+                    context,
+                    qwen3State.workspace.wrapXbQuants,
+                    qwen3State.workspace.wrapXbScales,
+                    qwen3State.workspace.wrapXbSums,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d,
+                    PACKED_LOCAL);
+        } else {
+            graph.task(
+                    name,
+                    q4k
+                            ? TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_K
+                            : TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_K,
+                    context,
+                    qwen3State.workspace.wrapXb,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d,
+                    LOCAL_WORK_GROUP_SIZE_ALLOC);
+        }
+    }
+
+    /**
+     * {@code wrapX += w·x}, the kernel chosen by what {@code w} holds; where projections are
+     * packed, {@code x} is quantized first by {@code quantizeName}.
+     */
+    private void kQuantResidualMatvec(
+            TaskGraph graph,
+            String quantizeName,
+            String name,
+            FloatArray x,
+            TornadoTensor w,
+            int n,
+            int d) {
+        boolean q4k = w.dataType() == DataType.Q4_K;
+        if (PackedActivationTasks.enabled()) {
+            PackedActivationTasks.quantize(graph, quantizeName, context, qwen3State.workspace, x);
+            graph.task(
+                    name,
+                    q4k
+                            ? TransformerComputeKernelsQ4_K::matrixVectorGenericWithResidualQ4_KDP4A
+                            : TransformerComputeKernelsQ6_K
+                                    ::matrixVectorGenericWithResidualQ6_KDP4A,
+                    context,
+                    qwen3State.workspace.wrapXbQuants,
+                    qwen3State.workspace.wrapXbScales,
+                    qwen3State.workspace.wrapXbSums,
+                    qwen3State.workspace.wrapX,
+                    w.asByteArray(),
+                    n,
+                    d,
+                    PACKED_LOCAL);
+        } else {
+            graph.task(
+                    name,
+                    q4k
+                            ? TransformerComputeKernelsQ4_K::matrixVectorGenericWithResidualQ4_K
+                            : TransformerComputeKernelsQ6_K::matrixVectorGenericWithResidualQ6_K,
+                    context,
+                    x,
+                    qwen3State.workspace.wrapX,
+                    w.asByteArray(),
+                    n,
+                    d,
+                    LOCAL_WORK_GROUP_SIZE_ALLOC);
+        }
+    }
+
+    /** {@code wrapHb = SiLU(w1·wrapXb) * (w3·wrapXb)}: both Q4_K in a Q4_K_M layer. */
+    private void kQuantGateUp(TaskGraph graph, String name, int layerIndex) {
+        if (PackedActivationTasks.enabled()) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsQ4_K::fusedFFNGateUpSiLUQ4_KDP4A,
+                    context,
+                    qwen3State.workspace.wrapXbQuants,
+                    qwen3State.workspace.wrapXbScales,
+                    qwen3State.workspace.wrapXbSums,
+                    qwen3State.workspace.wrapHb,
+                    weights.w1Layered[layerIndex].asByteArray(),
+                    weights.w3Layered[layerIndex].asByteArray(),
+                    config.dim(),
+                    config.hiddenDim(),
+                    PACKED_LOCAL);
+        } else {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsQ4_K::fusedFFNGateUpSiLUQ4_K,
+                    context,
+                    qwen3State.workspace.wrapXb,
+                    qwen3State.workspace.wrapHb,
+                    weights.w1Layered[layerIndex].asByteArray(),
+                    weights.w3Layered[layerIndex].asByteArray(),
+                    config.dim(),
+                    config.hiddenDim(),
+                    LOCAL_WORK_GROUP_SIZE_ALLOC);
+        }
+    }
+
+    /** The grids of a K-quant layer's tasks: one workgroup per output row. */
+    private void addKQuantWorkerGrids(
+            GridScheduler scheduler, String l, boolean packed, int qDim, int kvDim) {
+        int local = packed ? PACKED_LOCAL : LOCAL_WORK_GROUP_SIZE_ALLOC;
+        WorkerGrid rmsApplyWorker =
+                packed
+                        ? PackedActivationTasks.quantizeWorker(config.dim())
+                        : WorkerGridFactory.createRmsNormWorker(config.dim(), 256);
+        scheduler.addWorkerGrid(l + "attn_rms_apply", rmsApplyWorker);
+        scheduler.addWorkerGrid(l + "q_proj", WorkerGridFactory.genericWorker(qDim * local, local));
+        scheduler.addWorkerGrid(
+                l + "k_proj", WorkerGridFactory.genericWorker(kvDim * local, local));
+        scheduler.addWorkerGrid(
+                l + "v_proj", WorkerGridFactory.genericWorker(kvDim * local, local));
+        scheduler.addWorkerGrid(
+                l + "attn_output_proj",
+                WorkerGridFactory.genericWorker(config.dim() * local, local));
+        scheduler.addWorkerGrid(l + "ffn_rms_apply", rmsApplyWorker);
+        scheduler.addWorkerGrid(
+                l + "ffn_gate_up",
+                WorkerGridFactory.genericWorker(config.hiddenDim() * local, local));
+        scheduler.addWorkerGrid(
+                l + "ffn_down_proj", WorkerGridFactory.genericWorker(config.dim() * local, local));
+        if (packed) {
+            scheduler.addWorkerGrid(
+                    l + "attn_out_quantize", PackedActivationTasks.quantizeWorker(qDim));
+            scheduler.addWorkerGrid(
+                    l + "ffn_down_quantize",
+                    PackedActivationTasks.quantizeWorker(config.hiddenDim()));
+        }
+    }
 
     /**
      * Returns the explicit predecessor graph name for consumeFromDevice.
