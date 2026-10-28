@@ -54,9 +54,9 @@ public final class GoldenFixture {
         /**
          * unsloth's Llama-3.2-1B quantizations, each kept as it is on CUDA and Metal, under {@code
          * llama-unsloth/} because unsloth's Q4_0 file has the name of {@link #LLAMA_3_2_1B_Q4_0}:
-         * Q4_0 (Q4_1 {@code ffn_down} in two layers) and Q4_K_M (Q6_K {@code attn_v} and {@code
-         * ffn_down} in half the layers). Both have a Q6_K embedding that is also the output
-         * projection.
+         * Q4_0 (Q4_1 {@code ffn_down} in two layers), Q4_1, Q4_K_M and Q5_K_M (Q6_K {@code attn_v}
+         * and {@code ffn_down} in half the layers), Q4_K_S, Q6_K and UD-Q6_K_XL (Q8_0 mixed into
+         * Q6_K layers). Every one has a Q6_K or Q8_0 embedding that is also the output projection.
          */
         LLAMA_3_2_1B_UNSLOTH_Q4_0(
                 "llama-unsloth/Llama-3.2-1B-Instruct-Q4_0.gguf",
@@ -67,6 +67,31 @@ public final class GoldenFixture {
                 "llama-unsloth/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
                 "Q4_K_M",
                 "3f5a22426976ab26cfe84dba63c1d08391717abb1af893e10f1b2968d862dcc1",
+                "llama-3.2-1b-unsloth"),
+        LLAMA_3_2_1B_UNSLOTH_Q4_1(
+                "llama-unsloth/Llama-3.2-1B-Instruct-Q4_1.gguf",
+                "Q4_1",
+                "a8bfc798acebfbadf78fb90f21ab5e6464f652dca08f32e188ef03c8b96003e9",
+                "llama-3.2-1b-unsloth"),
+        LLAMA_3_2_1B_UNSLOTH_Q4_K_S(
+                "llama-unsloth/Llama-3.2-1B-Instruct-Q4_K_S.gguf",
+                "Q4_K_S",
+                "bedf466e28a9a54769a24457bc5ee8526421c9d2653ae52b4bfd56a059fbccf0",
+                "llama-3.2-1b-unsloth"),
+        LLAMA_3_2_1B_UNSLOTH_Q5_K_M(
+                "llama-unsloth/Llama-3.2-1B-Instruct-Q5_K_M.gguf",
+                "Q5_K_M",
+                "69dce91345442121eb3195370337eefa02cf076c7d84bd39adc0ce9552ccdfef",
+                "llama-3.2-1b-unsloth"),
+        LLAMA_3_2_1B_UNSLOTH_Q6_K(
+                "llama-unsloth/Llama-3.2-1B-Instruct-Q6_K.gguf",
+                "Q6_K",
+                "663ac8413e6d64a1412840c76bd1300ac19293454ae6802ff3c9b5543f93b531",
+                "llama-3.2-1b-unsloth"),
+        LLAMA_3_2_1B_UNSLOTH_UD_Q6_K_XL(
+                "llama-unsloth/Llama-3.2-1B-Instruct-UD-Q6_K_XL.gguf",
+                "UD-Q6_K_XL",
+                "c4b735094c603d9f76f533c6721da2c65d942c6275163948ee622b9c6eec6482",
                 "llama-3.2-1b-unsloth"),
 
         QWEN2_5_0_5B_F16(
@@ -79,11 +104,28 @@ public final class GoldenFixture {
                 "Q8_0",
                 "25130a98aa782284a7dabea0c23245b2fd371ed47244e79d78b8ec23245fdf96",
                 "qwen2.5-0.5b"),
+        /**
+         * The K-quant fixtures of the families after Llama, under {@code kquant/}, each kept as it
+         * is on CUDA and Metal: Q4_K projections with Q6_K {@code attn_v} and {@code ffn_down} in
+         * half the layers (Phi-3's fused {@code attn_qkv} is Q5_K). Qwen2.5-1.5B rather than the
+         * 0.5B, whose 896-wide rows are no multiple of a K-quant super-block, so its Q4_K_M file
+         * falls back to Q5_0, which no family reads.
+         */
+        QWEN2_5_1_5B_Q4_K_M(
+                "kquant/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+                "Q4_K_M",
+                "1adf0b11065d8ad2e8123ea110d1ec956dab4ab038eab665614adba04b6c3370",
+                "qwen2.5-1.5b"),
 
         MISTRAL_7B_Q8_0(
                 "Mistral-7B-Instruct-v0.3.Q8_0.gguf",
                 "Q8_0",
                 "24df553dc0e725196fe8a3c7be1edfe6ff17a0fe855f508b3f4a0e444e2e4281",
+                "mistral-7b"),
+        MISTRAL_7B_Q4_K_M(
+                "kquant/Mistral-7B-Instruct-v0.3.Q4_K_M.gguf",
+                "Q4_K_M",
+                "14850c84ff9f06e9b51d505d64815d5cc0cea0257380353ac0b3d21b21f6e024",
                 "mistral-7b"),
 
         GRANITE_3_2_2B_F16(
@@ -95,6 +137,11 @@ public final class GoldenFixture {
                 "granite-3.2-2b-instruct-Q8_0.gguf",
                 "Q8_0",
                 "7ffbd0fe17ac37775c3758464aa9a09773a3a162b9459eb9094278a7a809682a",
+                "granite-3.2-2b"),
+        GRANITE_3_2_2B_Q4_K_M(
+                "kquant/ibm-granite_granite-3.2-2b-instruct-Q4_K_M.gguf",
+                "Q4_K_M",
+                "e1b915b0849becf4fdda188dee7b09cbebbfabd71c6f3f2b75dd3eca0a8fded1",
                 "granite-3.2-2b"),
 
         QWEN3_0_6B_F16(
@@ -170,6 +217,11 @@ public final class GoldenFixture {
                 "Q8_0",
                 "0ac8ee48aeebf7d1b354691fd1e29e91c32ad88bbad10ad45ac880dcd4372a47",
                 "phi3-mini-4k"),
+        PHI3_MINI_4K_Q4_K_M(
+                "kquant/Phi-3-mini-4k-instruct-Q4_K_M.gguf",
+                "Q4_K_M",
+                "28a89b4ddb5766355f24e362ae4078b4c35b9ca9568df5fc9e6d9aeee4dee834",
+                "phi3-mini-4k"),
 
         /**
          * The {@code qwen35} hybrid architecture, and the only fixture here that is not a small
@@ -211,6 +263,17 @@ public final class GoldenFixture {
                 "gemma-4-E2B-it-Q4_0.gguf",
                 "Q4_0",
                 "31d3a3c630d4e71a7416498c42660dd3805066948acaec76a47e1ffac7010132",
+                "gemma-4-e2b"),
+        /**
+         * unsloth's Q4_K_M, kept as it is on CUDA and Metal, under {@code kquant/}: Q4_K
+         * projections with Q6_K {@code attn_v} and {@code ffn_down} in 17 of 35 layers, and a Q4_K
+         * {@code token_embd} that is also the output projection. Refused before native loading: its
+         * projections disagree, and the converting loader required them to agree.
+         */
+        GEMMA_4_E2B_Q4_K_M(
+                "kquant/gemma-4-E2B-it-Q4_K_M.gguf",
+                "Q4_K_M",
+                "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8",
                 "gemma-4-e2b"),
 
         QWEN3_8_27B_Q4_0(

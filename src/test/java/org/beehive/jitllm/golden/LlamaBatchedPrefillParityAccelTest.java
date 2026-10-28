@@ -59,4 +59,29 @@ public class LlamaBatchedPrefillParityAccelTest extends CpuGpuParity {
     public void llama3_2_1b_unsloth_q4_k_m_batchedPrefillParity() throws Exception {
         assertParityBatched(Fixture.LLAMA_3_2_1B_UNSLOTH_Q4_K_M, quantizedPrefill(), BATCH);
     }
+
+    @Test
+    public void llama3_2_1b_unsloth_q4_1_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.LLAMA_3_2_1B_UNSLOTH_Q4_1, quantizedPrefill(), BATCH);
+    }
+
+    @Test
+    public void llama3_2_1b_unsloth_q4_k_s_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.LLAMA_3_2_1B_UNSLOTH_Q4_K_S, quantizedPrefill(), BATCH);
+    }
+
+    @Test
+    public void llama3_2_1b_unsloth_q5_k_m_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.LLAMA_3_2_1B_UNSLOTH_Q5_K_M, quantizedPrefill(), BATCH);
+    }
+
+    @Test
+    public void llama3_2_1b_unsloth_q6_k_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.LLAMA_3_2_1B_UNSLOTH_Q6_K, quantizedPrefill(), BATCH);
+    }
+
+    @Test
+    public void llama3_2_1b_unsloth_ud_q6_k_xl_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.LLAMA_3_2_1B_UNSLOTH_UD_Q6_K_XL, quantizedPrefill(), BATCH);
+    }
 }

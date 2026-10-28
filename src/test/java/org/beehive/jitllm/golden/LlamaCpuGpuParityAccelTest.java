@@ -46,4 +46,30 @@ public class LlamaCpuGpuParityAccelTest extends CpuGpuParity {
     public void llama3_2_1b_unsloth_q4_k_m_prefillDecodeParity() throws Exception {
         assertParityPrefillDecode(Fixture.LLAMA_3_2_1B_UNSLOTH_Q4_K_M, Q8_0);
     }
+
+    @Test
+    public void llama3_2_1b_unsloth_q4_1_cpuGpuParity() throws Exception {
+        assertParity(Fixture.LLAMA_3_2_1B_UNSLOTH_Q4_1, Q8_0);
+    }
+
+    @Test
+    public void llama3_2_1b_unsloth_q4_k_s_cpuGpuParity() throws Exception {
+        assertParity(Fixture.LLAMA_3_2_1B_UNSLOTH_Q4_K_S, Q8_0);
+    }
+
+    @Test
+    public void llama3_2_1b_unsloth_q5_k_m_cpuGpuParity() throws Exception {
+        assertParity(Fixture.LLAMA_3_2_1B_UNSLOTH_Q5_K_M, Q8_0);
+    }
+
+    @Test
+    public void llama3_2_1b_unsloth_q6_k_cpuGpuParity() throws Exception {
+        assertParity(Fixture.LLAMA_3_2_1B_UNSLOTH_Q6_K, Q8_0);
+    }
+
+    /** Q8_0 and Q6_K projections in one layer. */
+    @Test
+    public void llama3_2_1b_unsloth_ud_q6_k_xl_cpuGpuParity() throws Exception {
+        assertParity(Fixture.LLAMA_3_2_1B_UNSLOTH_UD_Q6_K_XL, Q8_0);
+    }
 }

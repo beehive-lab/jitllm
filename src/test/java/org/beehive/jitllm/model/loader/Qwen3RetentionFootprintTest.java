@@ -125,7 +125,7 @@ public class Qwen3RetentionFootprintTest {
     }
 
     /** A version 3 GGUF header with no metadata and these tensors' descriptors, and no data. */
-    private static byte[] headerOnlyGguf(Map<String, GGMLType> tensors) {
+    static byte[] headerOnlyGguf(Map<String, GGMLType> tensors) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteBuffer header = little(4 + 4 + 8 + 8);
         header.putInt(0x46554747).putInt(3).putLong(tensors.size()).putLong(0);
