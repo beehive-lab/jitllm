@@ -66,7 +66,8 @@ public class GraniteQ8_0PlanComponents implements BatchPrefillDecodeForwardPlanC
 
     @Override
     public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
-        return new GraniteBatchDecodeActivation(state, config, lastBatchLayerId, true);
+        return new GraniteBatchDecodeActivation(
+                state, config, lastBatchLayerId, weights.getTokenEmbeddingTable().dataType());
     }
 
     @Override
