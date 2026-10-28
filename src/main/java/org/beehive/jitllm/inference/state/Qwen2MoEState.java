@@ -127,8 +127,10 @@ public class Qwen2MoEState extends Qwen2State {
         fields.x = ArrayFloatTensor.allocate(config.dim());
         fields.xb = ArrayFloatTensor.allocate(config.dim());
         fields.xb2 = ArrayFloatTensor.allocate(config.dim());
-        fields.hb = ArrayFloatTensor.allocate(config.hiddenDim());
-        fields.hb2 = ArrayFloatTensor.allocate(config.hiddenDim());
+        // There is no dense feed-forward (hiddenDim is 0) and the forward pass reads neither; a
+        // tensor needs at least one element, so they take the shared expert's width.
+        fields.hb = ArrayFloatTensor.allocate(config.sharedExpertHiddenDim());
+        fields.hb2 = ArrayFloatTensor.allocate(config.sharedExpertHiddenDim());
         fields.q = ArrayFloatTensor.allocate(config.dim());
         fields.k = ArrayFloatTensor.allocate(config.kvDim());
         fields.v = ArrayFloatTensor.allocate(config.kvDim());
