@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado.plan.components.activation;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
+import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -91,25 +92,10 @@ public class BatchDecodeActivation implements ActivationTaskGraph {
         // The block table travels the same chain as the caches it addresses: the batch-prefill
         // graphs allocate it, this graph passes it through, decode layer 0 consumes it.
         tg.consumeFromDevice(lastBatchLayerId, state.workspace.wrapBlockTable);
-        if (embedding == DataType.Q4_1
-                || embedding == DataType.Q4_K
-                || embedding == DataType.Q5_K
-                || embedding == DataType.Q6_K) {
+        if (Activation.keptEmbedding(embedding)) {
             tg.task(
                     "updateX",
-                    switch (embedding) {
-                        case Q4_1 -> TransformerComputeKernels::convertQ4_1toFP32;
-                        case Q4_K -> TransformerComputeKernels::convertQ4_KtoFP32;
-                        case Q5_K -> TransformerComputeKernels::convertQ5_KtoFP32;
-                        default -> TransformerComputeKernels::convertQ6_KtoFP32;
-                    },
-                    ctx,
-                    (ByteArray) state.workspace.embeddingX,
-                    state.workspace.wrapX);
-        } else if (embedding == DataType.Q4_0) {
-            tg.task(
-                    "updateX",
-                    TransformerComputeKernels::convertQ4_0toFP32,
+                    Activation.embeddingRowDecode(embedding),
                     ctx,
                     (ByteArray) state.workspace.embeddingX,
                     state.workspace.wrapX);
