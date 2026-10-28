@@ -22,8 +22,16 @@ public class TornadoPlanRegistryTest {
     public void theMigratedProvidersDeclareTheInventoriedMatrix() {
         var llama = provider("llama");
         assertEquals(
-                "both representations, plus the Q4_0 it retains rather than materializes",
-                Set.of(DataType.F16, DataType.Q8_0, DataType.Q4_0),
+                "both representations, the Q4_0 of its Q4_0 layers, and the types a file kept on"
+                        + " CUDA or Metal reports",
+                Set.of(
+                        DataType.F16,
+                        DataType.Q8_0,
+                        DataType.Q4_0,
+                        DataType.Q4_1,
+                        DataType.Q4_K,
+                        DataType.Q5_K,
+                        DataType.Q6_K),
                 llama.supportedDataTypes());
         // Declared for the family, not per representation: Q4_0 has single-token kernels only, and
         // the registry refuses the other two modes for it by name rather than on a cast.

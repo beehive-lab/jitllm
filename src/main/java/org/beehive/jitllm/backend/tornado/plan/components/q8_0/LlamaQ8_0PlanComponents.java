@@ -80,7 +80,9 @@ public class LlamaQ8_0PlanComponents
 
     @Override
     public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
-        return new BatchDecodeActivation(state, config, lastBatchLayerId, true);
+        // The embedding tensor's own representation: Q8_0, or what a kept file stores.
+        return new BatchDecodeActivation(
+                state, config, lastBatchLayerId, weights.getTokenEmbeddingTable().dataType());
     }
 
     // ── Transformer layer TaskGraphs ──────────────────────────────────────────────────────

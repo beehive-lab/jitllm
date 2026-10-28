@@ -51,6 +51,23 @@ public final class GoldenFixture {
                 "Llama-3.2-1B-Instruct-Q4_0.gguf",
                 "Q4_0",
                 "4b90b1d7ae7324676194755a6dfce11cb6e457982c4c01a1db2857be1ed064ad"),
+        /**
+         * unsloth's Llama-3.2-1B quantizations, each kept as it is on CUDA and Metal, under {@code
+         * llama-unsloth/} because unsloth's Q4_0 file has the name of {@link #LLAMA_3_2_1B_Q4_0}:
+         * Q4_0 (Q4_1 {@code ffn_down} in two layers) and Q4_K_M (Q6_K {@code attn_v} and {@code
+         * ffn_down} in half the layers). Both have a Q6_K embedding that is also the output
+         * projection.
+         */
+        LLAMA_3_2_1B_UNSLOTH_Q4_0(
+                "llama-unsloth/Llama-3.2-1B-Instruct-Q4_0.gguf",
+                "Q4_0",
+                "66bfbb2d48bdb77cd56bd03ef820deff3c4a74b1a09de3b917ae13e72c1a70c2",
+                "llama-3.2-1b-unsloth"),
+        LLAMA_3_2_1B_UNSLOTH_Q4_K_M(
+                "llama-unsloth/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+                "Q4_K_M",
+                "3f5a22426976ab26cfe84dba63c1d08391717abb1af893e10f1b2968d862dcc1",
+                "llama-3.2-1b-unsloth"),
 
         QWEN2_5_0_5B_F16(
                 "Qwen2.5-0.5B-Instruct-f16.gguf",

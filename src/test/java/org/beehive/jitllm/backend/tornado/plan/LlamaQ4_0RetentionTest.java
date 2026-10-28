@@ -7,30 +7,21 @@ import static org.junit.Assert.assertTrue;
 import java.util.HashMap;
 import java.util.Map;
 import org.beehive.jitllm.runtime.backend.BackendId;
-import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.tensor.DataType;
-import org.junit.After;
 import org.junit.Test;
 
 /**
- * The one rule for whether a Llama load keeps its Q4_0 projections, which the loader and the memory
- * preflight both ask: every projection Q4_0, a Q4_1 {@code ffn_down} allowed off Metal, and {@code
- * jitllm.q4_0.retain} not {@code false}.
+ * The rule for whether a Llama load runs the Q4_0 layers, which the loader asks, and the memory
+ * preflight too where the file is otherwise converted (OpenCL): every projection Q4_0, a Q4_1
+ * {@code ffn_down} allowed off Metal. On CUDA and Metal every tensor is kept as stored.
  */
 public class LlamaQ4_0RetentionTest {
-
-    private static final String PROPERTY = "jitllm.q4_0.retain";
 
     private static final String[] PROJECTIONS = {
         "attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_down", "ffn_up"
     };
 
     private static final int LAYERS = 2;
-
-    @After
-    public void clearProperty() {
-        System.clearProperty(PROPERTY);
-    }
 
     /** Every projection of every layer Q4_0, the norms F32 and the vocabulary Q6_K. */
     private static Map<String, DataType> q4_0File() {
@@ -78,27 +69,27 @@ public class LlamaQ4_0RetentionTest {
     }
 
     @Test
-    public void theRetainPropertySwitchesItOff() {
-        System.setProperty(PROPERTY, "false");
-
-        assertFalse(LlamaPlanProvider.retainsQ4_0(q4_0File(), LAYERS, BackendId.CUDA));
-    }
-
-    @Test
-    public void thePreflightKeepsQ4_0ExactlyWhenTheLoaderDoes() {
-        DeviceRetention retained =
-                new LlamaPlanProvider().deviceRetention(q4_0File(), LAYERS, BackendId.CUDA);
-        System.setProperty(PROPERTY, "false");
-        DeviceRetention materialized =
-                new LlamaPlanProvider().deviceRetention(q4_0File(), LAYERS, BackendId.CUDA);
-
-        String projection = "blk.0.ffn_gate.weight";
-        assertEquals(DataType.Q4_0, retained.deviceType(projection, DataType.Q4_0));
-        assertEquals(DataType.Q8_0, materialized.deviceType(projection, DataType.Q4_0));
-        // A retained load keeps a Q4_1 ffn_down and a Q6_K output as they are; the prediction
-        // counts them at Q8_0 either way, which over-estimates and never under-estimates.
-        assertEquals(DataType.Q8_0, retained.deviceType("blk.1.ffn_down.weight", DataType.Q4_1));
-        assertEquals(DataType.Q8_0, retained.deviceType("output.weight", DataType.Q6_K));
-        assertEquals(DataType.F32, materialized.deviceType("output_norm.weight", DataType.F32));
+    public void thePreflightKeepsEachTypeExactlyWhereTheLoaderDoes() {
+        Map<String, DataType> q4_0 = q4_0File();
+        q4_0.put("blk.1.ffn_down.weight", DataType.Q4_1);
+        LlamaPlanProvider provider = new LlamaPlanProvider();
+        for (BackendId kept : new BackendId[] {BackendId.CUDA, BackendId.METAL}) {
+            var retention = provider.deviceRetention(q4_0, LAYERS, kept);
+            assertEquals(DataType.Q4_0, retention.deviceType("blk.0.attn_q.weight", DataType.Q4_0));
+            assertEquals(
+                    DataType.Q4_1, retention.deviceType("blk.1.ffn_down.weight", DataType.Q4_1));
+            assertEquals(DataType.Q6_K, retention.deviceType("output.weight", DataType.Q6_K));
+            assertEquals(DataType.Q4_K, retention.deviceType("blk.0.attn_q.weight", DataType.Q4_K));
+        }
+        // OpenCL: Q4_0 kept for the Q4_0 layers, everything else materialized as Q8_0, the kept
+        // Q4_1 ffn_down predicted at Q8_0 (an over-estimate).
+        var openCl = provider.deviceRetention(q4_0, LAYERS, BackendId.OPENCL);
+        assertEquals(DataType.Q4_0, openCl.deviceType("blk.0.attn_q.weight", DataType.Q4_0));
+        assertEquals(DataType.Q8_0, openCl.deviceType("blk.1.ffn_down.weight", DataType.Q4_1));
+        Map<String, DataType> q4_k = new HashMap<>(q4_0);
+        q4_k.put("blk.0.attn_q.weight", DataType.Q4_K);
+        var converted = provider.deviceRetention(q4_k, LAYERS, BackendId.OPENCL);
+        assertEquals(DataType.Q8_0, converted.deviceType("blk.0.attn_k.weight", DataType.Q4_0));
+        assertEquals(DataType.F32, converted.deviceType("output_norm.weight", DataType.F32));
     }
 }

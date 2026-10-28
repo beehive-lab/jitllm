@@ -86,9 +86,9 @@ public class LlamaQ4_0PlanComponents
 
     @Override
     public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
-        return BatchPrefillGemmPolicy.simdgroup()
-                ? new BatchDecodeActivation(state, config, lastBatchLayerId, true, true)
-                : new BatchDecodeActivation(state, config, lastBatchLayerId, true);
+        // The embedding tensor's own representation, which is what the passes stage.
+        return new BatchDecodeActivation(
+                state, config, lastBatchLayerId, weights.getTokenEmbeddingTable().dataType());
     }
 
     @Override
