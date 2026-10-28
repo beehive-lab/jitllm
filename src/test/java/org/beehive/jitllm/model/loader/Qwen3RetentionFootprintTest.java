@@ -22,7 +22,7 @@ import org.junit.rules.TemporaryFolder;
 /**
  * The memory preflight predicts a Qwen3 file at the size the loader gives it: the file's own bytes
  * where the loader keeps its tensors (CUDA, Metal), and Q8_0 where it converts them, because both
- * ask {@code Qwen3PlanProvider.retainsNative}.
+ * ask {@code TornadoPlanProvider.retainsNative}.
  *
  * <p>The file is synthetic and holds descriptors only, which is all the prediction reads: two
  * layers of 256 x 256 projections in the Q4_K_M layout, {@code attn_v} and {@code ffn_down} Q6_K in

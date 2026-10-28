@@ -152,6 +152,24 @@ public interface TornadoPlanProvider {
         return stage;
     }
 
+    // @formatter:off
+    /**
+     * Whether a load keeps every tensor as the file stores it, rather than converting Q4_0, Q4_1
+     * and the K-quants to Q8_0: on CUDA and Metal, where a migrated family's every path reads each
+     * tensor by its own type (the single-token projections, the batched prefill, the tensor-core
+     * prefill and the embedding row).
+     *
+     * <p>On any other backend the tiled batch projections those layers would need are not known to
+     * compile (Qwen3.5's do not on OpenCL), so the file is converted as before.
+     *
+     * <p>The one rule for a migrated family's loader and its memory preflight ({@link
+     * #deviceRetention}), so the two cannot disagree about what a tensor becomes.
+     */
+    // @formatter:on
+    static boolean retainsNative(BackendId backend) {
+        return BackendId.CUDA.equals(backend) || BackendId.METAL.equals(backend);
+    }
+
     // ── What this family's layers can build ───────────────────────────────────
 
     /**

@@ -1,5 +1,7 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import static org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets.NATIVE_QUANTIZED;
+
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.Optional;
@@ -68,36 +70,10 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
         return weights == DataType.F16 || NATIVE_QUANTIZED.contains(weights);
     }
 
-    // @formatter:off
     /**
-     * Whether a Qwen3 load keeps every tensor as the file stores it, rather than converting Q4_0,
-     * Q4_1 and the K-quants to Q8_0: on CUDA and Metal, where every path reads each tensor by its
-     * own type (the single-token projections, the batched prefill, the tensor-core prefill and the
-     * embedding row).
-     *
-     * <p>On any other backend the tiled batch projections these layers would need are not known to
-     * compile (Qwen3.5's do not on OpenCL), so the file is converted as before.
-     *
-     * <p>The one rule for the loader and the memory preflight, so the two cannot disagree about
-     * what a tensor becomes. A kept model reports its trunk projection's type, which is what
-     * admission sees.
+     * F16, and every quantized representation a kept load holds ({@link
+     * TornadoPlanProvider#retainsNative}).
      */
-    // @formatter:on
-    public static boolean retainsNative(BackendId backend) {
-        return BackendId.CUDA.equals(backend) || BackendId.METAL.equals(backend);
-    }
-
-    /** The quantized representations a kept Qwen3 load holds, each read by its own kernels. */
-    private static final Set<DataType> NATIVE_QUANTIZED =
-            EnumSet.of(
-                    DataType.Q8_0,
-                    DataType.Q4_0,
-                    DataType.Q4_1,
-                    DataType.Q4_K,
-                    DataType.Q5_K,
-                    DataType.Q6_K);
-
-    /** F16, and every quantized representation a kept load holds ({@link #retainsNative}). */
     @Override
     public Set<DataType> supportedDataTypes() {
         Set<DataType> supported = EnumSet.copyOf(NATIVE_QUANTIZED);
@@ -111,12 +87,15 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
         return TornadoSupportSets.BOTH_REPRESENTATIONS;
     }
 
-    /** Every quantized type kept exactly where the loader keeps it: {@link #retainsNative}. */
+    /**
+     * Every quantized type kept exactly where the loader keeps it: {@link
+     * TornadoPlanProvider#retainsNative}.
+     */
     @Override
     public DeviceRetention deviceRetention(
             Map<String, DataType> sourceTypes, int layers, BackendId backend) {
         Set<DataType> retained = EnumSet.copyOf(nativeTensorTypes());
-        if (retainsNative(backend)) {
+        if (TornadoPlanProvider.retainsNative(backend)) {
             retained.addAll(NATIVE_QUANTIZED);
         }
         return DeviceRetention.retaining(retained);

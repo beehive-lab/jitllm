@@ -16,6 +16,19 @@ public final class TornadoSupportSets {
     /** The two representations that reach the device: a K-quant file arrives as {@code Q8_0}. */
     public static final Set<DataType> BOTH_REPRESENTATIONS = Set.of(DataType.F16, DataType.Q8_0);
 
+    /**
+     * The quantized representations a load keeps as the file stores them where {@code
+     * TornadoPlanProvider.retainsNative} holds, each read by its own kernels.
+     */
+    public static final Set<DataType> NATIVE_QUANTIZED =
+            EnumSet.of(
+                    DataType.Q8_0,
+                    DataType.Q4_0,
+                    DataType.Q4_1,
+                    DataType.Q4_K,
+                    DataType.Q5_K,
+                    DataType.Q6_K);
+
     /** All three plan shapes. */
     public static final Set<ExecutionMode> EVERY_MODE = EnumSet.allOf(ExecutionMode.class);
 

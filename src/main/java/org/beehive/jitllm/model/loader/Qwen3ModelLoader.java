@@ -8,7 +8,7 @@ import java.util.Map;
 import java.util.function.IntFunction;
 import org.beehive.jitllm.auxiliary.Pair;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jitllm.backend.tornado.plan.Qwen3PlanProvider;
+import org.beehive.jitllm.backend.tornado.plan.TornadoPlanProvider;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
 import org.beehive.jitllm.format.DataTypeMapping;
@@ -176,7 +176,7 @@ public class Qwen3ModelLoader extends AbstractModelLoader<Qwen3, Qwen3Configurat
         final int nl = config.numberOfLayers();
         // On CUDA and Metal every tensor stays as the file stores it: Qwen3's layers read each one
         // by its own type. Elsewhere Q4_0, Q4_1 and the K-quants are converted to Q8_0 as before.
-        boolean retain = Qwen3PlanProvider.retainsNative(TornadoDevices.current().backend());
+        boolean retain = TornadoPlanProvider.retainsNative(TornadoDevices.current().backend());
         TornadoTensor[] wq =
                 perLayer(retain, nl, i -> tensorEntries.get("blk." + i + ".attn_q.weight"));
         TornadoTensor[] wk =
@@ -220,18 +220,6 @@ public class Qwen3ModelLoader extends AbstractModelLoader<Qwen3, Qwen3Configurat
                 TornadoTensorLoader.fromFloats(ropeFreqs.second()),
                 load(retain, outputWeight),
                 weightType);
-    }
-
-    /** The first projection type other than Q8_0, or Q8_0 when they all are. */
-    private static DataType keptType(TornadoTensor[]... projections) {
-        for (TornadoTensor[] layers : projections) {
-            for (TornadoTensor w : layers) {
-                if (w.dataType() != DataType.Q8_0) {
-                    return w.dataType();
-                }
-            }
-        }
-        return DataType.Q8_0;
     }
 
     /** A device tensor as the file stores it, or with Q4_0, Q4_1 and K-quants converted to Q8_0. */

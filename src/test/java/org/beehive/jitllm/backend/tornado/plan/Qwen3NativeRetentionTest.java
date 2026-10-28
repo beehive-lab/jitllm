@@ -47,10 +47,10 @@ public class Qwen3NativeRetentionTest {
     /** Kept on CUDA and Metal only; anywhere else the file is converted as before. */
     @Test
     public void onlyCudaAndMetalKeepTheFile() {
-        assertTrue(Qwen3PlanProvider.retainsNative(BackendId.CUDA));
-        assertTrue(Qwen3PlanProvider.retainsNative(BackendId.METAL));
-        assertFalse(Qwen3PlanProvider.retainsNative(BackendId.OPENCL));
-        assertFalse(Qwen3PlanProvider.retainsNative(BackendId.CPU));
+        assertTrue(TornadoPlanProvider.retainsNative(BackendId.CUDA));
+        assertTrue(TornadoPlanProvider.retainsNative(BackendId.METAL));
+        assertFalse(TornadoPlanProvider.retainsNative(BackendId.OPENCL));
+        assertFalse(TornadoPlanProvider.retainsNative(BackendId.CPU));
     }
 
     /** The preflight keeps each quantized type exactly where the loader does. */
