@@ -236,12 +236,17 @@ public final class TransformerComputeKernelsQ6_K {
     /**
      * One row's dot product against {@code x}, reduced through shared memory.
      *
-     * <p>A thread takes sixteen weights per step: four consecutive positions of a half-block's
-     * thirty-two, in each of its four groups, as llama.cpp's Metal {@code kernel_mul_mv_q6_K_f32}
-     * does. The four groups at one position are built from the same {@code qh} byte and two {@code
-     * ql} bytes, so twelve byte loads cover sixteen weights, where reading weights one at a time
-     * costs two per weight. Each weight is still {@code d * scale * q} as {@link #decode} computes
-     * it; only the order of the summation differs. {@code n} is a multiple of 256.
+     * <p>A thread takes thirty-two weights per step: eight consecutive positions of a half-block's
+     * thirty-two, in each of its four groups, the layout of llama.cpp's Metal {@code
+     * kernel_mul_mv_q6_K_f32}. The four groups at one position are built from the same {@code qh}
+     * byte and two {@code ql} bytes. Those are read four at a time, as words of two two-byte loads
+     * ({@link #matrixVectorGenericQ6_KDP4A} documents why every address is even), and the six-bit
+     * values are assembled on the whole word, four weights per operation. Each weight is still
+     * {@code d * scale * q} as {@link #decode} computes it; only the order of the summation
+     * differs. {@code n} is a multiple of 256.
+     *
+     * <p>Measured on Qwen3-0.6B Q4_K_M on an M4 Pro, the vocabulary projection per call (profiler):
+     * 11,433 µs one weight per step, 3,445 µs sixteen weights from byte loads, 2,699 µs as here.
      */
     private static float rowDotShared(
             KernelContext context, int localSize, FloatArray x, ByteArray w, int n, int rowId) {
@@ -251,9 +256,9 @@ public final class TransformerComputeKernelsQ6_K {
         int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
 
         float partialSum = 0.0f;
-        for (int unit = localId; unit < n / 16; unit += localSize) {
-            int half = unit / 8;
-            int posInGroup = (unit - half * 8) * 4;
+        for (int unit = localId; unit < n / 32; unit += localSize) {
+            int half = unit / 4;
+            int posInGroup = (unit - half * 4) * 8;
             int blockIdx = half / 2;
             int halfIndex = half - blockIdx * 2;
             int blockByteOffset = rowByteOffset + blockIdx * BLOCK_BYTES;
@@ -268,18 +273,33 @@ public final class TransformerComputeKernelsQ6_K {
             int qlAt = blockByteOffset + halfIndex * 64 + posInGroup;
             int qhAt = blockByteOffset + QH_OFFSET + halfIndex * 32 + posInGroup;
             int xAt = blockIdx * QK_K + halfIndex * 128 + posInGroup;
-            for (int k = 0; k < 4; k++) {
-                int ql1 = w.get(qlAt + k) & 0xFF;
-                int ql2 = w.get(qlAt + 32 + k) & 0xFF;
-                int qh = w.get(qhAt + k) & 0xFF;
-                int q0 = ((ql1 & 0xF) | ((qh & 3) << 4)) - 32;
-                int q1 = ((ql2 & 0xF) | (((qh >> 2) & 3) << 4)) - 32;
-                int q2 = ((ql1 >> 4) | (((qh >> 4) & 3) << 4)) - 32;
-                int q3 = ((ql2 >> 4) | ((qh >> 6) << 4)) - 32;
-                partialSum += dScale0 * q0 * x.get(xAt + k);
-                partialSum += dScale1 * q1 * x.get(xAt + 32 + k);
-                partialSum += dScale2 * q2 * x.get(xAt + 64 + k);
-                partialSum += dScale3 * q3 * x.get(xAt + 96 + k);
+            for (int k = 0; k < 8; k += 4) {
+                int ql1Word =
+                        (w.getHalfFloat(qlAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int ql2Word =
+                        (w.getHalfFloat(qlAt + 32 + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + 34 + k).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int qhWord =
+                        (w.getHalfFloat(qhAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qhAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int raw0 = (ql1Word & 0x0F0F0F0F) | ((qhWord & 0x03030303) << 4);
+                int raw1 = (ql2Word & 0x0F0F0F0F) | (((qhWord >>> 2) & 0x03030303) << 4);
+                int raw2 = ((ql1Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 4) & 0x03030303) << 4);
+                int raw3 = ((ql2Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 6) & 0x03030303) << 4);
+                for (int b = 0; b < 4; b++) {
+                    int shift = 8 * b;
+                    partialSum += dScale0 * (((raw0 >>> shift) & 0xFF) - 32) * x.get(xAt + k + b);
+                    partialSum +=
+                            dScale1 * (((raw1 >>> shift) & 0xFF) - 32) * x.get(xAt + 32 + k + b);
+                    partialSum +=
+                            dScale2 * (((raw2 >>> shift) & 0xFF) - 32) * x.get(xAt + 64 + k + b);
+                    partialSum +=
+                            dScale3 * (((raw3 >>> shift) & 0xFF) - 32) * x.get(xAt + 96 + k + b);
+                }
             }
         }
 
