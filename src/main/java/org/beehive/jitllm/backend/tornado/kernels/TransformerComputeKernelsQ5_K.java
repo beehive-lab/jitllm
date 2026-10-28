@@ -379,6 +379,57 @@ public final class TransformerComputeKernelsQ5_K {
         }
     }
 
+    /**
+     * {@code output[row] = w[row]·x}: {@link #matrixVectorGenericWithResidualQ5_KDP4A}'s product,
+     * stored rather than added to a residual. The same scratch, lanes and reduction.
+     */
+    public static void matrixVectorGenericQ5_KDP4A(
+            KernelContext context,
+            IntArray xQuants,
+            FloatArray xScales,
+            IntArray xSums,
+            FloatArray output,
+            ByteArray w,
+            int n,
+            int d,
+            int localWorkGroupSize) {
+        int rowId = context.groupIdx;
+        if (rowId >= d) {
+            return;
+        }
+        int localId = context.localIdx;
+        int warpCount = localWorkGroupSize / 32;
+        float[] warpSums = context.allocateFloatLocalArray(warpCount);
+
+        int blocksPerRow = (n + QK_K - 1) / QK_K;
+        int rowBlockOffset = rowId * blocksPerRow;
+        int subBlocks = n / 32;
+
+        float partialSum = 0.0f;
+        for (int sb = localId; sb < subBlocks; sb += localWorkGroupSize) {
+            partialSum += laneSumPacked(xQuants, xScales, xSums, w, rowBlockOffset, sb);
+        }
+
+        partialSum += context.simdShuffleDown(partialSum, 16);
+        partialSum += context.simdShuffleDown(partialSum, 8);
+        partialSum += context.simdShuffleDown(partialSum, 4);
+        partialSum += context.simdShuffleDown(partialSum, 2);
+        partialSum += context.simdShuffleDown(partialSum, 1);
+
+        if ((localId & 31) == 0) {
+            warpSums[localId >> 5] = partialSum;
+        }
+        context.localBarrier();
+
+        if (localId == 0) {
+            float total = 0.0f;
+            for (int warp = 0; warp < warpCount; warp++) {
+                total += warpSums[warp];
+            }
+            output.set(rowId, total);
+        }
+    }
+
     // @formatter:off
     /**
      * {@code hb[row] += w[row]·x} with the weights read as {@code Q5_K} and the dot product done in

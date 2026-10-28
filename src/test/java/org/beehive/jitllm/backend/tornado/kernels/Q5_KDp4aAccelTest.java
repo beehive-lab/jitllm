@@ -220,6 +220,23 @@ public class Q5_KDp4aAccelTest {
             float[] destination,
             ProgramIdentity.SourceRecorder recorder)
             throws Exception {
+        return run(name, host, raw, n, rows, destination, recorder, false);
+    }
+
+    /**
+     * {@code plain} runs {@link TransformerComputeKernelsQ5_K#matrixVectorGenericQ5_KDP4A}, which
+     * stores the product, instead of the residual form, which adds it to {@code destination}.
+     */
+    private static float[] run(
+            String name,
+            float[] host,
+            byte[] raw,
+            int n,
+            int rows,
+            float[] destination,
+            ProgramIdentity.SourceRecorder recorder,
+            boolean plain)
+            throws Exception {
         FloatArray x = new FloatArray(n);
         for (int i = 0; i < n; i++) {
             x.set(i, host[i]);
@@ -250,8 +267,10 @@ public class Q5_KDp4aAccelTest {
                                 sums)
                         .task(
                                 "matvec",
-                                TransformerComputeKernelsQ5_K
-                                        ::matrixVectorGenericWithResidualQ5_KDP4A,
+                                plain
+                                        ? TransformerComputeKernelsQ5_K::matrixVectorGenericQ5_KDP4A
+                                        : TransformerComputeKernelsQ5_K
+                                                ::matrixVectorGenericWithResidualQ5_KDP4A,
                                 new KernelContext(),
                                 quants,
                                 scales,
@@ -372,6 +391,28 @@ public class Q5_KDp4aAccelTest {
         assertTrue(
                 "worst deviation " + worst + " against largest output " + largest,
                 worst <= 1e-4 * largest);
+    }
+
+    /**
+     * The plain form stores exactly what the residual form adds to zero: the same lanes, quants and
+     * reduction, so the same bits. Its destination starts nonzero, so a residual add would show.
+     */
+    @Test
+    public void thePlainFormStoresWhatTheResidualFormAdds() throws Exception {
+        int n = SSM_OUT_N;
+        int rows = 32;
+        byte[] raw = adversarialWeights(rows, n, 4242L);
+        float[] host = new float[n];
+        for (int i = 0; i < n; i++) {
+            host[i] = (float) Math.cos(0.013 * i) * (1.0f + (i % 5) * 0.5f);
+        }
+        float[] stale = new float[rows];
+        java.util.Arrays.fill(stale, 7.0f);
+        float[] plain = run("plain", host, raw, n, rows, stale, null, true);
+        float[] residual = run("residual", host, raw, n, rows, new float[rows], null, false);
+        for (int row = 0; row < rows; row++) {
+            assertEquals("row " + row, residual[row], plain[row], 0.0f);
+        }
     }
 
     /** A zero activation contributes nothing at all — not even through the minimum term. */
