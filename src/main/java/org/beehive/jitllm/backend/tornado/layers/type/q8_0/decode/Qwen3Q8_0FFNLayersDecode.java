@@ -53,6 +53,10 @@ public class Qwen3Q8_0FFNLayersDecode extends Qwen3Q8_0FFNLayers {
                     qwen3State.workspace.wrapAtt,
                     qwen3State.workspace.wrapHb);
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, state.workspace.wrapAttSplit);
+            if (splitsGateUp()) {
+                layer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, qwen3State.workspace.wrapHb2);
+            }
             // KV cache already allocated by batch prefill; relay from decode activation graph.
             layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, keyCache(), valueCache());
             layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, state.workspace.wrapBlockTable);
@@ -76,6 +80,9 @@ public class Qwen3Q8_0FFNLayersDecode extends Qwen3Q8_0FFNLayers {
             layer.consumeFromDevice(pred, state.workspace.wrapBlockTable);
             layer.consumeFromDevice(qwen3State.workspace.tempQcur, qwen3State.workspace.tempKcur);
             layer.consumeFromDevice(pred, state.workspace.wrapAttSplit);
+            if (splitsGateUp()) {
+                layer.consumeFromDevice(pred, qwen3State.workspace.wrapHb2);
+            }
         }
         return layer;
     }

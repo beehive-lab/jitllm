@@ -112,6 +112,9 @@ public final class Qwen3State extends State {
             TornadoWorkspaces.packedActivation(workspace, widest);
         }
         workspace.wrapHb = TornadoWorkspaces.floats(config.hiddenDim());
+        // The up projection's output where a layer runs gate and up apart; bound only by such a
+        // plan.
+        workspace.wrapHb2 = TornadoWorkspaces.floats(config.hiddenDim());
         workspace.wrapHb2 = TornadoWorkspaces.floats(config.hiddenDim());
         workspace.wrapLogits = TornadoWorkspaces.floats(config.vocabularySize());
         workspace.wrapQ = TornadoWorkspaces.floats(nEmbdHeadK * config.numberOfHeads());
