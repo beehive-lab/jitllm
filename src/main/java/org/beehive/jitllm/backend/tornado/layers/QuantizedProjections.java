@@ -36,9 +36,9 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * could read it too; none has to.
  *
  * <p>The gate and up projections run as one fused task where both are the same type and a fused
- * kernel exists (Q8_0, Q4_0, Q4_K; Q5_K in floating point), and otherwise as two projections into
- * {@code wrapHb} and {@code wrapHb2} and an elementwise SwiGLU, so a layer that splits them needs
- * {@code wrapHb2} bound.
+ * kernel exists (Q8_0, Q4_0, Q4_K and Q5_K), and otherwise as two projections into {@code wrapHb}
+ * and {@code wrapHb2} and an elementwise SwiGLU, so a layer that splits them needs {@code wrapHb2}
+ * bound.
  */
 // @formatter:on
 public final class QuantizedProjections {
@@ -260,8 +260,8 @@ public final class QuantizedProjections {
 
     /**
      * Whether {@link #gateUp} runs {@code w1} and {@code w3} as one fused task: both the same type,
-     * with a fused kernel on the path that runs (Q8_0, Q4_0 and Q4_K packed; those and Q5_K in
-     * floating point).
+     * with a fused kernel on the path that runs (Q8_0, Q4_0, Q4_K and Q5_K, packed and in floating
+     * point).
      */
     public boolean fusedGateUp(TornadoTensor w1, TornadoTensor w3) {
         DataType type = w1.dataType();
@@ -269,7 +269,7 @@ public final class QuantizedProjections {
                 && (type == DataType.Q8_0
                         || type == DataType.Q4_0
                         || type == DataType.Q4_K
-                        || (type == DataType.Q5_K && !packed()));
+                        || type == DataType.Q5_K);
     }
 
     /**
@@ -308,9 +308,11 @@ public final class QuantizedProjections {
         } else if (packed()) {
             graph.task(
                     name,
-                    type == DataType.Q4_0
-                            ? TransformerComputeKernelsQ4_0::fusedFFNGateUpSiLUQ4_0DP4A
-                            : TransformerComputeKernelsQ4_K::fusedFFNGateUpSiLUQ4_KDP4A,
+                    switch (type) {
+                        case Q4_0 -> TransformerComputeKernelsQ4_0::fusedFFNGateUpSiLUQ4_0DP4A;
+                        case Q5_K -> TransformerComputeKernelsQ5_K::fusedFFNGateUpSiLUQ5_KDP4A;
+                        default -> TransformerComputeKernelsQ4_K::fusedFFNGateUpSiLUQ4_KDP4A;
+                    },
                     context,
                     ws.wrapXbQuants,
                     ws.wrapXbScales,

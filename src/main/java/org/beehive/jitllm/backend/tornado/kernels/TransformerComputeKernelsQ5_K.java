@@ -499,6 +499,75 @@ public final class TransformerComputeKernelsQ5_K {
         }
     }
 
+    /**
+     * {@code hb[row] = silu(w1[row]·x) * (w3[row]·x)}, both Q5_K projections against the same
+     * quantized activation in one launch: the packed counterpart of {@link #fusedFFNGateUpSiLUQ5_K}
+     * and the Q5_K one of {@code TransformerComputeKernelsQ4_K.fusedFFNGateUpSiLUQ4_KDP4A}. Each
+     * lane takes a sub-block of both rows per step, as {@link #matrixVectorGenericQ5_KDP4A} takes
+     * one; SiLU is applied to the gate reduced across every warp, never per warp. Worker: one
+     * workgroup of {@code localWorkGroupSize} lanes (a multiple of 32) per row; {@code n} a
+     * multiple of 256.
+     */
+    public static void fusedFFNGateUpSiLUQ5_KDP4A(
+            KernelContext context,
+            IntArray xQuants,
+            FloatArray xScales,
+            IntArray xSums,
+            FloatArray hb,
+            ByteArray w1,
+            ByteArray w3,
+            int n,
+            int d,
+            int localWorkGroupSize) {
+        int rowId = context.groupIdx;
+        if (rowId >= d) {
+            return;
+        }
+        int localId = context.localIdx;
+        int warpCount = localWorkGroupSize / 32;
+        // Gate in the first warpCount entries, up in the second.
+        float[] warpSums = context.allocateFloatLocalArray(warpCount * 2);
+
+        int blocksPerRow = (n + QK_K - 1) / QK_K;
+        int rowBlockOffset = rowId * blocksPerRow;
+        int subBlocks = n / 32;
+
+        float gate = 0.0f;
+        float up = 0.0f;
+        for (int sb = localId; sb < subBlocks; sb += localWorkGroupSize) {
+            gate += laneSumPacked(xQuants, xScales, xSums, w1, rowBlockOffset, sb);
+            up += laneSumPacked(xQuants, xScales, xSums, w3, rowBlockOffset, sb);
+        }
+
+        gate += context.simdShuffleDown(gate, 16);
+        gate += context.simdShuffleDown(gate, 8);
+        gate += context.simdShuffleDown(gate, 4);
+        gate += context.simdShuffleDown(gate, 2);
+        gate += context.simdShuffleDown(gate, 1);
+        up += context.simdShuffleDown(up, 16);
+        up += context.simdShuffleDown(up, 8);
+        up += context.simdShuffleDown(up, 4);
+        up += context.simdShuffleDown(up, 2);
+        up += context.simdShuffleDown(up, 1);
+
+        if ((localId & 31) == 0) {
+            warpSums[localId >> 5] = gate;
+            warpSums[warpCount + (localId >> 5)] = up;
+        }
+        context.localBarrier();
+
+        if (localId == 0) {
+            float gateSum = 0.0f;
+            float upSum = 0.0f;
+            for (int warp = 0; warp < warpCount; warp++) {
+                gateSum += warpSums[warp];
+                upSum += warpSums[warpCount + warp];
+            }
+            float silu = gateSum / (1.0f + TornadoMath.exp(-gateSum));
+            hb.set(rowId, silu * upSum);
+        }
+    }
+
     // @formatter:off
     /**
      * {@code hb[row] += w[row]·x} with the weights read as {@code Q5_K} and the dot product done in
