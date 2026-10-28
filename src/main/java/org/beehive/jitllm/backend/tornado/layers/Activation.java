@@ -37,14 +37,20 @@ public class Activation extends AbstractLayer implements ActivationTaskGraph {
     protected TaskGraph setupActivationTaskGraph(String name) {
         DataType embedding =
                 weights instanceof TornadoWeights t ? t.getTokenEmbeddingTable().dataType() : null;
-        if (embedding == DataType.Q4_K || embedding == DataType.Q6_K) {
+        if (embedding == DataType.Q4_1
+                || embedding == DataType.Q4_K
+                || embedding == DataType.Q5_K
+                || embedding == DataType.Q6_K) {
             return new TaskGraph(name)
                     .transferToDevice(DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX)
                     .task(
                             "updateX",
-                            embedding == DataType.Q4_K
-                                    ? TransformerComputeKernels::convertQ4_KtoFP32
-                                    : TransformerComputeKernels::convertQ6_KtoFP32,
+                            switch (embedding) {
+                                case Q4_1 -> TransformerComputeKernels::convertQ4_1toFP32;
+                                case Q4_K -> TransformerComputeKernels::convertQ4_KtoFP32;
+                                case Q5_K -> TransformerComputeKernels::convertQ5_KtoFP32;
+                                default -> TransformerComputeKernels::convertQ6_KtoFP32;
+                            },
                             context,
                             (ByteArray) state.workspace.embeddingX,
                             state.workspace.wrapX)

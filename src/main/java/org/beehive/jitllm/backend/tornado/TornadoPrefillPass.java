@@ -5,7 +5,6 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
-import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * The accelerated <b>sequential prefill</b> pass: stage one token's embedding, then run the plan's
@@ -81,14 +80,18 @@ public final class TornadoPrefillPass {
                         0,
                         bytesPerToken);
             }
-            case Q4_K, Q6_K -> {
-                // Kept as the file stores it: 144 (Q4_K) or 210 (Q6_K) bytes per 256 weights,
-                // decoded on the device.
+            case Q4_1, Q4_K, Q5_K, Q6_K -> {
+                // Kept as the file stores it, decoded on the device: 20 bytes per 32 weights
+                // (Q4_1), or 144, 176 or 210 per 256 (Q4_K, Q5_K, Q6_K).
                 MemorySegment tokenEmbeddings =
                         weights.getTokenEmbeddingTable().asByteArray().getSegment();
-                int blockBytes =
-                        weights.getTokenEmbeddingTable().dataType() == DataType.Q4_K ? 144 : 210;
-                long bytesPerToken = (long) (configuration.dim() / 256) * blockBytes;
+                long bytesPerToken =
+                        switch (weights.getTokenEmbeddingTable().dataType()) {
+                            case Q4_1 -> (long) (configuration.dim() / 32) * 20;
+                            case Q4_K -> (long) (configuration.dim() / 256) * 144;
+                            case Q5_K -> (long) (configuration.dim() / 256) * 176;
+                            default -> (long) (configuration.dim() / 256) * 210;
+                        };
                 MemorySegment.copy(
                         tokenEmbeddings,
                         (long) token * bytesPerToken,

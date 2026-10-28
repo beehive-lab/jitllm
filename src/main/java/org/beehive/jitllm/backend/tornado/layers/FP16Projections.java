@@ -4,7 +4,10 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -162,10 +165,7 @@ public final class FP16Projections {
         int columns = Math.toIntExact(total / k);
         boolean tileDecodable = true;
         for (TornadoTensor w : ws) {
-            tileDecodable &=
-                    w.dataType() == DataType.Q8_0
-                            || w.dataType() == DataType.Q4_K
-                            || w.dataType() == DataType.Q6_K;
+            tileDecodable &= w.dataType() != DataType.F16;
         }
         if (tileDecodable
                 && !gemm.nativeGemm()
@@ -188,6 +188,23 @@ public final class FP16Projections {
                         TransformerBatchPrefillKernels::copyFP16Once,
                         context,
                         ws[i].asHalfFloatArray(),
+                        b,
+                        offset,
+                        n,
+                        decoded,
+                        resident ? flag : neverDecoded);
+            } else if (decodesOnceOnly(ws[i])) {
+                // Q4_0, Q4_1 and Q5_K have the decode-once form only; a per-chunk decode passes it
+                // the flag that is never set.
+                layer.task(
+                        decode,
+                        switch (ws[i].dataType()) {
+                            case Q4_0 -> TransformerComputeKernelsQ4_0::dequantizeQ4_0ToFP16Once;
+                            case Q4_1 -> TransformerComputeKernelsQ4_1::dequantizeQ4_1ToFP16Once;
+                            default -> TransformerComputeKernelsQ5_K::dequantizeQ5_KToFP16Once;
+                        },
+                        context,
+                        ws[i].asByteArray(),
                         b,
                         offset,
                         n,
@@ -241,7 +258,8 @@ public final class FP16Projections {
                         offset,
                         n);
             }
-            boolean striding = resident || ws[i].dataType() == DataType.F16;
+            boolean striding =
+                    resident || ws[i].dataType() == DataType.F16 || decodesOnceOnly(ws[i]);
             decodeTasks.put(
                     layer.getTaskGraphName() + "." + decode,
                     striding ? Math.min(n, TransformerBatchPrefillKernels.DECODE_ONCE_LANES) : n);
@@ -255,21 +273,30 @@ public final class FP16Projections {
         gemm.gemm(layer, task, a, b, c, m, offset / k, k);
     }
 
+    /** Whether {@code w}'s type has only the decode-once FP16 decoder. */
+    private static boolean decodesOnceOnly(TornadoTensor w) {
+        DataType type = w.dataType();
+        return type == DataType.Q4_0 || type == DataType.Q4_1 || type == DataType.Q5_K;
+    }
+
     /**
-     * Weights in {@code w}: FP16, Q8_0 at 34 bytes to 32 weights, or Q4_K and Q6_K at 144 and 210
-     * bytes to 256.
+     * Weights in {@code w}: FP16; Q8_0, Q4_0 and Q4_1 at 34, 18 and 20 bytes to 32 weights; Q4_K,
+     * Q5_K and Q6_K at 144, 176 and 210 bytes to 256.
      */
     private static long elements(TornadoTensor w) {
         return switch (w.dataType()) {
             case F16 -> w.asHalfFloatArray().getSize();
+            case Q4_0 -> (long) w.asByteArray().getSize() / 18 * 32;
+            case Q4_1 -> (long) w.asByteArray().getSize() / 20 * 32;
             case Q4_K -> (long) w.asByteArray().getSize() / 144 * 256;
+            case Q5_K -> (long) w.asByteArray().getSize() / 176 * 256;
             case Q6_K -> (long) w.asByteArray().getSize() / 210 * 256;
             default -> (long) w.asByteArray().getSize() / 34 * 32;
         };
     }
 
     /**
-     * The tile-order decodes of {@code ws} (Q8_0, Q4_K or Q6_K) into {@code b}, then {@code
+     * The tile-order decodes of {@code ws} (any quantized type) into {@code b}, then {@code
      * gemmMMATiledB}.
      */
     private void projectTiled(
@@ -289,7 +316,10 @@ public final class FP16Projections {
             layer.task(
                     decode,
                     switch (ws[i].dataType()) {
+                        case Q4_0 -> Qwen35MMAKernels::dequantizeQ4_0ToFP16Tiled;
+                        case Q4_1 -> Qwen35MMAKernels::dequantizeQ4_1ToFP16Tiled;
                         case Q4_K -> Qwen35MMAKernels::dequantizeQ4_KToFP16Tiled;
+                        case Q5_K -> Qwen35MMAKernels::dequantizeQ5_KToFP16Tiled;
                         case Q6_K -> Qwen35MMAKernels::dequantizeQ6_KToFP16Tiled;
                         default -> Qwen35MMAKernels::dequantizeQ8_0ToFP16Tiled;
                     },
