@@ -1,5 +1,6 @@
 package org.beehive.jitllm.golden;
 
+import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
@@ -20,6 +21,7 @@ public class Gemma4KQuantBatchedPrefillParityAccelTest extends CpuGpuParity {
 
     static {
         System.setProperty("jitllm.gemma4.packedIntegerDot", "false");
+        System.setProperty(PackedActivationTasks.DISABLE_PROPERTY, "false");
     }
 
     /** Compared against references captured with an FP32 key/value cache. */
