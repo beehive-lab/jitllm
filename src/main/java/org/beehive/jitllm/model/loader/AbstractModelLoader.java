@@ -75,6 +75,7 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
             case 2 ->
                     "Q8_0"; // Q4_0 — decoded directly on the CPU, materialized as Q8_0 for the GPU
             case 32 -> "FP16"; // MOSTLY_BF16 — BF16 weights use FP16 activation buffers
+            case 3 -> "Q8_0"; // Q4_1
             case 7 -> "Q8_0";
             case 14, 15 -> "Q8_0"; // Q4_K_S, Q4_K_M (K-quants use Q8_0 activations)
             case 16, 17 -> "Q8_0"; // Q5_K_S, Q5_K_M
@@ -114,6 +115,7 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
             case 0 -> "F32";
             case 1 -> "F16";
             case 2 -> "Q4_0";
+            case 3 -> "Q4_1";
             case 32 -> "BF16";
             case 7 -> "Q8_0";
             case 14 -> "Q4_K_S";

@@ -781,8 +781,7 @@ public class Qwen3Q8_0FFNLayers
     protected boolean splitsGateUp() {
         for (int i = 0; i < config.numberOfLayers(); i++) {
             if (nativeLayer(i)
-                    && !QuantizedProjections.fusedGateUp(
-                            weights.w1Layered[i], weights.w3Layered[i])) {
+                    && !projections.fusedGateUp(weights.w1Layered[i], weights.w3Layered[i])) {
                 return true;
             }
         }

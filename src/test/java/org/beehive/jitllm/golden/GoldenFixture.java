@@ -100,6 +100,48 @@ public final class GoldenFixture {
                 "Q4_K_M",
                 "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5",
                 "qwen3-1.7b"),
+        /**
+         * unsloth's Qwen3-0.6B quantizations, each kept as it is on CUDA and Metal: Q4_0 (with Q4_1
+         * {@code ffn_down} in three layers), Q4_1, Q4_K_S (Q5_K {@code attn_v} and {@code ffn_down}
+         * in a few layers), Q5_K_M (Q6_K in half the layers), Q5_K_S, Q6_K, and UD-Q6_K_XL (Q8_0
+         * {@code attn_q/k/v} and embedding with Q6_K elsewhere). Every one has a Q6_K or Q8_0
+         * embedding.
+         */
+        QWEN3_0_6B_Q4_0(
+                "Qwen3-0.6B-Q4_0.gguf",
+                "Q4_0",
+                "33bcc57074ec7b6eada5a90651ee546ec0c2b271002c22baf9f1b2dd1e8f75cb",
+                "qwen3-0.6b"),
+        QWEN3_0_6B_Q4_1(
+                "Qwen3-0.6B-Q4_1.gguf",
+                "Q4_1",
+                "ddaf05402c668540464a91efc607d732f41f108401533fe69de874bfc9653688",
+                "qwen3-0.6b"),
+        QWEN3_0_6B_Q4_K_S(
+                "Qwen3-0.6B-Q4_K_S.gguf",
+                "Q4_K_S",
+                "3e5495288a45c7891d32afeb4e7a1ed58a9a22fab83f8903b561204a89aae363",
+                "qwen3-0.6b"),
+        QWEN3_0_6B_Q5_K_M(
+                "Qwen3-0.6B-Q5_K_M.gguf",
+                "Q5_K_M",
+                "03c6e2127d155b89c21a512954010486b1e00e1a9eebdfad650d03b53ab4c74a",
+                "qwen3-0.6b"),
+        QWEN3_0_6B_Q5_K_S(
+                "Qwen3-0.6B-Q5_K_S.gguf",
+                "Q5_K_S",
+                "222acaa0376ffd371c5673a98ff896d7aa82428a4fab92e4b858e7eb281467ad",
+                "qwen3-0.6b"),
+        QWEN3_0_6B_Q6_K(
+                "Qwen3-0.6B-Q6_K.gguf",
+                "Q6_K",
+                "1c15a88244c9e852516e5ba0e394fc97f2182f1f2757413fb99fe6a9214c033b",
+                "qwen3-0.6b"),
+        QWEN3_0_6B_UD_Q6_K_XL(
+                "Qwen3-0.6B-UD-Q6_K_XL.gguf",
+                "UD-Q6_K_XL",
+                "d7df206be8dfac0267b24b97b6f062b31a8655ef770a74e82a38c262efb570ba",
+                "qwen3-0.6b"),
 
         PHI3_MINI_4K_F16(
                 "Phi-3-mini-4k-instruct-fp16.gguf",

@@ -236,7 +236,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.workspace.attnScaleBatch,
                     dim);
 
-            if (nativeLayer(layerIndex)) {
+            if (nativeLayer(layerIndex) && !q8_0Qkv(layerIndex)) {
                 // One projection each: wq, wk and wv can be different representations.
                 nativeProjection(
                         layer,
@@ -570,7 +570,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             if (mlxProjections != null) {
                 mlxProjections.addGrids(scheduler, p);
-            } else if (nativeLayer(i)) {
+            } else if (nativeLayer(i) && !q8_0Qkv(i)) {
                 scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApplyWorker);
                 scheduler.addWorkerGrid(p + "batch_q", nativeWorker(weights.wqLayered[i], qDim));
                 scheduler.addWorkerGrid(p + "batch_k", nativeWorker(weights.wkLayered[i], kvDim));
@@ -658,6 +658,16 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
             }
         }
         return false;
+    }
+
+    /**
+     * Whether a layer's wq, wk and wv are all Q8_0, so the Q8_0 QKV task serves it whatever its
+     * other projections hold, as in an unsloth UD-Q6_K_XL file.
+     */
+    private boolean q8_0Qkv(int layerIndex) {
+        return weights.wqLayered[layerIndex].dataType() == DataType.Q8_0
+                && weights.wkLayered[layerIndex].dataType() == DataType.Q8_0
+                && weights.wvLayered[layerIndex].dataType() == DataType.Q8_0;
     }
 
     /** {@code out = w·x} over the batch, or {@code out += w·x} with {@code residual}. */

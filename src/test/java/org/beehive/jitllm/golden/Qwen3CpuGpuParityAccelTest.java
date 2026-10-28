@@ -57,4 +57,44 @@ public class Qwen3CpuGpuParityAccelTest extends CpuGpuParity {
     public void qwen3_0_6b_q4_k_m_prefillDecodeParity() throws Exception {
         assertParityPrefillDecode(Fixture.QWEN3_0_6B_Q4_K_M, Q8_0);
     }
+
+    @Test
+    public void qwen3_0_6b_q4_0_cpuGpuParity() throws Exception {
+        assertParity(Fixture.QWEN3_0_6B_Q4_0, Q8_0);
+    }
+
+    @Test
+    public void qwen3_0_6b_q4_1_cpuGpuParity() throws Exception {
+        assertParity(Fixture.QWEN3_0_6B_Q4_1, Q8_0);
+    }
+
+    @Test
+    public void qwen3_0_6b_q4_k_s_cpuGpuParity() throws Exception {
+        assertParity(Fixture.QWEN3_0_6B_Q4_K_S, Q8_0);
+    }
+
+    @Test
+    public void qwen3_0_6b_q5_k_m_cpuGpuParity() throws Exception {
+        assertParity(Fixture.QWEN3_0_6B_Q5_K_M, Q8_0);
+    }
+
+    @Test
+    public void qwen3_0_6b_q5_k_s_cpuGpuParity() throws Exception {
+        assertParity(Fixture.QWEN3_0_6B_Q5_K_S, Q8_0);
+    }
+
+    @Test
+    public void qwen3_0_6b_q6_k_cpuGpuParity() throws Exception {
+        assertParity(Fixture.QWEN3_0_6B_Q6_K, Q8_0);
+    }
+
+    @Test
+    public void qwen3_0_6b_ud_q6_k_xl_cpuGpuParity() throws Exception {
+        assertParity(Fixture.QWEN3_0_6B_UD_Q6_K_XL, Q8_0);
+    }
+
+    @Test
+    public void qwen3_0_6b_q5_k_m_prefillDecodeParity() throws Exception {
+        assertParityPrefillDecode(Fixture.QWEN3_0_6B_Q5_K_M, Q8_0);
+    }
 }

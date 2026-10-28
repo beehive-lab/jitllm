@@ -65,4 +65,39 @@ public class Qwen3BatchedPrefillParityAccelTest extends CpuGpuParity {
     public void qwen3_1_7b_q4_k_m_batchedPrefillParity() throws Exception {
         assertParityBatched(Fixture.QWEN3_1_7B_Q4_K_M, quantizedPrefill(), BATCH);
     }
+
+    @Test
+    public void qwen3_0_6b_q4_0_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.QWEN3_0_6B_Q4_0, quantizedPrefill(), BATCH);
+    }
+
+    @Test
+    public void qwen3_0_6b_q4_1_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.QWEN3_0_6B_Q4_1, quantizedPrefill(), BATCH);
+    }
+
+    @Test
+    public void qwen3_0_6b_q4_k_s_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.QWEN3_0_6B_Q4_K_S, quantizedPrefill(), BATCH);
+    }
+
+    @Test
+    public void qwen3_0_6b_q5_k_m_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.QWEN3_0_6B_Q5_K_M, quantizedPrefill(), BATCH);
+    }
+
+    @Test
+    public void qwen3_0_6b_q5_k_s_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.QWEN3_0_6B_Q5_K_S, quantizedPrefill(), BATCH);
+    }
+
+    @Test
+    public void qwen3_0_6b_q6_k_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.QWEN3_0_6B_Q6_K, quantizedPrefill(), BATCH);
+    }
+
+    @Test
+    public void qwen3_0_6b_ud_q6_k_xl_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.QWEN3_0_6B_UD_Q6_K_XL, quantizedPrefill(), BATCH);
+    }
 }
