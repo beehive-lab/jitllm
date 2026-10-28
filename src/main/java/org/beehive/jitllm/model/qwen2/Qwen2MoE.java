@@ -107,9 +107,11 @@ public class Qwen2MoE extends AbstractModel {
             boolean echo,
             IntConsumer onTokenGenerated,
             TornadoVMMasterPlan tornadoVMPlan) {
+        // The single-token loop below charges the whole prompt against the budget, so the batched
+        // one must too, or the same request decodes one more token batched.
         if (state.executionPolicy().phaseStrategy() == PhaseStrategy.PREFILL_DECODE
                 && state.executionPolicy().prefillBatchSize() > 1) {
-            return TokenGenerationLoop.generateTokensGpu(
+            return TokenGenerationLoop.generateTokensGPUPrefillDecode(
                     this,
                     state,
                     startPosition,
