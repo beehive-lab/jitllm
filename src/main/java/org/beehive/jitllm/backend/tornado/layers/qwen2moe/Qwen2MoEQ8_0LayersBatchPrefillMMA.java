@@ -203,6 +203,6 @@ public class Qwen2MoEQ8_0LayersBatchPrefillMMA extends Qwen2Q8_0LayersBatchPrefi
                         batchSize * moeConfig().numberOfExperts() * ROUTER_LOCAL, ROUTER_LOCAL));
         scheduler.addWorkerGrid(p + "batch_topk", WorkerGridFactory.genericWorker(batchSize, 1));
         moe().addSharedGateInputGrid(scheduler, p);
-        moe().addExpertGrids(scheduler, p);
+        moe().addExpertGrids(scheduler, p, layerIndex);
     }
 }

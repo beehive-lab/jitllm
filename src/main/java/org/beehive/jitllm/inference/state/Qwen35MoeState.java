@@ -102,5 +102,9 @@ public final class Qwen35MoeState extends Qwen35State {
         workspace.wrapMoeSharedQ8 = TornadoWorkspaces.bytes(batch * shared);
         workspace.wrapMoeSharedScales = TornadoWorkspaces.floats(batch * shared / 32);
         workspace.wrapMoeSharedOut = TornadoWorkspaces.floats(batch * config.dim());
+        TornadoWorkspaces.sharedExpertTiles(
+                workspace,
+                batch,
+                org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels.TILE_ROWS);
     }
 }

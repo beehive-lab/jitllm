@@ -76,6 +76,7 @@ public final class Qwen2MoEQ8_0FFNLayersDecode extends Qwen2MoEQ8_0FFNLayers {
                     moeState.workspace.wrapSharedOutput);
             layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, keyCache(), valueCache());
             layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, state.workspace.wrapBlockTable);
+            bindNativeScratch(layer, layerIndex, null);
         } else {
             String predecessor = GraphNames.layer(layerIndex - 1);
             layer.consumeFromDevice(
@@ -99,6 +100,7 @@ public final class Qwen2MoEQ8_0FFNLayersDecode extends Qwen2MoEQ8_0FFNLayers {
                     moeState.workspace.temp,
                     moeState.workspace.tempFFN);
             layer.consumeFromDevice(predecessor, state.workspace.wrapBlockTable);
+            bindNativeScratch(layer, layerIndex, predecessor);
         }
         return layer;
     }

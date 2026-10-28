@@ -70,6 +70,10 @@ public class Qwen2MoEState extends Qwen2State {
                 TornadoWorkspaces.floats(c.moeHiddenDim() * c.numberOfExpertsUsed());
         this.workspace.wrapSharedGate = TornadoWorkspaces.floats(c.sharedExpertHiddenDim());
         this.workspace.wrapSharedOutput = TornadoWorkspaces.floats(c.dim());
+        this.workspace.wrapExpertUp =
+                TornadoWorkspaces.floats(c.moeHiddenDim() * c.numberOfExpertsUsed());
+        this.workspace.wrapExpertDown = TornadoWorkspaces.floats(c.dim() * c.numberOfExpertsUsed());
+        this.workspace.wrapSharedUp = TornadoWorkspaces.floats(c.sharedExpertHiddenDim());
 
         int gpuBatchSize = prefillBatchWidth;
         if (gpuBatchSize > 1) {
@@ -88,6 +92,10 @@ public class Qwen2MoEState extends Qwen2State {
             this.workspace.wrapSharedHiddenBatch =
                     TornadoWorkspaces.floats(gpuBatchSize * c.sharedExpertHiddenDim());
             this.workspace.wrapSharedWeightBatch = TornadoWorkspaces.floats(gpuBatchSize);
+            this.workspace.wrapGroupedExpertUp =
+                    TornadoWorkspaces.floats(assignments * c.moeHiddenDim());
+            this.workspace.wrapSharedUpBatch =
+                    TornadoWorkspaces.floats(gpuBatchSize * c.sharedExpertHiddenDim());
             // The tensor-core batched prefill: the normed chunk, its int8 quantization, and the
             // grouped-expert scratch of the shared expert tasks.
             this.workspace.wrapNormedBatch = TornadoWorkspaces.floats(gpuBatchSize * c.dim());
@@ -113,6 +121,8 @@ public class Qwen2MoEState extends Qwen2State {
             this.workspace.wrapGroupedExpertDown = null;
             this.workspace.wrapSharedHiddenBatch = null;
             this.workspace.wrapSharedWeightBatch = null;
+            this.workspace.wrapGroupedExpertUp = null;
+            this.workspace.wrapSharedUpBatch = null;
         }
     }
 

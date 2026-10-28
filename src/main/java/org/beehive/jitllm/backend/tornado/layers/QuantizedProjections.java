@@ -60,9 +60,17 @@ public final class QuantizedProjections {
         this.packedLocal = packedLocal;
     }
 
+    /**
+     * Floating-point projections only, for a layer whose graphs bind no quantized activation: the
+     * packed path never runs, whatever the device supports.
+     */
+    public QuantizedProjections(KernelContext context, TornadoWorkspace ws, int floatLocal) {
+        this(context, ws, floatLocal, 0);
+    }
+
     /** Whether the projections read the activation quantized to eight bits. */
     public boolean packed() {
-        return PackedActivationTasks.enabled();
+        return packedLocal > 0 && PackedActivationTasks.enabled();
     }
 
     /**
@@ -127,25 +135,40 @@ public final class QuantizedProjections {
                     d,
                     packedLocal);
         } else {
-            graph.task(
-                    name,
-                    switch (type) {
-                        case Q8_0 -> TransformerComputeKernelsLayered::matrixVectorGenericQ8Byte;
-                        case Q4_0 -> TransformerComputeKernelsQ4_0::matrixVectorGenericQ4_0;
-                        case Q4_1 -> TransformerComputeKernelsQ4_1::matrixVectorGenericQ4_1;
-                        case Q4_K -> TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_K;
-                        case Q5_K -> TransformerComputeKernelsQ5_K::matrixVectorGenericQ5_K;
-                        case Q6_K -> TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_K;
-                        default -> throw unsupported(w);
-                    },
-                    context,
-                    ws.wrapXb,
-                    out,
-                    bytes(w),
-                    n,
-                    d,
-                    floatLocal);
+            floatMatvec(graph, name, ws.wrapXb, out, w, n, d);
         }
+    }
+
+    /**
+     * {@code out = w·x} in floating point, for an activation other than {@code wrapXb}, which the
+     * packed path holds no quantization of.
+     */
+    public void floatMatvec(
+            TaskGraph graph,
+            String name,
+            FloatArray x,
+            FloatArray out,
+            TornadoTensor w,
+            int n,
+            int d) {
+        graph.task(
+                name,
+                switch (w.dataType()) {
+                    case Q8_0 -> TransformerComputeKernelsLayered::matrixVectorGenericQ8Byte;
+                    case Q4_0 -> TransformerComputeKernelsQ4_0::matrixVectorGenericQ4_0;
+                    case Q4_1 -> TransformerComputeKernelsQ4_1::matrixVectorGenericQ4_1;
+                    case Q4_K -> TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_K;
+                    case Q5_K -> TransformerComputeKernelsQ5_K::matrixVectorGenericQ5_K;
+                    case Q6_K -> TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_K;
+                    default -> throw unsupported(w);
+                },
+                context,
+                x,
+                out,
+                bytes(w),
+                n,
+                d,
+                floatLocal);
     }
 
     /**
