@@ -1076,14 +1076,27 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             int off) {
         simdgroupTasks.put(layer.getTaskGraphName() + "." + task, d);
         if (w instanceof TornadoTensor t) {
-            if (t.dataType() != DataType.Q8_0) {
-                throw new UnsupportedOperationException(
-                        "gemma4 batched prefill on Metal reads Q8_0 projections only, not "
-                                + t.dataType());
-            }
             layer.task(
                     task,
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ8Strided,
+                    switch (t.dataType()) {
+                        case Q8_0 ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ8Strided;
+                        case Q4_0 ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ4_0Strided;
+                        case Q4_1 ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ4_1Strided;
+                        case Q4_K ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ4_KStrided;
+                        case Q5_K ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ5_KStrided;
+                        case Q6_K ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ6_KStrided;
+                        default ->
+                                throw new UnsupportedOperationException(
+                                        "gemma4 batched prefill on Metal has no SIMD-group GEMM for "
+                                                + t.dataType()
+                                                + " projections");
+                    },
                     context,
                     x,
                     out,

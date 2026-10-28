@@ -150,16 +150,18 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
     }
 
     /**
-     * The batched projections and attention are tensor-core kernels, with no scalar twin. Without
-     * tensor cores the plan fails at "MMA instructions only supported for the CUDA backend".
+     * The batched projections and attention are tensor-core kernels, and on Metal SIMD-group
+     * kernels for every quantized type a kept file holds, with no scalar twin. Without either the
+     * plan fails at "MMA instructions only supported for the CUDA backend".
      */
     @Override
     public Optional<String> batchPrefillUnsupported(Combination c) {
         return c.tensorCores()
-                        || (BackendId.METAL.equals(c.backend()) && c.weights() == DataType.Q8_0)
+                        || (BackendId.METAL.equals(c.backend())
+                                && TornadoSupportSets.NATIVE_QUANTIZED.contains(c.weights()))
                 ? Optional.empty()
                 : Optional.of(
-                        "the gemma4 batched prefill is written for tensor cores, and for Q8_0"
+                        "the gemma4 batched prefill is written for tensor cores, and for quantized"
                                 + " weights on the Metal SIMD-group kernels, neither of which"
                                 + " this combination has");
     }
@@ -191,7 +193,7 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
 
     @Override
     public boolean metalBatchedPrefillDefault(DataType weights) {
-        return weights == DataType.F16 || weights == DataType.Q8_0;
+        return weights == DataType.F16 || TornadoSupportSets.NATIVE_QUANTIZED.contains(weights);
     }
 
     /**
