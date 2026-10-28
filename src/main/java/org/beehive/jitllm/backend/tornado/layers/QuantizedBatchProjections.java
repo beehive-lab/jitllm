@@ -210,14 +210,14 @@ public final class QuantizedBatchProjections {
             layer.task(
                     "batch_ffn_gate_up",
                     type == DataType.Q8_0
-                            ? (tiledQ8
-                                    ? (simdgroup
-                                            ? TransformerBatchPrefillSimdgroupKernels
+                            ? (simdgroup
+                                    ? TransformerBatchPrefillSimdgroupKernels
+                                            ::batchedGemmRmsNormFFNGateUpQ8
+                                    : tiledQ8
+                                            ? TransformerBatchPrefillKernels
                                                     ::batchedGemmRmsNormFFNGateUpQ8
                                             : TransformerBatchPrefillKernels
-                                                    ::batchedGemmRmsNormFFNGateUpQ8)
-                                    : TransformerBatchPrefillKernels
-                                            ::batchedFusedRmsNormFFNGateUpQ8)
+                                                    ::batchedFusedRmsNormFFNGateUpQ8)
                             : switch (type) {
                                 case Q4_0 ->
                                         TransformerBatchPrefillSimdgroupKernels

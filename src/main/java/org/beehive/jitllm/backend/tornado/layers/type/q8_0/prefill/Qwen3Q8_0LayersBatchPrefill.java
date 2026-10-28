@@ -683,7 +683,6 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                 && weights.wvLayered[layerIndex].dataType() == DataType.Q8_0;
     }
 
-    /** Whether some layer runs its gate and up apart, which needs {@code ffnUpResult}. */
     /** The per-weight batched projections of a layer that is not entirely Q8_0. */
     private QuantizedBatchProjections batchProjections() {
         return new QuantizedBatchProjections(
@@ -695,6 +694,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                 LOCAL_WORK_GROUP_SIZE);
     }
 
+    /** Whether some layer runs its gate and up apart, which needs {@code ffnUpResult}. */
     private boolean splitsGateUp() {
         if (mlxProjections != null) {
             return false;
