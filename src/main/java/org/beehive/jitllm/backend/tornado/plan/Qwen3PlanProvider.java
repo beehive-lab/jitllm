@@ -2,7 +2,6 @@ package org.beehive.jitllm.backend.tornado.plan;
 
 import static org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets.NATIVE_QUANTIZED;
 
-import java.util.EnumSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -76,9 +75,7 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
      */
     @Override
     public Set<DataType> supportedDataTypes() {
-        Set<DataType> supported = EnumSet.copyOf(NATIVE_QUANTIZED);
-        supported.add(DataType.F16);
-        return supported;
+        return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
     }
 
     /** What a load keeps whatever the backend: F16 and Q8_0. The rest depends on the backend. */
@@ -94,11 +91,7 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
     @Override
     public DeviceRetention deviceRetention(
             Map<String, DataType> sourceTypes, int layers, BackendId backend) {
-        Set<DataType> retained = EnumSet.copyOf(nativeTensorTypes());
-        if (TornadoPlanProvider.retainsNative(backend)) {
-            retained.addAll(NATIVE_QUANTIZED);
-        }
-        return DeviceRetention.retaining(retained);
+        return TornadoPlanProvider.nativeRetention(nativeTensorTypes(), backend);
     }
 
     @Override
@@ -121,26 +114,12 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
      */
     @Override
     public Optional<String> fp16KeyValueUnsupported(Combination c) {
-        return Fp16KeyValueSupport.nvidiaDecodeLayers(asQ8_0Layers(c), false);
+        return Fp16KeyValueSupport.nvidiaDecodeLayers(c.asQ8_0Layers(), false);
     }
 
     @Override
     public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
-        return Fp16KeyValueSupport.metalDecodeLayers(asQ8_0Layers(c), false);
-    }
-
-    /** {@code c} with a quantized file answered as the Q8_0 layers it runs. */
-    private static Combination asQ8_0Layers(Combination c) {
-        return !NATIVE_QUANTIZED.contains(c.weights()) || c.weights() == DataType.Q8_0
-                ? c
-                : new Combination(
-                        c.architecture(),
-                        DataType.Q8_0,
-                        c.mode(),
-                        c.backend(),
-                        c.nvidiaScheduler(),
-                        c.tensorCores(),
-                        c.nvidiaDevice());
+        return Fp16KeyValueSupport.metalDecodeLayers(c.asQ8_0Layers(), false);
     }
 
     @Override
@@ -161,12 +140,9 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
         // Every quantized type through cuBLAS over the same FP16-decoded weights; on MLX only
         // Q8_0 until part 5 (decision 2), so a Metal session with any other file runs the JIT
         // kernels.
-        if (!BackendId.CUDA.equals(backend)) {
-            return Set.of();
-        }
-        Set<DataType> weights = EnumSet.copyOf(NATIVE_QUANTIZED);
-        weights.add(DataType.F16);
-        return weights;
+        return BackendId.CUDA.equals(backend)
+                ? TornadoSupportSets.F16_AND_NATIVE_QUANTIZED
+                : Set.of();
     }
 
     /** The tensor-core layers' attention, split-K and decoded-projection buffers. */

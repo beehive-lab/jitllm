@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado;
 
 import java.util.Optional;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
@@ -55,6 +56,25 @@ public final class Fp16KeyValueSupport {
         @Override
         public String toString() {
             return architecture + " / " + weights + " / " + mode + " on " + backend;
+        }
+
+        /**
+         * This combination with a file kept as it is answered as the Q8_0 layers it runs: a
+         * migrated family's Q8_0 layers read each tensor by its type and write the cache as they do
+         * Q8_0's.
+         */
+        public Combination asQ8_0Layers() {
+            return !TornadoSupportSets.NATIVE_QUANTIZED.contains(weights)
+                            || weights == DataType.Q8_0
+                    ? this
+                    : new Combination(
+                            architecture,
+                            DataType.Q8_0,
+                            mode,
+                            backend,
+                            nvidiaScheduler,
+                            tensorCores,
+                            nvidiaDevice);
         }
     }
 

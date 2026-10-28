@@ -1,10 +1,12 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import java.util.EnumSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
+import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
@@ -168,6 +170,18 @@ public interface TornadoPlanProvider {
     // @formatter:on
     static boolean retainsNative(BackendId backend) {
         return BackendId.CUDA.equals(backend) || BackendId.METAL.equals(backend);
+    }
+
+    /**
+     * What a migrated family's load keeps on a {@code backend} device: {@code kept} everywhere, and
+     * every quantized type besides where {@link #retainsNative} holds.
+     */
+    static DeviceRetention nativeRetention(Set<DataType> kept, BackendId backend) {
+        Set<DataType> retained = EnumSet.copyOf(kept);
+        if (retainsNative(backend)) {
+            retained.addAll(TornadoSupportSets.NATIVE_QUANTIZED);
+        }
+        return DeviceRetention.retaining(retained);
     }
 
     // ── What this family's layers can build ───────────────────────────────────
