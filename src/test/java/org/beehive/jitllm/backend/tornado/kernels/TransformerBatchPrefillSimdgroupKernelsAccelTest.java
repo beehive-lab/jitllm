@@ -782,6 +782,143 @@ public class TransformerBatchPrefillSimdgroupKernelsAccelTest {
         checkHalfStrided(false);
     }
 
+    // @formatter:off
+    /**
+     * The strided projections over FP16 activations for every other type a kept Gemma 4 file holds
+     * ({@code batchedGemmHalf<T>Strided}), against the type's own decode: exactly their columns of
+     * a wider packed row, partial tiles included. {@code quant} null is Q4_0.
+     */
+    // @formatter:on
+    private static void checkHalfStridedQuant(Quant quant) {
+        assumeMetal();
+        int n = 512;
+        int d = 72;
+        int batch = 70;
+        int off = 40;
+        int ldo = off + d + 24;
+        FloatArray xf = activations(batch, n);
+        HalfFloatArray x = new HalfFloatArray(batch * n);
+        FloatArray xh = new FloatArray(batch * n);
+        for (int i = 0; i < batch * n; i++) {
+            x.set(i, new HalfFloat(xf.get(i)));
+            xh.set(i, x.get(i).getFloat32());
+        }
+        FloatArray out = new FloatArray(batch * ldo);
+        out.init(UNTOUCHED);
+        ByteArray w = quant == null ? q4Weights(d, n) : kQuantWeights(quant, d, n, 77);
+        String name = "simdgroupHalf" + (quant == null ? "Q4_0" : quant) + "Strided";
+        TaskGraph graph =
+                new TaskGraph(name).transferToDevice(DataTransferMode.EVERY_EXECUTION, x, out);
+        graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, w);
+        KernelContext context = new KernelContext();
+        if (quant == null) {
+            graph.task(
+                    "t",
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ4_0Strided,
+                    context,
+                    x,
+                    out,
+                    w,
+                    n,
+                    d,
+                    batch,
+                    ldo,
+                    off);
+        } else {
+            switch (quant) {
+                case Q4_1 ->
+                        graph.task(
+                                "t",
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ4_1Strided,
+                                context,
+                                x,
+                                out,
+                                w,
+                                n,
+                                d,
+                                batch,
+                                ldo,
+                                off);
+                case Q4_K ->
+                        graph.task(
+                                "t",
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ4_KStrided,
+                                context,
+                                x,
+                                out,
+                                w,
+                                n,
+                                d,
+                                batch,
+                                ldo,
+                                off);
+                case Q5_K ->
+                        graph.task(
+                                "t",
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ5_KStrided,
+                                context,
+                                x,
+                                out,
+                                w,
+                                n,
+                                d,
+                                batch,
+                                ldo,
+                                off);
+                case Q6_K ->
+                        graph.task(
+                                "t",
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ6_KStrided,
+                                context,
+                                x,
+                                out,
+                                w,
+                                n,
+                                d,
+                                batch,
+                                ldo,
+                                off);
+            }
+        }
+        graph.transferToHost(DataTransferMode.EVERY_EXECUTION, out);
+        run(graph, name, ((d + 63) / 64) * ((batch + 63) / 64));
+        Weights weights =
+                quant == null
+                        ? TransformerBatchPrefillSimdgroupKernelsAccelTest::q4Weight
+                        : kQuantWeight(quant, w, n);
+        for (int b = 0; b < batch; b++) {
+            for (int c = 0; c < ldo; c++) {
+                float got = out.get(b * ldo + c);
+                if (c < off || c >= off + d) {
+                    assertEquals(
+                            name + " column " + c + " is not this projection's",
+                            UNTOUCHED,
+                            got,
+                            0.0f);
+                } else {
+                    float expected = dot(xh, b, n, weights, c - off);
+                    assertEquals(
+                            name + " token " + b + " row " + (c - off),
+                            expected,
+                            got,
+                            1e-5f * Math.max(1.0f, absDot(xh, b, n, weights, c - off)));
+                }
+            }
+        }
+    }
+
+    @Test
+    public void halfActivationsQ4_0Strided() {
+        checkHalfStridedQuant(null);
+    }
+
+    @Test
+    public void halfActivationsKQuantStrided() {
+        for (Quant quant : Quant.values()) {
+            checkHalfStridedQuant(quant);
+        }
+    }
+
     /** A block format the K-quant tests stage: its block size, bytes and fp16 scale offsets. */
     private enum Quant {
         Q4_1(32, 20, 0, 2),
