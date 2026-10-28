@@ -30,10 +30,16 @@ public class LlamaCpuGpuParityAccelTest extends CpuGpuParity {
         assertParity(Fixture.LLAMA_3_2_1B_F16, FP16);
     }
 
-    /** A Q4_0 file kept as it is: Q4_0 and Q4_1 read per tensor. */
+    /**
+     * A Q4_0 file kept as it is: Q4_0 and Q4_1 read per tensor. Off Metal it runs the Q4_0 layers,
+     * whose projections are packed wherever the device has packed integer dot products ({@link
+     * #LLAMA_Q4_0_PACKED}).
+     */
     @Test
     public void llama3_2_1b_unsloth_q4_0_cpuGpuParity() throws Exception {
-        assertParity(Fixture.LLAMA_3_2_1B_UNSLOTH_Q4_0, Q8_0);
+        assertParity(
+                Fixture.LLAMA_3_2_1B_UNSLOTH_Q4_0,
+                PackedActivationTasks.supported() ? LLAMA_Q4_0_PACKED : Q8_0);
     }
 
     /** A Q4_K_M file kept as it is: Q4_K and Q6_K read per tensor. */

@@ -50,9 +50,15 @@ public class LlamaBatchedPrefillParityAccelTest extends CpuGpuParity {
         assertParityBatched(Fixture.LLAMA_3_2_1B_F16, FP16, BATCH);
     }
 
+    /**
+     * The Q4_0 layers' projections are packed where the device allows ({@link #LLAMA_Q4_0_PACKED}).
+     */
     @Test
     public void llama3_2_1b_unsloth_q4_0_batchedPrefillParity() throws Exception {
-        assertParityBatched(Fixture.LLAMA_3_2_1B_UNSLOTH_Q4_0, quantizedPrefill(), BATCH);
+        assertParityBatched(
+                Fixture.LLAMA_3_2_1B_UNSLOTH_Q4_0,
+                PackedActivationTasks.supported() ? LLAMA_Q4_0_PACKED : quantizedPrefill(),
+                BATCH);
     }
 
     @Test

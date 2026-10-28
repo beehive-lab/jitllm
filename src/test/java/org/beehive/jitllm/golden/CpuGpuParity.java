@@ -219,6 +219,27 @@ abstract class CpuGpuParity {
 
     // @formatter:off
     /**
+     * Llama's <b>Q4_0 layers where the device has packed integer dot products</b> (CUDA). Every
+     * projection there quantizes its activation to eight bits per block of 32 and takes a {@code
+     * dp4a} dot product whatever the packed-path switch says: the prepacked Q4_0 weights have no
+     * floating-point kernel. The batched path adds FP16-operand GEMMs for the prompt rows.
+     *
+     * <p>A different arithmetic again, so its own envelope. <b>Measured on CUDA, teacher-forced
+     * over 64 rows, reference RMS 2.96</b>, on unsloth's Q4_0 file: single-token relative L2
+     * 0.0359, largest absolute difference 0.135 of the RMS, cosine 0.99942, elementwise 66.8%,
+     * argmax 2/64; batched at 128, 0.0289, 0.108, 0.99958, 66.4%, argmax 1/64. The locally
+     * quantized Q4_0 file measured single-token 0.0616 before Llama kept its tensors and 0.0511
+     * after, batched 0.0354 and 0.0409: this is the arithmetic these layers always had.
+     *
+     * <p>The limits carry about 1.5x over the unsloth file (cosine as its deficit from one); the
+     * elementwise budget only says the count stays below four in five, which is all it can say at
+     * this {@code atol}. {@code decisionGap} does not move.
+     */
+    // @formatter:on
+    static final Bounds LLAMA_Q4_0_PACKED = new Bounds(1.7e-4, 1e-2, 0.2, 0.055, 0.9991, 0.8, 0.5);
+
+    // @formatter:off
+    /**
      * Gemma 4's <b>batched</b> prefill on the Q8_0 file, whose prompt rows go through tensor-core
      * GEMMs with FP16 operands and FP32 accumulation while the single-token path keeps FP32
      * activations.
