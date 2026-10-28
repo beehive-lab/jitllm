@@ -273,6 +273,10 @@ public final class TransformerComputeKernelsQ6_K {
             int qlAt = blockByteOffset + halfIndex * 64 + posInGroup;
             int qhAt = blockByteOffset + QH_OFFSET + halfIndex * 32 + posInGroup;
             int xAt = blockIdx * QK_K + halfIndex * 128 + posInGroup;
+            float sum0 = 0.0f;
+            float sum1 = 0.0f;
+            float sum2 = 0.0f;
+            float sum3 = 0.0f;
             for (int k = 0; k < 8; k += 4) {
                 int ql1Word =
                         (w.getHalfFloat(qlAt + k).getHalfFloatValue() & 0xFFFF)
@@ -292,15 +296,13 @@ public final class TransformerComputeKernelsQ6_K {
                 int raw3 = ((ql2Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 6) & 0x03030303) << 4);
                 for (int b = 0; b < 4; b++) {
                     int shift = 8 * b;
-                    partialSum += dScale0 * (((raw0 >>> shift) & 0xFF) - 32) * x.get(xAt + k + b);
-                    partialSum +=
-                            dScale1 * (((raw1 >>> shift) & 0xFF) - 32) * x.get(xAt + 32 + k + b);
-                    partialSum +=
-                            dScale2 * (((raw2 >>> shift) & 0xFF) - 32) * x.get(xAt + 64 + k + b);
-                    partialSum +=
-                            dScale3 * (((raw3 >>> shift) & 0xFF) - 32) * x.get(xAt + 96 + k + b);
+                    sum0 += (((raw0 >>> shift) & 0xFF) - 32) * x.get(xAt + k + b);
+                    sum1 += (((raw1 >>> shift) & 0xFF) - 32) * x.get(xAt + 32 + k + b);
+                    sum2 += (((raw2 >>> shift) & 0xFF) - 32) * x.get(xAt + 64 + k + b);
+                    sum3 += (((raw3 >>> shift) & 0xFF) - 32) * x.get(xAt + 96 + k + b);
                 }
             }
+            partialSum += dScale0 * sum0 + dScale1 * sum1 + dScale2 * sum2 + dScale3 * sum3;
         }
 
         localSums[localId] = partialSum;

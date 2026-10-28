@@ -5921,6 +5921,12 @@ public final class TransformerBatchPrefillSimdgroupKernels {
         int qsm;
         int qh;
         int qhs;
+        int qlw0;
+        int qlw1;
+        int qhw0;
+        int qhw1;
+        int raw0;
+        int raw1;
         Float4 fx00 = inputBatch.getFloat4(TornadoMath.min(b0 + vr + 0, batch - 1) * n + 0 + vc);
         px0_0 = fx00.getX();
         px0_1 = fx00.getY();
@@ -5939,46 +5945,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
         qh = qb + 128 + (qsub >> 2) * 32 + wk0;
         qs = ((qsub & 3) >> 1) << 2;
         qhs = (qsub & 3) << 1;
-        pw0 =
-                (float)
-                                ((((w.get(qn + 0) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 0) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw1 =
-                (float)
-                                ((((w.get(qn + 1) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 1) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw2 =
-                (float)
-                                ((((w.get(qn + 2) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 2) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw3 =
-                (float)
-                                ((((w.get(qn + 3) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 3) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw4 =
-                (float)
-                                ((((w.get(qn + 4) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 4) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw5 =
-                (float)
-                                ((((w.get(qn + 5) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 5) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw6 =
-                (float)
-                                ((((w.get(qn + 6) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 6) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw7 =
-                (float)
-                                ((((w.get(qn + 7) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 7) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
+        qlw0 =
+                (w.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF) << 16);
+        qlw1 =
+                (w.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF) << 16);
+        qhw0 =
+                (w.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF) << 16);
+        qhw1 =
+                (w.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF) << 16);
+        raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qhs) & 0x03030303) << 4);
+        raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qhs) & 0x03030303) << 4);
+        pw0 = (float) (raw0 & 0xFF) - 32.0f;
+        pw1 = (float) ((raw0 >>> 8) & 0xFF) - 32.0f;
+        pw2 = (float) ((raw0 >>> 16) & 0xFF) - 32.0f;
+        pw3 = (float) (raw0 >>> 24) - 32.0f;
+        pw4 = (float) (raw1 & 0xFF) - 32.0f;
+        pw5 = (float) ((raw1 >>> 8) & 0xFF) - 32.0f;
+        pw6 = (float) ((raw1 >>> 16) & 0xFF) - 32.0f;
+        pw7 = (float) (raw1 >>> 24) - 32.0f;
         for (int k0 = 0; k0 < n; k0 += 32) {
             xs[(vr + 0) * LDS + vc + 0] = px0_0;
             xs[(vr + 0) * LDS + vc + 1] = px0_1;
@@ -6020,46 +6008,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
                 qh = qb + 128 + (qsub >> 2) * 32 + wk0;
                 qs = ((qsub & 3) >> 1) << 2;
                 qhs = (qsub & 3) << 1;
-                pw0 =
-                        (float)
-                                        ((((w.get(qn + 0) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 0) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw1 =
-                        (float)
-                                        ((((w.get(qn + 1) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 1) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw2 =
-                        (float)
-                                        ((((w.get(qn + 2) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 2) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw3 =
-                        (float)
-                                        ((((w.get(qn + 3) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 3) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw4 =
-                        (float)
-                                        ((((w.get(qn + 4) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 4) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw5 =
-                        (float)
-                                        ((((w.get(qn + 5) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 5) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw6 =
-                        (float)
-                                        ((((w.get(qn + 6) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 6) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw7 =
-                        (float)
-                                        ((((w.get(qn + 7) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 7) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
+                qlw0 =
+                        (w.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF) << 16);
+                qlw1 =
+                        (w.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF) << 16);
+                qhw0 =
+                        (w.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF) << 16);
+                qhw1 =
+                        (w.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF) << 16);
+                raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qhs) & 0x03030303) << 4);
+                raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qhs) & 0x03030303) << 4);
+                pw0 = (float) (raw0 & 0xFF) - 32.0f;
+                pw1 = (float) ((raw0 >>> 8) & 0xFF) - 32.0f;
+                pw2 = (float) ((raw0 >>> 16) & 0xFF) - 32.0f;
+                pw3 = (float) (raw0 >>> 24) - 32.0f;
+                pw4 = (float) (raw1 & 0xFF) - 32.0f;
+                pw5 = (float) ((raw1 >>> 8) & 0xFF) - 32.0f;
+                pw6 = (float) ((raw1 >>> 16) & 0xFF) - 32.0f;
+                pw7 = (float) (raw1 >>> 24) - 32.0f;
             }
             for (int kk = 0; kk < 32; kk += 8) {
                 Matrix8x8Float x0 = context.simdgroupMatrixLoad(xs, (sgRow + 0) * LDS + kk, LDS);
@@ -6272,6 +6242,12 @@ public final class TransformerBatchPrefillSimdgroupKernels {
         int qsm;
         int qh;
         int qhs;
+        int qlw0;
+        int qlw1;
+        int qhw0;
+        int qhw1;
+        int raw0;
+        int raw1;
         Float4 fx00 = inputBatch.getFloat4(TornadoMath.min(b0 + vr + 0, batch - 1) * n + 0 + vc);
         px0_0 = fx00.getX();
         px0_1 = fx00.getY();
@@ -6290,46 +6266,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
         qh = qb + 128 + (qsub >> 2) * 32 + wk0;
         qs = ((qsub & 3) >> 1) << 2;
         qhs = (qsub & 3) << 1;
-        pw0 =
-                (float)
-                                ((((w.get(qn + 0) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 0) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw1 =
-                (float)
-                                ((((w.get(qn + 1) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 1) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw2 =
-                (float)
-                                ((((w.get(qn + 2) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 2) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw3 =
-                (float)
-                                ((((w.get(qn + 3) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 3) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw4 =
-                (float)
-                                ((((w.get(qn + 4) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 4) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw5 =
-                (float)
-                                ((((w.get(qn + 5) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 5) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw6 =
-                (float)
-                                ((((w.get(qn + 6) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 6) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
-        pw7 =
-                (float)
-                                ((((w.get(qn + 7) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 7) & 0xFF) >> qhs) & 3) << 4))
-                        - 32.0f;
+        qlw0 =
+                (w.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF) << 16);
+        qlw1 =
+                (w.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF) << 16);
+        qhw0 =
+                (w.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF) << 16);
+        qhw1 =
+                (w.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF) << 16);
+        raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qhs) & 0x03030303) << 4);
+        raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qhs) & 0x03030303) << 4);
+        pw0 = (float) (raw0 & 0xFF) - 32.0f;
+        pw1 = (float) ((raw0 >>> 8) & 0xFF) - 32.0f;
+        pw2 = (float) ((raw0 >>> 16) & 0xFF) - 32.0f;
+        pw3 = (float) (raw0 >>> 24) - 32.0f;
+        pw4 = (float) (raw1 & 0xFF) - 32.0f;
+        pw5 = (float) ((raw1 >>> 8) & 0xFF) - 32.0f;
+        pw6 = (float) ((raw1 >>> 16) & 0xFF) - 32.0f;
+        pw7 = (float) (raw1 >>> 24) - 32.0f;
         for (int k0 = 0; k0 < n; k0 += 32) {
             xs[(vr + 0) * LDS + vc + 0] = px0_0;
             xs[(vr + 0) * LDS + vc + 1] = px0_1;
@@ -6371,46 +6329,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
                 qh = qb + 128 + (qsub >> 2) * 32 + wk0;
                 qs = ((qsub & 3) >> 1) << 2;
                 qhs = (qsub & 3) << 1;
-                pw0 =
-                        (float)
-                                        ((((w.get(qn + 0) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 0) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw1 =
-                        (float)
-                                        ((((w.get(qn + 1) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 1) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw2 =
-                        (float)
-                                        ((((w.get(qn + 2) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 2) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw3 =
-                        (float)
-                                        ((((w.get(qn + 3) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 3) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw4 =
-                        (float)
-                                        ((((w.get(qn + 4) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 4) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw5 =
-                        (float)
-                                        ((((w.get(qn + 5) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 5) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw6 =
-                        (float)
-                                        ((((w.get(qn + 6) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 6) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
-                pw7 =
-                        (float)
-                                        ((((w.get(qn + 7) & 0xFF) >> qs) & 15)
-                                                | ((((w.get(qh + 7) & 0xFF) >> qhs) & 3) << 4))
-                                - 32.0f;
+                qlw0 =
+                        (w.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF) << 16);
+                qlw1 =
+                        (w.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF) << 16);
+                qhw0 =
+                        (w.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF) << 16);
+                qhw1 =
+                        (w.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF) << 16);
+                raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qhs) & 0x03030303) << 4);
+                raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qhs) & 0x03030303) << 4);
+                pw0 = (float) (raw0 & 0xFF) - 32.0f;
+                pw1 = (float) ((raw0 >>> 8) & 0xFF) - 32.0f;
+                pw2 = (float) ((raw0 >>> 16) & 0xFF) - 32.0f;
+                pw3 = (float) (raw0 >>> 24) - 32.0f;
+                pw4 = (float) (raw1 & 0xFF) - 32.0f;
+                pw5 = (float) ((raw1 >>> 8) & 0xFF) - 32.0f;
+                pw6 = (float) ((raw1 >>> 16) & 0xFF) - 32.0f;
+                pw7 = (float) (raw1 >>> 24) - 32.0f;
             }
             for (int kk = 0; kk < 32; kk += 8) {
                 Matrix8x8Float x0 = context.simdgroupMatrixLoad(xs, (sgRow + 0) * LDS + kk, LDS);
@@ -7339,6 +7279,12 @@ public final class TransformerBatchPrefillSimdgroupKernels {
         int qn;
         int qs;
         int qh;
+        int qlw0;
+        int qlw1;
+        int qhw0;
+        int qhw1;
+        int raw0;
+        int raw1;
         int qsub;
         int qsm;
         float pmn;
@@ -7360,38 +7306,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
         qn = qb + 48 + (qsub >> 1) * 32 + wk0;
         qh = qb + 16 + wk0;
         qs = (qsub & 1) << 2;
-        pw0 =
-                (float)
-                        ((((w.get(qn + 0) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 0) & 0xFF) >> qsub) & 1) << 4));
-        pw1 =
-                (float)
-                        ((((w.get(qn + 1) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 1) & 0xFF) >> qsub) & 1) << 4));
-        pw2 =
-                (float)
-                        ((((w.get(qn + 2) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 2) & 0xFF) >> qsub) & 1) << 4));
-        pw3 =
-                (float)
-                        ((((w.get(qn + 3) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 3) & 0xFF) >> qsub) & 1) << 4));
-        pw4 =
-                (float)
-                        ((((w.get(qn + 4) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 4) & 0xFF) >> qsub) & 1) << 4));
-        pw5 =
-                (float)
-                        ((((w.get(qn + 5) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 5) & 0xFF) >> qsub) & 1) << 4));
-        pw6 =
-                (float)
-                        ((((w.get(qn + 6) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 6) & 0xFF) >> qsub) & 1) << 4));
-        pw7 =
-                (float)
-                        ((((w.get(qn + 7) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 7) & 0xFF) >> qsub) & 1) << 4));
+        qlw0 =
+                (w.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF) << 16);
+        qlw1 =
+                (w.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF) << 16);
+        qhw0 =
+                (w.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF) << 16);
+        qhw1 =
+                (w.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF) << 16);
+        raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qsub) & 0x01010101) << 4);
+        raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qsub) & 0x01010101) << 4);
+        pw0 = (float) (raw0 & 0xFF);
+        pw1 = (float) ((raw0 >>> 8) & 0xFF);
+        pw2 = (float) ((raw0 >>> 16) & 0xFF);
+        pw3 = (float) (raw0 >>> 24);
+        pw4 = (float) (raw1 & 0xFF);
+        pw5 = (float) ((raw1 >>> 8) & 0xFF);
+        pw6 = (float) ((raw1 >>> 16) & 0xFF);
+        pw7 = (float) (raw1 >>> 24);
         for (int k0 = 0; k0 < n; k0 += 32) {
             xs[(vr + 0) * LDS + vc + 0] = px0_0;
             xs[(vr + 0) * LDS + vc + 1] = px0_1;
@@ -7433,38 +7369,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
                 qn = qb + 48 + (qsub >> 1) * 32 + wk0;
                 qh = qb + 16 + wk0;
                 qs = (qsub & 1) << 2;
-                pw0 =
-                        (float)
-                                ((((w.get(qn + 0) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 0) & 0xFF) >> qsub) & 1) << 4));
-                pw1 =
-                        (float)
-                                ((((w.get(qn + 1) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 1) & 0xFF) >> qsub) & 1) << 4));
-                pw2 =
-                        (float)
-                                ((((w.get(qn + 2) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 2) & 0xFF) >> qsub) & 1) << 4));
-                pw3 =
-                        (float)
-                                ((((w.get(qn + 3) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 3) & 0xFF) >> qsub) & 1) << 4));
-                pw4 =
-                        (float)
-                                ((((w.get(qn + 4) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 4) & 0xFF) >> qsub) & 1) << 4));
-                pw5 =
-                        (float)
-                                ((((w.get(qn + 5) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 5) & 0xFF) >> qsub) & 1) << 4));
-                pw6 =
-                        (float)
-                                ((((w.get(qn + 6) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 6) & 0xFF) >> qsub) & 1) << 4));
-                pw7 =
-                        (float)
-                                ((((w.get(qn + 7) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 7) & 0xFF) >> qsub) & 1) << 4));
+                qlw0 =
+                        (w.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF) << 16);
+                qlw1 =
+                        (w.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF) << 16);
+                qhw0 =
+                        (w.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF) << 16);
+                qhw1 =
+                        (w.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF) << 16);
+                raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qsub) & 0x01010101) << 4);
+                raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qsub) & 0x01010101) << 4);
+                pw0 = (float) (raw0 & 0xFF);
+                pw1 = (float) ((raw0 >>> 8) & 0xFF);
+                pw2 = (float) ((raw0 >>> 16) & 0xFF);
+                pw3 = (float) (raw0 >>> 24);
+                pw4 = (float) (raw1 & 0xFF);
+                pw5 = (float) ((raw1 >>> 8) & 0xFF);
+                pw6 = (float) ((raw1 >>> 16) & 0xFF);
+                pw7 = (float) (raw1 >>> 24);
             }
             for (int kk = 0; kk < 32; kk += 8) {
                 Matrix8x8Float x0 = context.simdgroupMatrixLoad(xs, (sgRow + 0) * LDS + kk, LDS);
@@ -7674,6 +7600,12 @@ public final class TransformerBatchPrefillSimdgroupKernels {
         int qn;
         int qs;
         int qh;
+        int qlw0;
+        int qlw1;
+        int qhw0;
+        int qhw1;
+        int raw0;
+        int raw1;
         int qsub;
         int qsm;
         float pmn;
@@ -7695,38 +7627,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
         qn = qb + 48 + (qsub >> 1) * 32 + wk0;
         qh = qb + 16 + wk0;
         qs = (qsub & 1) << 2;
-        pw0 =
-                (float)
-                        ((((w.get(qn + 0) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 0) & 0xFF) >> qsub) & 1) << 4));
-        pw1 =
-                (float)
-                        ((((w.get(qn + 1) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 1) & 0xFF) >> qsub) & 1) << 4));
-        pw2 =
-                (float)
-                        ((((w.get(qn + 2) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 2) & 0xFF) >> qsub) & 1) << 4));
-        pw3 =
-                (float)
-                        ((((w.get(qn + 3) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 3) & 0xFF) >> qsub) & 1) << 4));
-        pw4 =
-                (float)
-                        ((((w.get(qn + 4) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 4) & 0xFF) >> qsub) & 1) << 4));
-        pw5 =
-                (float)
-                        ((((w.get(qn + 5) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 5) & 0xFF) >> qsub) & 1) << 4));
-        pw6 =
-                (float)
-                        ((((w.get(qn + 6) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 6) & 0xFF) >> qsub) & 1) << 4));
-        pw7 =
-                (float)
-                        ((((w.get(qn + 7) & 0xFF) >> qs) & 15)
-                                | ((((w.get(qh + 7) & 0xFF) >> qsub) & 1) << 4));
+        qlw0 =
+                (w.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF) << 16);
+        qlw1 =
+                (w.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF) << 16);
+        qhw0 =
+                (w.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF) << 16);
+        qhw1 =
+                (w.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                        | ((w.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF) << 16);
+        raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qsub) & 0x01010101) << 4);
+        raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qsub) & 0x01010101) << 4);
+        pw0 = (float) (raw0 & 0xFF);
+        pw1 = (float) ((raw0 >>> 8) & 0xFF);
+        pw2 = (float) ((raw0 >>> 16) & 0xFF);
+        pw3 = (float) (raw0 >>> 24);
+        pw4 = (float) (raw1 & 0xFF);
+        pw5 = (float) ((raw1 >>> 8) & 0xFF);
+        pw6 = (float) ((raw1 >>> 16) & 0xFF);
+        pw7 = (float) (raw1 >>> 24);
         for (int k0 = 0; k0 < n; k0 += 32) {
             xs[(vr + 0) * LDS + vc + 0] = px0_0;
             xs[(vr + 0) * LDS + vc + 1] = px0_1;
@@ -7768,38 +7690,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
                 qn = qb + 48 + (qsub >> 1) * 32 + wk0;
                 qh = qb + 16 + wk0;
                 qs = (qsub & 1) << 2;
-                pw0 =
-                        (float)
-                                ((((w.get(qn + 0) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 0) & 0xFF) >> qsub) & 1) << 4));
-                pw1 =
-                        (float)
-                                ((((w.get(qn + 1) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 1) & 0xFF) >> qsub) & 1) << 4));
-                pw2 =
-                        (float)
-                                ((((w.get(qn + 2) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 2) & 0xFF) >> qsub) & 1) << 4));
-                pw3 =
-                        (float)
-                                ((((w.get(qn + 3) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 3) & 0xFF) >> qsub) & 1) << 4));
-                pw4 =
-                        (float)
-                                ((((w.get(qn + 4) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 4) & 0xFF) >> qsub) & 1) << 4));
-                pw5 =
-                        (float)
-                                ((((w.get(qn + 5) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 5) & 0xFF) >> qsub) & 1) << 4));
-                pw6 =
-                        (float)
-                                ((((w.get(qn + 6) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 6) & 0xFF) >> qsub) & 1) << 4));
-                pw7 =
-                        (float)
-                                ((((w.get(qn + 7) & 0xFF) >> qs) & 15)
-                                        | ((((w.get(qh + 7) & 0xFF) >> qsub) & 1) << 4));
+                qlw0 =
+                        (w.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF) << 16);
+                qlw1 =
+                        (w.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF) << 16);
+                qhw0 =
+                        (w.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF) << 16);
+                qhw1 =
+                        (w.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF) << 16);
+                raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qsub) & 0x01010101) << 4);
+                raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qsub) & 0x01010101) << 4);
+                pw0 = (float) (raw0 & 0xFF);
+                pw1 = (float) ((raw0 >>> 8) & 0xFF);
+                pw2 = (float) ((raw0 >>> 16) & 0xFF);
+                pw3 = (float) (raw0 >>> 24);
+                pw4 = (float) (raw1 & 0xFF);
+                pw5 = (float) ((raw1 >>> 8) & 0xFF);
+                pw6 = (float) ((raw1 >>> 16) & 0xFF);
+                pw7 = (float) (raw1 >>> 24);
             }
             for (int kk = 0; kk < 32; kk += 8) {
                 Matrix8x8Float x0 = context.simdgroupMatrixLoad(xs, (sgRow + 0) * LDS + kk, LDS);
@@ -7986,6 +7898,12 @@ public final class TransformerBatchPrefillSimdgroupKernels {
         int qn;
         int qs;
         int qh;
+        int qlw0;
+        int qlw1;
+        int qhw0;
+        int qhw1;
+        int raw0;
+        int raw1;
         int qsub;
         int qsm;
         float pmn;
@@ -8011,38 +7929,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
             qn = qb + 48 + (qsub >> 1) * 32 + wk0;
             qh = qb + 16 + wk0;
             qs = (qsub & 1) << 2;
-            pw0 =
-                    (float)
-                            ((((w1.get(qn + 0) & 0xFF) >> qs) & 15)
-                                    | ((((w1.get(qh + 0) & 0xFF) >> qsub) & 1) << 4));
-            pw1 =
-                    (float)
-                            ((((w1.get(qn + 1) & 0xFF) >> qs) & 15)
-                                    | ((((w1.get(qh + 1) & 0xFF) >> qsub) & 1) << 4));
-            pw2 =
-                    (float)
-                            ((((w1.get(qn + 2) & 0xFF) >> qs) & 15)
-                                    | ((((w1.get(qh + 2) & 0xFF) >> qsub) & 1) << 4));
-            pw3 =
-                    (float)
-                            ((((w1.get(qn + 3) & 0xFF) >> qs) & 15)
-                                    | ((((w1.get(qh + 3) & 0xFF) >> qsub) & 1) << 4));
-            pw4 =
-                    (float)
-                            ((((w1.get(qn + 4) & 0xFF) >> qs) & 15)
-                                    | ((((w1.get(qh + 4) & 0xFF) >> qsub) & 1) << 4));
-            pw5 =
-                    (float)
-                            ((((w1.get(qn + 5) & 0xFF) >> qs) & 15)
-                                    | ((((w1.get(qh + 5) & 0xFF) >> qsub) & 1) << 4));
-            pw6 =
-                    (float)
-                            ((((w1.get(qn + 6) & 0xFF) >> qs) & 15)
-                                    | ((((w1.get(qh + 6) & 0xFF) >> qsub) & 1) << 4));
-            pw7 =
-                    (float)
-                            ((((w1.get(qn + 7) & 0xFF) >> qs) & 15)
-                                    | ((((w1.get(qh + 7) & 0xFF) >> qsub) & 1) << 4));
+            qlw0 =
+                    (w1.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                            | ((w1.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF) << 16);
+            qlw1 =
+                    (w1.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                            | ((w1.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF) << 16);
+            qhw0 =
+                    (w1.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                            | ((w1.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF) << 16);
+            qhw1 =
+                    (w1.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                            | ((w1.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF) << 16);
+            raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qsub) & 0x01010101) << 4);
+            raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qsub) & 0x01010101) << 4);
+            pw0 = (float) (raw0 & 0xFF);
+            pw1 = (float) ((raw0 >>> 8) & 0xFF);
+            pw2 = (float) ((raw0 >>> 16) & 0xFF);
+            pw3 = (float) (raw0 >>> 24);
+            pw4 = (float) (raw1 & 0xFF);
+            pw5 = (float) ((raw1 >>> 8) & 0xFF);
+            pw6 = (float) ((raw1 >>> 16) & 0xFF);
+            pw7 = (float) (raw1 >>> 24);
         } else {
             qb = ((TornadoMath.min(r0 + wrow - 32, hiddenDim - 1)) * (dim >> 8) + ((0) >> 8)) * 176;
             qsub = ((0) >> 5) & 7;
@@ -8052,38 +7960,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
             qn = qb + 48 + (qsub >> 1) * 32 + wk0;
             qh = qb + 16 + wk0;
             qs = (qsub & 1) << 2;
-            pw0 =
-                    (float)
-                            ((((w3.get(qn + 0) & 0xFF) >> qs) & 15)
-                                    | ((((w3.get(qh + 0) & 0xFF) >> qsub) & 1) << 4));
-            pw1 =
-                    (float)
-                            ((((w3.get(qn + 1) & 0xFF) >> qs) & 15)
-                                    | ((((w3.get(qh + 1) & 0xFF) >> qsub) & 1) << 4));
-            pw2 =
-                    (float)
-                            ((((w3.get(qn + 2) & 0xFF) >> qs) & 15)
-                                    | ((((w3.get(qh + 2) & 0xFF) >> qsub) & 1) << 4));
-            pw3 =
-                    (float)
-                            ((((w3.get(qn + 3) & 0xFF) >> qs) & 15)
-                                    | ((((w3.get(qh + 3) & 0xFF) >> qsub) & 1) << 4));
-            pw4 =
-                    (float)
-                            ((((w3.get(qn + 4) & 0xFF) >> qs) & 15)
-                                    | ((((w3.get(qh + 4) & 0xFF) >> qsub) & 1) << 4));
-            pw5 =
-                    (float)
-                            ((((w3.get(qn + 5) & 0xFF) >> qs) & 15)
-                                    | ((((w3.get(qh + 5) & 0xFF) >> qsub) & 1) << 4));
-            pw6 =
-                    (float)
-                            ((((w3.get(qn + 6) & 0xFF) >> qs) & 15)
-                                    | ((((w3.get(qh + 6) & 0xFF) >> qsub) & 1) << 4));
-            pw7 =
-                    (float)
-                            ((((w3.get(qn + 7) & 0xFF) >> qs) & 15)
-                                    | ((((w3.get(qh + 7) & 0xFF) >> qsub) & 1) << 4));
+            qlw0 =
+                    (w3.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                            | ((w3.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF) << 16);
+            qlw1 =
+                    (w3.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                            | ((w3.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF) << 16);
+            qhw0 =
+                    (w3.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                            | ((w3.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF) << 16);
+            qhw1 =
+                    (w3.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                            | ((w3.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF) << 16);
+            raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qsub) & 0x01010101) << 4);
+            raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qsub) & 0x01010101) << 4);
+            pw0 = (float) (raw0 & 0xFF);
+            pw1 = (float) ((raw0 >>> 8) & 0xFF);
+            pw2 = (float) ((raw0 >>> 16) & 0xFF);
+            pw3 = (float) (raw0 >>> 24);
+            pw4 = (float) (raw1 & 0xFF);
+            pw5 = (float) ((raw1 >>> 8) & 0xFF);
+            pw6 = (float) ((raw1 >>> 16) & 0xFF);
+            pw7 = (float) (raw1 >>> 24);
         }
         for (int k0 = 0; k0 < dim; k0 += 32) {
             xs[(vr + 0) * LDS + vc + 0] = px0_0;
@@ -8129,38 +8027,32 @@ public final class TransformerBatchPrefillSimdgroupKernels {
                     qn = qb + 48 + (qsub >> 1) * 32 + wk0;
                     qh = qb + 16 + wk0;
                     qs = (qsub & 1) << 2;
-                    pw0 =
-                            (float)
-                                    ((((w1.get(qn + 0) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 0) & 0xFF) >> qsub) & 1) << 4));
-                    pw1 =
-                            (float)
-                                    ((((w1.get(qn + 1) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 1) & 0xFF) >> qsub) & 1) << 4));
-                    pw2 =
-                            (float)
-                                    ((((w1.get(qn + 2) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 2) & 0xFF) >> qsub) & 1) << 4));
-                    pw3 =
-                            (float)
-                                    ((((w1.get(qn + 3) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 3) & 0xFF) >> qsub) & 1) << 4));
-                    pw4 =
-                            (float)
-                                    ((((w1.get(qn + 4) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 4) & 0xFF) >> qsub) & 1) << 4));
-                    pw5 =
-                            (float)
-                                    ((((w1.get(qn + 5) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 5) & 0xFF) >> qsub) & 1) << 4));
-                    pw6 =
-                            (float)
-                                    ((((w1.get(qn + 6) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 6) & 0xFF) >> qsub) & 1) << 4));
-                    pw7 =
-                            (float)
-                                    ((((w1.get(qn + 7) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 7) & 0xFF) >> qsub) & 1) << 4));
+                    qlw0 =
+                            (w1.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                                    | ((w1.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    qlw1 =
+                            (w1.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                                    | ((w1.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    qhw0 =
+                            (w1.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                                    | ((w1.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    qhw1 =
+                            (w1.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                                    | ((w1.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qsub) & 0x01010101) << 4);
+                    raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qsub) & 0x01010101) << 4);
+                    pw0 = (float) (raw0 & 0xFF);
+                    pw1 = (float) ((raw0 >>> 8) & 0xFF);
+                    pw2 = (float) ((raw0 >>> 16) & 0xFF);
+                    pw3 = (float) (raw0 >>> 24);
+                    pw4 = (float) (raw1 & 0xFF);
+                    pw5 = (float) ((raw1 >>> 8) & 0xFF);
+                    pw6 = (float) ((raw1 >>> 16) & 0xFF);
+                    pw7 = (float) (raw1 >>> 24);
                 } else {
                     qb =
                             ((TornadoMath.min(r0 + wrow - 32, hiddenDim - 1)) * (dim >> 8)
@@ -8173,38 +8065,32 @@ public final class TransformerBatchPrefillSimdgroupKernels {
                     qn = qb + 48 + (qsub >> 1) * 32 + wk0;
                     qh = qb + 16 + wk0;
                     qs = (qsub & 1) << 2;
-                    pw0 =
-                            (float)
-                                    ((((w3.get(qn + 0) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 0) & 0xFF) >> qsub) & 1) << 4));
-                    pw1 =
-                            (float)
-                                    ((((w3.get(qn + 1) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 1) & 0xFF) >> qsub) & 1) << 4));
-                    pw2 =
-                            (float)
-                                    ((((w3.get(qn + 2) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 2) & 0xFF) >> qsub) & 1) << 4));
-                    pw3 =
-                            (float)
-                                    ((((w3.get(qn + 3) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 3) & 0xFF) >> qsub) & 1) << 4));
-                    pw4 =
-                            (float)
-                                    ((((w3.get(qn + 4) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 4) & 0xFF) >> qsub) & 1) << 4));
-                    pw5 =
-                            (float)
-                                    ((((w3.get(qn + 5) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 5) & 0xFF) >> qsub) & 1) << 4));
-                    pw6 =
-                            (float)
-                                    ((((w3.get(qn + 6) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 6) & 0xFF) >> qsub) & 1) << 4));
-                    pw7 =
-                            (float)
-                                    ((((w3.get(qn + 7) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 7) & 0xFF) >> qsub) & 1) << 4));
+                    qlw0 =
+                            (w3.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                                    | ((w3.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    qlw1 =
+                            (w3.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                                    | ((w3.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    qhw0 =
+                            (w3.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                                    | ((w3.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    qhw1 =
+                            (w3.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                                    | ((w3.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qsub) & 0x01010101) << 4);
+                    raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qsub) & 0x01010101) << 4);
+                    pw0 = (float) (raw0 & 0xFF);
+                    pw1 = (float) ((raw0 >>> 8) & 0xFF);
+                    pw2 = (float) ((raw0 >>> 16) & 0xFF);
+                    pw3 = (float) (raw0 >>> 24);
+                    pw4 = (float) (raw1 & 0xFF);
+                    pw5 = (float) ((raw1 >>> 8) & 0xFF);
+                    pw6 = (float) ((raw1 >>> 16) & 0xFF);
+                    pw7 = (float) (raw1 >>> 24);
                 }
             }
             for (int kk = 0; kk < 32; kk += 8) {
@@ -8312,6 +8198,12 @@ public final class TransformerBatchPrefillSimdgroupKernels {
         int qs;
         int qh;
         int qhs;
+        int qlw0;
+        int qlw1;
+        int qhw0;
+        int qhw1;
+        int raw0;
+        int raw1;
         int qsub;
         int qsm;
         float xsc0 = scaleBatch.get(TornadoMath.min(b0 + vr + 0, batch - 1));
@@ -8336,46 +8228,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
             qh = qb + 128 + (qsub >> 2) * 32 + wk0;
             qs = ((qsub & 3) >> 1) << 2;
             qhs = (qsub & 3) << 1;
-            pw0 =
-                    (float)
-                                    (((((w1.get(qn + 0) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 0) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw1 =
-                    (float)
-                                    (((((w1.get(qn + 1) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 1) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw2 =
-                    (float)
-                                    (((((w1.get(qn + 2) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 2) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw3 =
-                    (float)
-                                    (((((w1.get(qn + 3) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 3) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw4 =
-                    (float)
-                                    (((((w1.get(qn + 4) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 4) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw5 =
-                    (float)
-                                    (((((w1.get(qn + 5) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 5) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw6 =
-                    (float)
-                                    (((((w1.get(qn + 6) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 6) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw7 =
-                    (float)
-                                    (((((w1.get(qn + 7) & 0xFF) >> qs) & 15)
-                                            | ((((w1.get(qh + 7) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
+            qlw0 =
+                    (w1.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                            | ((w1.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF) << 16);
+            qlw1 =
+                    (w1.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                            | ((w1.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF) << 16);
+            qhw0 =
+                    (w1.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                            | ((w1.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF) << 16);
+            qhw1 =
+                    (w1.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                            | ((w1.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF) << 16);
+            raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qhs) & 0x03030303) << 4);
+            raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qhs) & 0x03030303) << 4);
+            pw0 = (float) (raw0 & 0xFF) - 32.0f;
+            pw1 = (float) ((raw0 >>> 8) & 0xFF) - 32.0f;
+            pw2 = (float) ((raw0 >>> 16) & 0xFF) - 32.0f;
+            pw3 = (float) (raw0 >>> 24) - 32.0f;
+            pw4 = (float) (raw1 & 0xFF) - 32.0f;
+            pw5 = (float) ((raw1 >>> 8) & 0xFF) - 32.0f;
+            pw6 = (float) ((raw1 >>> 16) & 0xFF) - 32.0f;
+            pw7 = (float) (raw1 >>> 24) - 32.0f;
         } else {
             qb = ((TornadoMath.min(r0 + wrow - 32, hiddenDim - 1)) * (dim >> 8) + ((0) >> 8)) * 210;
             qsub = ((0) >> 5) & 7;
@@ -8385,46 +8259,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
             qh = qb + 128 + (qsub >> 2) * 32 + wk0;
             qs = ((qsub & 3) >> 1) << 2;
             qhs = (qsub & 3) << 1;
-            pw0 =
-                    (float)
-                                    (((((w3.get(qn + 0) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 0) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw1 =
-                    (float)
-                                    (((((w3.get(qn + 1) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 1) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw2 =
-                    (float)
-                                    (((((w3.get(qn + 2) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 2) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw3 =
-                    (float)
-                                    (((((w3.get(qn + 3) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 3) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw4 =
-                    (float)
-                                    (((((w3.get(qn + 4) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 4) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw5 =
-                    (float)
-                                    (((((w3.get(qn + 5) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 5) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw6 =
-                    (float)
-                                    (((((w3.get(qn + 6) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 6) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
-            pw7 =
-                    (float)
-                                    (((((w3.get(qn + 7) & 0xFF) >> qs) & 15)
-                                            | ((((w3.get(qh + 7) & 0xFF) >> qhs) & 3) << 4)))
-                            - 32.0f;
+            qlw0 =
+                    (w3.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                            | ((w3.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF) << 16);
+            qlw1 =
+                    (w3.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                            | ((w3.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF) << 16);
+            qhw0 =
+                    (w3.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                            | ((w3.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF) << 16);
+            qhw1 =
+                    (w3.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                            | ((w3.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF) << 16);
+            raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qhs) & 0x03030303) << 4);
+            raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qhs) & 0x03030303) << 4);
+            pw0 = (float) (raw0 & 0xFF) - 32.0f;
+            pw1 = (float) ((raw0 >>> 8) & 0xFF) - 32.0f;
+            pw2 = (float) ((raw0 >>> 16) & 0xFF) - 32.0f;
+            pw3 = (float) (raw0 >>> 24) - 32.0f;
+            pw4 = (float) (raw1 & 0xFF) - 32.0f;
+            pw5 = (float) ((raw1 >>> 8) & 0xFF) - 32.0f;
+            pw6 = (float) ((raw1 >>> 16) & 0xFF) - 32.0f;
+            pw7 = (float) (raw1 >>> 24) - 32.0f;
         }
         for (int k0 = 0; k0 < dim; k0 += 32) {
             xs[(vr + 0) * LDS + vc + 0] = px0_0;
@@ -8470,54 +8326,32 @@ public final class TransformerBatchPrefillSimdgroupKernels {
                     qh = qb + 128 + (qsub >> 2) * 32 + wk0;
                     qs = ((qsub & 3) >> 1) << 2;
                     qhs = (qsub & 3) << 1;
-                    pw0 =
-                            (float)
-                                            (((((w1.get(qn + 0) & 0xFF) >> qs) & 15)
-                                                    | ((((w1.get(qh + 0) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw1 =
-                            (float)
-                                            (((((w1.get(qn + 1) & 0xFF) >> qs) & 15)
-                                                    | ((((w1.get(qh + 1) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw2 =
-                            (float)
-                                            (((((w1.get(qn + 2) & 0xFF) >> qs) & 15)
-                                                    | ((((w1.get(qh + 2) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw3 =
-                            (float)
-                                            (((((w1.get(qn + 3) & 0xFF) >> qs) & 15)
-                                                    | ((((w1.get(qh + 3) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw4 =
-                            (float)
-                                            (((((w1.get(qn + 4) & 0xFF) >> qs) & 15)
-                                                    | ((((w1.get(qh + 4) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw5 =
-                            (float)
-                                            (((((w1.get(qn + 5) & 0xFF) >> qs) & 15)
-                                                    | ((((w1.get(qh + 5) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw6 =
-                            (float)
-                                            (((((w1.get(qn + 6) & 0xFF) >> qs) & 15)
-                                                    | ((((w1.get(qh + 6) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw7 =
-                            (float)
-                                            (((((w1.get(qn + 7) & 0xFF) >> qs) & 15)
-                                                    | ((((w1.get(qh + 7) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
+                    qlw0 =
+                            (w1.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                                    | ((w1.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    qlw1 =
+                            (w1.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                                    | ((w1.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    qhw0 =
+                            (w1.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                                    | ((w1.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    qhw1 =
+                            (w1.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                                    | ((w1.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qhs) & 0x03030303) << 4);
+                    raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qhs) & 0x03030303) << 4);
+                    pw0 = (float) (raw0 & 0xFF) - 32.0f;
+                    pw1 = (float) ((raw0 >>> 8) & 0xFF) - 32.0f;
+                    pw2 = (float) ((raw0 >>> 16) & 0xFF) - 32.0f;
+                    pw3 = (float) (raw0 >>> 24) - 32.0f;
+                    pw4 = (float) (raw1 & 0xFF) - 32.0f;
+                    pw5 = (float) ((raw1 >>> 8) & 0xFF) - 32.0f;
+                    pw6 = (float) ((raw1 >>> 16) & 0xFF) - 32.0f;
+                    pw7 = (float) (raw1 >>> 24) - 32.0f;
                 } else {
                     qb =
                             ((TornadoMath.min(r0 + wrow - 32, hiddenDim - 1)) * (dim >> 8)
@@ -8530,54 +8364,32 @@ public final class TransformerBatchPrefillSimdgroupKernels {
                     qh = qb + 128 + (qsub >> 2) * 32 + wk0;
                     qs = ((qsub & 3) >> 1) << 2;
                     qhs = (qsub & 3) << 1;
-                    pw0 =
-                            (float)
-                                            (((((w3.get(qn + 0) & 0xFF) >> qs) & 15)
-                                                    | ((((w3.get(qh + 0) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw1 =
-                            (float)
-                                            (((((w3.get(qn + 1) & 0xFF) >> qs) & 15)
-                                                    | ((((w3.get(qh + 1) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw2 =
-                            (float)
-                                            (((((w3.get(qn + 2) & 0xFF) >> qs) & 15)
-                                                    | ((((w3.get(qh + 2) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw3 =
-                            (float)
-                                            (((((w3.get(qn + 3) & 0xFF) >> qs) & 15)
-                                                    | ((((w3.get(qh + 3) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw4 =
-                            (float)
-                                            (((((w3.get(qn + 4) & 0xFF) >> qs) & 15)
-                                                    | ((((w3.get(qh + 4) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw5 =
-                            (float)
-                                            (((((w3.get(qn + 5) & 0xFF) >> qs) & 15)
-                                                    | ((((w3.get(qh + 5) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw6 =
-                            (float)
-                                            (((((w3.get(qn + 6) & 0xFF) >> qs) & 15)
-                                                    | ((((w3.get(qh + 6) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
-                    pw7 =
-                            (float)
-                                            (((((w3.get(qn + 7) & 0xFF) >> qs) & 15)
-                                                    | ((((w3.get(qh + 7) & 0xFF) >> qhs) & 3)
-                                                            << 4)))
-                                    - 32.0f;
+                    qlw0 =
+                            (w3.getHalfFloat(qn + 0).getHalfFloatValue() & 0xFFFF)
+                                    | ((w3.getHalfFloat(qn + 2).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    qlw1 =
+                            (w3.getHalfFloat(qn + 4).getHalfFloatValue() & 0xFFFF)
+                                    | ((w3.getHalfFloat(qn + 6).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    qhw0 =
+                            (w3.getHalfFloat(qh + 0).getHalfFloatValue() & 0xFFFF)
+                                    | ((w3.getHalfFloat(qh + 2).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    qhw1 =
+                            (w3.getHalfFloat(qh + 4).getHalfFloatValue() & 0xFFFF)
+                                    | ((w3.getHalfFloat(qh + 6).getHalfFloatValue() & 0xFFFF)
+                                            << 16);
+                    raw0 = ((qlw0 >>> qs) & 0x0F0F0F0F) | (((qhw0 >>> qhs) & 0x03030303) << 4);
+                    raw1 = ((qlw1 >>> qs) & 0x0F0F0F0F) | (((qhw1 >>> qhs) & 0x03030303) << 4);
+                    pw0 = (float) (raw0 & 0xFF) - 32.0f;
+                    pw1 = (float) ((raw0 >>> 8) & 0xFF) - 32.0f;
+                    pw2 = (float) ((raw0 >>> 16) & 0xFF) - 32.0f;
+                    pw3 = (float) (raw0 >>> 24) - 32.0f;
+                    pw4 = (float) (raw1 & 0xFF) - 32.0f;
+                    pw5 = (float) ((raw1 >>> 8) & 0xFF) - 32.0f;
+                    pw6 = (float) ((raw1 >>> 16) & 0xFF) - 32.0f;
+                    pw7 = (float) (raw1 >>> 24) - 32.0f;
                 }
             }
             for (int kk = 0; kk < 32; kk += 8) {

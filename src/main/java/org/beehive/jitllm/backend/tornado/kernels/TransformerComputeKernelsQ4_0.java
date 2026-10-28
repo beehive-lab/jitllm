@@ -183,7 +183,29 @@ public final class TransformerComputeKernelsQ4_0 {
         return partialSum;
     }
 
-    /** One row's dot product against {@code x}, reduced through shared memory. */
+    /**
+     * The dot product of the eight weights in four consecutive bytes of one block with {@code x}:
+     * bytes {@code j} to {@code j + 3} hold weights {@code j} to {@code j + 3} in their low nibbles
+     * and weights {@code j + 16} to {@code j + 19} in their high ones. {@code d} is read once
+     * rather than once per weight; each weight is still {@code d * (q - 8)} as {@link #decode}
+     * computes it. {@code xAt} is where weight {@code j}'s activation is.
+     */
+    private static float dot8(ByteArray w, int blockByteOffset, int j, FloatArray x, int xAt) {
+        float d = w.getHalfFloat(blockByteOffset).getFloat32();
+        int qAt = blockByteOffset + QS_OFFSET + j;
+        float sum = 0.0f;
+        for (int k = 0; k < 4; k++) {
+            int qByte = w.get(qAt + k) & 0xFF;
+            sum += d * ((qByte & 0xF) - 8) * x.get(xAt + k);
+            sum += d * (((qByte >> 4) & 0xF) - 8) * x.get(xAt + 16 + k);
+        }
+        return sum;
+    }
+
+    /**
+     * One row's dot product against {@code x}, reduced through shared memory. A thread takes eight
+     * weights per step ({@link #dot8}); {@code n} is a multiple of 32.
+     */
     private static float rowDotShared(
             KernelContext context, int localSize, FloatArray x, ByteArray w, int n, int rowId) {
         return rowDotShared(context, localSize, x, 0, w, n, rowId);
@@ -207,15 +229,20 @@ public final class TransformerComputeKernelsQ4_0 {
         int localId = context.localIdx;
         float[] localSums = context.allocateFloatLocalArray(localSize);
 
-        int blocksPerRow = (n + QK - 1) / QK;
-        int rowBlockOffset = rowId * blocksPerRow;
+        int rowByteOffset = rowId * (n / QK) * BLOCK_BYTES;
 
+        // Eight weights per step through dot8: four consecutive bytes, both nibbles.
         float partialSum = 0.0f;
-        for (int j = localId; j < n; j += localSize) {
-            int blockIdx = j / QK;
-            int withinBlock = j - blockIdx * QK;
-            int blockByteOffset = (rowBlockOffset + blockIdx) * BLOCK_BYTES;
-            partialSum += decode(w, blockByteOffset, withinBlock) * x.get(xOffset + j);
+        for (int unit = localId; unit < n / 8; unit += localSize) {
+            int blockIdx = unit / 4;
+            int j = (unit - blockIdx * 4) * 4;
+            partialSum +=
+                    dot8(
+                            w,
+                            rowByteOffset + blockIdx * BLOCK_BYTES,
+                            j,
+                            x,
+                            xOffset + blockIdx * QK + j);
         }
 
         localSums[localId] = partialSum;
@@ -640,18 +667,18 @@ public final class TransformerComputeKernelsQ4_0 {
         // would have to interleave their barriers correctly to be safe. Gate occupies the first
         // half, up the second, and one tree reduces both.
         float[] localSums = context.allocateFloatLocalArray(localWorkGroupSize * 2);
-        int blocksPerRow = (n + QK - 1) / QK;
-        int rowBlockOffset = rowId * blocksPerRow;
+        int rowByteOffset = rowId * (n / QK) * BLOCK_BYTES;
 
+        // Eight weights per step, as rowDotShared takes them.
         float gate = 0.0f;
         float up = 0.0f;
-        for (int j = localId; j < n; j += localWorkGroupSize) {
-            int blockIdx = j / QK;
-            int withinBlock = j - blockIdx * QK;
-            int blockByteOffset = (rowBlockOffset + blockIdx) * BLOCK_BYTES;
-            float activation = x.get(j);
-            gate += decode(w1, blockByteOffset, withinBlock) * activation;
-            up += decode(w3, blockByteOffset, withinBlock) * activation;
+        for (int unit = localId; unit < n / 8; unit += localWorkGroupSize) {
+            int blockIdx = unit / 4;
+            int j = (unit - blockIdx * 4) * 4;
+            int blockByteOffset = rowByteOffset + blockIdx * BLOCK_BYTES;
+            int xAt = blockIdx * QK + j;
+            gate += dot8(w1, blockByteOffset, j, x, xAt);
+            up += dot8(w3, blockByteOffset, j, x, xAt);
         }
         localSums[localId] = gate;
         localSums[localWorkGroupSize + localId] = up;

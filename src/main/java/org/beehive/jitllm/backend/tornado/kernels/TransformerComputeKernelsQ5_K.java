@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado.kernels;
 
 import uk.ac.manchester.tornado.api.KernelContext;
+import uk.ac.manchester.tornado.api.math.TornadoMath;
 import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
@@ -292,6 +293,61 @@ public final class TransformerComputeKernelsQ5_K {
         return sum;
     }
 
+    /**
+     * The dot product of the eight weights in four consecutive bytes of one 32-byte nibble run with
+     * {@code x}, from {@code posInRun}, a multiple of four below 32, of run {@code pairIndex}: the
+     * low nibbles are four weights of sub-block {@code 2 * pairIndex}, the high nibbles the same
+     * four of sub-block {@code 2 * pairIndex + 1}, and their fifth bits are bits {@code 2 *
+     * pairIndex} and {@code 2 * pairIndex + 1} of the same four {@code qh} bytes. The bytes, {@code
+     * d}, {@code dmin} and both sub-blocks' scales and minimums are read once rather than once per
+     * weight; each weight is still {@code d * sc * q - dmin * m} as {@link #decode} computes it.
+     *
+     * <p>The fifth bits are brought down by shifts decided by the run index, constant amounts, as
+     * {@link #decode} brings its own down: a variable shift of a loaded value is what TornadoVM's
+     * CUDA backend cannot lower.
+     */
+    private static float dot8(
+            ByteArray w, int blockByteOffset, int pairIndex, int posInRun, FloatArray x, int xAt) {
+        float d = w.getHalfFloat(blockByteOffset).getFloat32();
+        float dmin = w.getHalfFloat(blockByteOffset + 2).getFloat32();
+        int lowPacked = scaleAndMin(w, blockByteOffset + SCALES_OFFSET, pairIndex * 2);
+        int highPacked = scaleAndMin(w, blockByteOffset + SCALES_OFFSET, pairIndex * 2 + 1);
+        float lowScale = d * (lowPacked >> 8);
+        float lowMinimum = dmin * (lowPacked & 0xFF);
+        float highScale = d * (highPacked >> 8);
+        float highMinimum = dmin * (highPacked & 0xFF);
+
+        int qsAt = blockByteOffset + QS_OFFSET + pairIndex * 32 + posInRun;
+        int qhAt = blockByteOffset + QH_OFFSET + posInRun;
+        float sum = 0.0f;
+        for (int g = 0; g < 8; g += 4) {
+            // Four bytes at a time, as words of two two-byte loads: the block is 176 bytes and
+            // both offsets add multiples of eight, so every address is even.
+            int qsWord =
+                    (w.getHalfFloat(qsAt + g).getHalfFloatValue() & 0xFFFF)
+                            | ((w.getHalfFloat(qsAt + g + 2).getHalfFloatValue() & 0xFFFF) << 16);
+            int qhWord =
+                    (w.getHalfFloat(qhAt + g).getHalfFloatValue() & 0xFFFF)
+                            | ((w.getHalfFloat(qhAt + g + 2).getHalfFloatValue() & 0xFFFF) << 16);
+            if (pairIndex >= 2) {
+                qhWord = qhWord >>> 4;
+            }
+            if ((pairIndex & 1) == 1) {
+                qhWord = qhWord >>> 2;
+            }
+            int low = (qsWord & 0x0F0F0F0F) | ((qhWord & 0x01010101) << 4);
+            int high = ((qsWord >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 1) & 0x01010101) << 4);
+            for (int b = 0; b < 4; b++) {
+                int shift = 8 * b;
+                sum += (lowScale * ((low >>> shift) & 0xFF) - lowMinimum) * x.get(xAt + g + b);
+                sum +=
+                        (highScale * ((high >>> shift) & 0xFF) - highMinimum)
+                                * x.get(xAt + 32 + g + b);
+            }
+        }
+        return sum;
+    }
+
     /** One row's dot product against {@code x}, reduced through shared memory. */
     private static float rowDotShared(
             KernelContext context, int localSize, FloatArray x, ByteArray w, int n, int rowId) {
@@ -310,13 +366,24 @@ public final class TransformerComputeKernelsQ5_K {
         int localId = context.localIdx;
         float[] localSums = context.allocateFloatLocalArray(localSize);
 
-        int blocksPerRow = (n + QK_K - 1) / QK_K;
-        int rowBlockOffset = rowId * blocksPerRow;
-        int subBlocks = n / 32;
+        int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
 
+        // Eight weights per step through dot8: four consecutive bytes of a nibble run, both
+        // nibbles, so a simdgroup's loads cover whole runs rather than one byte of each.
         float partialSum = 0.0f;
-        for (int sb = localId; sb < subBlocks; sb += localSize) {
-            partialSum += laneSum(x, xOffset, w, n, rowBlockOffset, sb);
+        for (int unit = localId; unit < n / 16; unit += localSize) {
+            int blockIdx = unit / 16;
+            int unitInBlock = unit - blockIdx * 16;
+            int pairIndex = unitInBlock / 4;
+            int posInRun = (unitInBlock - pairIndex * 4) * 8;
+            partialSum +=
+                    dot8(
+                            w,
+                            rowByteOffset + blockIdx * BLOCK_BYTES,
+                            pairIndex,
+                            posInRun,
+                            x,
+                            xOffset + blockIdx * QK_K + pairIndex * 64 + posInRun);
         }
 
         localSums[localId] = partialSum;
@@ -888,6 +955,63 @@ public final class TransformerComputeKernelsQ5_K {
                 int m = low * (b & 63) + (1 - low) * (((b >> 4) & 0xF) | ((a >> 6) << 4));
                 out.set(destOffset + i, new HalfFloat(d * sc * q - dmin * m));
             }
+        }
+    }
+
+    /**
+     * {@code hb = SiLU(w1·x) * (w3·x)}: the gate and up projections in one pass, both Q5_K, over
+     * one local array. The Q5_K counterpart of {@code
+     * TransformerComputeKernelsQ4_K.fusedFFNGateUpSiLUQ4_K}, sixteen weights of each per step as
+     * {@link #rowDotShared} takes them.
+     */
+    public static void fusedFFNGateUpSiLUQ5_K(
+            KernelContext context,
+            FloatArray x,
+            FloatArray hb,
+            ByteArray w1,
+            ByteArray w3,
+            int n,
+            int d,
+            int localWorkGroupSize) {
+        int rowId = context.groupIdx;
+        int localId = context.localIdx;
+        if (rowId >= d) {
+            return;
+        }
+        // Gate occupies the first half of the local array, up the second, and one tree reduces
+        // both.
+        float[] localSums = context.allocateFloatLocalArray(localWorkGroupSize * 2);
+        int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
+
+        float gate = 0.0f;
+        float up = 0.0f;
+        for (int unit = localId; unit < n / 16; unit += localWorkGroupSize) {
+            int blockIdx = unit / 16;
+            int unitInBlock = unit - blockIdx * 16;
+            int pairIndex = unitInBlock / 4;
+            int posInRun = (unitInBlock - pairIndex * 4) * 8;
+            int blockByteOffset = rowByteOffset + blockIdx * BLOCK_BYTES;
+            int xAt = blockIdx * QK_K + pairIndex * 64 + posInRun;
+            gate += dot8(w1, blockByteOffset, pairIndex, posInRun, x, xAt);
+            up += dot8(w3, blockByteOffset, pairIndex, posInRun, x, xAt);
+        }
+        localSums[localId] = gate;
+        localSums[localWorkGroupSize + localId] = up;
+        context.localBarrier();
+
+        for (int stride = localWorkGroupSize / 2; stride > 0; stride >>= 1) {
+            if (localId < stride) {
+                localSums[localId] += localSums[localId + stride];
+                localSums[localWorkGroupSize + localId] +=
+                        localSums[localWorkGroupSize + localId + stride];
+            }
+            context.localBarrier();
+        }
+
+        if (localId == 0) {
+            float gateSum = localSums[0];
+            float silu = gateSum / (1.0f + TornadoMath.exp(-gateSum));
+            hb.set(rowId, silu * localSums[localWorkGroupSize]);
         }
     }
 }
