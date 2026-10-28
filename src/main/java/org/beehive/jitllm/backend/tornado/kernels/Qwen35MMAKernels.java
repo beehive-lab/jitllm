@@ -776,6 +776,130 @@ public final class Qwen35MMAKernels {
         }
     }
 
+    /**
+     * {@link #dequantizeQ8_0ToFP16Tiled} for a {@code Q4_0} matrix: the same tile order, each half
+     * decoded from its 18-byte block as {@code
+     * TransformerComputeKernelsQ4_0.dequantizeQ4_0ToFP16Once} decodes it. Requires {@code n / k %
+     * 128 == 0} and {@code k % 32 == 0}. Worker: {@code min(n, TILED_DECODE_LANES)} lanes,
+     * striding.
+     */
+    public static void dequantizeQ4_0ToFP16Tiled(
+            KernelContext ctx,
+            ByteArray w,
+            HalfFloatArray out,
+            int destOffset,
+            int n,
+            int k,
+            IntArray done,
+            int flag) {
+        int lane = ctx.globalIdx;
+        if (lane < TILED_DECODE_LANES && done.get(flag) == 0) {
+            int kSteps = k / GEMM_BK;
+            for (int h = lane; h < n; h += TILED_DECODE_LANES) {
+                int tile = h >>> 11;
+                int idx = (h >>> 1) & 1023;
+                int rowBlock = tile / kSteps;
+                int row = rowBlock * GEMM_BN + ((idx >>> 6) << 3) + ((idx & 3) << 1) + (h & 1);
+                int kk = (tile - rowBlock * kSteps) * GEMM_BK + ((idx & 63) >>> 2);
+                int blockByteOffset = (row * (k >>> 5) + (kk >>> 5)) * 18;
+                int withinBlock = kk & 31;
+                float d = w.getHalfFloat(blockByteOffset).getFloat32();
+                int high = withinBlock >>> 4;
+                int packed = w.get(blockByteOffset + 2 + (withinBlock & 15)) & 0xFF;
+                int q = (packed >> (high * 4)) & 0xF;
+                out.set(destOffset + h, new HalfFloat(d * (q - 8)));
+            }
+        }
+    }
+
+    /**
+     * {@link #dequantizeQ8_0ToFP16Tiled} for a {@code Q4_1} matrix: the same tile order, each half
+     * decoded from its 20-byte block as {@code
+     * TransformerComputeKernelsQ4_1.dequantizeQ4_1ToFP16Once} decodes it. Requires {@code n / k %
+     * 128 == 0} and {@code k % 32 == 0}. Worker: {@code min(n, TILED_DECODE_LANES)} lanes,
+     * striding.
+     */
+    public static void dequantizeQ4_1ToFP16Tiled(
+            KernelContext ctx,
+            ByteArray w,
+            HalfFloatArray out,
+            int destOffset,
+            int n,
+            int k,
+            IntArray done,
+            int flag) {
+        int lane = ctx.globalIdx;
+        if (lane < TILED_DECODE_LANES && done.get(flag) == 0) {
+            int kSteps = k / GEMM_BK;
+            for (int h = lane; h < n; h += TILED_DECODE_LANES) {
+                int tile = h >>> 11;
+                int idx = (h >>> 1) & 1023;
+                int rowBlock = tile / kSteps;
+                int row = rowBlock * GEMM_BN + ((idx >>> 6) << 3) + ((idx & 3) << 1) + (h & 1);
+                int kk = (tile - rowBlock * kSteps) * GEMM_BK + ((idx & 63) >>> 2);
+                int blockByteOffset = (row * (k >>> 5) + (kk >>> 5)) * 20;
+                int withinBlock = kk & 31;
+                float d = w.getHalfFloat(blockByteOffset).getFloat32();
+                float m = w.getHalfFloat(blockByteOffset + 2).getFloat32();
+                int high = withinBlock >>> 4;
+                int packed = w.get(blockByteOffset + 4 + (withinBlock & 15)) & 0xFF;
+                int q = (packed >> (high * 4)) & 0xF;
+                out.set(destOffset + h, new HalfFloat(d * q + m));
+            }
+        }
+    }
+
+    /**
+     * {@link #dequantizeQ8_0ToFP16Tiled} for a {@code Q5_K} matrix: the same tile order, each half
+     * decoded from its 176-byte super-block as {@code
+     * TransformerComputeKernelsQ5_K.dequantizeQ5_KToFP16Once} decodes it. Requires {@code n / k %
+     * 128 == 0} and {@code k % 256 == 0}. Worker: {@code min(n, TILED_DECODE_LANES)} lanes,
+     * striding.
+     */
+    public static void dequantizeQ5_KToFP16Tiled(
+            KernelContext ctx,
+            ByteArray w,
+            HalfFloatArray out,
+            int destOffset,
+            int n,
+            int k,
+            IntArray done,
+            int flag) {
+        int lane = ctx.globalIdx;
+        if (lane < TILED_DECODE_LANES && done.get(flag) == 0) {
+            int kSteps = k / GEMM_BK;
+            for (int h = lane; h < n; h += TILED_DECODE_LANES) {
+                int tile = h >>> 11;
+                int idx = (h >>> 1) & 1023;
+                int rowBlock = tile / kSteps;
+                int row = rowBlock * GEMM_BN + ((idx >>> 6) << 3) + ((idx & 3) << 1) + (h & 1);
+                int kk = (tile - rowBlock * kSteps) * GEMM_BK + ((idx & 63) >>> 2);
+                // The super-block decode, as the resident decoder has it: d, dmin, 12 scale bytes
+                // at 4, 32 high-bit bytes at 16, 128 nibble bytes at 48.
+                int blockByteOffset = (row * (k >>> 8) + (kk >>> 8)) * 176;
+                int withinBlock = kk & 255;
+                float d = w.getHalfFloat(blockByteOffset).getFloat32();
+                float dmin = w.getHalfFloat(blockByteOffset + 2).getFloat32();
+                int pairIndex = withinBlock / 64;
+                int posInPair = withinBlock - pairIndex * 64;
+                int highNibble = posInPair / 32;
+                int posInHalf = posInPair - highNibble * 32;
+                int subBlock = pairIndex * 2 + highNibble;
+                int qsByte = w.get(blockByteOffset + 48 + pairIndex * 32 + posInHalf) & 0xFF;
+                int qhByte = w.get(blockByteOffset + 16 + posInHalf) & 0xFF;
+                int q = ((qsByte >> (highNibble * 4)) & 0xF) | (((qhByte >> subBlock) & 1) << 4);
+                int scalesBase = blockByteOffset + 4;
+                int a = w.get(scalesBase + subBlock) & 0xFF;
+                int b = w.get(scalesBase + subBlock + 4) & 0xFF;
+                int c = w.get(scalesBase + subBlock - 4) & 0xFF;
+                int low = subBlock < 4 ? 1 : 0;
+                int sc = low * (a & 63) + (1 - low) * ((b & 0xF) | ((c >> 6) << 4));
+                int m = low * (b & 63) + (1 - low) * (((b >> 4) & 0xF) | ((a >> 6) << 4));
+                out.set(destOffset + h, new HalfFloat(d * sc * q - dmin * m));
+            }
+        }
+    }
+
     // @formatter:off
     /**
      * {@code out = fp16(scale * (q - 8))} for a whole {@code Q4_0} matrix, written not row-major

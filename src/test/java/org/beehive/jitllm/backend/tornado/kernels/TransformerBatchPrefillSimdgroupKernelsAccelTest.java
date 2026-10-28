@@ -782,33 +782,55 @@ public class TransformerBatchPrefillSimdgroupKernelsAccelTest {
         checkHalfStrided(false);
     }
 
+    /** A block format the K-quant tests stage: its block size, bytes and fp16 scale offsets. */
+    private enum Quant {
+        Q4_1(32, 20, 0, 2),
+        Q4_K(256, 144, 0, 2),
+        Q5_K(256, 176, 0, 2),
+        Q6_K(256, 210, 208);
+
+        final int weights;
+        final int bytes;
+        final int[] scaleOffsets;
+
+        Quant(int weights, int bytes, int... scaleOffsets) {
+            this.weights = weights;
+            this.bytes = bytes;
+            this.scaleOffsets = scaleOffsets;
+        }
+
+        /** One weight, through the decode the device kernels are held against. */
+        float decode(ByteArray w, int block, int within) {
+            return switch (this) {
+                case Q4_1 -> TransformerComputeKernelsQ4_1.decode(w, block * bytes, within);
+                case Q4_K -> TransformerComputeKernelsQ4_K.decode(w, block * bytes, within);
+                case Q5_K -> TransformerComputeKernelsQ5_K.decode(w, block * bytes, within);
+                case Q6_K -> TransformerComputeKernelsQ6_K.decode(w, block * bytes, within);
+            };
+        }
+    }
+
     /**
-     * K-quant rows of {@code n} columns: random bytes, with each super-block's fp16 scales set to
-     * about 0.06 so that every weight is finite.
+     * Rows of {@code n} columns in {@code quant}: random bytes, with each block's fp16 scales set
+     * to about 0.06 so that every weight is finite.
      */
-    private static ByteArray kQuantWeights(boolean q4k, int rows, int n, long seed) {
-        int blockBytes = q4k ? 144 : 210;
-        int blocks = rows * (n / 256);
-        byte[] raw = new byte[blocks * blockBytes];
+    private static ByteArray kQuantWeights(Quant quant, int rows, int n, long seed) {
+        int blocks = rows * (n / quant.weights);
+        byte[] raw = new byte[blocks * quant.bytes];
         new Random(seed).nextBytes(raw);
-        int[] scaleOffsets = q4k ? new int[] {0, 2} : new int[] {208};
         for (int b = 0; b < blocks; b++) {
-            for (int offset : scaleOffsets) {
-                raw[b * blockBytes + offset] = (byte) (b & 0xFF);
-                raw[b * blockBytes + offset + 1] = 0x2C;
+            for (int offset : quant.scaleOffsets) {
+                raw[b * quant.bytes + offset] = (byte) (b & 0xFF);
+                raw[b * quant.bytes + offset + 1] = 0x2C;
             }
         }
         return ByteArray.fromArray(raw);
     }
 
-    /** A K-quant weight, through the decode the device kernels are held against. */
-    private static Weights kQuantWeight(boolean q4k, ByteArray w, int n) {
-        return (row, k) -> {
-            int block = row * (n / 256) + k / 256;
-            return q4k
-                    ? TransformerComputeKernelsQ4_K.decode(w, block * 144, k % 256)
-                    : TransformerComputeKernelsQ6_K.decode(w, block * 210, k % 256);
-        };
+    /** A weight of {@code w} in {@code quant}. */
+    private static Weights kQuantWeight(Quant quant, ByteArray w, int n) {
+        return (row, k) ->
+                quant.decode(w, row * (n / quant.weights) + k / quant.weights, k % quant.weights);
     }
 
     /** {@code sum |x * w|}, the scale of the rounding a reordered sum can differ by. */
@@ -820,11 +842,83 @@ public class TransformerBatchPrefillSimdgroupKernelsAccelTest {
         return sum;
     }
 
+    /** Adds {@code quant}'s plain or residual GEMM to {@code graph} as task {@code t}. */
+    private static void addProjection(
+            TaskGraph graph,
+            Quant quant,
+            boolean residual,
+            FloatArray x,
+            FloatArray out,
+            ByteArray w,
+            int n,
+            int d,
+            int batch) {
+        KernelContext context = new KernelContext();
+        switch (quant) {
+            case Q4_1 ->
+                    graph.task(
+                            "t",
+                            residual
+                                    ? TransformerBatchPrefillSimdgroupKernels
+                                            ::batchedGemmQ4_1WithResidual
+                                    : TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_1,
+                            context,
+                            x,
+                            out,
+                            w,
+                            n,
+                            d,
+                            batch);
+            case Q4_K ->
+                    graph.task(
+                            "t",
+                            residual
+                                    ? TransformerBatchPrefillSimdgroupKernels
+                                            ::batchedGemmQ4_KWithResidual
+                                    : TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_K,
+                            context,
+                            x,
+                            out,
+                            w,
+                            n,
+                            d,
+                            batch);
+            case Q5_K ->
+                    graph.task(
+                            "t",
+                            residual
+                                    ? TransformerBatchPrefillSimdgroupKernels
+                                            ::batchedGemmQ5_KWithResidual
+                                    : TransformerBatchPrefillSimdgroupKernels::batchedGemmQ5_K,
+                            context,
+                            x,
+                            out,
+                            w,
+                            n,
+                            d,
+                            batch);
+            case Q6_K ->
+                    graph.task(
+                            "t",
+                            residual
+                                    ? TransformerBatchPrefillSimdgroupKernels
+                                            ::batchedGemmQ6_KWithResidual
+                                    : TransformerBatchPrefillSimdgroupKernels::batchedGemmQ6_K,
+                            context,
+                            x,
+                            out,
+                            w,
+                            n,
+                            d,
+                            batch);
+        }
+    }
+
     /**
-     * The plain and residual K-quant projections, partial tiles included: the plain one overwrites
-     * every element, the residual one adds to what is there.
+     * The plain and residual projections, partial tiles included: the plain one overwrites every
+     * element, the residual one adds to what is there.
      */
-    private static void checkKQuantProjection(boolean q4k, boolean residual) {
+    private static void checkKQuantProjection(Quant quant, boolean residual) {
         assumeMetal();
         int n = 512;
         int d = 72;
@@ -834,59 +928,15 @@ public class TransformerBatchPrefillSimdgroupKernelsAccelTest {
         for (int i = 0; i < batch * d; i++) {
             out.set(i, residual ? value(i % d, i / d + 1) : UNTOUCHED);
         }
-        ByteArray w = kQuantWeights(q4k, d, n, q4k ? 41 : 61);
-        String name = "simdgroup" + (q4k ? "Q4_K" : "Q6_K") + (residual ? "Residual" : "");
+        ByteArray w = kQuantWeights(quant, d, n, 41 + quant.ordinal() * 10);
+        String name = "simdgroup" + quant + (residual ? "Residual" : "");
         TaskGraph graph = new TaskGraph(name).transferToDevice(DataTransferMode.EVERY_EXECUTION, x);
         graph.transferToDevice(DataTransferMode.EVERY_EXECUTION, out);
         graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, w);
-        if (q4k && residual) {
-            graph.task(
-                    "t",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_KWithResidual,
-                    new KernelContext(),
-                    x,
-                    out,
-                    w,
-                    n,
-                    d,
-                    batch);
-        } else if (q4k) {
-            graph.task(
-                    "t",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_K,
-                    new KernelContext(),
-                    x,
-                    out,
-                    w,
-                    n,
-                    d,
-                    batch);
-        } else if (residual) {
-            graph.task(
-                    "t",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ6_KWithResidual,
-                    new KernelContext(),
-                    x,
-                    out,
-                    w,
-                    n,
-                    d,
-                    batch);
-        } else {
-            graph.task(
-                    "t",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ6_K,
-                    new KernelContext(),
-                    x,
-                    out,
-                    w,
-                    n,
-                    d,
-                    batch);
-        }
+        addProjection(graph, quant, residual, x, out, w, n, d, batch);
         graph.transferToHost(DataTransferMode.EVERY_EXECUTION, out);
         run(graph, name, ((d + 63) / 64) * ((batch + 63) / 64));
-        Weights weights = kQuantWeight(q4k, w, n);
+        Weights weights = kQuantWeight(quant, w, n);
         for (int b = 0; b < batch; b++) {
             for (int r = 0; r < d; r++) {
                 float expected = (residual ? value(r, b + 1) : 0.0f) + dot(x, b, n, weights, r);
@@ -902,30 +952,41 @@ public class TransformerBatchPrefillSimdgroupKernelsAccelTest {
 
     @Test
     public void q4kProjection() {
-        checkKQuantProjection(true, false);
+        checkKQuantProjection(Quant.Q4_K, false);
     }
 
     @Test
     public void q4kResidual() {
-        checkKQuantProjection(true, true);
+        checkKQuantProjection(Quant.Q4_K, true);
     }
 
     @Test
     public void q6kProjection() {
-        checkKQuantProjection(false, false);
+        checkKQuantProjection(Quant.Q6_K, false);
     }
 
     @Test
     public void q6kResidual() {
-        checkKQuantProjection(false, true);
+        checkKQuantProjection(Quant.Q6_K, true);
+    }
+
+    @Test
+    public void q4_1ProjectionAndResidual() {
+        checkKQuantProjection(Quant.Q4_1, false);
+        checkKQuantProjection(Quant.Q4_1, true);
+    }
+
+    @Test
+    public void q5kProjectionAndResidual() {
+        checkKQuantProjection(Quant.Q5_K, false);
+        checkKQuantProjection(Quant.Q5_K, true);
     }
 
     /**
-     * The Q4_K gate/up projection with the RMS weights and per-token scales applied as the
-     * activations are staged, partial tiles included.
+     * The gate/up projection with the RMS weights and per-token scales applied as the activations
+     * are staged, partial tiles included.
      */
-    @Test
-    public void q4kGateUp() {
+    private static void checkKQuantGateUp(Quant quant) {
         assumeMetal();
         int dim = 512;
         int hiddenDim = 40;
@@ -947,30 +1008,80 @@ public class TransformerBatchPrefillSimdgroupKernelsAccelTest {
         }
         FloatArray hb = new FloatArray(batch * hiddenDim);
         hb.init(UNTOUCHED);
-        ByteArray w1 = kQuantWeights(true, hiddenDim, dim, 71);
-        ByteArray w3 = kQuantWeights(true, hiddenDim, dim, 73);
-        String name = "simdgroupGateUpQ4_K";
+        ByteArray w1 = kQuantWeights(quant, hiddenDim, dim, 71 + quant.ordinal());
+        ByteArray w3 = kQuantWeights(quant, hiddenDim, dim, 73 + quant.ordinal());
+        String name = "simdgroupGateUp" + quant;
         TaskGraph graph =
                 new TaskGraph(name)
                         .transferToDevice(DataTransferMode.EVERY_EXECUTION, x, rms, scale, hb);
         graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, w1, w3);
-        graph.task(
-                "t",
-                TransformerBatchPrefillSimdgroupKernels::batchedGemmRmsNormFFNGateUpQ4_K,
-                new KernelContext(),
-                x,
-                hb,
-                rms,
-                scale,
-                w1,
-                w3,
-                dim,
-                hiddenDim,
-                batch);
+        KernelContext context = new KernelContext();
+        switch (quant) {
+            case Q4_1 ->
+                    graph.task(
+                            "t",
+                            TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmRmsNormFFNGateUpQ4_1,
+                            context,
+                            x,
+                            hb,
+                            rms,
+                            scale,
+                            w1,
+                            w3,
+                            dim,
+                            hiddenDim,
+                            batch);
+            case Q4_K ->
+                    graph.task(
+                            "t",
+                            TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmRmsNormFFNGateUpQ4_K,
+                            context,
+                            x,
+                            hb,
+                            rms,
+                            scale,
+                            w1,
+                            w3,
+                            dim,
+                            hiddenDim,
+                            batch);
+            case Q5_K ->
+                    graph.task(
+                            "t",
+                            TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmRmsNormFFNGateUpQ5_K,
+                            context,
+                            x,
+                            hb,
+                            rms,
+                            scale,
+                            w1,
+                            w3,
+                            dim,
+                            hiddenDim,
+                            batch);
+            case Q6_K ->
+                    graph.task(
+                            "t",
+                            TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmRmsNormFFNGateUpQ6_K,
+                            context,
+                            x,
+                            hb,
+                            rms,
+                            scale,
+                            w1,
+                            w3,
+                            dim,
+                            hiddenDim,
+                            batch);
+        }
         graph.transferToHost(DataTransferMode.EVERY_EXECUTION, hb);
         run(graph, name, ((hiddenDim + 31) / 32) * ((batch + 63) / 64));
-        Weights gateWeights = kQuantWeight(true, w1, dim);
-        Weights upWeights = kQuantWeight(true, w3, dim);
+        Weights gateWeights = kQuantWeight(quant, w1, dim);
+        Weights upWeights = kQuantWeight(quant, w3, dim);
         for (int b = 0; b < batch; b++) {
             for (int r = 0; r < hiddenDim; r++) {
                 float gate = dot(normed, b, dim, gateWeights, r);
@@ -989,5 +1100,25 @@ public class TransformerBatchPrefillSimdgroupKernelsAccelTest {
                         tolerance);
             }
         }
+    }
+
+    @Test
+    public void q4kGateUp() {
+        checkKQuantGateUp(Quant.Q4_K);
+    }
+
+    @Test
+    public void q4_1GateUp() {
+        checkKQuantGateUp(Quant.Q4_1);
+    }
+
+    @Test
+    public void q5kGateUp() {
+        checkKQuantGateUp(Quant.Q5_K);
+    }
+
+    @Test
+    public void q6kGateUp() {
+        checkKQuantGateUp(Quant.Q6_K);
     }
 }

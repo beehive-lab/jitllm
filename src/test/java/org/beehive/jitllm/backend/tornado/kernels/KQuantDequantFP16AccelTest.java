@@ -293,4 +293,168 @@ public class KQuantDequantFP16AccelTest {
             }
         }
     }
+
+    /**
+     * The host decode of element {@code within} of block {@code block} of a {@code type} matrix.
+     */
+    private static float hostDecode(String type, ByteArray w, int block, int within) {
+        return switch (type) {
+            case "Q4_0" -> TransformerComputeKernelsQ4_0.decode(w, block * 18, within);
+            case "Q4_1" -> TransformerComputeKernelsQ4_1.decode(w, block * 20, within);
+            default -> TransformerComputeKernelsQ5_K.decode(w, block * 176, within);
+        };
+    }
+
+    /**
+     * The Q4_0, Q4_1 and Q5_K decoders the tensor-core prefill reads: the decode-once forms write
+     * the host decode with the flag clear and nothing with it set, and the tiled forms write it in
+     * {@code gemmMMATiledB}'s order.
+     */
+    @Test
+    public void theQ4_0Q4_1AndQ5_KDecodersMatchTheHost() {
+        int rows = 128;
+        int k = 512;
+        int n = rows * k;
+        int kSteps = k / 16;
+        for (String type : new String[] {"Q4_0", "Q4_1", "Q5_K"}) {
+            int weights = type.equals("Q5_K") ? 256 : 32;
+            int bytes =
+                    switch (type) {
+                        case "Q4_0" -> 18;
+                        case "Q4_1" -> 20;
+                        default -> 176;
+                    };
+            ByteArray w = randomBlocks(n / weights, bytes, 0, type.hashCode());
+            for (int flagValue : new int[] {0, 1}) {
+                HalfFloatArray out = new HalfFloatArray(n);
+                out.init(new HalfFloat(-7.0f));
+                IntArray done = new IntArray(1);
+                done.set(0, flagValue);
+                String name = type + "Once" + flagValue;
+                TaskGraph graph =
+                        new TaskGraph(name)
+                                .transferToDevice(DataTransferMode.FIRST_EXECUTION, w, out, done);
+                KernelContext context = new KernelContext();
+                switch (type) {
+                    case "Q4_0" ->
+                            graph.task(
+                                    "decode",
+                                    TransformerComputeKernelsQ4_0::dequantizeQ4_0ToFP16Once,
+                                    context,
+                                    w,
+                                    out,
+                                    0,
+                                    n,
+                                    done,
+                                    0);
+                    case "Q4_1" ->
+                            graph.task(
+                                    "decode",
+                                    TransformerComputeKernelsQ4_1::dequantizeQ4_1ToFP16Once,
+                                    context,
+                                    w,
+                                    out,
+                                    0,
+                                    n,
+                                    done,
+                                    0);
+                    default ->
+                            graph.task(
+                                    "decode",
+                                    TransformerComputeKernelsQ5_K::dequantizeQ5_KToFP16Once,
+                                    context,
+                                    w,
+                                    out,
+                                    0,
+                                    n,
+                                    done,
+                                    0);
+                }
+                graph.transferToHost(DataTransferMode.EVERY_EXECUTION, out);
+                WorkerGrid1D grid = new WorkerGrid1D(n);
+                grid.setLocalWork(256, 1, 1);
+                try (TornadoExecutionPlan plan = new TornadoExecutionPlan(graph.snapshot())) {
+                    plan.withGridScheduler(new GridScheduler(name + ".decode", grid)).execute();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+                for (int i = 0; i < n; i++) {
+                    float want =
+                            flagValue == 0
+                                    ? new HalfFloat(hostDecode(type, w, i / weights, i % weights))
+                                            .getFloat32()
+                                    : -7.0f;
+                    assertEquals(name + " element " + i, want, out.get(i).getFloat32(), 0f);
+                }
+            }
+
+            HalfFloatArray tiled = new HalfFloatArray(n);
+            IntArray done = new IntArray(1);
+            String name = type + "Tiled";
+            TaskGraph graph =
+                    new TaskGraph(name)
+                            .transferToDevice(DataTransferMode.FIRST_EXECUTION, w, tiled, done);
+            KernelContext context = new KernelContext();
+            switch (type) {
+                case "Q4_0" ->
+                        graph.task(
+                                "decode",
+                                Qwen35MMAKernels::dequantizeQ4_0ToFP16Tiled,
+                                context,
+                                w,
+                                tiled,
+                                0,
+                                n,
+                                k,
+                                done,
+                                0);
+                case "Q4_1" ->
+                        graph.task(
+                                "decode",
+                                Qwen35MMAKernels::dequantizeQ4_1ToFP16Tiled,
+                                context,
+                                w,
+                                tiled,
+                                0,
+                                n,
+                                k,
+                                done,
+                                0);
+                default ->
+                        graph.task(
+                                "decode",
+                                Qwen35MMAKernels::dequantizeQ5_KToFP16Tiled,
+                                context,
+                                w,
+                                tiled,
+                                0,
+                                n,
+                                k,
+                                done,
+                                0);
+            }
+            graph.transferToHost(DataTransferMode.EVERY_EXECUTION, tiled);
+            WorkerGrid1D grid = new WorkerGrid1D(Math.min(n, Qwen35MMAKernels.TILED_DECODE_LANES));
+            grid.setLocalWork(256, 1, 1);
+            try (TornadoExecutionPlan plan = new TornadoExecutionPlan(graph.snapshot())) {
+                plan.withGridScheduler(new GridScheduler(name + ".decode", grid)).execute();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            boolean[] seen = new boolean[n];
+            for (int h = 0; h < n; h++) {
+                int tile = h >>> 11;
+                int idx = (h >>> 1) & 1023;
+                int row = (tile / kSteps) * 128 + ((idx >>> 6) << 3) + ((idx & 3) << 1) + (h & 1);
+                int kk = (tile % kSteps) * 16 + ((idx & 63) >>> 2);
+                assertEquals(name + " position " + h + " covered twice", false, seen[row * k + kk]);
+                seen[row * k + kk] = true;
+                int element = row * k + kk;
+                float want =
+                        new HalfFloat(hostDecode(type, w, element / weights, element % weights))
+                                .getFloat32();
+                assertEquals(name + " position " + h, want, tiled.get(h).getFloat32(), 0f);
+            }
+        }
+    }
 }

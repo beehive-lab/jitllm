@@ -1485,4 +1485,35 @@ public final class TransformerComputeKernelsQ4_0 {
     public static int ffnRowTile() {
         return FFN_ROW_TILE;
     }
+
+    /**
+     * {@code Q4_0} weights decoded into FP16 at {@code destOffset} of {@code out}, for a GEMM that
+     * reads FP16 operands, skipped once {@code done[flag]} is set, on {@code
+     * TransformerBatchPrefillKernels.dequantizeQ8_0ToFP16Once}'s fixed striding grid. A per-chunk
+     * caller passes a flag that is never set.
+     */
+    public static void dequantizeQ4_0ToFP16Once(
+            KernelContext context,
+            ByteArray w,
+            HalfFloatArray out,
+            int destOffset,
+            int n,
+            IntArray done,
+            int flag) {
+        int gid = context.globalIdx;
+        if (gid < TransformerBatchPrefillKernels.DECODE_ONCE_LANES && done.get(flag) == 0) {
+            for (int i = gid; i < n; i += TransformerBatchPrefillKernels.DECODE_ONCE_LANES) {
+                // decode(...) copied in: called through the helper, the CUDA backend cannot lower
+                // the FP16 store's HalfFloat allocation.
+                int block = i / QK;
+                int blockByteOffset = block * BLOCK_BYTES;
+                int withinBlock = i - block * QK;
+                float d = w.getHalfFloat(blockByteOffset).getFloat32();
+                int high = withinBlock / 16;
+                int packed = w.get(blockByteOffset + QS_OFFSET + withinBlock - high * 16) & 0xFF;
+                int q = (packed >> (high * 4)) & 0xF;
+                out.set(destOffset + i, new HalfFloat(d * (q - 8)));
+            }
+        }
+    }
 }

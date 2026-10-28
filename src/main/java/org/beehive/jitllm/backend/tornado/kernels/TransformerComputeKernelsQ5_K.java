@@ -1,8 +1,10 @@
 package org.beehive.jitllm.backend.tornado.kernels;
 
 import uk.ac.manchester.tornado.api.KernelContext;
+import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 import uk.ac.manchester.tornado.api.utils.QuantizationUtils;
 
@@ -839,6 +841,52 @@ public final class TransformerComputeKernelsQ5_K {
                                 index, outBatch.get(index) + localSums[slot * localWorkGroupSize]);
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * {@code Q5_K} weights decoded into FP16 at {@code destOffset} of {@code out}, for a GEMM that
+     * reads FP16 operands, skipped once {@code done[flag]} is set, on {@code
+     * TransformerBatchPrefillKernels.dequantizeQ8_0ToFP16Once}'s fixed striding grid. A per-chunk
+     * caller passes a flag that is never set.
+     */
+    public static void dequantizeQ5_KToFP16Once(
+            KernelContext context,
+            ByteArray w,
+            HalfFloatArray out,
+            int destOffset,
+            int n,
+            IntArray done,
+            int flag) {
+        int gid = context.globalIdx;
+        if (gid < TransformerBatchPrefillKernels.DECODE_ONCE_LANES && done.get(flag) == 0) {
+            for (int i = gid; i < n; i += TransformerBatchPrefillKernels.DECODE_ONCE_LANES) {
+                // decode(...) copied in with every read unconditional: called through the helper,
+                // the CUDA backend cannot lower the FP16 store's HalfFloat allocation.
+                int block = i / QK_K;
+                int blockByteOffset = block * BLOCK_BYTES;
+                int withinBlock = i - block * QK_K;
+                float d = w.getHalfFloat(blockByteOffset).getFloat32();
+                float dmin = w.getHalfFloat(blockByteOffset + 2).getFloat32();
+                int pairIndex = withinBlock / 64;
+                int posInPair = withinBlock - pairIndex * 64;
+                int highNibble = posInPair / 32;
+                int posInHalf = posInPair - highNibble * 32;
+                int subBlock = pairIndex * 2 + highNibble;
+                int qsByte = w.get(blockByteOffset + QS_OFFSET + pairIndex * 32 + posInHalf) & 0xFF;
+                int qhByte = w.get(blockByteOffset + QH_OFFSET + posInHalf) & 0xFF;
+                int q = ((qsByte >> (highNibble * 4)) & 0xF) | (((qhByte >> subBlock) & 1) << 4);
+                // Sub-blocks 0-3 read bytes [j] and [j+4]; 4-7 read [j+4], [j-4] and [j]. Reading
+                // all three stays inside the block: [j-4] for j < 4 lands on d/dmin, discarded.
+                int scalesBase = blockByteOffset + SCALES_OFFSET;
+                int a = w.get(scalesBase + subBlock) & 0xFF;
+                int b = w.get(scalesBase + subBlock + 4) & 0xFF;
+                int c = w.get(scalesBase + subBlock - 4) & 0xFF;
+                int low = subBlock < 4 ? 1 : 0;
+                int sc = low * (a & 63) + (1 - low) * ((b & 0xF) | ((c >> 6) << 4));
+                int m = low * (b & 63) + (1 - low) * (((b >> 4) & 0xF) | ((a >> 6) << 4));
+                out.set(destOffset + i, new HalfFloat(d * sc * q - dmin * m));
             }
         }
     }

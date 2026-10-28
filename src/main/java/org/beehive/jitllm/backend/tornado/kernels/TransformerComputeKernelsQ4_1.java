@@ -1,8 +1,10 @@
 package org.beehive.jitllm.backend.tornado.kernels;
 
 import uk.ac.manchester.tornado.api.KernelContext;
+import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 import uk.ac.manchester.tornado.api.utils.QuantizationUtils;
 
@@ -564,6 +566,38 @@ public final class TransformerComputeKernelsQ4_1 {
                 total += warpSums[warp];
             }
             output.set(rowId, total);
+        }
+    }
+
+    /**
+     * {@code Q4_1} weights decoded into FP16 at {@code destOffset} of {@code out}, for a GEMM that
+     * reads FP16 operands, skipped once {@code done[flag]} is set, on {@code
+     * TransformerBatchPrefillKernels.dequantizeQ8_0ToFP16Once}'s fixed striding grid. A per-chunk
+     * caller passes a flag that is never set.
+     */
+    public static void dequantizeQ4_1ToFP16Once(
+            KernelContext context,
+            ByteArray w,
+            HalfFloatArray out,
+            int destOffset,
+            int n,
+            IntArray done,
+            int flag) {
+        int gid = context.globalIdx;
+        if (gid < TransformerBatchPrefillKernels.DECODE_ONCE_LANES && done.get(flag) == 0) {
+            for (int i = gid; i < n; i += TransformerBatchPrefillKernels.DECODE_ONCE_LANES) {
+                // decode(...) copied in: called through the helper, the CUDA backend cannot lower
+                // the FP16 store's HalfFloat allocation.
+                int block = i / QK;
+                int blockByteOffset = block * BLOCK_BYTES;
+                int withinBlock = i - block * QK;
+                float d = w.getHalfFloat(blockByteOffset).getFloat32();
+                float m = w.getHalfFloat(blockByteOffset + 2).getFloat32();
+                int high = withinBlock / 16;
+                int packed = w.get(blockByteOffset + QS_OFFSET + withinBlock - high * 16) & 0xFF;
+                int q = (packed >> (high * 4)) & 0xF;
+                out.set(destOffset + i, new HalfFloat(d * q + m));
+            }
         }
     }
 }
