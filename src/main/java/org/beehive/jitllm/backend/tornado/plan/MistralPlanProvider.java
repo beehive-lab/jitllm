@@ -1,5 +1,8 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import static org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets.NATIVE_QUANTIZED;
+
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport;
@@ -15,6 +18,7 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -35,15 +39,35 @@ public final class MistralPlanProvider implements TornadoPlanProvider {
         return ID;
     }
 
-    /** The FP16 and Q8_0 logits sample on the device; a Q4_0 file's logits are the Q8_0 layer. */
+    /**
+     * The FP16 and Q8_0 logits sample on the device, and so do every quantized file's: they are the
+     * Q8_0 logits layer, whichever representation the output projection holds.
+     */
     @Override
     public boolean deviceSampling(DataType weights) {
-        return weights == DataType.F16 || weights == DataType.Q8_0 || weights == DataType.Q4_0;
+        return weights == DataType.F16 || NATIVE_QUANTIZED.contains(weights);
     }
 
+    /** F16, and every quantized representation a kept load holds. */
     @Override
     public Set<DataType> supportedDataTypes() {
+        return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
+    }
+
+    /** What a load keeps whatever the backend: F16 and Q8_0. The rest depends on the backend. */
+    @Override
+    public Set<DataType> nativeTensorTypes() {
         return TornadoSupportSets.BOTH_REPRESENTATIONS;
+    }
+
+    /**
+     * Every quantized type kept exactly where the loader keeps it: {@link
+     * TornadoPlanProvider#retainsNative}.
+     */
+    @Override
+    public DeviceRetention deviceRetention(
+            Map<String, DataType> sourceTypes, int layers, BackendId backend) {
+        return TornadoPlanProvider.nativeRetention(nativeTensorTypes(), backend);
     }
 
     @Override
@@ -61,10 +85,12 @@ public final class MistralPlanProvider implements TornadoPlanProvider {
 
     /**
      * Mistral keeps the non-NVIDIA scheduler for its FP32 attention; its FP16 cache takes the flash
-     * kernels, which need an NVIDIA-class device, not that scheduler.
+     * kernels, which need an NVIDIA-class device, not that scheduler. A file that runs the Q8_0
+     * layers one weight at a time is answered as Q8_0.
      */
     @Override
-    public Optional<String> fp16KeyValueUnsupported(Combination c) {
+    public Optional<String> fp16KeyValueUnsupported(Combination q) {
+        Combination c = q.asQ8_0Layers();
         if (!c.nvidiaDevice()) {
             return Optional.of("the FP16 flash kernels need an NVIDIA-class device");
         }
@@ -79,17 +105,18 @@ public final class MistralPlanProvider implements TornadoPlanProvider {
 
     @Override
     public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
-        return Fp16KeyValueSupport.metalSingleTokenAndBatchedLayers(c);
+        return Fp16KeyValueSupport.metalSingleTokenAndBatchedLayers(c.asQ8_0Layers());
     }
 
     @Override
     public boolean metalBatchedPrefillDefault(DataType weights) {
-        return weights == DataType.F16 || weights == DataType.Q8_0;
+        return weights == DataType.F16 || NATIVE_QUANTIZED.contains(weights);
     }
 
     /**
-     * The batched prefill's projections through cuBLAS: Q8_0 weights decoded to FP16 first; F16
-     * weights' output and down projections.
+     * The batched prefill's projections through cuBLAS: quantized weights decoded to FP16 first;
+     * F16 weights' output and down projections. MLX on Metal for F16 and Q8_0, and no other
+     * quantized type until part 5 (decision 2).
      */
     @Override
     public Set<DataType> nativeLibraryWeights(BackendId backend) {
@@ -97,7 +124,9 @@ public final class MistralPlanProvider implements TornadoPlanProvider {
             // Batched prefill attention and projections on Apple MLX (MlxPrefill).
             return Set.of(DataType.F16, DataType.Q8_0);
         }
-        return BackendId.CUDA.equals(backend) ? Set.of(DataType.Q8_0, DataType.F16) : Set.of();
+        return BackendId.CUDA.equals(backend)
+                ? TornadoSupportSets.F16_AND_NATIVE_QUANTIZED
+                : Set.of();
     }
 
     /** On Metal under native libraries, what the MLX prefill allocates ({@code MlxPrefill}). */
@@ -108,7 +137,10 @@ public final class MistralPlanProvider implements TornadoPlanProvider {
             int batchSize,
             ExecutionPolicy policy,
             boolean fp16Cache) {
-        return MlxPrefill.resolve(policy, weights, config)
-                .map(mlx -> MlxPrefill.workspace(weights, config, batchSize, false, false));
+        // MLX only for the types Metal's native libraries take here (nativeLibraryWeights).
+        return nativeLibraryWeights(BackendId.METAL).contains(weights)
+                ? MlxPrefill.resolve(policy, weights, config)
+                        .map(mlx -> MlxPrefill.workspace(weights, config, batchSize, false, false))
+                : Optional.empty();
     }
 }
