@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspace;
@@ -15,6 +16,7 @@ import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
+import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 // @formatter:off
@@ -100,7 +102,7 @@ public final class QuantizedProjections {
                     ws.wrapXbQuants,
                     ws.wrapXbScales,
                     out,
-                    w.asByteArray(),
+                    bytes(w),
                     n,
                     d,
                     packedLocal);
@@ -120,7 +122,7 @@ public final class QuantizedProjections {
                     ws.wrapXbScales,
                     ws.wrapXbSums,
                     out,
-                    w.asByteArray(),
+                    bytes(w),
                     n,
                     d,
                     packedLocal);
@@ -139,7 +141,7 @@ public final class QuantizedProjections {
                     context,
                     ws.wrapXb,
                     out,
-                    w.asByteArray(),
+                    bytes(w),
                     n,
                     d,
                     floatLocal);
@@ -170,7 +172,7 @@ public final class QuantizedProjections {
                     ws.wrapXbQuants,
                     ws.wrapXbScales,
                     ws.wrapX,
-                    w.asByteArray(),
+                    bytes(w),
                     n,
                     d,
                     packedLocal);
@@ -200,7 +202,7 @@ public final class QuantizedProjections {
                     ws.wrapXbScales,
                     ws.wrapXbSums,
                     ws.wrapX,
-                    w.asByteArray(),
+                    bytes(w),
                     n,
                     d,
                     packedLocal);
@@ -226,7 +228,7 @@ public final class QuantizedProjections {
                     context,
                     x,
                     ws.wrapX,
-                    w.asByteArray(),
+                    bytes(w),
                     n,
                     d,
                     floatLocal);
@@ -275,8 +277,8 @@ public final class QuantizedProjections {
                     ws.wrapXbQuants,
                     ws.wrapXbScales,
                     ws.wrapHb,
-                    w1.asByteArray(),
-                    w3.asByteArray(),
+                    bytes(w1),
+                    bytes(w3),
                     n,
                     d,
                     packedLocal);
@@ -291,8 +293,8 @@ public final class QuantizedProjections {
                     ws.wrapXbScales,
                     ws.wrapXbSums,
                     ws.wrapHb,
-                    w1.asByteArray(),
-                    w3.asByteArray(),
+                    bytes(w1),
+                    bytes(w3),
                     n,
                     d,
                     packedLocal);
@@ -310,8 +312,8 @@ public final class QuantizedProjections {
                     context,
                     ws.wrapXb,
                     ws.wrapHb,
-                    w1.asByteArray(),
-                    w3.asByteArray(),
+                    bytes(w1),
+                    bytes(w3),
                     n,
                     d,
                     floatLocal);
@@ -340,6 +342,18 @@ public final class QuantizedProjections {
         scheduler.addWorkerGrid(prefix + name + "_up", worker(d));
         scheduler.addWorkerGrid(
                 prefix + name, WorkerGridFactory.genericWorker((d + 255) / 256 * 256, 256));
+    }
+
+    /**
+     * {@code w}'s blocks as the file stores them. A weight the plan prepacked into tiles has no
+     * kernel here, and is refused by name rather than read as the format it no longer is.
+     */
+    private ByteArray bytes(TornadoTensor w) {
+        if (ws.prepacking != null && ws.prepacking.prepacked(w)) {
+            throw WeightPrepacking.noPrepackedKernel(
+                    "single-token " + w.dataType() + " projection");
+        }
+        return w.asByteArray();
     }
 
     private static IllegalStateException unsupported(TornadoTensor w) {
