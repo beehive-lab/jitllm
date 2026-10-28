@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
@@ -13,6 +14,7 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -31,10 +33,67 @@ public final class DevstralPlanProvider implements TornadoPlanProvider {
         return ID;
     }
 
+    /**
+     * F16, Q8_0 and Q4_K as before (Q4_K for a file whose projections are all K-quants, {@link
+     * #kQuantLayers}), and the types a kept file reports when it runs the Q8_0 layers one weight at
+     * a time.
+     */
     @Override
     public Set<DataType> supportedDataTypes() {
-        // BOTH_REPRESENTATIONS plus Q4_K, which this family retains rather than materializing.
-        return java.util.Set.of(DataType.F16, DataType.Q8_0, DataType.Q4_K);
+        return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
+    }
+
+    /** What a load keeps whatever the backend: F16 and Q8_0. The rest depends on the backend. */
+    @Override
+    public Set<DataType> nativeTensorTypes() {
+        return TornadoSupportSets.BOTH_REPRESENTATIONS;
+    }
+
+    /**
+     * Every quantized type kept where the loader keeps it ({@link
+     * TornadoPlanProvider#retainsNative}). Elsewhere a {@link #kQuantLayers} file keeps its Q4_K
+     * and Q6_K projections and converts its embedding and output projection, and any other file is
+     * converted to Q8_0, as the loader does.
+     */
+    @Override
+    public DeviceRetention deviceRetention(
+            Map<String, DataType> sourceTypes, int layers, BackendId backend) {
+        if (TornadoPlanProvider.retainsNative(backend)) {
+            return TornadoPlanProvider.nativeRetention(nativeTensorTypes(), backend);
+        }
+        DeviceRetention converted = DeviceRetention.retaining(nativeTensorTypes());
+        if (!kQuantLayers(sourceTypes, layers)) {
+            return converted;
+        }
+        return (name, source) ->
+                name.startsWith("blk.") && (source == DataType.Q4_K || source == DataType.Q6_K)
+                        ? source
+                        : converted.deviceType(name, source);
+    }
+
+    private static final String[] PROJECTIONS = {
+        "attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_down", "ffn_up"
+    };
+
+    /**
+     * Whether a Devstral load runs the K-quant layers: every per-layer weight they read is Q4_K or
+     * Q6_K, as in a Q4_K_M file. Asked by the loader and by the memory preflight, so the two cannot
+     * disagree about what a tensor becomes. The norms are F32 and read by dtype-independent
+     * kernels.
+     */
+    public static boolean kQuantLayers(Map<String, DataType> sourceTypes, int layers) {
+        if (layers <= 0) {
+            return false;
+        }
+        for (int i = 0; i < layers; i++) {
+            for (String kind : PROJECTIONS) {
+                DataType type = sourceTypes.get("blk." + i + "." + kind + ".weight");
+                if (type != DataType.Q4_K && type != DataType.Q6_K) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     @Override
@@ -88,7 +147,7 @@ public final class DevstralPlanProvider implements TornadoPlanProvider {
     @Override
     public Set<DataType> nativeLibraryWeights(BackendId backend) {
         return BackendId.CUDA.equals(backend)
-                ? Set.of(DataType.Q8_0, DataType.Q4_K, DataType.F16)
+                ? TornadoSupportSets.F16_AND_NATIVE_QUANTIZED
                 : Set.of();
     }
 
@@ -106,7 +165,7 @@ public final class DevstralPlanProvider implements TornadoPlanProvider {
                             .LlamaFP16LayersBatchPrefillMMA.workspace(
                             config, batchSize, policy, fp16Cache));
         }
-        if (weights == DataType.Q8_0) {
+        if (TornadoSupportSets.NATIVE_QUANTIZED.contains(weights) && weights != DataType.Q4_K) {
             return Optional.of(
                     org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill
                             .LlamaQ8_0LayersBatchPrefillMMA.workspace(
