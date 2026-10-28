@@ -20,9 +20,8 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 /**
- * The memory preflight predicts a Qwen3 file at the size the loader gives it: the file's own bytes
- * where the loader keeps its tensors (CUDA, Metal), and Q8_0 where it converts them, because both
- * ask {@code TornadoPlanProvider.retainsNative}.
+ * The memory preflight predicts a Qwen3 file at the size the loader gives it, the file's own bytes
+ * on every device backend, because both ask {@code TornadoPlanProvider.retainsNative}.
  *
  * <p>The file is synthetic and holds descriptors only, which is all the prediction reads: two
  * layers of 256 x 256 projections in the Q4_K_M layout, {@code attn_v} and {@code ffn_down} Q6_K in
@@ -51,18 +50,12 @@ public class Qwen3RetentionFootprintTest {
     public void aKeptFileIsPredictedAtItsOwnSize() throws Exception {
         long perLayer = 10 * Q4_K_BYTES + 2 * Q6_K_BYTES + 2 * Q4_K_BYTES + 8 * NORM_BYTES;
         Path file = qwen3Q4_K_MFile();
-        for (BackendId backend : new BackendId[] {BackendId.CUDA, BackendId.METAL}) {
+        for (BackendId backend :
+                new BackendId[] {BackendId.CUDA, BackendId.METAL, BackendId.OPENCL}) {
             WeightFootprint footprint = footprint(file, backend);
             assertEquals(backend + " per layer", perLayer, footprint.perLayerBytes());
             assertEquals(backend + " token_embd", Q6_K_BYTES, footprint.globalBytes());
         }
-    }
-
-    @Test
-    public void aConvertedFileIsPredictedAtQ8_0() throws Exception {
-        WeightFootprint footprint = footprint(qwen3Q4_K_MFile(), BackendId.OPENCL);
-        assertEquals(14 * Q8_0_BYTES + 8 * NORM_BYTES, footprint.perLayerBytes());
-        assertEquals(Q8_0_BYTES, footprint.globalBytes());
     }
 
     /**

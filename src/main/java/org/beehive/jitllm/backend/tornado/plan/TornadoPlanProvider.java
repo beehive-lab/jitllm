@@ -157,19 +157,22 @@ public interface TornadoPlanProvider {
     // @formatter:off
     /**
      * Whether a load keeps every tensor as the file stores it, rather than converting Q4_0, Q4_1
-     * and the K-quants to Q8_0: on CUDA and Metal, where a migrated family's every path reads each
-     * tensor by its own type (the single-token projections, the batched prefill, the tensor-core
-     * prefill and the embedding row).
+     * and the K-quants to Q8_0: on every device backend (CUDA, Metal and OpenCL), where a migrated
+     * family's every path reads each tensor by its own type (the single-token projections, the
+     * batched prefill, the tensor-core prefill and the embedding row).
      *
-     * <p>On any other backend the tiled batch projections those layers would need are not known to
-     * compile (Qwen3.5's do not on OpenCL), so the file is converted as before.
+     * <p>OpenCL came last: the per-type float kernels, the tiled batch projections included,
+     * compile and match their host references there, and no migrated family's parity there is worse
+     * than it was on the Q8_0 copies.
      *
      * <p>The one rule for a migrated family's loader and its memory preflight ({@link
      * #deviceRetention}), so the two cannot disagree about what a tensor becomes.
      */
     // @formatter:on
     static boolean retainsNative(BackendId backend) {
-        return BackendId.CUDA.equals(backend) || BackendId.METAL.equals(backend);
+        return BackendId.CUDA.equals(backend)
+                || BackendId.METAL.equals(backend)
+                || BackendId.OPENCL.equals(backend);
     }
 
     /**

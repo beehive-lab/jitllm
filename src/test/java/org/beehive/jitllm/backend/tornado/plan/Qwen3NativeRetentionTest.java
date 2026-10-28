@@ -11,9 +11,8 @@ import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 
 /**
- * The one rule for whether a Qwen3 load keeps its tensors as the file stores them: on CUDA and
- * Metal, every file; anywhere else, Q4_0, Q4_1 and the K-quants are converted to Q8_0 as before.
- * The loader and the memory preflight both ask it.
+ * The one rule for whether a Qwen3 load keeps its tensors as the file stores them: on every device
+ * backend, every file. The loader and the memory preflight both ask it.
  */
 public class Qwen3NativeRetentionTest {
 
@@ -44,12 +43,12 @@ public class Qwen3NativeRetentionTest {
         return types;
     }
 
-    /** Kept on CUDA and Metal only; anywhere else the file is converted as before. */
+    /** Kept on every device backend; the CPU backend does not load device weights. */
     @Test
-    public void onlyCudaAndMetalKeepTheFile() {
+    public void everyDeviceBackendKeepsTheFile() {
         assertTrue(TornadoPlanProvider.retainsNative(BackendId.CUDA));
         assertTrue(TornadoPlanProvider.retainsNative(BackendId.METAL));
-        assertFalse(TornadoPlanProvider.retainsNative(BackendId.OPENCL));
+        assertTrue(TornadoPlanProvider.retainsNative(BackendId.OPENCL));
         assertFalse(TornadoPlanProvider.retainsNative(BackendId.CPU));
     }
 
@@ -66,7 +65,7 @@ public class Qwen3NativeRetentionTest {
                 }) {
             assertEquals(type, kept.deviceType("blk.0.attn_q.weight", type));
             assertEquals(type, metal.deviceType("blk.0.attn_q.weight", type));
-            assertEquals(DataType.Q8_0, openCl.deviceType("blk.0.attn_q.weight", type));
+            assertEquals(type, openCl.deviceType("blk.0.attn_q.weight", type));
         }
         assertEquals(DataType.Q8_0, kept.deviceType("blk.0.ffn_up.weight", DataType.Q8_0));
         assertEquals(DataType.F16, openCl.deviceType("token_embd.weight", DataType.F16));

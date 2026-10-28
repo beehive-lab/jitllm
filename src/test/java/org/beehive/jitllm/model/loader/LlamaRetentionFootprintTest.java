@@ -20,9 +20,8 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 /**
- * The memory preflight predicts a Llama Q4_0 file at the size the loader gives it: the file's own
- * bytes where the loader keeps every tensor (CUDA, Metal), and on OpenCL Q4_0 where the loader
- * keeps Q4_0 for the Q4_0 layers, because both ask {@code LlamaPlanProvider} the same questions.
+ * The memory preflight predicts a Llama Q4_0 file at the size the loader gives it, the file's own
+ * bytes on every device backend, because both ask {@code LlamaPlanProvider} the same questions.
  *
  * <p>The file is synthetic and holds descriptors only, which is all the prediction reads: two
  * layers of 256 x 256 projections, all Q4_0 except one Q4_1 {@code ffn_down}, as {@code
@@ -34,7 +33,6 @@ public class LlamaRetentionFootprintTest {
     private static final int DIM = 256;
     private static final long PROJECTION_ELEMENTS = (long) DIM * DIM;
     private static final long Q4_0_BYTES = PROJECTION_ELEMENTS / 32 * 18;
-    private static final long Q8_0_BYTES = PROJECTION_ELEMENTS / 32 * 34;
     private static final long Q4_1_BYTES = PROJECTION_ELEMENTS / 32 * 20;
     private static final long NORM_BYTES = (long) DIM * Float.BYTES;
 
@@ -46,21 +44,13 @@ public class LlamaRetentionFootprintTest {
 
     @Test
     public void aKeptFileIsPredictedAtItsOwnSize() throws Exception {
-        for (BackendId backend : new BackendId[] {BackendId.CUDA, BackendId.METAL}) {
+        for (BackendId backend :
+                new BackendId[] {BackendId.CUDA, BackendId.METAL, BackendId.OPENCL}) {
             assertEquals(
                     backend.toString(),
                     13 * Q4_0_BYTES + Q4_1_BYTES + 2 * LAYERS * NORM_BYTES,
                     perLayerBytes(backend));
         }
-    }
-
-    @Test
-    public void onOpenClQ4_0IsKeptForTheQ4_0Layers() throws Exception {
-        // The Q4_1 ffn_down is allowed off Metal, so the loader keeps Q4_0; the Q4_1 projection is
-        // kept too, and predicted at Q8_0: an over-estimate.
-        assertEquals(
-                13 * Q4_0_BYTES + Q8_0_BYTES + 2 * LAYERS * NORM_BYTES,
-                perLayerBytes(BackendId.OPENCL));
     }
 
     private long perLayerBytes(BackendId backend) throws Exception {

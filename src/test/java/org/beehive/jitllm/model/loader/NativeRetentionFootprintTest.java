@@ -17,10 +17,8 @@ import org.junit.rules.TemporaryFolder;
 
 /**
  * The memory preflight predicts a K-quant file of each family migrated after Qwen3 and Llama at the
- * size its loader gives it: the file's own bytes on CUDA and Metal, where the loader keeps every
- * tensor ({@code TornadoPlanProvider.retainsNative}), and Q8_0 where it converts them. Devstral
- * keeps the projections of a file whose layers are all Q4_K and Q6_K on every backend, and
- * elsewhere converts only its embedding and output projection.
+ * size its loader gives it: the file's own bytes on every device backend, where the loader keeps
+ * every tensor ({@code TornadoPlanProvider.retainsNative}).
  *
  * <p>The file is the synthetic Q4_K_M layout of {@link Qwen3RetentionFootprintTest}: descriptors
  * only, two layers of 256 x 256 projections, {@code attn_v} and {@code ffn_down} Q6_K in the first
@@ -33,14 +31,11 @@ public class NativeRetentionFootprintTest {
     private static final long ELEMENTS = (long) DIM * DIM;
     private static final long Q4_K_BYTES = ELEMENTS / 256 * 144;
     private static final long Q6_K_BYTES = ELEMENTS / 256 * 210;
-    private static final long Q8_0_BYTES = ELEMENTS / 32 * 34;
     private static final long NORM_BYTES = (long) DIM * Float.BYTES;
 
     /** Both layers' projections and norms, as the file stores them. */
     private static final long KEPT_PER_LAYER =
             10 * Q4_K_BYTES + 2 * Q6_K_BYTES + 2 * Q4_K_BYTES + 4 * NORM_BYTES;
-
-    private static final long CONVERTED_PER_LAYER = 14 * Q8_0_BYTES + 4 * NORM_BYTES;
 
     private static final String[] FAMILIES = {
         "mistral", "qwen2", "deepseek-r1-distill-qwen", "phi3", "granite", "devstral", "qwen2-moe"
@@ -49,35 +44,16 @@ public class NativeRetentionFootprintTest {
     @Rule public final TemporaryFolder folder = new TemporaryFolder();
 
     @Test
-    public void aKeptFileIsPredictedAtItsOwnSizeOnCudaAndMetal() throws Exception {
+    public void aKeptFileIsPredictedAtItsOwnSizeOnEveryDevice() throws Exception {
         Path file = q4_K_MFile();
         for (String family : FAMILIES) {
-            for (BackendId backend : new BackendId[] {BackendId.CUDA, BackendId.METAL}) {
+            for (BackendId backend :
+                    new BackendId[] {BackendId.CUDA, BackendId.METAL, BackendId.OPENCL}) {
                 WeightFootprint footprint = footprint(family, file, backend);
                 assertEquals(family + " on " + backend, KEPT_PER_LAYER, footprint.perLayerBytes());
                 assertEquals(family + " on " + backend, Q6_K_BYTES, footprint.globalBytes());
             }
         }
-    }
-
-    @Test
-    public void elsewhereTheFileIsPredictedAtQ8_0() throws Exception {
-        Path file = q4_K_MFile();
-        for (String family : FAMILIES) {
-            if (family.equals("devstral")) {
-                continue;
-            }
-            WeightFootprint footprint = footprint(family, file, BackendId.OPENCL);
-            assertEquals(family, CONVERTED_PER_LAYER, footprint.perLayerBytes());
-            assertEquals(family, Q8_0_BYTES, footprint.globalBytes());
-        }
-    }
-
-    @Test
-    public void elsewhereDevstralKeepsItsK_QuantLayersOnly() throws Exception {
-        WeightFootprint footprint = footprint("devstral", q4_K_MFile(), BackendId.OPENCL);
-        assertEquals(KEPT_PER_LAYER, footprint.perLayerBytes());
-        assertEquals(Q8_0_BYTES, footprint.globalBytes());
     }
 
     private static WeightFootprint footprint(String family, Path file, BackendId backend)
