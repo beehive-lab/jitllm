@@ -43,7 +43,7 @@ public class NativeRetentionFootprintTest {
     private static final long CONVERTED_PER_LAYER = 14 * Q8_0_BYTES + 4 * NORM_BYTES;
 
     private static final String[] FAMILIES = {
-        "mistral", "qwen2", "deepseek-r1-distill-qwen", "phi3", "granite", "devstral"
+        "mistral", "qwen2", "deepseek-r1-distill-qwen", "phi3", "granite", "devstral", "qwen2-moe"
     };
 
     @Rule public final TemporaryFolder folder = new TemporaryFolder();

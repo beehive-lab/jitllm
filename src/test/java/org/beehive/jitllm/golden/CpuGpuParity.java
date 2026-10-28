@@ -240,6 +240,34 @@ abstract class CpuGpuParity {
 
     // @formatter:off
     /**
+     * Qwen2-MoE's <b>batched prefill on tensor cores</b>: the routed and shared experts are int8
+     * GEMMs over the activation quantized to eight bits per block of 32, at every prompt position.
+     *
+     * <p>Wider than {@link #Q8_0_FULLY_PACKED}, which a dense model met, because routing amplifies
+     * small differences: a token whose top experts change takes another sum of experts. How much is
+     * visible without the int8 path at all. Single-token, where the host and device compute the
+     * same thing, the Q4_0 file kept as it is measures relative L2 1.0e-5; the same file read
+     * through its Q8_0 copies, whose weights differ from the host's by a requantization, measured
+     * 0.174 (Q6_K: 7.3e-6 kept, 0.105 copied).
+     *
+     * <p><b>Measured on CUDA, teacher-forced over 63 rows at a width of 128</b>, Qwen1.5-MoE-A2.7B
+     * kept as it is: relative L2 0.120 (Q8_0), 0.160 (Q4_0) and 0.085 (Q6_K); largest absolute
+     * difference 0.79, 0.74 and 0.60 of the reference RMS; cosine 0.99281, 0.98757 and 0.99637;
+     * elementwise 60%, 68% and 58%; argmax 0, 0 and 1 of 63. On their Q8_0 copies the same Q4_0 and
+     * Q6_K files measured 0.225 and 0.121. The Q8_0 file's rows are bit-identical before and after
+     * its experts were kept by type. With the tensor-core prefill forced off, the floating-point
+     * batched layers on the same device measure 5.5e-6 (Q8_0), 1.0e-5 (Q4_0) and 7.4e-6 (Q6_K): the
+     * difference is the int8 GEMMs'.
+     *
+     * <p>The limits carry about 1.5x over the worst of the three (cosine as its deficit from one).
+     * Only the decisions still speak here: {@code decisionGap} does not move.
+     */
+    // @formatter:on
+    static final Bounds QWEN2_MOE_INT8_BATCHED =
+            new Bounds(1.7e-4, 1e-2, 1.2, 0.24, 0.981, 0.9, 0.5);
+
+    // @formatter:off
+    /**
      * Gemma 4's <b>batched</b> prefill on the Q8_0 file, whose prompt rows go through tensor-core
      * GEMMs with FP16 operands and FP32 accumulation while the single-token path keeps FP32
      * activations.
