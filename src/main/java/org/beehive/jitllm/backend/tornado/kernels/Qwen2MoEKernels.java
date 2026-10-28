@@ -414,4 +414,295 @@ public final class Qwen2MoEKernels {
             residual.set(index, residual.get(index) + sharedWeight * sharedOutput.get(index));
         }
     }
+
+    // ── The routed experts of a layer whose weights keep the file's own representations ─────────
+    //
+    // One projection of every routed slot per launch, each slot's row of the stacked expert tensor
+    // read by its own type: out[slot * rows + r] = w_e[r] . x[slot * xStride ...], e the slot's
+    // selected expert, whose row r is row e * rows + r of the tensor. With xStride 0 every slot
+    // reads
+    // the same activation (gate and up); with the expert hidden size each reads its own window of
+    // the hidden activations (down), writing one output per slot for
+    // routedAndSharedExpertsAccumulate. Worker: one workgroup per (slot, row), expertsUsed * rows
+    // workgroups of localWorkGroupSize lanes. A slot whose expert is out of range writes nothing.
+
+    /** The routed projection over Q8_0 experts. */
+    public static void routedExpertsMatvecQ8_0(
+            KernelContext context,
+            FloatArray x,
+            int xStride,
+            IntArray selectedExperts,
+            int expertsUsed,
+            ByteArray w,
+            FloatArray out,
+            int n,
+            int rows,
+            int numberOfExperts,
+            int localWorkGroupSize) {
+        int slot = context.groupIdx / rows;
+        int rowId = context.groupIdx - slot * rows;
+        int localId = context.localIdx;
+        if (slot >= expertsUsed) {
+            return;
+        }
+        int expert = selectedExperts.get(slot);
+        if (expert < 0 || expert >= numberOfExperts) {
+            return;
+        }
+
+        int blocksPerRow = n / Q8_0_BLOCK_SIZE;
+        int rowBlockOffset = (expert * rows + rowId) * blocksPerRow;
+        int xBase = slot * xStride;
+        float partialSum = 0.0f;
+        for (int column = localId; column < n; column += localWorkGroupSize) {
+            int blockByteOffset = (rowBlockOffset + column / Q8_0_BLOCK_SIZE) * Q8_0_BLOCK_BYTES;
+            int quantOffset = blockByteOffset + 2 + column % Q8_0_BLOCK_SIZE;
+            float weight = w.get(quantOffset) * w.getHalfFloat(blockByteOffset).getFloat32();
+            partialSum += weight * x.get(xBase + column);
+        }
+
+        float[] localSums = context.allocateFloatLocalArray(localWorkGroupSize);
+        localSums[localId] = partialSum;
+        context.localBarrier();
+        for (int stride = localWorkGroupSize / 2; stride > 0; stride >>= 1) {
+            if (localId < stride) {
+                localSums[localId] += localSums[localId + stride];
+            }
+            context.localBarrier();
+        }
+        if (localId == 0) {
+            out.set(slot * rows + rowId, localSums[0]);
+        }
+    }
+
+    /** The routed projection over Q4_0 experts. */
+    public static void routedExpertsMatvecQ4_0(
+            KernelContext context,
+            FloatArray x,
+            int xStride,
+            IntArray selectedExperts,
+            int expertsUsed,
+            ByteArray w,
+            FloatArray out,
+            int n,
+            int rows,
+            int numberOfExperts,
+            int localWorkGroupSize) {
+        int slot = context.groupIdx / rows;
+        int rowId = context.groupIdx - slot * rows;
+        if (slot >= expertsUsed) {
+            return;
+        }
+        int expert = selectedExperts.get(slot);
+        if (expert < 0 || expert >= numberOfExperts) {
+            return;
+        }
+        float sum =
+                TransformerComputeKernelsQ4_0.rowDotShared(
+                        context,
+                        localWorkGroupSize,
+                        x,
+                        slot * xStride,
+                        w,
+                        n,
+                        expert * rows + rowId);
+        if (context.localIdx == 0) {
+            out.set(slot * rows + rowId, sum);
+        }
+    }
+
+    /** The routed projection over Q4_1 experts. */
+    public static void routedExpertsMatvecQ4_1(
+            KernelContext context,
+            FloatArray x,
+            int xStride,
+            IntArray selectedExperts,
+            int expertsUsed,
+            ByteArray w,
+            FloatArray out,
+            int n,
+            int rows,
+            int numberOfExperts,
+            int localWorkGroupSize) {
+        int slot = context.groupIdx / rows;
+        int rowId = context.groupIdx - slot * rows;
+        if (slot >= expertsUsed) {
+            return;
+        }
+        int expert = selectedExperts.get(slot);
+        if (expert < 0 || expert >= numberOfExperts) {
+            return;
+        }
+        float sum =
+                TransformerComputeKernelsQ4_1.rowDotShared(
+                        context,
+                        localWorkGroupSize,
+                        x,
+                        slot * xStride,
+                        w,
+                        n,
+                        expert * rows + rowId);
+        if (context.localIdx == 0) {
+            out.set(slot * rows + rowId, sum);
+        }
+    }
+
+    /** The routed projection over Q4_K experts. */
+    public static void routedExpertsMatvecQ4_K(
+            KernelContext context,
+            FloatArray x,
+            int xStride,
+            IntArray selectedExperts,
+            int expertsUsed,
+            ByteArray w,
+            FloatArray out,
+            int n,
+            int rows,
+            int numberOfExperts,
+            int localWorkGroupSize) {
+        int slot = context.groupIdx / rows;
+        int rowId = context.groupIdx - slot * rows;
+        if (slot >= expertsUsed) {
+            return;
+        }
+        int expert = selectedExperts.get(slot);
+        if (expert < 0 || expert >= numberOfExperts) {
+            return;
+        }
+        float sum =
+                TransformerComputeKernelsQ4_K.rowDotShared(
+                        context,
+                        localWorkGroupSize,
+                        x,
+                        slot * xStride,
+                        w,
+                        n,
+                        expert * rows + rowId);
+        if (context.localIdx == 0) {
+            out.set(slot * rows + rowId, sum);
+        }
+    }
+
+    /** The routed projection over Q5_K experts. */
+    public static void routedExpertsMatvecQ5_K(
+            KernelContext context,
+            FloatArray x,
+            int xStride,
+            IntArray selectedExperts,
+            int expertsUsed,
+            ByteArray w,
+            FloatArray out,
+            int n,
+            int rows,
+            int numberOfExperts,
+            int localWorkGroupSize) {
+        int slot = context.groupIdx / rows;
+        int rowId = context.groupIdx - slot * rows;
+        if (slot >= expertsUsed) {
+            return;
+        }
+        int expert = selectedExperts.get(slot);
+        if (expert < 0 || expert >= numberOfExperts) {
+            return;
+        }
+        float sum =
+                TransformerComputeKernelsQ5_K.rowDotShared(
+                        context,
+                        localWorkGroupSize,
+                        x,
+                        slot * xStride,
+                        w,
+                        n,
+                        expert * rows + rowId);
+        if (context.localIdx == 0) {
+            out.set(slot * rows + rowId, sum);
+        }
+    }
+
+    /** The routed projection over Q6_K experts. */
+    public static void routedExpertsMatvecQ6_K(
+            KernelContext context,
+            FloatArray x,
+            int xStride,
+            IntArray selectedExperts,
+            int expertsUsed,
+            ByteArray w,
+            FloatArray out,
+            int n,
+            int rows,
+            int numberOfExperts,
+            int localWorkGroupSize) {
+        int slot = context.groupIdx / rows;
+        int rowId = context.groupIdx - slot * rows;
+        if (slot >= expertsUsed) {
+            return;
+        }
+        int expert = selectedExperts.get(slot);
+        if (expert < 0 || expert >= numberOfExperts) {
+            return;
+        }
+        float sum =
+                TransformerComputeKernelsQ6_K.rowDotShared(
+                        context,
+                        localWorkGroupSize,
+                        x,
+                        slot * xStride,
+                        w,
+                        n,
+                        expert * rows + rowId);
+        if (context.localIdx == 0) {
+            out.set(slot * rows + rowId, sum);
+        }
+    }
+
+    /**
+     * {@code residual += sum over slots of routingWeights[slot] * expertDown[slot] +
+     * sigmoid(sharedGateInput . input) * sharedOutput}: the routed slots' down projections, which
+     * {@code routedExpertsMatvec*} wrote one per slot, and the gated shared expert, added in the
+     * order {@link #routedExpertsDownProjectAndAccumulateQ8_0} and {@link
+     * #sharedExpertGateAndAccumulate} add them. A slot whose expert is out of range adds nothing.
+     * Worker: one workgroup of {@code localWorkGroupSize} lanes.
+     */
+    public static void routedAndSharedExpertsAccumulate(
+            KernelContext context,
+            FloatArray input,
+            FloatArray sharedGateInput,
+            FloatArray sharedOutput,
+            FloatArray expertDown,
+            IntArray selectedExperts,
+            FloatArray routingWeights,
+            FloatArray residual,
+            int expertsUsed,
+            int numberOfExperts,
+            int dim,
+            int localWorkGroupSize) {
+        int localId = context.localIdx;
+
+        float partialScore = 0.0f;
+        for (int column = localId; column < dim; column += localWorkGroupSize) {
+            partialScore += sharedGateInput.get(column) * input.get(column);
+        }
+
+        float[] localSums = context.allocateFloatLocalArray(localWorkGroupSize);
+        localSums[localId] = partialScore;
+        context.localBarrier();
+        for (int stride = localWorkGroupSize / 2; stride > 0; stride >>= 1) {
+            if (localId < stride) {
+                localSums[localId] += localSums[localId + stride];
+            }
+            context.localBarrier();
+        }
+        float sharedWeight = 1.0f / (1.0f + TornadoMath.exp(-localSums[0]));
+
+        for (int index = localId; index < dim; index += localWorkGroupSize) {
+            float running = residual.get(index);
+            for (int slot = 0; slot < expertsUsed; slot++) {
+                int expert = selectedExperts.get(slot);
+                if (expert >= 0 && expert < numberOfExperts) {
+                    running += routingWeights.get(slot) * expertDown.get(slot * dim + index);
+                }
+            }
+            residual.set(index, running + sharedWeight * sharedOutput.get(index));
+        }
+    }
 }

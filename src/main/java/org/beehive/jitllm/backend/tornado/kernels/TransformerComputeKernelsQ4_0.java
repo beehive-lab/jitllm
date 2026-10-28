@@ -218,7 +218,7 @@ public final class TransformerComputeKernelsQ4_0 {
      * addressing, the decode, the reduction — is the single-token path's, so a batched projection
      * is the same arithmetic in the same order over a different input offset.
      */
-    private static float rowDotShared(
+    static float rowDotShared(
             KernelContext context,
             int localSize,
             FloatArray x,

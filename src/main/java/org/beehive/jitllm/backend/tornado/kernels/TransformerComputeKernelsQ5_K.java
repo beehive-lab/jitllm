@@ -355,7 +355,7 @@ public final class TransformerComputeKernelsQ5_K {
     }
 
     /** The same reduction over one row of a batch of activations. */
-    private static float rowDotShared(
+    static float rowDotShared(
             KernelContext context,
             int localSize,
             FloatArray x,

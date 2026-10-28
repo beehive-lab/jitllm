@@ -250,6 +250,21 @@ public final class TransformerComputeKernelsQ6_K {
      */
     private static float rowDotShared(
             KernelContext context, int localSize, FloatArray x, ByteArray w, int n, int rowId) {
+        return rowDotShared(context, localSize, x, 0, w, n, rowId);
+    }
+
+    /**
+     * The same reduction against the activation that starts at {@code xOffset}: one row of a batch,
+     * or one expert slot's hidden activation.
+     */
+    static float rowDotShared(
+            KernelContext context,
+            int localSize,
+            FloatArray x,
+            int xOffset,
+            ByteArray w,
+            int n,
+            int rowId) {
         int localId = context.localIdx;
         float[] localSums = context.allocateFloatLocalArray(localSize);
 
@@ -272,7 +287,7 @@ public final class TransformerComputeKernelsQ6_K {
 
             int qlAt = blockByteOffset + halfIndex * 64 + posInGroup;
             int qhAt = blockByteOffset + QH_OFFSET + halfIndex * 32 + posInGroup;
-            int xAt = blockIdx * QK_K + halfIndex * 128 + posInGroup;
+            int xAt = xOffset + blockIdx * QK_K + halfIndex * 128 + posInGroup;
             float sum0 = 0.0f;
             float sum1 = 0.0f;
             float sum2 = 0.0f;
