@@ -16,8 +16,8 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 /**
- * The Q4_K, Q6_K and packed Q4_0 to FP16 decodes on the device against the host decode, element by
- * element.
+ * The Q4_K, Q5_K, Q6_K and packed Q4_0 to FP16 decodes on the device against the host decode,
+ * element by element.
  */
 public class KQuantDequantFP16AccelTest {
 
@@ -106,6 +106,39 @@ public class KQuantDequantFP16AccelTest {
         HalfFloatArray out = run("q6k", w, false);
         for (int i = 0; i < N; i++) {
             float expected = TransformerComputeKernelsQ6_K.decode(w, (i / 256) * 210, i % 256);
+            assertEquals(
+                    "element " + i,
+                    new HalfFloat(expected).getFloat32(),
+                    out.get(i).getFloat32(),
+                    0f);
+        }
+    }
+
+    @Test
+    public void q5kMatchesHost() {
+        ByteArray w = randomBlocks(176, 0, 4);
+        HalfFloatArray out = new HalfFloatArray(N);
+        TaskGraph graph =
+                new TaskGraph("q5k")
+                        .transferToDevice(DataTransferMode.FIRST_EXECUTION, w, out)
+                        .task(
+                                "decode",
+                                TransformerComputeKernelsQ5_K::dequantizeQ5_KToFP16,
+                                new KernelContext(),
+                                w,
+                                out,
+                                0,
+                                N)
+                        .transferToHost(DataTransferMode.EVERY_EXECUTION, out);
+        WorkerGrid1D grid = new WorkerGrid1D(N);
+        grid.setLocalWork(256, 1, 1);
+        try (TornadoExecutionPlan plan = new TornadoExecutionPlan(graph.snapshot())) {
+            plan.withGridScheduler(new GridScheduler("q5k.decode", grid)).execute();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        for (int i = 0; i < N; i++) {
+            float expected = TransformerComputeKernelsQ5_K.decode(w, (i / 256) * 176, i % 256);
             assertEquals(
                     "element " + i,
                     new HalfFloat(expected).getFloat32(),

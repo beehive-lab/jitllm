@@ -913,6 +913,43 @@ public final class TransformerComputeKernelsQ5_K {
     }
 
     /**
+     * Decodes a Q5_K weight into FP16 at {@code destOffset} of {@code out}, for a GEMM that reads
+     * FP16 operands. One thread per element of the {@code n}; the row width a multiple of 256, so
+     * element {@code i} lies in super-block {@code i / 256}.
+     */
+    public static void dequantizeQ5_KToFP16(
+            KernelContext context, ByteArray w, HalfFloatArray out, int destOffset, int n) {
+        int gid = context.globalIdx;
+        if (gid < n) {
+            // decode(...) copied in with every read unconditional: called through the helper, the
+            // backends cannot lower the FP16 store's HalfFloat allocation (NewInstance).
+            int block = gid / QK_K;
+            int blockByteOffset = block * BLOCK_BYTES;
+            int withinBlock = gid - block * QK_K;
+            float d = w.getHalfFloat(blockByteOffset).getFloat32();
+            float dmin = w.getHalfFloat(blockByteOffset + 2).getFloat32();
+            int pairIndex = withinBlock / 64;
+            int posInPair = withinBlock - pairIndex * 64;
+            int highNibble = posInPair / 32;
+            int posInHalf = posInPair - highNibble * 32;
+            int subBlock = pairIndex * 2 + highNibble;
+            int qsByte = w.get(blockByteOffset + QS_OFFSET + pairIndex * 32 + posInHalf) & 0xFF;
+            int qhByte = w.get(blockByteOffset + QH_OFFSET + posInHalf) & 0xFF;
+            int q = ((qsByte >> (highNibble * 4)) & 0xF) | (((qhByte >> subBlock) & 1) << 4);
+            // Sub-blocks 0-3 read bytes [j] and [j+4]; 4-7 read [j+4], [j-4] and [j]. Reading all
+            // three stays inside the block: [j-4] for j < 4 lands on d/dmin and is discarded.
+            int scalesBase = blockByteOffset + SCALES_OFFSET;
+            int a = w.get(scalesBase + subBlock) & 0xFF;
+            int b = w.get(scalesBase + subBlock + 4) & 0xFF;
+            int c = w.get(scalesBase + subBlock - 4) & 0xFF;
+            int low = subBlock < 4 ? 1 : 0;
+            int sc = low * (a & 63) + (1 - low) * ((b & 0xF) | ((c >> 6) << 4));
+            int m = low * (b & 63) + (1 - low) * (((b >> 4) & 0xF) | ((a >> 6) << 4));
+            out.set(destOffset + gid, new HalfFloat(d * sc * q - dmin * m));
+        }
+    }
+
+    /**
      * {@code Q5_K} weights decoded into FP16 at {@code destOffset} of {@code out}, for a GEMM that
      * reads FP16 operands, skipped once {@code done[flag]} is set, on {@code
      * TransformerBatchPrefillKernels.dequantizeQ8_0ToFP16Once}'s fixed striding grid. A per-chunk
