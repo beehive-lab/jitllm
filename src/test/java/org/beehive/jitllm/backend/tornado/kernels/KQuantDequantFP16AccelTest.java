@@ -75,7 +75,9 @@ public class KQuantDequantFP16AccelTest {
                     N);
         }
         graph.transferToHost(DataTransferMode.EVERY_EXECUTION, out);
-        WorkerGrid1D grid = new WorkerGrid1D(N);
+        // Four weights per lane: the smallest grid the decoders take, as the batched prefill
+        // dispatches them.
+        WorkerGrid1D grid = new WorkerGrid1D(N / 4);
         grid.setLocalWork(256, 1, 1);
         GridScheduler scheduler = new GridScheduler(name + ".decode", grid);
         try (TornadoExecutionPlan plan = new TornadoExecutionPlan(graph.snapshot())) {

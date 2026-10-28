@@ -260,9 +260,13 @@ public final class FP16Projections {
             }
             boolean striding =
                     resident || ws[i].dataType() == DataType.F16 || decodesOnceOnly(ws[i]);
+            // The per-chunk Q4_K and Q6_K decoders take four weights per lane.
+            boolean quads = ws[i].dataType() == DataType.Q4_K || ws[i].dataType() == DataType.Q6_K;
             decodeTasks.put(
                     layer.getTaskGraphName() + "." + decode,
-                    striding ? Math.min(n, TransformerBatchPrefillKernels.DECODE_ONCE_LANES) : n);
+                    striding
+                            ? Math.min(n, TransformerBatchPrefillKernels.DECODE_ONCE_LANES)
+                            : quads ? n / 4 : n);
             offset += n;
         }
         if (resident) {

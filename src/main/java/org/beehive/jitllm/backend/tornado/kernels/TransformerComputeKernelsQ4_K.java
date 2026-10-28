@@ -95,32 +95,28 @@ public final class TransformerComputeKernelsQ4_K {
 
     /**
      * Decodes a Q4_K weight into FP16 at {@code destOffset} of {@code out}, for a GEMM that reads
-     * FP16 operands. One thread per element of the {@code n}; the row width a multiple of 256, so
-     * element {@code i} lies in super-block {@code i / 256}.
+     * FP16 operands. Lane {@code g} decodes elements {@code 4g} to {@code 4g + 3}: one sub-block's,
+     * so {@code d}, {@code dmin} and the sub-block's scale and minimum are decoded once for the
+     * four and their nibbles come from four consecutive bytes. The row width is a multiple of 256,
+     * so element {@code i} lies in super-block {@code i / 256}. Any grid of at least {@code n / 4}
+     * lanes; the rest do nothing.
      */
     public static void dequantizeQ4_KToFP16(
             KernelContext context, ByteArray w, HalfFloatArray out, int destOffset, int n) {
         int gid = context.globalIdx;
-        if (gid < n) {
+        if (gid < n >>> 2) {
             // decode(...) copied in with every read unconditional: called through the helper, the
             // CUDA backend cannot lower the FP16 store's HalfFloat allocation (NewInstance).
-            int block = gid / QK_K;
+            int first = gid << 2;
+            int block = first / QK_K;
             int blockByteOffset = block * BLOCK_BYTES;
-            int withinBlock = gid - block * QK_K;
+            int withinBlock = first - block * QK_K;
             float d = w.getHalfFloat(blockByteOffset).getFloat32();
             float dmin = w.getHalfFloat(blockByteOffset + 2).getFloat32();
             int pairIndex = withinBlock / 64;
             int posInPair = withinBlock - pairIndex * 64;
             int highNibble = posInPair / 32;
             int subBlock = pairIndex * 2 + highNibble;
-            int qByte =
-                    w.get(
-                                    blockByteOffset
-                                            + QS_OFFSET
-                                            + pairIndex * 32
-                                            + (posInPair - highNibble * 32))
-                            & 0xFF;
-            int q = (qByte >> (highNibble * 4)) & 0xF;
             // Sub-blocks 0-3 read bytes [j] and [j+4]; 4-7 read [j+4], [j-4] and [j]. Reading all
             // three stays inside the block: [j-4] for j < 4 lands on d/dmin and is discarded.
             int scalesBase = blockByteOffset + SCALES_OFFSET;
@@ -130,7 +126,13 @@ public final class TransformerComputeKernelsQ4_K {
             int low = subBlock < 4 ? 1 : 0;
             int sc = low * (a & 63) + (1 - low) * ((b & 0xF) | ((c >> 6) << 4));
             int m = low * (b & 63) + (1 - low) * (((b >> 4) & 0xF) | ((a >> 6) << 4));
-            out.set(destOffset + gid, new HalfFloat(d * sc * q - dmin * m));
+            int qBase =
+                    blockByteOffset + QS_OFFSET + pairIndex * 32 + (posInPair - highNibble * 32);
+            int shift = highNibble * 4;
+            for (int j = 0; j < 4; j++) {
+                int q = ((w.get(qBase + j) & 0xFF) >> shift) & 0xF;
+                out.set(destOffset + first + j, new HalfFloat(d * sc * q - dmin * m));
+            }
         }
     }
 

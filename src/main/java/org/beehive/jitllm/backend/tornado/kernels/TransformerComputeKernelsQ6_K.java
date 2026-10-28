@@ -106,34 +106,41 @@ public final class TransformerComputeKernelsQ6_K {
 
     /**
      * Decodes a Q6_K weight into FP16 at {@code destOffset} of {@code out}, for a GEMM that reads
-     * FP16 operands. One thread per element of the {@code n}; the row width a multiple of 256, so
-     * element {@code i} lies in super-block {@code i / 256}.
+     * FP16 operands. Lane {@code g} decodes elements {@code 4g} to {@code 4g + 3}: one scale run's,
+     * so {@code d}, the scale and the byte positions are decoded once for the four and their {@code
+     * ql} and {@code qh} bytes are consecutive. Any grid of at least {@code n / 4} lanes; the rest
+     * do nothing.
      */
     public static void dequantizeQ6_KToFP16(
             KernelContext context, ByteArray w, HalfFloatArray out, int destOffset, int n) {
         int gid = context.globalIdx;
-        if (gid < n) {
+        if (gid < n >>> 2) {
             // decode(...) copied in with its branches as selects: called through the helper, the
             // CUDA backend fails the FrameState dominance check on the FP16 store.
-            int block = gid / QK_K;
+            int first = gid << 2;
+            int block = first / QK_K;
             int blockByteOffset = block * BLOCK_BYTES;
-            int withinBlock = gid - block * QK_K;
+            int withinBlock = first - block * QK_K;
             float d = w.getHalfFloat(blockByteOffset + D_OFFSET).getFloat32();
             int halfIndex = withinBlock / 128;
             int posInHalf = withinBlock - halfIndex * 128;
             int groupInHalf = posInHalf / 32;
             int posInGroup = posInHalf - groupInHalf * 32;
-            int qlBase = blockByteOffset + halfIndex * 64;
-            int qhBase = blockByteOffset + QH_OFFSET + halfIndex * 32;
+            int qlBase = blockByteOffset + halfIndex * 64 + (groupInHalf & 1) * 32 + posInGroup;
+            int qhBase = blockByteOffset + QH_OFFSET + halfIndex * 32 + posInGroup;
             int scBase = blockByteOffset + SCALES_OFFSET + halfIndex * 8;
             int is = posInGroup / 16;
-            int qh = w.get(qhBase + posInGroup) & 0xFF;
-            int ql = w.get(qlBase + (groupInHalf & 1) * 32 + posInGroup) & 0xFF;
-            int lowBits = (ql >> ((groupInHalf >> 1) * 4)) & 0xF;
-            int highPair = (qh >> (groupInHalf * 2)) & 3;
-            int qValue = (lowBits | (highPair << 4)) - 32;
             int scale = w.get(scBase + is + groupInHalf * 2);
-            out.set(destOffset + gid, new HalfFloat(d * scale * qValue));
+            int lowShift = (groupInHalf >> 1) * 4;
+            int highShift = groupInHalf * 2;
+            for (int j = 0; j < 4; j++) {
+                int qh = w.get(qhBase + j) & 0xFF;
+                int ql = w.get(qlBase + j) & 0xFF;
+                int lowBits = (ql >> lowShift) & 0xF;
+                int highPair = (qh >> highShift) & 3;
+                int qValue = (lowBits | (highPair << 4)) - 32;
+                out.set(destOffset + first + j, new HalfFloat(d * scale * qValue));
+            }
         }
     }
 
