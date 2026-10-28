@@ -55,6 +55,8 @@ final class GgufRecognition {
                                 ? ArchitectureId.of("deepseek-r1-distill-qwen")
                                 : ArchitectureId.of("qwen2");
                 case "granitemoehybrid" -> ArchitectureId.of("granite");
+                    // The identity the loaded model reports and its plan provider registers under.
+                case "qwen2moe" -> ArchitectureId.of("qwen2-moe");
                 case "mistral3" -> withinMistral3(name);
                 default -> ArchitectureId.of(declared);
             };

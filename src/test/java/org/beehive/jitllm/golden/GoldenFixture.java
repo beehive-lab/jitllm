@@ -276,6 +276,29 @@ public final class GoldenFixture {
                 "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8",
                 "gemma-4-e2b"),
 
+        /**
+         * Qwen1.5-MoE-A2.7B-Chat, the Qwen2-MoE fixtures, under {@code qwen2moe/} (RichardErkhov's
+         * GGUFs). Q4_0 holds every projection and expert in Q4_0 with a Q6_K output; Q6_K holds
+         * Q6_K but for Q8_0 routed down projections, whose 1408-wide rows a K-quant cannot hold.
+         * The Q8_0 one is made from the Q6_K file with {@code llama-quantize --allow-requantize}:
+         * the Q8_0 layers' file for the before-and-after comparisons.
+         */
+        QWEN1_5_MOE_A2_7B_Q4_0(
+                "qwen2moe/Qwen1.5-MoE-A2.7B-Chat.Q4_0.gguf",
+                "Q4_0",
+                "1ab9d2c1bf004d342526fd90f95d9aab934bbcd9200d75e78a4eaeffe6f56628",
+                "qwen1.5-moe-a2.7b"),
+        QWEN1_5_MOE_A2_7B_Q6_K(
+                "qwen2moe/Qwen1.5-MoE-A2.7B-Chat.Q6_K.gguf",
+                "Q6_K",
+                "fb6e1a0807e03a1c368b3b2935541f24510d1078db4cb676aa84cb179302ff50",
+                "qwen1.5-moe-a2.7b"),
+        QWEN1_5_MOE_A2_7B_Q8_0(
+                "qwen2moe/Qwen1.5-MoE-A2.7B-Chat.Q8_0.gguf",
+                "Q8_0",
+                "0fd02f5077054c1131437b50bca65d430a3d36cb57ce51950ace349791be355d",
+                "qwen1.5-moe-a2.7b"),
+
         QWEN3_8_27B_Q4_0(
                 "Qwen3.8-27B-Q4_0.gguf",
                 "Q4_0",

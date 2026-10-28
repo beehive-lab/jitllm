@@ -58,6 +58,7 @@ public class FamilyRecognitionTest {
         assertEquals(
                 "deepseek-r1-distill-qwen",
                 architectureOf(source("qwen2", "DeepSeek R1 Distill Qwen 1.5B")));
+        assertEquals("qwen2-moe", architectureOf(source("qwen2moe", "Qwen1.5 MoE A2.7B Chat")));
     }
 
     /**
