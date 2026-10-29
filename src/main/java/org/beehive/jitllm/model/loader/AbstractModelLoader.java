@@ -9,14 +9,12 @@ import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.format.DataTypeMapping;
 import org.beehive.jitllm.format.GGMLTensorEntry;
-import org.beehive.jitllm.format.GGMLType;
 import org.beehive.jitllm.format.GGUF;
 import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 import org.beehive.jitllm.runtime.tensor.DataType;
-import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.tokenizer.Tokenizer;
 import org.beehive.jitllm.tokenizer.Vocabulary;
 
@@ -63,17 +61,15 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
     /**
      * The activation representation this model runs with, from GGUF's {@code general.file_type}.
      *
-     * <p>Not the same question as the weights' type: every quantization the GPU cannot execute
-     * directly is materialized as Q8_0 (see {@link #effectiveGpuWeightType}), so they all report
-     * Q8_0 activations. Static because it reads only its argument — which also makes it testable
-     * without standing up a loader.
+     * <p>Not the same question as the weights' type: every quantized file quantizes its activations
+     * to Q8_0 blocks, so they all report Q8_0 activations. Static because it reads only its
+     * argument — which also makes it testable without standing up a loader.
      */
     protected static String getModelQuantization(Map<String, Object> metadata) {
         int modelQuantizationAsInt = (int) metadata.get("general.file_type");
         return switch (modelQuantizationAsInt) {
             case 1 -> "FP16";
-            case 2 ->
-                    "Q8_0"; // Q4_0 — decoded directly on the CPU, materialized as Q8_0 for the GPU
+            case 2 -> "Q8_0"; // Q4_0 — its activations are quantized to Q8_0 blocks
             case 32 -> "FP16"; // MOSTLY_BF16 — BF16 weights use FP16 activation buffers
             case 3 -> "Q8_0"; // Q4_1
             case 7 -> "Q8_0";
@@ -86,28 +82,6 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
                                     + modelQuantizationAsInt
                                     + " (as int).");
         };
-    }
-
-    /**
-     * Returns the effective GPU weight type for TornadoVM execution. K-quant types (Q4_K, Q5_K,
-     * Q6_K) are dequantized to Q8_0 at load time.
-     */
-    /**
-     * @deprecated Use {@code DataTypeMapping.materializedType(fileType, ExecutionTarget.GPU)}. Kept
-     *     while the diagnostic below still speaks the file's vocabulary; it answers in file types,
-     *     which is what made the collapse invisible in the first place.
-     */
-    @Deprecated
-    protected static GGMLType effectiveGpuWeightType(GGMLType ggmlType) {
-        // Delegates to the mapping so the collapse is stated once and tested. A type this
-        // engine does not execute at all is left alone here rather than rejected: the callers
-        // already refuse anything that is not F16 or Q8_0, with a message naming the type.
-        // BF16 collapses to F16 for the GPU, which is what #120's explicit switch did here.
-        if (!DataTypeMapping.isSupported(ggmlType, ExecutionTarget.GPU)) {
-            return ggmlType;
-        }
-        return DataTypeMapping.asFileType(
-                DataTypeMapping.materializedType(ggmlType, ExecutionTarget.GPU));
     }
 
     private static String fileTypeName(int fileType) {

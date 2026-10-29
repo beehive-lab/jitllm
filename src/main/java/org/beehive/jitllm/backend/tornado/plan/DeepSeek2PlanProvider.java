@@ -33,11 +33,6 @@ public final class DeepSeek2PlanProvider implements TornadoPlanProvider {
     }
 
     @Override
-    public Set<DataType> nativeTensorTypes() {
-        return Set.of(DataType.F32, DataType.Q8_0);
-    }
-
-    @Override
     public Set<ExecutionMode> supportedModes() {
         return Set.of(ExecutionMode.values());
     }

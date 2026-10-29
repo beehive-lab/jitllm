@@ -34,9 +34,8 @@ import org.beehive.jitllm.runtime.tensor.DataType;
  *
  * <p>Mixed by construction, because the file is. {@code llama-quantize ... Q4_0} writes every
  * {@code blk.*} weight as Q4_0 (and some {@code ffn_down} as Q4_1), with {@code token_embd} as Q4_0
- * or Q6_K, which is kept as it is on CUDA and Metal and materialized as Q8_0 elsewhere. So the
- * transformer layers read Q4_0, and the embedding and the logits layer read their tensors in their
- * own representation.
+ * or Q6_K, which is kept as it is. So the transformer layers read Q4_0, and the embedding and the
+ * logits layer read their tensors in their own representation.
  *
  * <p>Single-token decode, and batched prefill with its projections run by cuBLAS ({@code
  * --with-native-libraries}). There is no sequential prefill/decode plan: asking for one fails here,

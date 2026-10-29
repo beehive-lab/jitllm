@@ -18,8 +18,8 @@ public final class TornadoSupportSets {
     public static final Set<DataType> BOTH_REPRESENTATIONS = Set.of(DataType.F16, DataType.Q8_0);
 
     /**
-     * The quantized representations a load keeps as the file stores them where {@code
-     * TornadoPlanProvider.retainsNative} holds, each read by its own kernels.
+     * The quantized representations a load keeps as the file stores them, each read by its own
+     * kernels.
      */
     public static final Set<DataType> NATIVE_QUANTIZED =
             Collections.unmodifiableSet(

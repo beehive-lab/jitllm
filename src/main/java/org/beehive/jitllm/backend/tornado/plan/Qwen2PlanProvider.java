@@ -1,6 +1,5 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport;
@@ -16,7 +15,6 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
-import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -35,22 +33,6 @@ public final class Qwen2PlanProvider implements TornadoPlanProvider {
     @Override
     public Set<DataType> supportedDataTypes() {
         return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
-    }
-
-    /** What a load keeps whatever the backend: F16 and Q8_0. The rest depends on the backend. */
-    @Override
-    public Set<DataType> nativeTensorTypes() {
-        return TornadoSupportSets.BOTH_REPRESENTATIONS;
-    }
-
-    /**
-     * Every quantized type kept exactly where the loader keeps it: {@link
-     * TornadoPlanProvider#retainsNative}.
-     */
-    @Override
-    public DeviceRetention deviceRetention(
-            Map<String, DataType> sourceTypes, int layers, BackendId backend) {
-        return TornadoPlanProvider.nativeRetention(nativeTensorTypes(), backend);
     }
 
     @Override

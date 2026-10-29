@@ -3,9 +3,6 @@ package org.beehive.jitllm.model.loader;
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.function.Function;
 import java.util.function.IntFunction;
 import org.beehive.jitllm.Options;
 import org.beehive.jitllm.auxiliary.RunMetrics;
@@ -31,10 +28,10 @@ import org.beehive.jitllm.model.provider.ModelProvider;
 import org.beehive.jitllm.model.provider.ModelProviders;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
-import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.memory.WeightFootprint;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.runtime.tensor.Shape;
 import org.beehive.jitllm.runtime.tensor.TensorDescriptor;
 import org.beehive.jitllm.tensor.standard.*;
@@ -139,67 +136,13 @@ public final class ModelLoader {
      * {@code blk.N.*}. That is the same convention every loader in this package already relies on
      * to find them, so the two cannot disagree about what a layer owns.
      *
-     * <p><b>Sized as the accelerator materializes it, not as the file stores it.</b> This is a
-     * device memory plan, and {@link #loadTornadoTensor} materializes a representation the device
-     * has no kernel for as Q8_0 — so a Q4_K file's weights occupy roughly twice their file size
-     * once loaded. Measuring the file type here under-predicted exactly those models, in the one
-     * direction a preflight must never be wrong: {@code MemoryPlanAccuracyAccelTest} exists because
-     * a prediction below what is actually allocated admits a load that then dies part-allocated.
-     * Found on the real Devstral fixture (Metal parity task 12): a Q4_K 24B predicted 13.5 GiB and
-     * died materializing Q8_0 — {@code OutOfMemoryError: Cannot reserve. direct buffer memory at
-     * TornadoTensorLoader.dequantizeToQ8_0}. The materialized type comes from {@code
-     * DataTypeMapping.materializedType}, the same function {@link #loadTornadoTensor}'s descriptor
-     * uses, so the prediction and the allocation cannot disagree about what a tensor becomes. F16,
-     * Q8_0 and F32 materialize as themselves, so every tuple measured on CUDA is predicted
-     * byte-for-byte as before.
+     * <p><b>Sized as the accelerator holds it</b> ({@code DataTypeMapping.materializedType}): every
+     * tensor in the file's own representation, as {@link #loadTornadoTensorNative} keeps it, and a
+     * BF16 one as the F16 copy it becomes. A preflight must not predict below what a load allocates
+     * ({@code MemoryPlanAccuracyAccelTest}), and the loaders convert nothing else.
      */
     public static WeightFootprint weightFootprint(Path ggufPath) throws IOException {
-        return weightFootprint(ggufPath, DeviceRetention.converting());
-    }
-
-    /** {@link #weightFootprint(Path, DeviceRetention)} for a flat set of retained types. */
-    public static WeightFootprint weightFootprint(
-            Path ggufPath, java.util.Set<DataType> nativeDeviceTypes) throws IOException {
-        return weightFootprint(ggufPath, DeviceRetention.retaining(nativeDeviceTypes));
-    }
-
-    /**
-     * The device footprint of a file's weights, given the representations the target family reads
-     * without materializing.
-     *
-     * <p>Descriptors only — no tensor data is touched, which is what makes this usable before a
-     * load rather than after one. The decision is taken per tensor; for a family whose loader
-     * decides for the whole model, see {@link #weightFootprint(Path, Function)}.
-     *
-     * @param retention what representation each tensor will occupy on the device
-     */
-    public static WeightFootprint weightFootprint(Path ggufPath, DeviceRetention retention)
-            throws IOException {
-        return weightFootprint(GGUF.loadGGUFMetadata(ggufPath), retention);
-    }
-
-    /**
-     * {@link #weightFootprint(Path, DeviceRetention)} with the retention decided from the file
-     * itself: {@code retention} is given every tensor's representation, by name, and answers what
-     * each will occupy. That is what a loader that decides for the whole model reads — Llama keeps
-     * Q4_0 only when every per-layer projection is Q4_0, and materializes all of them otherwise —
-     * so the prediction follows the same rule as the load.
-     *
-     * @param retention the device representation of each tensor, given every tensor's
-     *     representation in the file
-     */
-    public static WeightFootprint weightFootprint(
-            Path ggufPath, Function<Map<String, DataType>, DeviceRetention> retention)
-            throws IOException {
         GGUF gguf = GGUF.loadGGUFMetadata(ggufPath);
-        Map<String, DataType> sourceTypes = new HashMap<>();
-        for (GGUF.GGUFTensorInfo info : gguf.getTensorInfos().values()) {
-            sourceTypes.put(info.name(), DataTypeMapping.sourceType(info.ggmlType()));
-        }
-        return weightFootprint(gguf, retention.apply(sourceTypes));
-    }
-
-    private static WeightFootprint weightFootprint(GGUF gguf, DeviceRetention retention) {
         long perLayer = 0;
         long global = 0;
         int perLayerTensors = 0;
@@ -212,10 +155,8 @@ public final class ModelLoader {
             for (int d : info.dimensions()) {
                 elements *= d;
             }
-            DataType source = DataTypeMapping.sourceType(info.ggmlType());
-            // Per tensor, by name and representation: a model is not one dtype, and support can
-            // differ by role as well as by format.
-            DataType materialized = retention.deviceType(info.name(), source);
+            DataType materialized =
+                    DataTypeMapping.materializedType(info.ggmlType(), ExecutionTarget.GPU);
             long bytes = TensorDescriptors.layoutOf(materialized).byteSize(elements);
             if (info.name().startsWith("blk.")) {
                 perLayer += bytes;

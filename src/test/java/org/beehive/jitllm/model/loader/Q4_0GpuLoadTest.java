@@ -4,7 +4,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Map;
-import org.beehive.jitllm.format.GGMLType;
 import org.junit.Test;
 
 /**
@@ -14,18 +13,6 @@ import org.junit.Test;
  * {@code general.file_type} 2. Its tensors now stay Q4_0 on the device, read by Q4_0 kernels.
  */
 public class Q4_0GpuLoadTest {
-
-    /** The device has no 4-bit kernel, so the weight type the plan dispatches on is Q8_0. */
-    @Test
-    public void theGpuWeightTypeForAQ4_0FileIsQ8_0() {
-        assertEquals(GGMLType.Q8_0, AbstractModelLoader.effectiveGpuWeightType(GGMLType.Q4_0));
-        assertEquals(GGMLType.Q8_0, AbstractModelLoader.effectiveGpuWeightType(GGMLType.Q4_K));
-        assertEquals(
-                "a type the device executes is left alone",
-                GGMLType.Q8_0,
-                AbstractModelLoader.effectiveGpuWeightType(GGMLType.Q8_0));
-        assertEquals(GGMLType.F16, AbstractModelLoader.effectiveGpuWeightType(GGMLType.F16));
-    }
 
     /**
      * {@code general.file_type} 2 is Q4_0. Before this change it fell through to {@code

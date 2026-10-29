@@ -25,10 +25,9 @@ import org.beehive.jitllm.model.devstral.DevstralConfiguration;
  * Devstral's plan when its per-layer weights are retained as Q4_K.
  *
  * <p>Mixed by construction, because the file is: {@code Q4_K_M} stores the 240 {@code blk.*} weight
- * tensors as Q4_K but {@code output.weight} as Q6_K, which has no device kernel and is still
- * materialized as Q8_0. So the transformer layers read Q4_K and the logits layer is the existing
- * Q8_0 one — each reading what its own tensors actually hold, which is why this needs no per-tensor
- * dispatch.
+ * tensors as Q4_K but {@code output.weight} as Q6_K. So the transformer layers read Q4_K and the
+ * logits layer reads the Q6_K output projection by its type — each reading what its own tensors
+ * hold.
  */
 public class DevstralQ4_KPlanComponents implements BatchPrefillDecodeForwardPlanComponents {
 
@@ -67,7 +66,7 @@ public class DevstralQ4_KPlanComponents implements BatchPrefillDecodeForwardPlan
         return new DevstralQ4_KLayersBatchPrefillMMA(state, weights, config, batchSize);
     }
 
-    /** The embedding is materialized as Q8_0; the host writes the FP32 batch directly. */
+    /** The host decodes the embedding, whatever its type, into the FP32 batch directly. */
     @Override
     public ActivationTaskGraph batchPrefillActivation(int batchSize) {
         return new BatchPrefillActivation(state, config, batchSize, true);

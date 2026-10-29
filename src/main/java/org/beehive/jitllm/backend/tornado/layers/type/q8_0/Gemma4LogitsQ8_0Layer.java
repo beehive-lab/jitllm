@@ -137,9 +137,9 @@ public class Gemma4LogitsQ8_0Layer extends LogitsQ8_0Layer {
 
     // @formatter:off
     /**
-     * A Q8_0 output projection of a model whose own projections are Q8_0. The Q4_0 file's Q4_K
-     * {@code token_embd} is materialized as Q8_0 on the device as well, but this kernel was
-     * evaluated on the Q8_0 file only; that one keeps the shared-memory kernel.
+     * A Q8_0 output projection of a model whose own projections are Q8_0. This kernel was evaluated
+     * on the Q8_0 file only; any other output projection (the Q4_0 file's is its Q4_K {@code
+     * token_embd}) keeps the inherited dispatch.
      */
     // @formatter:on
     private boolean warpVocabulary(TornadoWeights weights) {

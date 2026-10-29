@@ -108,8 +108,8 @@ public final class LocalModels {
      *   <li>{@code TornadoOutOfMemoryException} — the backend's configured device budget is
      *       exhausted while buffers are allocated;
      *   <li>{@code java.lang.OutOfMemoryError: Cannot reserve … direct buffer memory} — the host
-     *       runs out of direct memory materializing the weights, which is where a representation
-     *       the device has no kernel for is converted to Q8_0.
+     *       runs out of direct memory materializing the weights (a BF16 tensor's FP16 copy is made
+     *       there).
      * </ul>
      */
     private static boolean isDeviceMemoryExhaustion(Throwable failure) {

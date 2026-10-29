@@ -1,6 +1,5 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
-import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -12,8 +11,7 @@ import org.junit.Test;
 
 /**
  * The rule for whether a Llama load runs the Q4_0 layers, which the loader asks: every projection
- * Q4_0, a Q4_1 {@code ffn_down} allowed off Metal. On every device backend every tensor is kept as
- * stored.
+ * Q4_0, a Q4_1 {@code ffn_down} allowed off Metal.
  */
 public class LlamaQ4_0RetentionTest {
 
@@ -66,21 +64,5 @@ public class LlamaQ4_0RetentionTest {
         assertFalse(LlamaPlanProvider.retainsQ4_0(q8, LAYERS, BackendId.CUDA));
         assertFalse(LlamaPlanProvider.retainsQ4_0(missing, LAYERS, BackendId.CUDA));
         assertFalse(LlamaPlanProvider.retainsQ4_0(Map.of(), 0, BackendId.CUDA));
-    }
-
-    @Test
-    public void thePreflightKeepsEachTypeExactlyWhereTheLoaderDoes() {
-        Map<String, DataType> q4_0 = q4_0File();
-        q4_0.put("blk.1.ffn_down.weight", DataType.Q4_1);
-        LlamaPlanProvider provider = new LlamaPlanProvider();
-        for (BackendId kept : new BackendId[] {BackendId.CUDA, BackendId.METAL, BackendId.OPENCL}) {
-            var retention = provider.deviceRetention(q4_0, LAYERS, kept);
-            assertEquals(DataType.Q4_0, retention.deviceType("blk.0.attn_q.weight", DataType.Q4_0));
-            assertEquals(
-                    DataType.Q4_1, retention.deviceType("blk.1.ffn_down.weight", DataType.Q4_1));
-            assertEquals(DataType.Q6_K, retention.deviceType("output.weight", DataType.Q6_K));
-            assertEquals(DataType.Q4_K, retention.deviceType("blk.0.attn_q.weight", DataType.Q4_K));
-            assertEquals(DataType.F32, retention.deviceType("output_norm.weight", DataType.F32));
-        }
     }
 }
