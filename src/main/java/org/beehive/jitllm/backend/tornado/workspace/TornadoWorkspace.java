@@ -347,15 +347,6 @@ public final class TornadoWorkspace {
     public FloatArray wrapMoeSharedScales;
     public FloatArray wrapMoeSharedOut;
 
-    /**
-     * The shared expert as one expert over the whole chunk, for the grouped GEMMs of experts in
-     * their own representation: tiles of up to 64 rows of expert 0 in token order, and the rows'
-     * tokens (each its own).
-     */
-    public IntArray wrapMoeSharedTiles;
-
-    public IntArray wrapMoeSharedRows;
-
     public FloatArray wrapRouterLogitsBatch;
     public IntArray activeBatchSizeHolder;
     public IntArray wrapSelectedExpertsBatch;

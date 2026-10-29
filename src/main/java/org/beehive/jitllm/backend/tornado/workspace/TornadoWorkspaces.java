@@ -126,27 +126,6 @@ public final class TornadoWorkspaces {
         workspace.wrapValueCache.init(0.f);
     }
 
-    /**
-     * The shared expert as one expert over a chunk of {@code batch} rows, for the grouped expert
-     * GEMMs: {@code wrapMoeSharedTiles} holds tiles of up to {@code rowsPerTile} rows of expert 0
-     * in row order, and {@code wrapMoeSharedRows} each row's token, which is the row itself.
-     */
-    public static void sharedExpertTiles(TornadoWorkspace workspace, int batch, int rowsPerTile) {
-        int tiles = (batch + rowsPerTile - 1) / rowsPerTile;
-        workspace.wrapMoeSharedTiles = ints(1 + 3 * tiles);
-        workspace.wrapMoeSharedTiles.set(0, tiles);
-        for (int t = 0; t < tiles; t++) {
-            workspace.wrapMoeSharedTiles.set(1 + 3 * t, 0);
-            workspace.wrapMoeSharedTiles.set(2 + 3 * t, t * rowsPerTile);
-            workspace.wrapMoeSharedTiles.set(
-                    3 + 3 * t, Math.min(rowsPerTile, batch - t * rowsPerTile));
-        }
-        workspace.wrapMoeSharedRows = ints(batch);
-        for (int r = 0; r < batch; r++) {
-            workspace.wrapMoeSharedRows.set(r, r);
-        }
-    }
-
     /** Sets the active batch size an MoE plan reads. */
     public static void activeBatchSize(TornadoWorkspace workspace, int size) {
         workspace.activeBatchSizeHolder.init(size);

@@ -27,9 +27,9 @@ import uk.ac.manchester.tornado.api.WorkerGrid2D;
  * adds the tasks, names the weights and scratch they bind, and registers the tasks' grids.
  *
  * <p>Experts that keep the file's own representation (a {@code qwen2moe} Q4_0, Q4_1 or Q6_K file's)
- * run the grouped GEMMs for their type. A shared expert in such a representation runs them too, as
- * one expert over the whole chunk ({@code wrapMoeSharedTiles}, {@code wrapMoeSharedRows}), in place
- * of the Q8_0 GEMMs; a Q8_0 one keeps them.
+ * run the grouped GEMMs for their type. The shared expert runs here on the int8 GEMMs where each of
+ * its weights is Q8_0 or Q4_0 ({@link #int8Shared}); any other the caller runs ({@code sharedHere}
+ * false).
  */
 // @formatter:on
 public final class Qwen35MoeBatchFeedForward implements Qwen35BatchFeedForward {
@@ -130,6 +130,16 @@ public final class Qwen35MoeBatchFeedForward implements Qwen35BatchFeedForward {
      * GEMMs, the shared expert, and the weighted combine into the residual stream.
      */
     public void appendExperts(TaskGraph layer, KernelContext context, int layerIndex) {
+        appendExperts(layer, context, layerIndex, true);
+    }
+
+    /**
+     * {@link #appendExperts}, with the shared expert left to the caller where {@code sharedHere} is
+     * false: the caller's tasks, added before these, write {@code wrapMoeSharedOut}, which the
+     * combine reads. Where it is true the shared expert must be {@link #int8Shared}.
+     */
+    public void appendExperts(
+            TaskGraph layer, KernelContext context, int layerIndex, boolean sharedHere) {
         var ws = workspace;
         int hidden = experts.hiddenDim();
         int shared = experts.sharedHiddenDim();
@@ -196,10 +206,8 @@ public final class Qwen35MoeBatchFeedForward implements Qwen35BatchFeedForward {
                 ws.wrapMoeOutBatch,
                 dim,
                 hidden);
-        // The shared expert, over every row of the chunk.
-        if (nativeShared(layerIndex)) {
-            appendNativeSharedExpert(layer, context, layerIndex);
-        } else {
+        // The shared expert, over every row of the chunk, unless the caller runs it.
+        if (sharedHere) {
             appendSharedExpert(layer, context, layerIndex);
         }
         layer.task(
@@ -217,13 +225,27 @@ public final class Qwen35MoeBatchFeedForward implements Qwen35BatchFeedForward {
                 experts.used());
     }
 
-    /** The shared expert over Q8_0 weights: three int8 GEMMs over the chunk. */
+    /**
+     * The shared expert over Q8_0 or Q4_0 weights: three int8 GEMMs over the chunk, each reading
+     * its weight in its own representation.
+     */
     private void appendSharedExpert(TaskGraph layer, KernelContext context, int layerIndex) {
+        if (!int8Shared(layerIndex)) {
+            throw new UnsupportedOperationException(
+                    "the shared expert's int8 GEMMs read Q8_0 and Q4_0, not "
+                            + tensors.sharedGate()[layerIndex].dataType()
+                            + "/"
+                            + tensors.sharedUp()[layerIndex].dataType()
+                            + "/"
+                            + tensors.sharedDown()[layerIndex].dataType());
+        }
         var ws = workspace;
         int shared = experts.sharedHiddenDim();
         layer.task(
                 "moe_shared_gate",
-                Int8GemmKernels::gemmInt8Q8_0,
+                q4_0(tensors.sharedGate()[layerIndex])
+                        ? Int8GemmKernels::gemmInt8Q4_0
+                        : Int8GemmKernels::gemmInt8Q8_0,
                 context,
                 ws.wrapQ8ActBatch,
                 ws.wrapQ8ActScales,
@@ -241,7 +263,9 @@ public final class Qwen35MoeBatchFeedForward implements Qwen35BatchFeedForward {
                 0);
         layer.task(
                 "moe_shared_up",
-                Int8GemmKernels::gemmInt8Q8_0,
+                q4_0(tensors.sharedUp()[layerIndex])
+                        ? Int8GemmKernels::gemmInt8Q4_0
+                        : Int8GemmKernels::gemmInt8Q8_0,
                 context,
                 ws.wrapQ8ActBatch,
                 ws.wrapQ8ActScales,
@@ -267,7 +291,9 @@ public final class Qwen35MoeBatchFeedForward implements Qwen35BatchFeedForward {
                 shared);
         layer.task(
                 "moe_shared_down",
-                Int8GemmKernels::gemmInt8Q8_0,
+                q4_0(tensors.sharedDown()[layerIndex])
+                        ? Int8GemmKernels::gemmInt8Q4_0
+                        : Int8GemmKernels::gemmInt8Q8_0,
                 context,
                 ws.wrapMoeSharedQ8,
                 ws.wrapMoeSharedScales,
@@ -286,79 +312,21 @@ public final class Qwen35MoeBatchFeedForward implements Qwen35BatchFeedForward {
     }
 
     /**
-     * The shared expert over weights in their own representation: the routed experts' grouped
-     * GEMMs, as one expert whose tiles cover the chunk in token order.
+     * Whether layer {@code layerIndex}'s shared expert runs on the int8 GEMMs here: each of its
+     * weights Q8_0 or Q4_0.
      */
-    private void appendNativeSharedExpert(TaskGraph layer, KernelContext context, int layerIndex) {
-        var ws = workspace;
-        int shared = experts.sharedHiddenDim();
-        TornadoTensor gate = tensors.sharedGate()[layerIndex];
-        TornadoTensor down = tensors.sharedDown()[layerIndex];
-        requireSameType(gate, tensors.sharedUp()[layerIndex], "shared");
-        layer.task(
-                "moe_shared_gate_up",
-                switch (gate.dataType()) {
-                    case Q8_0 -> Qwen35MoeBatchKernels::groupedGateUpQ8_0;
-                    case Q4_0 -> Qwen35MoeBatchKernels::groupedGateUpQ4_0;
-                    case Q4_1 -> Qwen35MoeBatchKernels::groupedGateUpQ4_1;
-                    case Q4_K -> Qwen35MoeBatchKernels::groupedGateUpQ4_K;
-                    case Q5_K -> Qwen35MoeBatchKernels::groupedGateUpQ5_K;
-                    case Q6_K -> Qwen35MoeBatchKernels::groupedGateUpQ6_K;
-                    default -> throw unsupported(gate, "shared gate and up");
-                },
-                context,
-                ws.wrapQ8ActBatch,
-                ws.wrapQ8ActScales,
-                ws.wrapMoeSharedRows,
-                ws.wrapMoeSharedTiles,
-                gate.asByteArray(),
-                tensors.sharedUp()[layerIndex].asByteArray(),
-                ws.wrapMoeSharedHidden,
-                dim,
-                shared);
-        layer.task(
-                "moe_shared_q8",
-                Int8GemmKernels::quantizeActivationsQ8Warp,
-                context,
-                ws.wrapMoeSharedHidden,
-                ws.wrapMoeSharedQ8,
-                ws.wrapMoeSharedScales,
-                shared);
-        layer.task(
-                "moe_shared_down",
-                switch (down.dataType()) {
-                    case Q8_0 -> Qwen35MoeBatchKernels::groupedDownQ8_0;
-                    case Q4_0 -> Qwen35MoeBatchKernels::groupedDownQ4_0;
-                    case Q4_1 -> Qwen35MoeBatchKernels::groupedDownQ4_1;
-                    case Q4_K -> Qwen35MoeBatchKernels::groupedDownQ4_K;
-                    case Q5_K -> Qwen35MoeBatchKernels::groupedDownQ5_K;
-                    case Q6_K -> Qwen35MoeBatchKernels::groupedDownQ6_K;
-                    default -> throw unsupported(down, "shared down");
-                },
-                context,
-                ws.wrapMoeSharedQ8,
-                ws.wrapMoeSharedScales,
-                ws.wrapMoeSharedTiles,
-                down.asByteArray(),
-                ws.wrapMoeSharedOut,
-                dim,
-                shared);
+    public boolean int8Shared(int layerIndex) {
+        return int8(tensors.sharedGate()[layerIndex])
+                && int8(tensors.sharedUp()[layerIndex])
+                && int8(tensors.sharedDown()[layerIndex]);
     }
 
-    /** Whether layer {@code layerIndex}'s shared expert holds a weight other than Q8_0. */
-    private boolean nativeShared(int layerIndex) {
-        return tensors.sharedGate()[layerIndex].dataType() != DataType.Q8_0
-                || tensors.sharedUp()[layerIndex].dataType() != DataType.Q8_0
-                || tensors.sharedDown()[layerIndex].dataType() != DataType.Q8_0;
+    private static boolean int8(TornadoTensor w) {
+        return w.dataType() == DataType.Q8_0 || w.dataType() == DataType.Q4_0;
     }
 
-    private boolean anyNativeShared() {
-        for (int i = 0; i < tensors.sharedGate().length; i++) {
-            if (nativeShared(i)) {
-                return true;
-            }
-        }
-        return false;
+    private static boolean q4_0(TornadoTensor w) {
+        return w.dataType() == DataType.Q4_0;
     }
 
     /** A gate and an up projection one fused GEMM decodes: they must share a type. */
@@ -416,13 +384,7 @@ public final class Qwen35MoeBatchFeedForward implements Qwen35BatchFeedForward {
             ws.wrapMoeSharedScales,
             ws.wrapMoeSharedOut
         };
-        if (!anyNativeShared()) {
-            return expertScratch;
-        }
-        Object[] scratch = java.util.Arrays.copyOf(expertScratch, expertScratch.length + 2);
-        scratch[expertScratch.length] = ws.wrapMoeSharedTiles;
-        scratch[expertScratch.length + 1] = ws.wrapMoeSharedRows;
-        return scratch;
+        return expertScratch;
     }
 
     /** Grids of one layer's feed-forward tasks, whose qualified names start with {@code prefix}. */
@@ -453,36 +415,19 @@ public final class Qwen35MoeBatchFeedForward implements Qwen35BatchFeedForward {
     }
 
     /**
-     * Grids of {@link #appendExperts} in layer {@code layerIndex}, whose shared expert may differ.
+     * Grids of {@link #appendExperts} in layer {@code layerIndex}, without the shared expert's
+     * where the caller runs it ({@code sharedHere} false).
      */
-    public void addExpertGrids(GridScheduler scheduler, String prefix, int layerIndex) {
-        if (!nativeShared(layerIndex)) {
+    public void addExpertGrids(
+            GridScheduler scheduler, String prefix, int layerIndex, boolean sharedHere) {
+        if (sharedHere) {
             addExpertGrids(scheduler, prefix);
-            return;
+        } else {
+            addRoutedExpertGrids(scheduler, prefix);
         }
-        addRoutedExpertGrids(scheduler, prefix);
-        int sharedTiles =
-                (batchSize + Qwen35MoeBatchKernels.TILE_ROWS - 1) / Qwen35MoeBatchKernels.TILE_ROWS;
-        WorkerGrid gateUp =
-                new WorkerGrid2D(
-                        experts.sharedHiddenDim()
-                                / Qwen35MoeBatchKernels.TILE_COLS
-                                * Qwen35MoeBatchKernels.GEMM_THREADS,
-                        sharedTiles);
-        gateUp.setLocalWork(Qwen35MoeBatchKernels.GEMM_THREADS, 1, 1);
-        scheduler.addWorkerGrid(prefix + "moe_shared_gate_up", gateUp);
-        scheduler.addWorkerGrid(
-                prefix + "moe_shared_q8",
-                WorkerGridFactory.genericWorker(batchSize * experts.sharedHiddenDim(), 128));
-        WorkerGrid down =
-                new WorkerGrid2D(
-                        dim / Qwen35MoeBatchKernels.TILE_COLS * Qwen35MoeBatchKernels.GEMM_THREADS,
-                        sharedTiles);
-        down.setLocalWork(Qwen35MoeBatchKernels.GEMM_THREADS, 1, 1);
-        scheduler.addWorkerGrid(prefix + "moe_shared_down", down);
     }
 
-    /** Grids of {@link #appendExperts}, with the shared expert's Q8_0 GEMMs. */
+    /** Grids of {@link #appendExperts}, with the shared expert's int8 GEMMs. */
     public void addExpertGrids(GridScheduler scheduler, String prefix) {
         addRoutedExpertGrids(scheduler, prefix);
         int shared = experts.sharedHiddenDim();
