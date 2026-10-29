@@ -14,7 +14,10 @@ import org.beehive.jitllm.runtime.tensor.DataType;
  */
 public final class TornadoSupportSets {
 
-    /** The two representations that reach the device: a K-quant file arrives as {@code Q8_0}. */
+    /**
+     * The two representations the lowered path builds for. A file kept in any other refuses it by
+     * name ({@code -Djitllm.lowering=on}); the plan providers take every kept type.
+     */
     public static final Set<DataType> BOTH_REPRESENTATIONS = Set.of(DataType.F16, DataType.Q8_0);
 
     /**
