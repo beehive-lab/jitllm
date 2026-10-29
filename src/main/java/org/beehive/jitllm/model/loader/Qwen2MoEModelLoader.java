@@ -4,10 +4,7 @@ import static org.beehive.jitllm.model.loader.ModelLoader.*;
 
 import java.nio.channels.FileChannel;
 import java.util.Map;
-import java.util.function.IntFunction;
 import org.beehive.jitllm.auxiliary.Pair;
-import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jitllm.backend.tornado.plan.TornadoPlanProvider;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
 import org.beehive.jitllm.format.DataTypeMapping;
@@ -21,7 +18,6 @@ import org.beehive.jitllm.model.format.Qwen3ChatFormat;
 import org.beehive.jitllm.model.qwen2.Qwen2MoE;
 import org.beehive.jitllm.model.qwen2.Qwen2MoEConfiguration;
 import org.beehive.jitllm.runtime.tensor.DataType;
-import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
 import org.beehive.jitllm.tokenizer.Qwen3Tokenizer;
 import org.beehive.jitllm.tokenizer.Tokenizer;
@@ -157,63 +153,57 @@ public class Qwen2MoEModelLoader extends AbstractModelLoader<Qwen2MoE, Qwen2MoEC
             GGMLTensorEntry tokenEmbeddings,
             GGMLTensorEntry outputWeight) {
         final int nl = config.numberOfLayers();
-        // On CUDA and Metal every tensor stays as the file stores it: Qwen2-MoE's layers read each
-        // one by its own type. Elsewhere Q4_0, Q4_1 and the K-quants are converted to Q8_0 as
-        // before.
-        boolean retain = TornadoPlanProvider.retainsNative(TornadoDevices.current().backend());
-        TornadoTensor[] wq = perLayer(retain, nl, i -> layer(tensorEntries, i, "attn_q"));
-        TornadoTensor[] wk = perLayer(retain, nl, i -> layer(tensorEntries, i, "attn_k"));
-        TornadoTensor[] wv = perLayer(retain, nl, i -> layer(tensorEntries, i, "attn_v"));
-        TornadoTensor[] wo = perLayer(retain, nl, i -> layer(tensorEntries, i, "attn_output"));
+        // Every tensor stays as the file stores it; the layers read each by its own type.
+        TornadoTensor[] wq =
+                loadArrayOfTornadoTensorsNative(nl, i -> layer(tensorEntries, i, "attn_q"));
+        TornadoTensor[] wk =
+                loadArrayOfTornadoTensorsNative(nl, i -> layer(tensorEntries, i, "attn_k"));
+        TornadoTensor[] wv =
+                loadArrayOfTornadoTensorsNative(nl, i -> layer(tensorEntries, i, "attn_v"));
+        TornadoTensor[] wo =
+                loadArrayOfTornadoTensorsNative(nl, i -> layer(tensorEntries, i, "attn_output"));
         TornadoTensor[] gateExperts =
-                perLayer(retain, nl, i -> layer(tensorEntries, i, "ffn_gate_exps"));
+                loadArrayOfTornadoTensorsNative(nl, i -> layer(tensorEntries, i, "ffn_gate_exps"));
         TornadoTensor[] upExperts =
-                perLayer(retain, nl, i -> layer(tensorEntries, i, "ffn_up_exps"));
+                loadArrayOfTornadoTensorsNative(nl, i -> layer(tensorEntries, i, "ffn_up_exps"));
         TornadoTensor[] downExperts =
-                perLayer(retain, nl, i -> layer(tensorEntries, i, "ffn_down_exps"));
+                loadArrayOfTornadoTensorsNative(nl, i -> layer(tensorEntries, i, "ffn_down_exps"));
         TornadoTensor[] sharedGate =
-                perLayer(retain, nl, i -> layer(tensorEntries, i, "ffn_gate_shexp"));
+                loadArrayOfTornadoTensorsNative(nl, i -> layer(tensorEntries, i, "ffn_gate_shexp"));
         TornadoTensor[] sharedUp =
-                perLayer(retain, nl, i -> layer(tensorEntries, i, "ffn_up_shexp"));
+                loadArrayOfTornadoTensorsNative(nl, i -> layer(tensorEntries, i, "ffn_up_shexp"));
         TornadoTensor[] sharedDown =
-                perLayer(retain, nl, i -> layer(tensorEntries, i, "ffn_down_shexp"));
-        DataType weightType;
-        if (retain) {
-            weightType =
-                    keptType(
-                            wq,
-                            wk,
-                            wv,
-                            wo,
-                            gateExperts,
-                            upExperts,
-                            downExperts,
-                            sharedGate,
-                            sharedUp,
-                            sharedDown);
-        } else {
-            weightType =
-                    DataTypeMapping.materializedType(outputWeight.ggmlType(), ExecutionTarget.GPU);
-            if (weightType != DataType.F16 && weightType != DataType.Q8_0) {
-                throw new UnsupportedOperationException(
-                        "Type: " + weightType + " currently not supported for TornadoVM weights.");
-            }
-        }
+                loadArrayOfTornadoTensorsNative(nl, i -> layer(tensorEntries, i, "ffn_down_shexp"));
+        DataType weightType =
+                keptType(
+                        wq,
+                        wk,
+                        wv,
+                        wo,
+                        gateExperts,
+                        upExperts,
+                        downExperts,
+                        sharedGate,
+                        sharedUp,
+                        sharedDown);
 
         return new Qwen2MoETornadoWeights(
-                load(retain, tokenEmbeddings),
-                loadArrayOfTornadoTensors(
+                loadTornadoTensorNative(tokenEmbeddings),
+                loadArrayOfTornadoTensorsNative(
                         nl, i -> tensorEntries.get("blk." + i + ".attn_norm.weight")),
                 wq,
                 wk,
                 wv,
-                loadArrayOfTornadoTensors(nl, i -> tensorEntries.get("blk." + i + ".attn_q.bias")),
-                loadArrayOfTornadoTensors(nl, i -> tensorEntries.get("blk." + i + ".attn_k.bias")),
-                loadArrayOfTornadoTensors(nl, i -> tensorEntries.get("blk." + i + ".attn_v.bias")),
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_q.bias")),
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_k.bias")),
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_v.bias")),
                 wo,
-                loadArrayOfTornadoTensors(
+                loadArrayOfTornadoTensorsNative(
                         nl, i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")),
-                loadArrayOfTornadoTensors(
+                loadArrayOfTornadoTensorsNative(
                         nl, i -> tensorEntries.get("blk." + i + ".ffn_gate_inp.weight")),
                 gateExperts,
                 upExperts,
@@ -221,30 +211,17 @@ public class Qwen2MoEModelLoader extends AbstractModelLoader<Qwen2MoE, Qwen2MoEC
                 sharedGate,
                 sharedUp,
                 sharedDown,
-                loadArrayOfTornadoTensors(
+                loadArrayOfTornadoTensorsNative(
                         nl, i -> tensorEntries.get("blk." + i + ".ffn_gate_inp_shexp.weight")),
-                loadTornadoTensor(tensorEntries.get("output_norm.weight")),
+                loadTornadoTensorNative(tensorEntries.get("output_norm.weight")),
                 TornadoTensorLoader.fromFloats(ropeFreqs.first()),
                 TornadoTensorLoader.fromFloats(ropeFreqs.second()),
-                load(retain, outputWeight),
+                loadTornadoTensorNative(outputWeight),
                 weightType);
     }
 
     private static GGMLTensorEntry layer(
             Map<String, GGMLTensorEntry> tensorEntries, int layer, String role) {
         return tensorEntries.get("blk." + layer + "." + role + ".weight");
-    }
-
-    /** A device tensor as the file stores it, or with Q4_0, Q4_1 and K-quants converted to Q8_0. */
-    private static TornadoTensor load(boolean retain, GGMLTensorEntry entry) {
-        return retain ? loadTornadoTensorNative(entry) : loadTornadoTensor(entry);
-    }
-
-    /** {@link #load} for each layer. */
-    private static TornadoTensor[] perLayer(
-            boolean retain, int layers, IntFunction<GGMLTensorEntry> entry) {
-        return retain
-                ? loadArrayOfTornadoTensorsNative(layers, entry)
-                : loadArrayOfTornadoTensors(layers, entry);
     }
 }

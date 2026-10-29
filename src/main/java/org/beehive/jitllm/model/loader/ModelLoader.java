@@ -23,7 +23,6 @@ import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
 import org.beehive.jitllm.format.*;
 import org.beehive.jitllm.format.DataTypeMapping;
-import org.beehive.jitllm.format.GGMLType;
 import org.beehive.jitllm.format.GGUF;
 import org.beehive.jitllm.format.TensorDescriptors;
 import org.beehive.jitllm.model.Configuration;
@@ -36,7 +35,6 @@ import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.memory.WeightFootprint;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
-import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.runtime.tensor.Shape;
 import org.beehive.jitllm.runtime.tensor.TensorDescriptor;
 import org.beehive.jitllm.tensor.standard.*;
@@ -290,44 +288,13 @@ public final class ModelLoader {
         return array;
     }
 
-    /** Loads a tensor for the device <b>retaining Q4_K</b> rather than materializing it as Q8_0. */
-    public static TornadoTensor loadTornadoTensorRetainingQ4_K(GGMLTensorEntry entry) {
-        if (entry.ggmlType() == GGMLType.Q4_K) {
-            return Q4_KTornadoTensor.fromTornadoMemorySegment(
-                    entry.memorySegment(), shapeOf(entry));
-        }
-        if (entry.ggmlType() == GGMLType.Q6_K) {
-            return Q6_KTornadoTensor.fromTornadoMemorySegment(
-                    entry.memorySegment(), shapeOf(entry));
-        }
-        return loadTornadoTensor(entry);
-    }
-
-    /**
-     * Loads a tensor for the device <b>retaining Q4_0</b> rather than materializing it as Q8_0.
-     *
-     * <p>Separate from {@link #loadTornadoTensorRetainingQ4_K} rather than one helper that retains
-     * everything with a kernel: which representations a family can read is a property of that
-     * family's layer graph, and a tensor retained in a format the graph has no kernel for would be
-     * read as the format it is not — fluent output, wrong numbers. A loader opts into exactly what
-     * its own layers dispatch on.
-     */
-    public static TornadoTensor loadTornadoTensorRetainingQ4_0(GGMLTensorEntry entry) {
-        if (entry.ggmlType() == GGMLType.Q4_0) {
-            return Q4_0TornadoTensor.fromTornadoMemorySegment(
-                    entry.memorySegment(), shapeOf(entry));
-        }
-        return loadTornadoTensor(entry);
-    }
-
     /**
      * Loads a tensor for the device in <b>whatever representation the file gave it</b>, for every
      * quantization the backend has device storage and kernels for.
      *
-     * <p>The general form of the two helpers above, and the one a family uses when its layer graph
-     * dispatches per tensor rather than assuming one representation. Nothing is converted: a Q4_1
-     * tensor stays Q4_1, a Q5_K tensor stays Q5_K, and a representation with no device storage is
-     * an error here rather than a quiet promotion to Q8_0.
+     * <p>Nothing is converted: a Q4_1 tensor stays Q4_1, a Q5_K tensor stays Q5_K, and a
+     * representation with no device storage is an error here rather than a quiet promotion to Q8_0.
+     * BF16 alone is copied, as FP16, since the device has no BF16 kernels.
      *
      * @throws ModelLoadException if the file holds a representation the device cannot store
      */
@@ -371,7 +338,7 @@ public final class ModelLoader {
         };
     }
 
-    /** {@link #loadArrayOfTornadoTensors} keeping every representation as the file gave it. */
+    /** {@link #loadTornadoTensorNative} for each of {@code size} tensors, by index. */
     public static TornadoTensor[] loadArrayOfTornadoTensorsNative(
             int size, IntFunction<GGMLTensorEntry> getTensorEntry) {
         TornadoTensor[] array = new TornadoTensor[size];
@@ -398,45 +365,6 @@ public final class ModelLoader {
         return DataType.Q8_0;
     }
 
-    /** {@link #loadArrayOfTornadoTensors} that retains Q4_0. */
-    public static TornadoTensor[] loadArrayOfTornadoTensorsRetainingQ4_0(
-            int size, IntFunction<GGMLTensorEntry> getTensorEntry) {
-        TornadoTensor[] array = new TornadoTensor[size];
-        for (int i = 0; i < size; i++) {
-            array[i] = loadTornadoTensorRetainingQ4_0(getTensorEntry.apply(i));
-        }
-        return array;
-    }
-
-    public static TornadoTensor loadTornadoTensor(GGMLTensorEntry entry) {
-        // Describe first: the descriptor states what this tensor becomes on the device — including
-        // the Q8_0 materialization for representations with no kernel — and validates the element
-        // count before any storage is touched. It holds no data, so nothing is copied for it.
-        TensorDescriptor descriptor = TensorDescriptors.describe(entry, ExecutionTarget.GPU);
-        descriptor.shape().elementCountAsInt(descriptor.name());
-        return switch (entry.ggmlType()) {
-            case F32 ->
-                    FP32TornadoTensor.fromTornadoMemorySegment(
-                            entry.memorySegment(), shapeOf(entry));
-            case F16 ->
-                    FP16TornadoTensor.fromTornadoMemorySegment(
-                            entry.memorySegment(), shapeOf(entry));
-            case BF16 ->
-                    TornadoTensorLoader.convertBF16ToFP16(rawTensorData(entry), shapeOf(entry));
-            case Q8_0 ->
-                    Q8_0TornadoTensor.fromTornadoMemorySegment(
-                            entry.memorySegment(), shapeOf(entry));
-                // A representation the device has no kernel for is materialized as Q8_0 at load
-                // The conversion reads through the CPU tensor for that format, which
-                // already knows how to decode it.
-            case Q4_0, Q4_1, Q4_K, Q5_K, Q6_K ->
-                    TornadoTensorLoader.dequantizeToQ8_0(rawTensorData(entry), shapeOf(entry));
-            default ->
-                    throw new UnsupportedOperationException(
-                            "Quantization format " + entry.ggmlType());
-        };
-    }
-
     /** The dimensions the file gives {@code entry}, recorded on the device tensor built from it. */
     private static Shape shapeOf(GGMLTensorEntry entry) {
         return Shape.of(entry.shape());
@@ -457,28 +385,5 @@ public final class ModelLoader {
                         entry.shape(),
                         TornadoTensorLoader.withoutArrayHeader(entry.memorySegment()));
         return loadTensor(dataEntry);
-    }
-
-    /**
-     * {@link #loadArrayOfTornadoTensors} that retains Q4_K — see {@link
-     * #loadTornadoTensorRetainingQ4_K}. For the per-layer weights of a family that has Q4_K
-     * kernels.
-     */
-    public static TornadoTensor[] loadArrayOfTornadoTensorsRetainingQ4_K(
-            int size, IntFunction<GGMLTensorEntry> getTensorEntry) {
-        TornadoTensor[] array = new TornadoTensor[size];
-        for (int i = 0; i < size; i++) {
-            array[i] = loadTornadoTensorRetainingQ4_K(getTensorEntry.apply(i));
-        }
-        return array;
-    }
-
-    public static TornadoTensor[] loadArrayOfTornadoTensors(
-            int size, IntFunction<GGMLTensorEntry> getTensorEntry) {
-        TornadoTensor[] array = new TornadoTensor[size];
-        for (int i = 0; i < size; i++) {
-            array[i] = loadTornadoTensor(getTensorEntry.apply(i));
-        }
-        return array;
     }
 }
