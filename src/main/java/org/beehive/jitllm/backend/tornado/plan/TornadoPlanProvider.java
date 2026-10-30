@@ -1,12 +1,9 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
-import java.util.EnumSet;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
-import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
@@ -14,7 +11,6 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
-import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -59,48 +55,9 @@ public interface TornadoPlanProvider {
      * representation, can this family build a plan for it", which is the question {@code
      * ForwardPlanFactory} asks. It is deliberately <b>not</b> the set of representations the
      * family's kernels can read: a heterogeneous model reports one representation and holds
-     * several, and answering both questions with one set would make one of the two answers false.
-     * See {@link #nativeTensorTypes()} for the other half.
+     * several, each kept as the file stores it.
      */
     Set<DataType> supportedDataTypes();
-
-    /**
-     * The representations this family's tasks read <b>per tensor</b>, in the file's own layout.
-     *
-     * <p>Read by the memory preflight, which predicts each tensor at the representation it will
-     * actually occupy on the device. A family listing {@code Q4_0} has tasks that decode Q4_0
-     * blocks, so a Q4_0 tensor stays 4.5 bits per weight instead of becoming 8.5.
-     *
-     * <p>Defaults to {@link #supportedDataTypes()}, which is right for every family whose model is
-     * one representation throughout: there the two questions have one answer. A family with a
-     * genuinely mixed model overrides it — {@code qwen35} admits plans for its projections'
-     * representation while its tasks also decode Q4_1 down projections, Q5_K recurrent outputs, a
-     * Q6_K vocabulary projection and F32 recurrent parameters.
-     *
-     * <p>Listing a representation here is a claim that some task decodes it natively. It is not a
-     * claim that every operation can: an operation with no kernel for a representation must fail by
-     * name at plan construction, not be repaired by conversion.
-     */
-    default Set<DataType> nativeTensorTypes() {
-        return supportedDataTypes();
-    }
-
-    /**
-     * What representation each tensor of a file will occupy on the device, as this family's loader
-     * decides it. Read by the memory preflight, from the file's descriptors.
-     *
-     * <p>Defaults to keeping {@link #nativeTensorTypes()} and materializing the rest as Q8_0, which
-     * is right for a family whose loader decides per tensor. A family whose loader decides for the
-     * whole model overrides it with that same rule.
-     *
-     * @param sourceTypes each tensor's representation in the file, by tensor name
-     * @param layers the number of transformer blocks
-     * @param backend the device's backend
-     */
-    default DeviceRetention deviceRetention(
-            Map<String, DataType> sourceTypes, int layers, BackendId backend) {
-        return DeviceRetention.retaining(nativeTensorTypes());
-    }
 
     /** The execution modes this family has plans for. */
     Set<ExecutionMode> supportedModes();
@@ -152,39 +109,6 @@ public interface TornadoPlanProvider {
                                                         : model.createNewState()));
         stage.resolveExecutionPolicy(session.executionPolicy());
         return stage;
-    }
-
-    // @formatter:off
-    /**
-     * Whether a load keeps every tensor as the file stores it, rather than converting Q4_0, Q4_1
-     * and the K-quants to Q8_0: on every device backend (CUDA, Metal and OpenCL), where a migrated
-     * family's every path reads each tensor by its own type (the single-token projections, the
-     * batched prefill, the tensor-core prefill and the embedding row).
-     *
-     * <p>OpenCL came last: the per-type float kernels, the tiled batch projections included,
-     * compile and match their host references there, and no migrated family's parity there is worse
-     * than it was on the Q8_0 copies.
-     *
-     * <p>The one rule for a migrated family's loader and its memory preflight ({@link
-     * #deviceRetention}), so the two cannot disagree about what a tensor becomes.
-     */
-    // @formatter:on
-    static boolean retainsNative(BackendId backend) {
-        return BackendId.CUDA.equals(backend)
-                || BackendId.METAL.equals(backend)
-                || BackendId.OPENCL.equals(backend);
-    }
-
-    /**
-     * What a migrated family's load keeps on a {@code backend} device: {@code kept} everywhere, and
-     * every quantized type besides where {@link #retainsNative} holds.
-     */
-    static DeviceRetention nativeRetention(Set<DataType> kept, BackendId backend) {
-        Set<DataType> retained = EnumSet.copyOf(kept);
-        if (retainsNative(backend)) {
-            retained.addAll(TornadoSupportSets.NATIVE_QUANTIZED);
-        }
-        return DeviceRetention.retaining(retained);
     }
 
     // ── What this family's layers can build ───────────────────────────────────

@@ -1,6 +1,5 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
@@ -16,7 +15,6 @@ import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
-import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -35,42 +33,12 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
     }
 
     /**
-     * F16, Q8_0 and Q4_0 as before, and the types a file kept as it is on CUDA and Metal reports
-     * ({@link TornadoPlanProvider#retainsNative}): the quantized layers read each tensor by its
-     * type.
+     * F16, Q8_0 and Q4_0 as before, and every other type a kept file reports: the quantized layers
+     * read each tensor by its type.
      */
     @Override
     public Set<DataType> supportedDataTypes() {
         return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
-    }
-
-    /** {@link #nativeTensorTypes}, and every quantized type where the loader keeps them all. */
-    @Override
-    public DeviceRetention deviceRetention(
-            Map<String, DataType> sourceTypes, int layers, BackendId backend) {
-        return TornadoPlanProvider.nativeRetention(nativeTensorTypes(), backend);
-    }
-
-    /**
-     * Every representation this family's tasks decode per tensor, which is a different question
-     * from the one {@link #supportedDataTypes()} answers.
-     *
-     * <p>That one is admission: the single representation a model reports and a plan is selected
-     * on. This one is what the memory preflight must predict against, and a Q4_0 file is mixed —
-     * Q4_0 projections, Q4_1 {@code ffn_down} on its first blocks, a Q4_K {@code token_embd} that
-     * is also the output projection, and F32 norms. Answering admission here would predict every
-     * tensor at the model's representation and mispredict all of those.
-     */
-    @Override
-    public Set<DataType> nativeTensorTypes() {
-        return Set.of(
-                DataType.F32,
-                DataType.F16,
-                DataType.BF16,
-                DataType.Q4_0,
-                DataType.Q4_1,
-                DataType.Q4_K,
-                DataType.Q8_0);
     }
 
     /**

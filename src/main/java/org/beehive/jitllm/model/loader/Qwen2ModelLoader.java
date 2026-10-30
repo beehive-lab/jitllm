@@ -4,10 +4,7 @@ import static org.beehive.jitllm.model.loader.ModelLoader.*;
 
 import java.nio.channels.FileChannel;
 import java.util.Map;
-import java.util.function.IntFunction;
 import org.beehive.jitllm.auxiliary.Pair;
-import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
-import org.beehive.jitllm.backend.tornado.plan.TornadoPlanProvider;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
 import org.beehive.jitllm.format.DataTypeMapping;
@@ -22,7 +19,6 @@ import org.beehive.jitllm.model.qwen2.DeepSeekR1Qwen;
 import org.beehive.jitllm.model.qwen2.Qwen2;
 import org.beehive.jitllm.model.qwen2.Qwen2Configuration;
 import org.beehive.jitllm.runtime.tensor.DataType;
-import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
 import org.beehive.jitllm.tokenizer.Qwen3Tokenizer;
 import org.beehive.jitllm.tokenizer.Tokenizer;
@@ -170,75 +166,57 @@ public class Qwen2ModelLoader extends AbstractModelLoader<Qwen2, Qwen2Configurat
             GGMLTensorEntry tokenEmbeddings,
             GGMLTensorEntry outputWeight) {
         final int nl = config.numberOfLayers();
-        // On CUDA and Metal every tensor stays as the file stores it: Qwen2's layers read each one
-        // by its own type. Elsewhere Q4_0, Q4_1 and the K-quants are converted to Q8_0 as before.
-        boolean retain = TornadoPlanProvider.retainsNative(TornadoDevices.current().backend());
+        // Every tensor stays as the file stores it; the layers read each by its own type.
         TornadoTensor[] wq =
-                perLayer(retain, nl, i -> tensorEntries.get("blk." + i + ".attn_q.weight"));
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_q.weight"));
         TornadoTensor[] wk =
-                perLayer(retain, nl, i -> tensorEntries.get("blk." + i + ".attn_k.weight"));
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_k.weight"));
         TornadoTensor[] wv =
-                perLayer(retain, nl, i -> tensorEntries.get("blk." + i + ".attn_v.weight"));
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_v.weight"));
         TornadoTensor[] wo =
-                perLayer(retain, nl, i -> tensorEntries.get("blk." + i + ".attn_output.weight"));
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_output.weight"));
         TornadoTensor[] w1 =
-                perLayer(retain, nl, i -> tensorEntries.get("blk." + i + ".ffn_gate.weight"));
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_gate.weight"));
         TornadoTensor[] w2 =
-                perLayer(retain, nl, i -> tensorEntries.get("blk." + i + ".ffn_down.weight"));
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_down.weight"));
         TornadoTensor[] w3 =
-                perLayer(retain, nl, i -> tensorEntries.get("blk." + i + ".ffn_up.weight"));
-        DataType weightType;
-        if (retain) {
-            weightType = keptType(wq, wk, wv, wo, w1, w2, w3);
-        } else {
-            weightType =
-                    DataTypeMapping.materializedType(outputWeight.ggmlType(), ExecutionTarget.GPU);
-            // Validate supported types
-            if (weightType != DataType.F16 && weightType != DataType.Q8_0) {
-                throw new UnsupportedOperationException(
-                        "Type: " + weightType + " currently not supported for TornadoVM weights.");
-            }
-        }
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_up.weight"));
+        DataType weightType = keptType(wq, wk, wv, wo, w1, w2, w3);
 
         // Load all tensors uniformly as TornadoTensor hierarchy
         return new Qwen2TornadoWeights(
-                load(retain, tokenEmbeddings),
-                loadArrayOfTornadoTensors(
+                loadTornadoTensorNative(tokenEmbeddings),
+                loadArrayOfTornadoTensorsNative(
                         nl, i -> tensorEntries.get("blk." + i + ".attn_norm.weight")), // fp32
                 wq,
                 wk,
                 wv,
                 // Qwen2-specific: qkv bias (always F32)
-                loadArrayOfTornadoTensors(
+                loadArrayOfTornadoTensorsNative(
                         nl, i -> tensorEntries.get("blk." + i + ".attn_q.bias")), // fp32
-                loadArrayOfTornadoTensors(
+                loadArrayOfTornadoTensorsNative(
                         nl, i -> tensorEntries.get("blk." + i + ".attn_k.bias")), // fp32
-                loadArrayOfTornadoTensors(
+                loadArrayOfTornadoTensorsNative(
                         nl, i -> tensorEntries.get("blk." + i + ".attn_v.bias")), // fp32
                 wo,
-                loadArrayOfTornadoTensors(
+                loadArrayOfTornadoTensorsNative(
                         nl, i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")), // fp32
                 w1,
                 w2,
                 w3,
-                loadTornadoTensor(tensorEntries.get("output_norm.weight")), // fp32
+                loadTornadoTensorNative(tensorEntries.get("output_norm.weight")), // fp32
                 TornadoTensorLoader.fromFloats(ropeFreqs.first()),
                 TornadoTensorLoader.fromFloats(ropeFreqs.second()),
-                load(retain, outputWeight),
+                loadTornadoTensorNative(outputWeight),
                 weightType);
     }
 
-    /** A device tensor as the file stores it, or with Q4_0, Q4_1 and K-quants converted to Q8_0. */
-    private static TornadoTensor load(boolean retain, GGMLTensorEntry entry) {
-        return retain ? loadTornadoTensorNative(entry) : loadTornadoTensor(entry);
-    }
-
-    /** {@link #load} for each layer. */
-    private static TornadoTensor[] perLayer(
-            boolean retain, int layers, IntFunction<GGMLTensorEntry> entry) {
-        return retain
-                ? loadArrayOfTornadoTensorsNative(layers, entry)
-                : loadArrayOfTornadoTensors(layers, entry);
-    }
     // @formatter:off
 }

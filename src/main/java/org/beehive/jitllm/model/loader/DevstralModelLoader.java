@@ -4,11 +4,8 @@ import static org.beehive.jitllm.model.loader.ModelLoader.*;
 
 import java.nio.channels.FileChannel;
 import java.util.Map;
-import java.util.function.IntFunction;
 import org.beehive.jitllm.auxiliary.Pair;
-import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.plan.DevstralPlanProvider;
-import org.beehive.jitllm.backend.tornado.plan.TornadoPlanProvider;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
 import org.beehive.jitllm.format.DataTypeMapping;
@@ -21,7 +18,6 @@ import org.beehive.jitllm.model.devstral.Devstral;
 import org.beehive.jitllm.model.devstral.DevstralConfiguration;
 import org.beehive.jitllm.model.format.DevstralChatFormat;
 import org.beehive.jitllm.runtime.tensor.DataType;
-import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
 import org.beehive.jitllm.tokenizer.DevstralTokenizer;
 import org.beehive.jitllm.tokenizer.Tokenizer;
@@ -171,112 +167,57 @@ public class DevstralModelLoader extends AbstractModelLoader<Devstral, DevstralC
             GGMLTensorEntry outputWeight) {
         final int nl = config.numberOfLayers();
         // A file whose projections are all Q4_K and Q6_K, as a Q4_K_M file's are, runs the K-quant
-        // layers on every backend; DataType.Q4_K selects them. On CUDA and Metal every tensor
-        // stays as the file stores it, and any other quantized file runs the Q8_0 layers, which
-        // read each tensor by its type. Elsewhere such a file is converted to Q8_0 as before.
+        // layers; DataType.Q4_K selects them. Any other quantized file runs the Q8_0 layers, which
+        // read each tensor by its type. Every tensor stays as the file stores it.
         boolean kQuantLayers = DevstralPlanProvider.kQuantLayers(sourceTypes(tensorEntries), nl);
-        boolean retain = TornadoPlanProvider.retainsNative(TornadoDevices.current().backend());
         TornadoTensor[] wq =
-                perLayer(
-                        retain,
-                        kQuantLayers,
-                        nl,
-                        i -> tensorEntries.get("blk." + i + ".attn_q.weight"));
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_q.weight"));
         TornadoTensor[] wk =
-                perLayer(
-                        retain,
-                        kQuantLayers,
-                        nl,
-                        i -> tensorEntries.get("blk." + i + ".attn_k.weight"));
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_k.weight"));
         TornadoTensor[] wv =
-                perLayer(
-                        retain,
-                        kQuantLayers,
-                        nl,
-                        i -> tensorEntries.get("blk." + i + ".attn_v.weight"));
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_v.weight"));
         TornadoTensor[] wo =
-                perLayer(
-                        retain,
-                        kQuantLayers,
-                        nl,
-                        i -> tensorEntries.get("blk." + i + ".attn_output.weight"));
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_output.weight"));
         TornadoTensor[] w1 =
-                perLayer(
-                        retain,
-                        kQuantLayers,
-                        nl,
-                        i -> tensorEntries.get("blk." + i + ".ffn_gate.weight"));
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_gate.weight"));
         TornadoTensor[] w2 =
-                perLayer(
-                        retain,
-                        kQuantLayers,
-                        nl,
-                        i -> tensorEntries.get("blk." + i + ".ffn_down.weight"));
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_down.weight"));
         TornadoTensor[] w3 =
-                perLayer(
-                        retain,
-                        kQuantLayers,
-                        nl,
-                        i -> tensorEntries.get("blk." + i + ".ffn_up.weight"));
-        DataType weightType;
-        if (kQuantLayers) {
-            weightType = DataType.Q4_K;
-        } else if (retain) {
-            weightType = q8_0LayersType(wq, wk, wv, wo, w1, w2, w3);
-        } else {
-            weightType =
-                    DataTypeMapping.materializedType(outputWeight.ggmlType(), ExecutionTarget.GPU);
-            // Validate supported types
-            if (weightType != DataType.F16 && weightType != DataType.Q8_0) {
-                throw new UnsupportedOperationException(
-                        "Type: " + weightType + " currently not supported for TornadoVM weights.");
-            }
-        }
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_up.weight"));
+        DataType weightType =
+                kQuantLayers ? DataType.Q4_K : q8_0LayersType(wq, wk, wv, wo, w1, w2, w3);
 
         return new LlamaTornadoWeights(
-                load(retain, tokenEmbeddings),
-                loadArrayOfTornadoTensors(
+                loadTornadoTensorNative(tokenEmbeddings),
+                loadArrayOfTornadoTensorsNative(
                         nl, i -> tensorEntries.get("blk." + i + ".attn_norm.weight")),
                 wq,
                 wk,
                 wv,
                 wo,
-                loadArrayOfTornadoTensors(
+                loadArrayOfTornadoTensorsNative(
                         nl, i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")),
                 w1,
                 w2,
                 w3,
-                loadTornadoTensor(tensorEntries.get("output_norm.weight")),
+                loadTornadoTensorNative(tensorEntries.get("output_norm.weight")),
                 TornadoTensorLoader.fromFloats(ropeFreqs.first()),
                 TornadoTensorLoader.fromFloats(ropeFreqs.second()),
-                load(retain, outputWeight),
+                loadTornadoTensorNative(outputWeight),
                 weightType);
     }
 
-    /** A device tensor as the file stores it, or with Q4_0, Q4_1 and K-quants converted to Q8_0. */
-    private static TornadoTensor load(boolean retain, GGMLTensorEntry entry) {
-        return retain ? loadTornadoTensorNative(entry) : loadTornadoTensor(entry);
-    }
-
     /**
-     * A per-layer weight array: as the file stores it where the load keeps every tensor ({@code
-     * retain}); otherwise Q4_K and Q6_K kept for the K-quant layers, and everything else converted
-     * to Q8_0.
-     */
-    private static TornadoTensor[] perLayer(
-            boolean retain, boolean kQuantLayers, int layers, IntFunction<GGMLTensorEntry> entry) {
-        if (retain) {
-            return loadArrayOfTornadoTensorsNative(layers, entry);
-        }
-        return kQuantLayers
-                ? loadArrayOfTornadoTensorsRetainingQ4_K(layers, entry)
-                : loadArrayOfTornadoTensors(layers, entry);
-    }
-
-    /**
-     * What a kept file that does not run the K-quant layers reports: F16 or Q8_0 when its
-     * projections all are, and otherwise the first projection type that is neither Q8_0 nor Q4_K,
-     * so that the Q8_0 layers, which read each tensor by its type, are the ones that run it.
+     * What a file that does not run the K-quant layers reports: F16 or Q8_0 when its projections
+     * all are, and otherwise the first projection type that is neither Q8_0 nor Q4_K, so that the
+     * Q8_0 layers, which read each tensor by its type, are the ones that run it.
      *
      * @throws ModelLoadException for a file mixing only Q4_K and Q8_0 projections, which no
      *     llama.cpp recipe writes and no Devstral plan reads

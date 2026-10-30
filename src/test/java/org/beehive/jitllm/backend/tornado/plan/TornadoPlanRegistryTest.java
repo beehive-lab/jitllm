@@ -4,10 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-import java.util.Map;
 import java.util.Set;
-import org.beehive.jitllm.runtime.backend.BackendId;
-import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
@@ -131,104 +128,7 @@ public class TornadoPlanRegistryTest {
     }
 
     /**
-     * Admission and per-tensor native support are separate declarations.
-     *
-     * <p>For a family whose model is one representation throughout they agree, and the default says
-     * so. They stop agreeing the moment a model is mixed: it reports one representation and holds
-     * several, so a memory prediction built from the admission set counts every tensor that is not
-     * the model's representation at the wrong size. This pins that the preflight reads the
-     * per-tensor declaration and not the admission one.
-     */
-    @Test
-    public void perTensorNativeSupportIsDeclaredApartFromAdmission() {
-        for (TornadoPlanProvider provider : TornadoPlanRegistry.discover()) {
-            if (decidesForTheWholeModel(provider)) {
-                continue; // its own rule, tested with the family
-            }
-            DeviceRetention declared = DeviceRetention.retaining(provider.nativeTensorTypes());
-            DeviceRetention asked =
-                    TornadoPlanRegistry.deviceRetention(
-                            provider.architecture(), Map.of(), 1, BackendId.CUDA);
-            for (DataType type : FILE_TYPES) {
-                assertEquals(
-                        provider.architecture() + " retains what it declares per tensor: " + type,
-                        declared.deviceType("blk.0.ffn_up.weight", type),
-                        asked.deviceType("blk.0.ffn_up.weight", type));
-            }
-        }
-
-        TornadoPlanProvider uniform =
-                new TornadoPlanProvider() {
-                    @Override
-                    public ArchitectureId architecture() {
-                        return ArchitectureId.of("uniform-test");
-                    }
-
-                    @Override
-                    public Set<DataType> supportedDataTypes() {
-                        return Set.of(DataType.Q8_0);
-                    }
-
-                    @Override
-                    public Set<ExecutionMode> supportedModes() {
-                        return Set.of(ExecutionMode.STANDARD);
-                    }
-
-                    @Override
-                    public org.beehive.jitllm.backend.tornado.plan.components
-                                    .SingleTokenForwardPlanComponents
-                            components(
-                                    DataType weights,
-                                    org.beehive.jitllm.inference.state.State state,
-                                    org.beehive.jitllm.model.Model model) {
-                        throw new UnsupportedOperationException("declaration only");
-                    }
-                };
-        assertEquals(
-                "a uniform family answers both questions the same way, without restating it",
-                uniform.supportedDataTypes(),
-                uniform.nativeTensorTypes());
-
-        TornadoPlanProvider mixed =
-                new TornadoPlanProvider() {
-                    @Override
-                    public ArchitectureId architecture() {
-                        return ArchitectureId.of("mixed-test");
-                    }
-
-                    @Override
-                    public Set<DataType> supportedDataTypes() {
-                        return Set.of(DataType.Q4_0);
-                    }
-
-                    @Override
-                    public Set<DataType> nativeTensorTypes() {
-                        return Set.of(DataType.Q4_0, DataType.Q5_K, DataType.F32);
-                    }
-
-                    @Override
-                    public Set<ExecutionMode> supportedModes() {
-                        return Set.of(ExecutionMode.STANDARD);
-                    }
-
-                    @Override
-                    public org.beehive.jitllm.backend.tornado.plan.components
-                                    .SingleTokenForwardPlanComponents
-                            components(
-                                    DataType weights,
-                                    org.beehive.jitllm.inference.state.State state,
-                                    org.beehive.jitllm.model.Model model) {
-                        throw new UnsupportedOperationException("declaration only");
-                    }
-                };
-        assertTrue(
-                "a mixed family reads representations it does not admit a plan for",
-                mixed.nativeTensorTypes().containsAll(mixed.supportedDataTypes())
-                        && mixed.nativeTensorTypes().size() > mixed.supportedDataTypes().size());
-    }
-
-    /**
-     * {@code qwen35} resolves in all three modes, and reads eight representations per tensor.
+     * {@code qwen35} resolves in all three modes.
      *
      * <p>The mode set is a claim the selection layer acts on: a mode declared without graphs fails
      * from inside TornadoVM, and a mode implemented but not declared is unreachable. Both are
@@ -246,16 +146,6 @@ public class TornadoPlanRegistryTest {
                 "admitted on the representation its trunk projections share",
                 Set.of(DataType.Q4_0, DataType.Q8_0),
                 qwen35.supportedDataTypes());
-        assertTrue(
-                "and reads five block layouts and F32 per tensor without materializing any",
-                qwen35.nativeTensorTypes()
-                        .containsAll(
-                                Set.of(
-                                        DataType.F32,
-                                        DataType.Q4_0,
-                                        DataType.Q4_1,
-                                        DataType.Q5_K,
-                                        DataType.Q6_K)));
     }
 
     private static TornadoPlanProvider provider(String architecture) {
@@ -264,28 +154,5 @@ public class TornadoPlanRegistryTest {
                 .filter(p -> p.architecture().equals(id))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("no plan provider for " + id));
-    }
-
-    private static final DataType[] FILE_TYPES = {
-        DataType.F32,
-        DataType.F16,
-        DataType.Q8_0,
-        DataType.Q4_0,
-        DataType.Q4_1,
-        DataType.Q4_K,
-        DataType.Q5_K,
-        DataType.Q6_K
-    };
-
-    /** Whether the provider replaces the per-tensor default with a rule of its own. */
-    private static boolean decidesForTheWholeModel(TornadoPlanProvider provider) {
-        try {
-            return provider.getClass()
-                            .getMethod("deviceRetention", Map.class, int.class, BackendId.class)
-                            .getDeclaringClass()
-                    != TornadoPlanProvider.class;
-        } catch (NoSuchMethodException e) {
-            throw new AssertionError(e);
-        }
     }
 }

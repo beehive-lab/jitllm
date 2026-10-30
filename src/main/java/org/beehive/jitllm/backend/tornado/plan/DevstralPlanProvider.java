@@ -14,7 +14,6 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
-import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -41,34 +40,6 @@ public final class DevstralPlanProvider implements TornadoPlanProvider {
     @Override
     public Set<DataType> supportedDataTypes() {
         return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
-    }
-
-    /** What a load keeps whatever the backend: F16 and Q8_0. The rest depends on the backend. */
-    @Override
-    public Set<DataType> nativeTensorTypes() {
-        return TornadoSupportSets.BOTH_REPRESENTATIONS;
-    }
-
-    /**
-     * Every quantized type kept where the loader keeps it ({@link
-     * TornadoPlanProvider#retainsNative}). Elsewhere a {@link #kQuantLayers} file keeps its Q4_K
-     * and Q6_K projections and converts its embedding and output projection, and any other file is
-     * converted to Q8_0, as the loader does.
-     */
-    @Override
-    public DeviceRetention deviceRetention(
-            Map<String, DataType> sourceTypes, int layers, BackendId backend) {
-        if (TornadoPlanProvider.retainsNative(backend)) {
-            return TornadoPlanProvider.nativeRetention(nativeTensorTypes(), backend);
-        }
-        DeviceRetention converted = DeviceRetention.retaining(nativeTensorTypes());
-        if (!kQuantLayers(sourceTypes, layers)) {
-            return converted;
-        }
-        return (name, source) ->
-                name.startsWith("blk.") && (source == DataType.Q4_K || source == DataType.Q6_K)
-                        ? source
-                        : converted.deviceType(name, source);
     }
 
     private static final String[] PROJECTIONS = {

@@ -701,8 +701,8 @@ public class Gemma4Q8_0FFNLayers
                     gemma4State.workspace.wrapXbSums);
         }
         // Gate and up share one pass over one local array and one tree reduction, so the pair has
-        // to be dispatched together rather than tensor by tensor. They are the same representation
-        // in every file this family loads -- projectionType() refuses a trunk that disagrees.
+        // to be dispatched together rather than tensor by tensor where a fused kernel reads their
+        // one representation; a layer that holds anything else projects them apart (splitGateUp).
         if (prepackedQ4(weights.w1Layered[layerIndex])
                 || prepackedQ4(weights.w3Layered[layerIndex])) {
             if (!packed

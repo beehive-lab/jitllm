@@ -2,7 +2,6 @@ package org.beehive.jitllm.backend.tornado.plan;
 
 import static org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets.NATIVE_QUANTIZED;
 
-import java.util.EnumSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -25,7 +24,6 @@ import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import org.beehive.jitllm.runtime.backend.BackendId;
-import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -85,38 +83,10 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
         return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
     }
 
-    /**
-     * What a load keeps on every backend: F16, Q8_0, and Q4_0 for the Q4_0 layers. The other types
-     * are kept where {@link TornadoPlanProvider#retainsNative} holds.
-     */
-    @Override
-    public Set<DataType> nativeTensorTypes() {
-        return Set.of(DataType.F16, DataType.Q8_0, DataType.Q4_0);
-    }
-
     /** Its Q4_0 layers read Q4_0 projections prepacked. */
     @Override
     public Set<DataType> prepackableTypes(ExecutionPolicy policy) {
         return Set.of(DataType.Q4_0);
-    }
-
-    /**
-     * Every quantized type kept where the loader keeps it ({@link
-     * TornadoPlanProvider#retainsNative}). Elsewhere Q4_0 is kept only when {@link #retainsQ4_0}
-     * says so, and everything else materialized as Q8_0, as the loader does; a kept Q4_1 {@code
-     * ffn_down} and Q6_K output projection are then still predicted at Q8_0: an over-estimate, the
-     * safe direction.
-     */
-    @Override
-    public DeviceRetention deviceRetention(
-            Map<String, DataType> sourceTypes, int layers, BackendId backend) {
-        Set<DataType> retained = EnumSet.copyOf(nativeTensorTypes());
-        if (TornadoPlanProvider.retainsNative(backend)) {
-            retained.addAll(NATIVE_QUANTIZED);
-        } else if (!retainsQ4_0(sourceTypes, layers, backend)) {
-            retained.remove(DataType.Q4_0);
-        }
-        return DeviceRetention.retaining(retained);
     }
 
     private static final String[] PROJECTIONS = {
@@ -125,9 +95,7 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
 
     /**
      * Whether a Llama load runs the Q4_0 layers: every per-layer weight the Q4_0 layer graph reads
-     * is Q4_0, except {@code ffn_down}, which may also be Q4_1. Asked by the loader, and by the
-     * memory preflight where the file is otherwise converted ({@link
-     * TornadoPlanProvider#retainsNative}), so the two cannot disagree about what a tensor becomes.
+     * is Q4_0, except {@code ffn_down}, which may also be Q4_1. Asked by the loader.
      *
      * <p>The norms are F32 and are read by dtype-independent kernels, so they are not consulted;
      * these seven are the ones a Q4_0 kernel would decode. {@code llama-quantize ... Q4_0} gives
@@ -135,7 +103,8 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
      * Llama-3.2-1B), and the layer graph has a Q4_1 kernel for exactly that projection.
      *
      * <p>Not on Metal: there a Q4_0 model's prompt is read by the SIMD-group batched prefill, which
-     * has Q4_0 kernels only, so a file with Q4_1 layers is materialized as Q8_0 instead.
+     * has Q4_0 kernels only, so a file with Q4_1 layers runs the Q8_0 layers instead, which read
+     * each tensor by its type.
      *
      * @param sourceTypes each tensor's representation in the file, by tensor name
      * @param layers the number of transformer blocks

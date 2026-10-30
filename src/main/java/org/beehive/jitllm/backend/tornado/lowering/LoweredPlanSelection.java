@@ -257,8 +257,9 @@ public final class LoweredPlanSelection {
     /**
      * How this model's weights are represented <b>on the device</b>.
      *
-     * <p>Not what the file held: a Q4_0 or K-quant file is materialized as {@link DataType#Q8_0},
-     * and it is the materialized form the task graphs are built for and the signature must carry.
+     * <p>Not every tensor's: a model reports one representation (its projections') while it holds
+     * several, each kept as the file stores it, and it is the reported one the task graphs are
+     * selected by and the signature must carry.
      */
     private static DataType weightRepresentation(Model model) {
         return model.weights().dataType();

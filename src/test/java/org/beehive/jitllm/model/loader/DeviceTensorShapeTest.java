@@ -18,8 +18,8 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
 
 /**
- * A device tensor read from a file records the dimensions the file gives it, whichever way it is
- * loaded, so that what happens to it on the device can be decided from the tensor itself.
+ * A device tensor read from a file records the dimensions the file gives it, so that what happens
+ * to it on the device can be decided from the tensor itself.
  *
  * <p>No model file and no device: the entries are synthesized with TornadoVM's array header in
  * front, as the loader receives them.
@@ -47,24 +47,11 @@ public class DeviceTensorShapeTest {
         try (Arena arena = Arena.ofConfined()) {
             TornadoTensor asStored =
                     ModelLoader.loadTornadoTensorNative(entry(arena, GGMLType.Q4_0));
-            TornadoTensor kept =
-                    ModelLoader.loadTornadoTensorRetainingQ4_0(entry(arena, GGMLType.Q4_0));
             TornadoTensor f32 = ModelLoader.loadTornadoTensorNative(entry(arena, GGMLType.F32));
 
             assertEquals(DataType.Q4_0, asStored.dataType());
             assertShape(asStored);
-            assertShape(kept);
             assertShape(f32);
-        }
-    }
-
-    @Test
-    public void aTensorConvertedAtLoadRecordsTheFileShape() {
-        try (Arena arena = Arena.ofConfined()) {
-            TornadoTensor converted = ModelLoader.loadTornadoTensor(entry(arena, GGMLType.Q4_0));
-
-            assertEquals(DataType.Q8_0, converted.dataType());
-            assertShape(converted);
         }
     }
 

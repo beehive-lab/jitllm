@@ -48,21 +48,9 @@ final class MemoryPreflight {
         ModelLoader.Description model = ModelLoader.describe(modelFile, contextLength);
         Configuration config = model.configuration();
         // Descriptors only. The loader owns the format types (Rule 4 permits it there and forbids
-        // them here), and what comes back is a neutral footprint.
-        //
-        // The footprint has to know which representations this family keeps as they are, or it
-        // predicts every quantized weight at its Q8_0 size — nearly double for a 4-bit file, which
-        // is the difference between refusing a 27B model on a 24 GB device and running it. The
-        // family decides from the file's own representations, as its loader does.
-        var weights =
-                ModelLoader.weightFootprint(
-                        modelFile,
-                        sourceTypes ->
-                                TornadoPlanRegistry.deviceRetention(
-                                        model.architecture(),
-                                        sourceTypes,
-                                        config.numberOfLayers(),
-                                        TornadoDevices.current().backend()));
+        // them here), and what comes back is a neutral footprint: every tensor at the size the
+        // loader keeps it, which is the file's own.
+        var weights = ModelLoader.weightFootprint(modelFile);
         return TornadoMemoryModel.predict(
                 weights,
                 config,
@@ -196,9 +184,9 @@ final class MemoryPreflight {
     }
 
     /**
-     * The weight type a load materializes, when the file's type determines it: F16 and Q8_0 are
-     * loaded as they are. Anything else may be converted, so it is left unknown rather than
-     * guessed.
+     * The weight type a load reports, when the file's type determines it: F16 and Q8_0 files report
+     * themselves. Any other reports its projections' first type other than Q8_0, which the file's
+     * type alone does not tell, so it is left unknown rather than guessed.
      */
     private static org.beehive.jitllm.runtime.tensor.DataType loadedWeightType(Path modelFile) {
         try {

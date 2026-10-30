@@ -10,18 +10,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
 import org.beehive.jitllm.format.GGMLType;
-import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.memory.WeightFootprint;
-import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 /**
- * The memory preflight predicts a Qwen3 file at the size the loader gives it, the file's own bytes
- * on every device backend, because both ask {@code TornadoPlanProvider.retainsNative}.
+ * The memory preflight predicts a file at the size the loader gives it: every tensor at the file's
+ * own representation, as every loader keeps it.
  *
  * <p>The file is synthetic and holds descriptors only, which is all the prediction reads: two
  * layers of 256 x 256 projections in the Q4_K_M layout, {@code attn_v} and {@code ffn_down} Q6_K in
@@ -49,13 +46,9 @@ public class Qwen3RetentionFootprintTest {
     @Test
     public void aKeptFileIsPredictedAtItsOwnSize() throws Exception {
         long perLayer = 10 * Q4_K_BYTES + 2 * Q6_K_BYTES + 2 * Q4_K_BYTES + 8 * NORM_BYTES;
-        Path file = qwen3Q4_K_MFile();
-        for (BackendId backend :
-                new BackendId[] {BackendId.CUDA, BackendId.METAL, BackendId.OPENCL}) {
-            WeightFootprint footprint = footprint(file, backend);
-            assertEquals(backend + " per layer", perLayer, footprint.perLayerBytes());
-            assertEquals(backend + " token_embd", Q6_K_BYTES, footprint.globalBytes());
-        }
+        WeightFootprint footprint = ModelLoader.weightFootprint(qwen3Q4_K_MFile());
+        assertEquals("per layer", perLayer, footprint.perLayerBytes());
+        assertEquals("token_embd", Q6_K_BYTES, footprint.globalBytes());
     }
 
     /**
@@ -84,17 +77,9 @@ public class Qwen3RetentionFootprintTest {
         tensors.put("token_embd.weight", GGMLType.Q6_K);
         Path file = folder.newFile("qwen3-mixed-descriptors.gguf").toPath();
         Files.write(file, headerOnlyGguf(tensors));
-        WeightFootprint footprint = footprint(file, BackendId.CUDA);
+        WeightFootprint footprint = ModelLoader.weightFootprint(file);
         assertEquals(expected, footprint.perLayerBytes());
         assertEquals(Q6_K_BYTES, footprint.globalBytes());
-    }
-
-    private static WeightFootprint footprint(Path file, BackendId backend) throws Exception {
-        return ModelLoader.weightFootprint(
-                file,
-                sourceTypes ->
-                        TornadoPlanRegistry.deviceRetention(
-                                ArchitectureId.of("qwen3"), sourceTypes, LAYERS, backend));
     }
 
     private Path qwen3Q4_K_MFile() throws Exception {
