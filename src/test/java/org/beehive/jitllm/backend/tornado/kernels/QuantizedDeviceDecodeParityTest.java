@@ -14,6 +14,7 @@ import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_0FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_1FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_KFloatTensor;
+import org.beehive.jitllm.tensor.standard.Q5_0FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q5_KFloatTensor;
 import org.beehive.jitllm.tensor.standard.Q6_KFloatTensor;
 import org.beehive.jitllm.tensor.standard.Q8_0FloatTensor;
@@ -203,6 +204,49 @@ public class QuantizedDeviceDecodeParityTest {
                 new int[] {0, 2},
                 (n, seg) -> new Q4_1FloatTensor(n, seg),
                 TransformerComputeKernelsQ4_1::decode);
+    }
+
+    @Test
+    public void q5_0DecodesIdenticallyOnBothSides() {
+        assertDecodersAgree(
+                "Q5_0",
+                GGMLType.Q5_0,
+                new int[] {0},
+                (n, seg) -> new Q5_0FloatTensor(n, seg),
+                TransformerComputeKernelsQ5_0::decode);
+    }
+
+    /**
+     * Both Q5_0 decoders read ggml's layout ({@code dequantize_row_q5_0}): with {@code d = 1} and
+     * quants {@code q_j = j}, low nibbles in {@code qs[j]} for {@code j < 16}, high nibbles for the
+     * rest, and the fifth bits in {@code qh}, weight {@code j} is {@code j - 16}.
+     */
+    @Test
+    public void q5_0ReadsGgmlsLayout() {
+        byte[] raw = new byte[22];
+        raw[0] = 0x00; // d = 1.0, fp16 0x3C00, little-endian
+        raw[1] = 0x3C;
+        int qh = 0xFFFF0000; // weights 16..31 have their fifth bit set
+        for (int i = 0; i < 4; i++) {
+            raw[2 + i] = (byte) (qh >>> (8 * i));
+        }
+        for (int i = 0; i < 16; i++) {
+            raw[6 + i] = (byte) (i | (i << 4));
+        }
+        ByteArray device = toDevice(raw);
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment segment = arena.allocate(raw.length);
+            MemorySegment.copy(raw, 0, segment, ValueLayout.JAVA_BYTE, 0, raw.length);
+            FloatTensor host = new Q5_0FloatTensor(32, segment);
+            for (int j = 0; j < 32; j++) {
+                assertEquals("host weight " + j, j - 16, host.getFloat(j), 0f);
+                assertEquals(
+                        "device weight " + j,
+                        j - 16,
+                        TransformerComputeKernelsQ5_0.decode(device, 0, j),
+                        0f);
+            }
+        }
     }
 
     @Test

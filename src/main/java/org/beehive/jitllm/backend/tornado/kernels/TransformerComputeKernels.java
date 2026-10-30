@@ -277,6 +277,21 @@ public class TransformerComputeKernels {
     }
 
     /**
+     * The embedding row, decoded from Q5_0 blocks into FP32: 22-byte blocks of 32 weights, each
+     * {@code d * (q - 16)}.
+     */
+    public static void convertQ5_0toFP32(KernelContext context, ByteArray x, FloatArray wrapX) {
+        int globalId = context.globalIdx;
+        if (globalId >= wrapX.getSize()) {
+            return;
+        }
+        int blockIdx = globalId / 32;
+        wrapX.set(
+                globalId,
+                TransformerComputeKernelsQ5_0.decode(x, blockIdx * 22, globalId - blockIdx * 32));
+    }
+
+    /**
      * The embedding row, decoded from Q5_K super-blocks into FP32.
      *
      * <p>The Q5_K twin of {@link #convertQ4_0toFP32}: the row is staged as 176-byte super-blocks of

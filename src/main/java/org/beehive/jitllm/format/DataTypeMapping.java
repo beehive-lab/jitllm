@@ -35,6 +35,7 @@ public final class DataTypeMapping {
             case Q8_0 -> DataType.Q8_0;
             case Q4_0 -> DataType.Q4_0;
             case Q4_1 -> DataType.Q4_1;
+            case Q5_0 -> DataType.Q5_0;
             case Q4_K -> DataType.Q4_K;
             case Q5_K -> DataType.Q5_K;
             case Q6_K -> DataType.Q6_K;
@@ -107,6 +108,7 @@ public final class DataTypeMapping {
             case Q8_0 -> GGMLType.Q8_0;
             case Q4_0 -> GGMLType.Q4_0;
             case Q4_1 -> GGMLType.Q4_1;
+            case Q5_0 -> GGMLType.Q5_0;
             case Q4_K -> GGMLType.Q4_K;
             case Q5_K -> GGMLType.Q5_K;
             case Q6_K -> GGMLType.Q6_K;

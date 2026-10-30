@@ -71,6 +71,16 @@ public enum DataType {
      */
     Q4_1(true),
 
+    /**
+     * 5-bit block quantization, 32 values to a block with one scale: {@code d * (q - 16)}, the
+     * fifth bit of each value packed apart from the low nibbles. Like {@link #Q4_0} it is decoded
+     * during compute on the CPU and kept as it is on the GPU.
+     *
+     * <p>Here because quantizers mix it into K-quant files: `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf`
+     * holds its q, k, output, gate and up projections as Q5_0.
+     */
+    Q5_0(true),
+
     /** 4-bit K-quantization, decoded during compute on the CPU and kept as it is on the GPU. */
     Q4_K(true),
 

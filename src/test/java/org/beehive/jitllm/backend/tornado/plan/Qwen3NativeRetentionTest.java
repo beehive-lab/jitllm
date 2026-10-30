@@ -17,6 +17,7 @@ public class Qwen3NativeRetentionTest {
                         DataType.Q8_0,
                         DataType.Q4_0,
                         DataType.Q4_1,
+                        DataType.Q5_0,
                         DataType.Q4_K,
                         DataType.Q5_K,
                         DataType.Q6_K),

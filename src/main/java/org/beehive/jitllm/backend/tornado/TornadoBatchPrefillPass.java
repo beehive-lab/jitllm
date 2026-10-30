@@ -11,6 +11,7 @@ import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_1FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_KFloatTensor;
+import org.beehive.jitllm.tensor.standard.Q5_0FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q5_KFloatTensor;
 import org.beehive.jitllm.tensor.standard.Q6_KFloatTensor;
 
@@ -254,7 +255,7 @@ public final class TornadoBatchPrefillPass {
                                     }
                                 });
             }
-            case Q4_1, Q4_K, Q5_K, Q6_K -> {
+            case Q4_1, Q5_0, Q4_K, Q5_K, Q6_K -> {
                 // Kept as the file stores it: decoded here into the FP32 batch carrier through the
                 // CPU tensor for that format, rows in parallel, as the branches above decode
                 // theirs.
@@ -264,6 +265,8 @@ public final class TornadoBatchPrefillPass {
                         switch (embTable.dataType()) {
                             case Q4_1 ->
                                     new Q4_1FloatTensor((int) (rows.byteSize() / 20 * 32), rows);
+                            case Q5_0 ->
+                                    new Q5_0FloatTensor((int) (rows.byteSize() / 22 * 32), rows);
                             case Q4_K ->
                                     new Q4_KFloatTensor((int) (rows.byteSize() / 144 * 256), rows);
                             case Q5_K ->
@@ -369,14 +372,15 @@ public final class TornadoBatchPrefillPass {
                         0L,
                         bytesPerToken);
             }
-            case Q4_1, Q4_K, Q5_K, Q6_K -> {
+            case Q4_1, Q5_0, Q4_K, Q5_K, Q6_K -> {
                 // Kept as the file stores it, decoded on the device: 20 bytes per 32 weights
-                // (Q4_1), or 144, 176 or 210 per 256 (Q4_K, Q5_K, Q6_K).
+                // (Q4_1), 22 (Q5_0), or 144, 176 or 210 per 256 (Q4_K, Q5_K, Q6_K).
                 MemorySegment tokenEmbeddings =
                         weights.getTokenEmbeddingTable().asByteArray().getSegment();
                 long bytesPerToken =
                         switch (weights.getTokenEmbeddingTable().dataType()) {
                             case Q4_1 -> (long) (config.dim() / 32) * 20;
+                            case Q5_0 -> (long) (config.dim() / 32) * 22;
                             case Q4_K -> (long) (config.dim() / 256) * 144;
                             case Q5_K -> (long) (config.dim() / 256) * 176;
                             default -> (long) (config.dim() / 256) * 210;

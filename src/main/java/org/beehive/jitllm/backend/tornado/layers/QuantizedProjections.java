@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
@@ -28,7 +29,7 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * <p>The decode counterpart of {@link FP16Projections}. A layer that holds one representation keeps
  * its family's fused kernels; a layer that holds several, as a Q4_K_M file's do, projects through
  * here one weight at a time. Every type the device stores natively has a floating-point kernel and
- * a packed one: Q8_0, Q4_0, Q4_1, Q4_K, Q5_K and Q6_K.
+ * a packed one: Q8_0, Q4_0, Q4_1, Q5_0, Q4_K, Q5_K and Q6_K.
  *
  * <p><b>Packed or not is one answer for the whole layer</b> ({@link
  * PackedActivationTasks#enabled}), because the RMS norm that feeds the projections quantizes the
@@ -120,6 +121,7 @@ public final class QuantizedProjections {
                     switch (type) {
                         case Q4_0 -> TransformerComputeKernelsQ4_0::matrixVectorGenericQ4_0DP4A;
                         case Q4_1 -> TransformerComputeKernelsQ4_1::matrixVectorGenericQ4_1DP4A;
+                        case Q5_0 -> TransformerComputeKernelsQ5_0::matrixVectorGenericQ5_0DP4A;
                         case Q4_K -> TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_KDP4A;
                         case Q5_K -> TransformerComputeKernelsQ5_K::matrixVectorGenericQ5_KDP4A;
                         case Q6_K -> TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_KDP4A;
@@ -157,6 +159,7 @@ public final class QuantizedProjections {
                     case Q8_0 -> TransformerComputeKernelsLayered::matrixVectorGenericQ8Byte;
                     case Q4_0 -> TransformerComputeKernelsQ4_0::matrixVectorGenericQ4_0;
                     case Q4_1 -> TransformerComputeKernelsQ4_1::matrixVectorGenericQ4_1;
+                    case Q5_0 -> TransformerComputeKernelsQ5_0::matrixVectorGenericQ5_0;
                     case Q4_K -> TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_K;
                     case Q5_K -> TransformerComputeKernelsQ5_K::matrixVectorGenericQ5_K;
                     case Q6_K -> TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_K;
@@ -209,6 +212,9 @@ public final class QuantizedProjections {
                         case Q4_1 ->
                                 TransformerComputeKernelsQ4_1
                                         ::matrixVectorGenericWithResidualQ4_1DP4A;
+                        case Q5_0 ->
+                                TransformerComputeKernelsQ5_0
+                                        ::matrixVectorGenericWithResidualQ5_0DP4A;
                         case Q4_K ->
                                 TransformerComputeKernelsQ4_K
                                         ::matrixVectorGenericWithResidualQ4_KDP4A;
@@ -240,6 +246,8 @@ public final class QuantizedProjections {
                                 TransformerComputeKernelsQ4_0::matrixVectorGenericWithResidualQ4_0;
                         case Q4_1 ->
                                 TransformerComputeKernelsQ4_1::matrixVectorGenericWithResidualQ4_1;
+                        case Q5_0 ->
+                                TransformerComputeKernelsQ5_0::matrixVectorGenericWithResidualQ5_0;
                         case Q4_K ->
                                 TransformerComputeKernelsQ4_K::matrixVectorGenericWithResidualQ4_K;
                         case Q5_K ->

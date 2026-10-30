@@ -13,6 +13,7 @@ import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_1TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_KTornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q5_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q5_KTornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q6_KTornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor;
@@ -208,6 +209,7 @@ public final class ModelLoader {
             case Q8_0 -> new Q8_0FloatTensor(size, data);
             case Q4_0 -> new Q4_0FloatTensor(size, data);
             case Q4_1 -> new Q4_1FloatTensor(size, data);
+            case Q5_0 -> new Q5_0FloatTensor(size, data);
             case Q4_K -> new Q4_KFloatTensor(size, data);
             case Q5_K -> new Q5_KFloatTensor(size, data);
             case Q6_K -> new Q6_KFloatTensor(size, data);
@@ -255,6 +257,9 @@ public final class ModelLoader {
                             entry.memorySegment(), shapeOf(entry));
             case Q4_1 ->
                     Q4_1TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q5_0 ->
+                    Q5_0TornadoTensor.fromTornadoMemorySegment(
                             entry.memorySegment(), shapeOf(entry));
             case Q4_K ->
                     Q4_KTornadoTensor.fromTornadoMemorySegment(

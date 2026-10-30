@@ -80,14 +80,15 @@ public final class TornadoPrefillPass {
                         0,
                         bytesPerToken);
             }
-            case Q4_1, Q4_K, Q5_K, Q6_K -> {
+            case Q4_1, Q5_0, Q4_K, Q5_K, Q6_K -> {
                 // Kept as the file stores it, decoded on the device: 20 bytes per 32 weights
-                // (Q4_1), or 144, 176 or 210 per 256 (Q4_K, Q5_K, Q6_K).
+                // (Q4_1), 22 (Q5_0), or 144, 176 or 210 per 256 (Q4_K, Q5_K, Q6_K).
                 MemorySegment tokenEmbeddings =
                         weights.getTokenEmbeddingTable().asByteArray().getSegment();
                 long bytesPerToken =
                         switch (weights.getTokenEmbeddingTable().dataType()) {
                             case Q4_1 -> (long) (configuration.dim() / 32) * 20;
+                            case Q5_0 -> (long) (configuration.dim() / 32) * 22;
                             case Q4_K -> (long) (configuration.dim() / 256) * 144;
                             case Q5_K -> (long) (configuration.dim() / 256) * 176;
                             default -> (long) (configuration.dim() / 256) * 210;

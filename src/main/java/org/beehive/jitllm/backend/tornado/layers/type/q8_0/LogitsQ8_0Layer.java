@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
@@ -258,6 +259,17 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
                     logits.task(
                             "vocab_proj",
                             TransformerComputeKernelsQ4_1::matrixVectorGenericQ4_1,
+                            context,
+                            state.workspace.wrapX,
+                            state.workspace.wrapLogits,
+                            w.asByteArray(),
+                            config.dim(),
+                            config.vocabularySize(),
+                            localSize);
+            case Q5_0 ->
+                    logits.task(
+                            "vocab_proj",
+                            TransformerComputeKernelsQ5_0::matrixVectorGenericQ5_0,
                             context,
                             state.workspace.wrapX,
                             state.workspace.wrapLogits,

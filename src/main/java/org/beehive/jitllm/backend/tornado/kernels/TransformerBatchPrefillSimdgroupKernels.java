@@ -18653,4 +18653,1374 @@ public final class TransformerBatchPrefillSimdgroupKernels {
             }
         }
     }
+
+    // @formatter:off
+    /**
+     * {@code out = w·x} as {@link #batchedGemmQ4_0HalfTiles}, for Q5_0 weights (each {@code d * (q
+     * - 16)}, the fifth bit from the block's {@code qh} word) staged as FP16. There is no FP32-tile
+     * Q5_0 form: this runs at every grid size. {@code n} must be a multiple of 32. Grid: {@code
+     * ceil(d / 64) * ceil(batch / 64)} workgroups of 128 threads.
+     */
+    // @formatter:on
+    public static void batchedGemmQ5_0HalfTiles(
+            KernelContext context,
+            FloatArray inputBatch,
+            FloatArray outputBatch,
+            ByteArray w,
+            int n,
+            int d,
+            int batch) {
+        HalfFloat[] sa = context.allocateHalfFloatLocalArray(2048);
+        float[] sb = context.allocateFloatLocalArray(2048);
+        float[] cs = context.allocateFloatLocalArray(256);
+        int tid = context.localIdx;
+        int sg = tid >> 5;
+        int lane = tid & 31;
+        int grp = context.groupIdx;
+        int rowTiles = (d + 63) >> 6;
+        int r0 = (grp % rowTiles) << 6;
+        int b0 = (grp / rowTiles) << 6;
+        boolean full = b0 + 64 <= batch && r0 + 64 <= d;
+        int lr = tid >> 1;
+        int kh = (tid & 1) << 4;
+        int aBase = ((((tid & 1) << 4) + (lr >> 3)) << 6) + (lr & 7);
+        int bBase = ((((tid & 1) << 4) + (lr >> 3)) << 6) + ((lr & 7) << 3);
+        int ca = (sg & 1) << 8;
+        int cb = (sg >> 1) << 8;
+        int rb = TornadoMath.min(r0 + lr, d - 1) * (n >> 5) * 22;
+        int xi = TornadoMath.min(b0 + lr, batch - 1) * n + kh;
+        int cbase = (b0 + ((sg >> 1) << 5)) * d + r0 + ((sg & 1) << 5);
+        Matrix8x8Float c0 = context.simdgroupMatrixZero();
+        Matrix8x8Float c1 = context.simdgroupMatrixZero();
+        Matrix8x8Float c2 = context.simdgroupMatrixZero();
+        Matrix8x8Float c3 = context.simdgroupMatrixZero();
+        Matrix8x8Float c4 = context.simdgroupMatrixZero();
+        Matrix8x8Float c5 = context.simdgroupMatrixZero();
+        Matrix8x8Float c6 = context.simdgroupMatrixZero();
+        Matrix8x8Float c7 = context.simdgroupMatrixZero();
+        Matrix8x8Float c8 = context.simdgroupMatrixZero();
+        Matrix8x8Float c9 = context.simdgroupMatrixZero();
+        Matrix8x8Float c10 = context.simdgroupMatrixZero();
+        Matrix8x8Float c11 = context.simdgroupMatrixZero();
+        Matrix8x8Float c12 = context.simdgroupMatrixZero();
+        Matrix8x8Float c13 = context.simdgroupMatrixZero();
+        Matrix8x8Float c14 = context.simdgroupMatrixZero();
+        Matrix8x8Float c15 = context.simdgroupMatrixZero();
+        for (int k0 = 0; k0 < n; k0 += 32) {
+            float a0;
+            float a1;
+            float a2;
+            float a3;
+            float a4;
+            float a5;
+            float a6;
+            float a7;
+            float a8;
+            float a9;
+            float a10;
+            float a11;
+            float a12;
+            float a13;
+            float a14;
+            float a15;
+            int qb = rb + (k0 >> 5) * 22;
+            float sc = w.getHalfFloat(qb).getFloat32();
+            int qh =
+                    (w.getHalfFloat(qb + 2).getHalfFloatValue() & 0xFFFF)
+                            | ((w.getHalfFloat(qb + 4).getHalfFloatValue() & 0xFFFF) << 16);
+            int qn = qb + 6;
+            int sh = kh >> 2;
+            a0 =
+                    (float)
+                                    ((((((w.get(qn + 0) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 0)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a1 =
+                    (float)
+                                    ((((((w.get(qn + 1) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 1)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a2 =
+                    (float)
+                                    ((((((w.get(qn + 2) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 2)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a3 =
+                    (float)
+                                    ((((((w.get(qn + 3) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 3)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a4 =
+                    (float)
+                                    ((((((w.get(qn + 4) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 4)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a5 =
+                    (float)
+                                    ((((((w.get(qn + 5) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 5)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a6 =
+                    (float)
+                                    ((((((w.get(qn + 6) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 6)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a7 =
+                    (float)
+                                    ((((((w.get(qn + 7) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 7)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a8 =
+                    (float)
+                                    ((((((w.get(qn + 8) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 8)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a9 =
+                    (float)
+                                    ((((((w.get(qn + 9) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 9)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a10 =
+                    (float)
+                                    ((((((w.get(qn + 10) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 10)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a11 =
+                    (float)
+                                    ((((((w.get(qn + 11) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 11)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a12 =
+                    (float)
+                                    ((((((w.get(qn + 12) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 12)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a13 =
+                    (float)
+                                    ((((((w.get(qn + 13) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 13)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a14 =
+                    (float)
+                                    ((((((w.get(qn + 14) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 14)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a15 =
+                    (float)
+                                    ((((((w.get(qn + 15) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 15)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            float y0 = inputBatch.get(xi + 0);
+            float y1 = inputBatch.get(xi + 1);
+            float y2 = inputBatch.get(xi + 2);
+            float y3 = inputBatch.get(xi + 3);
+            float y4 = inputBatch.get(xi + 4);
+            float y5 = inputBatch.get(xi + 5);
+            float y6 = inputBatch.get(xi + 6);
+            float y7 = inputBatch.get(xi + 7);
+            float y8 = inputBatch.get(xi + 8);
+            float y9 = inputBatch.get(xi + 9);
+            float y10 = inputBatch.get(xi + 10);
+            float y11 = inputBatch.get(xi + 11);
+            float y12 = inputBatch.get(xi + 12);
+            float y13 = inputBatch.get(xi + 13);
+            float y14 = inputBatch.get(xi + 14);
+            float y15 = inputBatch.get(xi + 15);
+            context.localBarrier();
+            sa[aBase + 0] = new HalfFloat(a0);
+            sa[aBase + 8] = new HalfFloat(a1);
+            sa[aBase + 16] = new HalfFloat(a2);
+            sa[aBase + 24] = new HalfFloat(a3);
+            sa[aBase + 32] = new HalfFloat(a4);
+            sa[aBase + 40] = new HalfFloat(a5);
+            sa[aBase + 48] = new HalfFloat(a6);
+            sa[aBase + 56] = new HalfFloat(a7);
+            sa[aBase + 512] = new HalfFloat(a8);
+            sa[aBase + 520] = new HalfFloat(a9);
+            sa[aBase + 528] = new HalfFloat(a10);
+            sa[aBase + 536] = new HalfFloat(a11);
+            sa[aBase + 544] = new HalfFloat(a12);
+            sa[aBase + 552] = new HalfFloat(a13);
+            sa[aBase + 560] = new HalfFloat(a14);
+            sa[aBase + 568] = new HalfFloat(a15);
+            sb[bBase + 0] = y0;
+            sb[bBase + 1] = y1;
+            sb[bBase + 2] = y2;
+            sb[bBase + 3] = y3;
+            sb[bBase + 4] = y4;
+            sb[bBase + 5] = y5;
+            sb[bBase + 6] = y6;
+            sb[bBase + 7] = y7;
+            sb[bBase + 512] = y8;
+            sb[bBase + 513] = y9;
+            sb[bBase + 514] = y10;
+            sb[bBase + 515] = y11;
+            sb[bBase + 516] = y12;
+            sb[bBase + 517] = y13;
+            sb[bBase + 518] = y14;
+            sb[bBase + 519] = y15;
+            context.localBarrier();
+            for (int ik = 0; ik < 4; ik++) {
+                int pa = ca + (ik << 9);
+                int pb = cb + (ik << 9);
+                Matrix8x8Half m0 = context.simdgroupMatrixLoad(sa, pa + 0, 8);
+                Matrix8x8Half m1 = context.simdgroupMatrixLoad(sa, pa + 64, 8);
+                Matrix8x8Half m2 = context.simdgroupMatrixLoad(sa, pa + 128, 8);
+                Matrix8x8Half m3 = context.simdgroupMatrixLoad(sa, pa + 192, 8);
+                Matrix8x8Float n0 = context.simdgroupMatrixLoad(sb, pb + 0, 8);
+                Matrix8x8Float n1 = context.simdgroupMatrixLoad(sb, pb + 64, 8);
+                Matrix8x8Float n2 = context.simdgroupMatrixLoad(sb, pb + 128, 8);
+                Matrix8x8Float n3 = context.simdgroupMatrixLoad(sb, pb + 192, 8);
+                c0 = context.simdgroupMatrixMultiplyAccumulate(n0, m0, c0);
+                c1 = context.simdgroupMatrixMultiplyAccumulate(n0, m1, c1);
+                c2 = context.simdgroupMatrixMultiplyAccumulate(n0, m2, c2);
+                c3 = context.simdgroupMatrixMultiplyAccumulate(n0, m3, c3);
+                c4 = context.simdgroupMatrixMultiplyAccumulate(n1, m0, c4);
+                c5 = context.simdgroupMatrixMultiplyAccumulate(n1, m1, c5);
+                c6 = context.simdgroupMatrixMultiplyAccumulate(n1, m2, c6);
+                c7 = context.simdgroupMatrixMultiplyAccumulate(n1, m3, c7);
+                c8 = context.simdgroupMatrixMultiplyAccumulate(n2, m0, c8);
+                c9 = context.simdgroupMatrixMultiplyAccumulate(n2, m1, c9);
+                c10 = context.simdgroupMatrixMultiplyAccumulate(n2, m2, c10);
+                c11 = context.simdgroupMatrixMultiplyAccumulate(n2, m3, c11);
+                c12 = context.simdgroupMatrixMultiplyAccumulate(n3, m0, c12);
+                c13 = context.simdgroupMatrixMultiplyAccumulate(n3, m1, c13);
+                c14 = context.simdgroupMatrixMultiplyAccumulate(n3, m2, c14);
+                c15 = context.simdgroupMatrixMultiplyAccumulate(n3, m3, c15);
+            }
+            xi += 32;
+        }
+        if (full) {
+            context.simdgroupMatrixStore(c0, outputBatch, cbase + 0 * d + 0, d);
+            context.simdgroupMatrixStore(c1, outputBatch, cbase + 0 * d + 8, d);
+            context.simdgroupMatrixStore(c2, outputBatch, cbase + 0 * d + 16, d);
+            context.simdgroupMatrixStore(c3, outputBatch, cbase + 0 * d + 24, d);
+            context.simdgroupMatrixStore(c4, outputBatch, cbase + 8 * d + 0, d);
+            context.simdgroupMatrixStore(c5, outputBatch, cbase + 8 * d + 8, d);
+            context.simdgroupMatrixStore(c6, outputBatch, cbase + 8 * d + 16, d);
+            context.simdgroupMatrixStore(c7, outputBatch, cbase + 8 * d + 24, d);
+            context.simdgroupMatrixStore(c8, outputBatch, cbase + 16 * d + 0, d);
+            context.simdgroupMatrixStore(c9, outputBatch, cbase + 16 * d + 8, d);
+            context.simdgroupMatrixStore(c10, outputBatch, cbase + 16 * d + 16, d);
+            context.simdgroupMatrixStore(c11, outputBatch, cbase + 16 * d + 24, d);
+            context.simdgroupMatrixStore(c12, outputBatch, cbase + 24 * d + 0, d);
+            context.simdgroupMatrixStore(c13, outputBatch, cbase + 24 * d + 8, d);
+            context.simdgroupMatrixStore(c14, outputBatch, cbase + 24 * d + 16, d);
+            context.simdgroupMatrixStore(c15, outputBatch, cbase + 24 * d + 24, d);
+        } else {
+            int t0 = b0 + ((sg >> 1) << 5);
+            int rr = r0 + ((sg & 1) << 5);
+            context.localBarrier();
+            context.simdgroupMatrixStore(c0, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c1, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c2, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c3, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c4, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c5, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c6, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c7, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c8, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c9, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c10, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c11, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c12, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c13, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c14, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c15, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, cs[(sg << 6) + e]);
+                }
+            }
+        }
+    }
+
+    // @formatter:off
+    /**
+     * {@code out += w·x} as {@link #batchedGemmQ8WithResidualHalfTiles}, for Q5_0 weights (each
+     * {@code d * (q - 16)}, the fifth bit from the block's {@code qh} word) staged as FP16. There
+     * is no FP32-tile Q5_0 form: this runs at every grid size. {@code n} must be a multiple of 32.
+     * Grid: {@code ceil(d / 64) * ceil(batch / 64)} workgroups of 128 threads.
+     */
+    // @formatter:on
+    public static void batchedGemmQ5_0WithResidualHalfTiles(
+            KernelContext context,
+            FloatArray inputBatch,
+            FloatArray outputBatch,
+            ByteArray w,
+            int n,
+            int d,
+            int batch) {
+        HalfFloat[] sa = context.allocateHalfFloatLocalArray(2048);
+        float[] sb = context.allocateFloatLocalArray(2048);
+        float[] cs = context.allocateFloatLocalArray(256);
+        int tid = context.localIdx;
+        int sg = tid >> 5;
+        int lane = tid & 31;
+        int grp = context.groupIdx;
+        int rowTiles = (d + 63) >> 6;
+        int r0 = (grp % rowTiles) << 6;
+        int b0 = (grp / rowTiles) << 6;
+        boolean full = b0 + 64 <= batch && r0 + 64 <= d;
+        int lr = tid >> 1;
+        int kh = (tid & 1) << 4;
+        int aBase = ((((tid & 1) << 4) + (lr >> 3)) << 6) + (lr & 7);
+        int bBase = ((((tid & 1) << 4) + (lr >> 3)) << 6) + ((lr & 7) << 3);
+        int ca = (sg & 1) << 8;
+        int cb = (sg >> 1) << 8;
+        int rb = TornadoMath.min(r0 + lr, d - 1) * (n >> 5) * 22;
+        int xi = TornadoMath.min(b0 + lr, batch - 1) * n + kh;
+        int cbase = (b0 + ((sg >> 1) << 5)) * d + r0 + ((sg & 1) << 5);
+        Matrix8x8Float c0 = context.simdgroupMatrixZero();
+        Matrix8x8Float c1 = context.simdgroupMatrixZero();
+        Matrix8x8Float c2 = context.simdgroupMatrixZero();
+        Matrix8x8Float c3 = context.simdgroupMatrixZero();
+        Matrix8x8Float c4 = context.simdgroupMatrixZero();
+        Matrix8x8Float c5 = context.simdgroupMatrixZero();
+        Matrix8x8Float c6 = context.simdgroupMatrixZero();
+        Matrix8x8Float c7 = context.simdgroupMatrixZero();
+        Matrix8x8Float c8 = context.simdgroupMatrixZero();
+        Matrix8x8Float c9 = context.simdgroupMatrixZero();
+        Matrix8x8Float c10 = context.simdgroupMatrixZero();
+        Matrix8x8Float c11 = context.simdgroupMatrixZero();
+        Matrix8x8Float c12 = context.simdgroupMatrixZero();
+        Matrix8x8Float c13 = context.simdgroupMatrixZero();
+        Matrix8x8Float c14 = context.simdgroupMatrixZero();
+        Matrix8x8Float c15 = context.simdgroupMatrixZero();
+        if (full) {
+            c0 = context.simdgroupMatrixLoad(outputBatch, cbase + 0 * d + 0, d);
+            c1 = context.simdgroupMatrixLoad(outputBatch, cbase + 0 * d + 8, d);
+            c2 = context.simdgroupMatrixLoad(outputBatch, cbase + 0 * d + 16, d);
+            c3 = context.simdgroupMatrixLoad(outputBatch, cbase + 0 * d + 24, d);
+            c4 = context.simdgroupMatrixLoad(outputBatch, cbase + 8 * d + 0, d);
+            c5 = context.simdgroupMatrixLoad(outputBatch, cbase + 8 * d + 8, d);
+            c6 = context.simdgroupMatrixLoad(outputBatch, cbase + 8 * d + 16, d);
+            c7 = context.simdgroupMatrixLoad(outputBatch, cbase + 8 * d + 24, d);
+            c8 = context.simdgroupMatrixLoad(outputBatch, cbase + 16 * d + 0, d);
+            c9 = context.simdgroupMatrixLoad(outputBatch, cbase + 16 * d + 8, d);
+            c10 = context.simdgroupMatrixLoad(outputBatch, cbase + 16 * d + 16, d);
+            c11 = context.simdgroupMatrixLoad(outputBatch, cbase + 16 * d + 24, d);
+            c12 = context.simdgroupMatrixLoad(outputBatch, cbase + 24 * d + 0, d);
+            c13 = context.simdgroupMatrixLoad(outputBatch, cbase + 24 * d + 8, d);
+            c14 = context.simdgroupMatrixLoad(outputBatch, cbase + 24 * d + 16, d);
+            c15 = context.simdgroupMatrixLoad(outputBatch, cbase + 24 * d + 24, d);
+        }
+        for (int k0 = 0; k0 < n; k0 += 32) {
+            float a0;
+            float a1;
+            float a2;
+            float a3;
+            float a4;
+            float a5;
+            float a6;
+            float a7;
+            float a8;
+            float a9;
+            float a10;
+            float a11;
+            float a12;
+            float a13;
+            float a14;
+            float a15;
+            int qb = rb + (k0 >> 5) * 22;
+            float sc = w.getHalfFloat(qb).getFloat32();
+            int qh =
+                    (w.getHalfFloat(qb + 2).getHalfFloatValue() & 0xFFFF)
+                            | ((w.getHalfFloat(qb + 4).getHalfFloatValue() & 0xFFFF) << 16);
+            int qn = qb + 6;
+            int sh = kh >> 2;
+            a0 =
+                    (float)
+                                    ((((((w.get(qn + 0) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 0)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a1 =
+                    (float)
+                                    ((((((w.get(qn + 1) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 1)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a2 =
+                    (float)
+                                    ((((((w.get(qn + 2) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 2)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a3 =
+                    (float)
+                                    ((((((w.get(qn + 3) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 3)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a4 =
+                    (float)
+                                    ((((((w.get(qn + 4) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 4)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a5 =
+                    (float)
+                                    ((((((w.get(qn + 5) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 5)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a6 =
+                    (float)
+                                    ((((((w.get(qn + 6) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 6)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a7 =
+                    (float)
+                                    ((((((w.get(qn + 7) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 7)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a8 =
+                    (float)
+                                    ((((((w.get(qn + 8) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 8)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a9 =
+                    (float)
+                                    ((((((w.get(qn + 9) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 9)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a10 =
+                    (float)
+                                    ((((((w.get(qn + 10) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 10)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a11 =
+                    (float)
+                                    ((((((w.get(qn + 11) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 11)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a12 =
+                    (float)
+                                    ((((((w.get(qn + 12) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 12)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a13 =
+                    (float)
+                                    ((((((w.get(qn + 13) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 13)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a14 =
+                    (float)
+                                    ((((((w.get(qn + 14) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 14)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            a15 =
+                    (float)
+                                    ((((((w.get(qn + 15) & 0xFF) >> sh) & 15)
+                                                    | (((qh >>> (kh + 15)) & 1) << 4)))
+                                            - 16)
+                            * sc;
+            float y0 = inputBatch.get(xi + 0);
+            float y1 = inputBatch.get(xi + 1);
+            float y2 = inputBatch.get(xi + 2);
+            float y3 = inputBatch.get(xi + 3);
+            float y4 = inputBatch.get(xi + 4);
+            float y5 = inputBatch.get(xi + 5);
+            float y6 = inputBatch.get(xi + 6);
+            float y7 = inputBatch.get(xi + 7);
+            float y8 = inputBatch.get(xi + 8);
+            float y9 = inputBatch.get(xi + 9);
+            float y10 = inputBatch.get(xi + 10);
+            float y11 = inputBatch.get(xi + 11);
+            float y12 = inputBatch.get(xi + 12);
+            float y13 = inputBatch.get(xi + 13);
+            float y14 = inputBatch.get(xi + 14);
+            float y15 = inputBatch.get(xi + 15);
+            context.localBarrier();
+            sa[aBase + 0] = new HalfFloat(a0);
+            sa[aBase + 8] = new HalfFloat(a1);
+            sa[aBase + 16] = new HalfFloat(a2);
+            sa[aBase + 24] = new HalfFloat(a3);
+            sa[aBase + 32] = new HalfFloat(a4);
+            sa[aBase + 40] = new HalfFloat(a5);
+            sa[aBase + 48] = new HalfFloat(a6);
+            sa[aBase + 56] = new HalfFloat(a7);
+            sa[aBase + 512] = new HalfFloat(a8);
+            sa[aBase + 520] = new HalfFloat(a9);
+            sa[aBase + 528] = new HalfFloat(a10);
+            sa[aBase + 536] = new HalfFloat(a11);
+            sa[aBase + 544] = new HalfFloat(a12);
+            sa[aBase + 552] = new HalfFloat(a13);
+            sa[aBase + 560] = new HalfFloat(a14);
+            sa[aBase + 568] = new HalfFloat(a15);
+            sb[bBase + 0] = y0;
+            sb[bBase + 1] = y1;
+            sb[bBase + 2] = y2;
+            sb[bBase + 3] = y3;
+            sb[bBase + 4] = y4;
+            sb[bBase + 5] = y5;
+            sb[bBase + 6] = y6;
+            sb[bBase + 7] = y7;
+            sb[bBase + 512] = y8;
+            sb[bBase + 513] = y9;
+            sb[bBase + 514] = y10;
+            sb[bBase + 515] = y11;
+            sb[bBase + 516] = y12;
+            sb[bBase + 517] = y13;
+            sb[bBase + 518] = y14;
+            sb[bBase + 519] = y15;
+            context.localBarrier();
+            for (int ik = 0; ik < 4; ik++) {
+                int pa = ca + (ik << 9);
+                int pb = cb + (ik << 9);
+                Matrix8x8Half m0 = context.simdgroupMatrixLoad(sa, pa + 0, 8);
+                Matrix8x8Half m1 = context.simdgroupMatrixLoad(sa, pa + 64, 8);
+                Matrix8x8Half m2 = context.simdgroupMatrixLoad(sa, pa + 128, 8);
+                Matrix8x8Half m3 = context.simdgroupMatrixLoad(sa, pa + 192, 8);
+                Matrix8x8Float n0 = context.simdgroupMatrixLoad(sb, pb + 0, 8);
+                Matrix8x8Float n1 = context.simdgroupMatrixLoad(sb, pb + 64, 8);
+                Matrix8x8Float n2 = context.simdgroupMatrixLoad(sb, pb + 128, 8);
+                Matrix8x8Float n3 = context.simdgroupMatrixLoad(sb, pb + 192, 8);
+                c0 = context.simdgroupMatrixMultiplyAccumulate(n0, m0, c0);
+                c1 = context.simdgroupMatrixMultiplyAccumulate(n0, m1, c1);
+                c2 = context.simdgroupMatrixMultiplyAccumulate(n0, m2, c2);
+                c3 = context.simdgroupMatrixMultiplyAccumulate(n0, m3, c3);
+                c4 = context.simdgroupMatrixMultiplyAccumulate(n1, m0, c4);
+                c5 = context.simdgroupMatrixMultiplyAccumulate(n1, m1, c5);
+                c6 = context.simdgroupMatrixMultiplyAccumulate(n1, m2, c6);
+                c7 = context.simdgroupMatrixMultiplyAccumulate(n1, m3, c7);
+                c8 = context.simdgroupMatrixMultiplyAccumulate(n2, m0, c8);
+                c9 = context.simdgroupMatrixMultiplyAccumulate(n2, m1, c9);
+                c10 = context.simdgroupMatrixMultiplyAccumulate(n2, m2, c10);
+                c11 = context.simdgroupMatrixMultiplyAccumulate(n2, m3, c11);
+                c12 = context.simdgroupMatrixMultiplyAccumulate(n3, m0, c12);
+                c13 = context.simdgroupMatrixMultiplyAccumulate(n3, m1, c13);
+                c14 = context.simdgroupMatrixMultiplyAccumulate(n3, m2, c14);
+                c15 = context.simdgroupMatrixMultiplyAccumulate(n3, m3, c15);
+            }
+            xi += 32;
+        }
+        if (full) {
+            context.simdgroupMatrixStore(c0, outputBatch, cbase + 0 * d + 0, d);
+            context.simdgroupMatrixStore(c1, outputBatch, cbase + 0 * d + 8, d);
+            context.simdgroupMatrixStore(c2, outputBatch, cbase + 0 * d + 16, d);
+            context.simdgroupMatrixStore(c3, outputBatch, cbase + 0 * d + 24, d);
+            context.simdgroupMatrixStore(c4, outputBatch, cbase + 8 * d + 0, d);
+            context.simdgroupMatrixStore(c5, outputBatch, cbase + 8 * d + 8, d);
+            context.simdgroupMatrixStore(c6, outputBatch, cbase + 8 * d + 16, d);
+            context.simdgroupMatrixStore(c7, outputBatch, cbase + 8 * d + 24, d);
+            context.simdgroupMatrixStore(c8, outputBatch, cbase + 16 * d + 0, d);
+            context.simdgroupMatrixStore(c9, outputBatch, cbase + 16 * d + 8, d);
+            context.simdgroupMatrixStore(c10, outputBatch, cbase + 16 * d + 16, d);
+            context.simdgroupMatrixStore(c11, outputBatch, cbase + 16 * d + 24, d);
+            context.simdgroupMatrixStore(c12, outputBatch, cbase + 24 * d + 0, d);
+            context.simdgroupMatrixStore(c13, outputBatch, cbase + 24 * d + 8, d);
+            context.simdgroupMatrixStore(c14, outputBatch, cbase + 24 * d + 16, d);
+            context.simdgroupMatrixStore(c15, outputBatch, cbase + 24 * d + 24, d);
+        } else {
+            int t0 = b0 + ((sg >> 1) << 5);
+            int rr = r0 + ((sg & 1) << 5);
+            context.localBarrier();
+            context.simdgroupMatrixStore(c0, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c1, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c2, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c3, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c4, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c5, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c6, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c7, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c8, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c9, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c10, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c11, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c12, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c13, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c14, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c15, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+        }
+    }
+
+    // @formatter:off
+    /**
+     * RMS norm, then gate and up as one GEMM and the SwiGLU, as {@link
+     * #batchedGemmRmsNormFFNGateUpQ8HalfTiles}, for Q5_0 weights (each {@code d * (q - 16)}, the
+     * fifth bit from the block's {@code qh} word) staged as FP16. There is no FP32-tile Q5_0 form:
+     * this runs at every grid size. {@code dim} must be a multiple of 32. Grid: {@code
+     * ceil(hiddenDim / 32) * ceil(batch / 64)} workgroups of 128 threads.
+     */
+    // @formatter:on
+    public static void batchedGemmRmsNormFFNGateUpQ5_0HalfTiles(
+            KernelContext context,
+            FloatArray x,
+            FloatArray hb,
+            FloatArray rmsWeights,
+            FloatArray scaleBatch,
+            ByteArray w1,
+            ByteArray w3,
+            int dim,
+            int hiddenDim,
+            int batch) {
+        HalfFloat[] sa = context.allocateHalfFloatLocalArray(2048);
+        float[] sb = context.allocateFloatLocalArray(2048);
+        float[] cs = context.allocateFloatLocalArray(512);
+        int tid = context.localIdx;
+        int sg = tid >> 5;
+        int lane = tid & 31;
+        int grp = context.groupIdx;
+        int rowTiles = (hiddenDim + 31) >> 5;
+        int r0 = (grp % rowTiles) << 5;
+        int b0 = (grp / rowTiles) << 6;
+        int lr = tid >> 1;
+        int kh = (tid & 1) << 4;
+        int aBase = ((((tid & 1) << 4) + (lr >> 3)) << 6) + (lr & 7);
+        int bBase = ((((tid & 1) << 4) + (lr >> 3)) << 6) + ((lr & 7) << 3);
+        int ca = (sg & 1) << 8;
+        int cb = (sg >> 1) << 8;
+        boolean up = ((lr >> 4) & 1) == 1;
+        int row = TornadoMath.min(r0 + ((lr >> 5) << 4) + (lr & 15), hiddenDim - 1);
+        int rb = row * (dim >> 5) * 22;
+        int tok = TornadoMath.min(b0 + lr, batch - 1);
+        int xi = tok * dim + kh;
+        int ri = kh;
+        float xsc = scaleBatch.get(tok);
+        Matrix8x8Float c0 = context.simdgroupMatrixZero();
+        Matrix8x8Float c1 = context.simdgroupMatrixZero();
+        Matrix8x8Float c2 = context.simdgroupMatrixZero();
+        Matrix8x8Float c3 = context.simdgroupMatrixZero();
+        Matrix8x8Float c4 = context.simdgroupMatrixZero();
+        Matrix8x8Float c5 = context.simdgroupMatrixZero();
+        Matrix8x8Float c6 = context.simdgroupMatrixZero();
+        Matrix8x8Float c7 = context.simdgroupMatrixZero();
+        Matrix8x8Float c8 = context.simdgroupMatrixZero();
+        Matrix8x8Float c9 = context.simdgroupMatrixZero();
+        Matrix8x8Float c10 = context.simdgroupMatrixZero();
+        Matrix8x8Float c11 = context.simdgroupMatrixZero();
+        Matrix8x8Float c12 = context.simdgroupMatrixZero();
+        Matrix8x8Float c13 = context.simdgroupMatrixZero();
+        Matrix8x8Float c14 = context.simdgroupMatrixZero();
+        Matrix8x8Float c15 = context.simdgroupMatrixZero();
+        for (int k0 = 0; k0 < dim; k0 += 32) {
+            float a0;
+            float a1;
+            float a2;
+            float a3;
+            float a4;
+            float a5;
+            float a6;
+            float a7;
+            float a8;
+            float a9;
+            float a10;
+            float a11;
+            float a12;
+            float a13;
+            float a14;
+            float a15;
+            if (!up) {
+                int qb = rb + (k0 >> 5) * 22;
+                float sc = w1.getHalfFloat(qb).getFloat32();
+                int qh =
+                        (w1.getHalfFloat(qb + 2).getHalfFloatValue() & 0xFFFF)
+                                | ((w1.getHalfFloat(qb + 4).getHalfFloatValue() & 0xFFFF) << 16);
+                int qn = qb + 6;
+                int sh = kh >> 2;
+                a0 =
+                        (float)
+                                        ((((((w1.get(qn + 0) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 0)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a1 =
+                        (float)
+                                        ((((((w1.get(qn + 1) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 1)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a2 =
+                        (float)
+                                        ((((((w1.get(qn + 2) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 2)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a3 =
+                        (float)
+                                        ((((((w1.get(qn + 3) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 3)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a4 =
+                        (float)
+                                        ((((((w1.get(qn + 4) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 4)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a5 =
+                        (float)
+                                        ((((((w1.get(qn + 5) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 5)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a6 =
+                        (float)
+                                        ((((((w1.get(qn + 6) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 6)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a7 =
+                        (float)
+                                        ((((((w1.get(qn + 7) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 7)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a8 =
+                        (float)
+                                        ((((((w1.get(qn + 8) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 8)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a9 =
+                        (float)
+                                        ((((((w1.get(qn + 9) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 9)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a10 =
+                        (float)
+                                        ((((((w1.get(qn + 10) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 10)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a11 =
+                        (float)
+                                        ((((((w1.get(qn + 11) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 11)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a12 =
+                        (float)
+                                        ((((((w1.get(qn + 12) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 12)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a13 =
+                        (float)
+                                        ((((((w1.get(qn + 13) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 13)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a14 =
+                        (float)
+                                        ((((((w1.get(qn + 14) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 14)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a15 =
+                        (float)
+                                        ((((((w1.get(qn + 15) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 15)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+            } else {
+                int qb = rb + (k0 >> 5) * 22;
+                float sc = w3.getHalfFloat(qb).getFloat32();
+                int qh =
+                        (w3.getHalfFloat(qb + 2).getHalfFloatValue() & 0xFFFF)
+                                | ((w3.getHalfFloat(qb + 4).getHalfFloatValue() & 0xFFFF) << 16);
+                int qn = qb + 6;
+                int sh = kh >> 2;
+                a0 =
+                        (float)
+                                        ((((((w3.get(qn + 0) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 0)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a1 =
+                        (float)
+                                        ((((((w3.get(qn + 1) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 1)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a2 =
+                        (float)
+                                        ((((((w3.get(qn + 2) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 2)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a3 =
+                        (float)
+                                        ((((((w3.get(qn + 3) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 3)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a4 =
+                        (float)
+                                        ((((((w3.get(qn + 4) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 4)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a5 =
+                        (float)
+                                        ((((((w3.get(qn + 5) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 5)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a6 =
+                        (float)
+                                        ((((((w3.get(qn + 6) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 6)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a7 =
+                        (float)
+                                        ((((((w3.get(qn + 7) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 7)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a8 =
+                        (float)
+                                        ((((((w3.get(qn + 8) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 8)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a9 =
+                        (float)
+                                        ((((((w3.get(qn + 9) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 9)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a10 =
+                        (float)
+                                        ((((((w3.get(qn + 10) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 10)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a11 =
+                        (float)
+                                        ((((((w3.get(qn + 11) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 11)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a12 =
+                        (float)
+                                        ((((((w3.get(qn + 12) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 12)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a13 =
+                        (float)
+                                        ((((((w3.get(qn + 13) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 13)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a14 =
+                        (float)
+                                        ((((((w3.get(qn + 14) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 14)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+                a15 =
+                        (float)
+                                        ((((((w3.get(qn + 15) & 0xFF) >> sh) & 15)
+                                                        | (((qh >>> (kh + 15)) & 1) << 4)))
+                                                - 16)
+                                * sc;
+            }
+            float y0 = x.get(xi + 0) * rmsWeights.get(ri + 0) * xsc;
+            float y1 = x.get(xi + 1) * rmsWeights.get(ri + 1) * xsc;
+            float y2 = x.get(xi + 2) * rmsWeights.get(ri + 2) * xsc;
+            float y3 = x.get(xi + 3) * rmsWeights.get(ri + 3) * xsc;
+            float y4 = x.get(xi + 4) * rmsWeights.get(ri + 4) * xsc;
+            float y5 = x.get(xi + 5) * rmsWeights.get(ri + 5) * xsc;
+            float y6 = x.get(xi + 6) * rmsWeights.get(ri + 6) * xsc;
+            float y7 = x.get(xi + 7) * rmsWeights.get(ri + 7) * xsc;
+            float y8 = x.get(xi + 8) * rmsWeights.get(ri + 8) * xsc;
+            float y9 = x.get(xi + 9) * rmsWeights.get(ri + 9) * xsc;
+            float y10 = x.get(xi + 10) * rmsWeights.get(ri + 10) * xsc;
+            float y11 = x.get(xi + 11) * rmsWeights.get(ri + 11) * xsc;
+            float y12 = x.get(xi + 12) * rmsWeights.get(ri + 12) * xsc;
+            float y13 = x.get(xi + 13) * rmsWeights.get(ri + 13) * xsc;
+            float y14 = x.get(xi + 14) * rmsWeights.get(ri + 14) * xsc;
+            float y15 = x.get(xi + 15) * rmsWeights.get(ri + 15) * xsc;
+            context.localBarrier();
+            sa[aBase + 0] = new HalfFloat(a0);
+            sa[aBase + 8] = new HalfFloat(a1);
+            sa[aBase + 16] = new HalfFloat(a2);
+            sa[aBase + 24] = new HalfFloat(a3);
+            sa[aBase + 32] = new HalfFloat(a4);
+            sa[aBase + 40] = new HalfFloat(a5);
+            sa[aBase + 48] = new HalfFloat(a6);
+            sa[aBase + 56] = new HalfFloat(a7);
+            sa[aBase + 512] = new HalfFloat(a8);
+            sa[aBase + 520] = new HalfFloat(a9);
+            sa[aBase + 528] = new HalfFloat(a10);
+            sa[aBase + 536] = new HalfFloat(a11);
+            sa[aBase + 544] = new HalfFloat(a12);
+            sa[aBase + 552] = new HalfFloat(a13);
+            sa[aBase + 560] = new HalfFloat(a14);
+            sa[aBase + 568] = new HalfFloat(a15);
+            sb[bBase + 0] = y0;
+            sb[bBase + 1] = y1;
+            sb[bBase + 2] = y2;
+            sb[bBase + 3] = y3;
+            sb[bBase + 4] = y4;
+            sb[bBase + 5] = y5;
+            sb[bBase + 6] = y6;
+            sb[bBase + 7] = y7;
+            sb[bBase + 512] = y8;
+            sb[bBase + 513] = y9;
+            sb[bBase + 514] = y10;
+            sb[bBase + 515] = y11;
+            sb[bBase + 516] = y12;
+            sb[bBase + 517] = y13;
+            sb[bBase + 518] = y14;
+            sb[bBase + 519] = y15;
+            context.localBarrier();
+            for (int ik = 0; ik < 4; ik++) {
+                int pa = ca + (ik << 9);
+                int pb = cb + (ik << 9);
+                Matrix8x8Half m0 = context.simdgroupMatrixLoad(sa, pa + 0, 8);
+                Matrix8x8Half m1 = context.simdgroupMatrixLoad(sa, pa + 64, 8);
+                Matrix8x8Half m2 = context.simdgroupMatrixLoad(sa, pa + 128, 8);
+                Matrix8x8Half m3 = context.simdgroupMatrixLoad(sa, pa + 192, 8);
+                Matrix8x8Float n0 = context.simdgroupMatrixLoad(sb, pb + 0, 8);
+                Matrix8x8Float n1 = context.simdgroupMatrixLoad(sb, pb + 64, 8);
+                Matrix8x8Float n2 = context.simdgroupMatrixLoad(sb, pb + 128, 8);
+                Matrix8x8Float n3 = context.simdgroupMatrixLoad(sb, pb + 192, 8);
+                c0 = context.simdgroupMatrixMultiplyAccumulate(n0, m0, c0);
+                c1 = context.simdgroupMatrixMultiplyAccumulate(n0, m1, c1);
+                c2 = context.simdgroupMatrixMultiplyAccumulate(n0, m2, c2);
+                c3 = context.simdgroupMatrixMultiplyAccumulate(n0, m3, c3);
+                c4 = context.simdgroupMatrixMultiplyAccumulate(n1, m0, c4);
+                c5 = context.simdgroupMatrixMultiplyAccumulate(n1, m1, c5);
+                c6 = context.simdgroupMatrixMultiplyAccumulate(n1, m2, c6);
+                c7 = context.simdgroupMatrixMultiplyAccumulate(n1, m3, c7);
+                c8 = context.simdgroupMatrixMultiplyAccumulate(n2, m0, c8);
+                c9 = context.simdgroupMatrixMultiplyAccumulate(n2, m1, c9);
+                c10 = context.simdgroupMatrixMultiplyAccumulate(n2, m2, c10);
+                c11 = context.simdgroupMatrixMultiplyAccumulate(n2, m3, c11);
+                c12 = context.simdgroupMatrixMultiplyAccumulate(n3, m0, c12);
+                c13 = context.simdgroupMatrixMultiplyAccumulate(n3, m1, c13);
+                c14 = context.simdgroupMatrixMultiplyAccumulate(n3, m2, c14);
+                c15 = context.simdgroupMatrixMultiplyAccumulate(n3, m3, c15);
+            }
+            xi += 32;
+            ri += 32;
+        }
+        int t0 = b0 + ((sg >> 1) << 5);
+        int rr = r0 + ((sg & 1) << 4);
+        context.localBarrier();
+        context.simdgroupMatrixStore(c0, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c2, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 0 + (e >> 3);
+            int r = rr + 0 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c1, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c3, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 0 + (e >> 3);
+            int r = rr + 8 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c4, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c6, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 8 + (e >> 3);
+            int r = rr + 0 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c5, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c7, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 8 + (e >> 3);
+            int r = rr + 8 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c8, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c10, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 16 + (e >> 3);
+            int r = rr + 0 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c9, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c11, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 16 + (e >> 3);
+            int r = rr + 8 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c12, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c14, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 24 + (e >> 3);
+            int r = rr + 0 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c13, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c15, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 24 + (e >> 3);
+            int r = rr + 8 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+    }
 }

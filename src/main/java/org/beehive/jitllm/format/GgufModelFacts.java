@@ -41,6 +41,7 @@ public record GgufModelFacts(String arch, String quant, double paramsB) {
             case 1 -> "F16";
             case 2 -> "Q4_0";
             case 3 -> "Q4_1";
+            case 8 -> "Q5_0";
             case 7 -> "Q8_0";
             case 14 -> "Q4_K_S";
             case 15 -> "Q4_K_M";

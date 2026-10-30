@@ -28,6 +28,7 @@ public class Activation extends AbstractLayer implements ActivationTaskGraph {
     public static boolean keptEmbedding(DataType embedding) {
         return embedding == DataType.Q4_0
                 || embedding == DataType.Q4_1
+                || embedding == DataType.Q5_0
                 || embedding == DataType.Q4_K
                 || embedding == DataType.Q5_K
                 || embedding == DataType.Q6_K;
@@ -39,6 +40,7 @@ public class Activation extends AbstractLayer implements ActivationTaskGraph {
         return switch (embedding) {
             case Q4_0 -> TransformerComputeKernels::convertQ4_0toFP32;
             case Q4_1 -> TransformerComputeKernels::convertQ4_1toFP32;
+            case Q5_0 -> TransformerComputeKernels::convertQ5_0toFP32;
             case Q4_K -> TransformerComputeKernels::convertQ4_KtoFP32;
             case Q5_K -> TransformerComputeKernels::convertQ5_KtoFP32;
             case Q6_K -> TransformerComputeKernels::convertQ6_KtoFP32;
