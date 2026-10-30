@@ -1,9 +1,11 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers;
+import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.fp16.Gemma4FP16PlanComponents;
@@ -14,6 +16,7 @@ import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -31,9 +34,21 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
         return ID;
     }
 
+    /**
+     * F16, Q8_0 and Q4_0 as before, and the types a file kept as it is on CUDA and Metal reports
+     * ({@link TornadoPlanProvider#retainsNative}): the quantized layers read each tensor by its
+     * type.
+     */
     @Override
     public Set<DataType> supportedDataTypes() {
-        return Set.of(DataType.F16, DataType.Q8_0, DataType.Q4_0);
+        return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
+    }
+
+    /** {@link #nativeTensorTypes}, and every quantized type where the loader keeps them all. */
+    @Override
+    public DeviceRetention deviceRetention(
+            Map<String, DataType> sourceTypes, int layers, BackendId backend) {
+        return TornadoPlanProvider.nativeRetention(nativeTensorTypes(), backend);
     }
 
     /**
@@ -95,7 +110,7 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
         // as another rather than fail.
         return switch (weights) {
             case F16 -> new Gemma4FP16PlanComponents(typed, model);
-            case Q8_0, Q4_0 -> new Gemma4Q8_0PlanComponents(typed, model);
+            case Q8_0, Q4_0, Q4_1, Q4_K, Q5_K, Q6_K -> new Gemma4Q8_0PlanComponents(typed, model);
             default ->
                     throw new UnsupportedOperationException(
                             "gemma4 has no plan components for " + weights);
@@ -135,16 +150,18 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
     }
 
     /**
-     * The batched projections and attention are tensor-core kernels, with no scalar twin. Without
-     * tensor cores the plan fails at "MMA instructions only supported for the CUDA backend".
+     * The batched projections and attention are tensor-core kernels, and on Metal SIMD-group
+     * kernels for every quantized type a kept file holds, with no scalar twin. Without either the
+     * plan fails at "MMA instructions only supported for the CUDA backend".
      */
     @Override
     public Optional<String> batchPrefillUnsupported(Combination c) {
         return c.tensorCores()
-                        || (BackendId.METAL.equals(c.backend()) && c.weights() == DataType.Q8_0)
+                        || (BackendId.METAL.equals(c.backend())
+                                && TornadoSupportSets.NATIVE_QUANTIZED.contains(c.weights()))
                 ? Optional.empty()
                 : Optional.of(
-                        "the gemma4 batched prefill is written for tensor cores, and for Q8_0"
+                        "the gemma4 batched prefill is written for tensor cores, and for quantized"
                                 + " weights on the Metal SIMD-group kernels, neither of which"
                                 + " this combination has");
     }
@@ -155,7 +172,9 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
      * layers write the FP16 cache too, attending with the split kernel.
      */
     @Override
-    public Optional<String> fp16KeyValueUnsupported(Combination c) {
+    public Optional<String> fp16KeyValueUnsupported(Combination q) {
+        // A kept file runs the quantized layers, which write the cache as they do Q8_0's.
+        Combination c = q.weights() == DataType.Q4_0 ? q : q.asQ8_0Layers();
         if (c.weights() != DataType.Q8_0
                 && c.weights() != DataType.Q4_0
                 && c.weights() != DataType.F16) {
@@ -165,7 +184,8 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
     }
 
     @Override
-    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+    public Optional<String> metalFp16KeyValueUnsupported(Combination q) {
+        Combination c = q.weights() == DataType.Q4_0 ? q : q.asQ8_0Layers();
         return c.weights() == DataType.Q8_0
                 ? Optional.empty()
                 : Optional.of("the gemma4 " + c.weights() + " FP16 cache is not verified on Metal");
@@ -173,19 +193,20 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
 
     @Override
     public boolean metalBatchedPrefillDefault(DataType weights) {
-        return weights == DataType.F16 || weights == DataType.Q8_0;
+        return weights == DataType.F16 || TornadoSupportSets.NATIVE_QUANTIZED.contains(weights);
     }
 
     /**
-     * CUDA: the projections through cuBLAS over the weights decoded to FP16. Metal: the Q8_0
-     * projections on Apple MLX, attention kept on the SIMD-group kernels.
+     * CUDA: the projections through cuBLAS over the weights decoded to FP16, every quantized type.
+     * Metal: the Q8_0 projections on Apple MLX, attention kept on the SIMD-group kernels, and no
+     * other quantized type until part 5 (decision 2).
      */
     @Override
     public Set<DataType> nativeLibraryWeights(BackendId backend) {
         if (BackendId.METAL.equals(backend)) {
             return Set.of(DataType.Q8_0);
         }
-        return BackendId.CUDA.equals(backend) ? Set.of(DataType.Q8_0, DataType.Q4_0) : Set.of();
+        return BackendId.CUDA.equals(backend) ? TornadoSupportSets.NATIVE_QUANTIZED : Set.of();
     }
 
     /** The MLX projections' FP16 copies (or affine repack) and staging, on Metal. */

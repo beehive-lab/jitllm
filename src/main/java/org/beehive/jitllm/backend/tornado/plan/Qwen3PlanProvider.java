@@ -1,5 +1,8 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import static org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets.NATIVE_QUANTIZED;
+
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport;
@@ -20,6 +23,7 @@ import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -56,15 +60,38 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
                         decode.maxBlocksPerSlot()));
     }
 
-    /** The FP16 and Q8_0 logits sample on the device; a Q4_0 file's logits are the Q8_0 layer. */
+    /**
+     * The FP16 and Q8_0 logits sample on the device, and so do every quantized file's: they are the
+     * Q8_0 logits layer, whichever representation the output projection holds.
+     */
     @Override
     public boolean deviceSampling(DataType weights) {
-        return weights == DataType.F16 || weights == DataType.Q8_0 || weights == DataType.Q4_0;
+        return weights == DataType.F16 || NATIVE_QUANTIZED.contains(weights);
     }
 
+    /**
+     * F16, and every quantized representation a kept load holds ({@link
+     * TornadoPlanProvider#retainsNative}).
+     */
     @Override
     public Set<DataType> supportedDataTypes() {
+        return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
+    }
+
+    /** What a load keeps whatever the backend: F16 and Q8_0. The rest depends on the backend. */
+    @Override
+    public Set<DataType> nativeTensorTypes() {
         return TornadoSupportSets.BOTH_REPRESENTATIONS;
+    }
+
+    /**
+     * Every quantized type kept exactly where the loader keeps it: {@link
+     * TornadoPlanProvider#retainsNative}.
+     */
+    @Override
+    public DeviceRetention deviceRetention(
+            Map<String, DataType> sourceTypes, int layers, BackendId backend) {
+        return TornadoPlanProvider.nativeRetention(nativeTensorTypes(), backend);
     }
 
     @Override
@@ -80,20 +107,24 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
                 : new Qwen3Q8_0PlanComponents(typed, model);
     }
 
-    /** The NVIDIA-class decode layers, without a Q4_0 path. */
+    /**
+     * The NVIDIA-class decode layers, without a Q4_0 path. A quantized file runs the Q8_0 layers,
+     * which read each tensor by its type and write the cache as they do Q8_0's, so it is answered
+     * as Q8_0.
+     */
     @Override
     public Optional<String> fp16KeyValueUnsupported(Combination c) {
-        return Fp16KeyValueSupport.nvidiaDecodeLayers(c, false);
+        return Fp16KeyValueSupport.nvidiaDecodeLayers(c.asQ8_0Layers(), false);
     }
 
     @Override
     public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
-        return Fp16KeyValueSupport.metalDecodeLayers(c, false);
+        return Fp16KeyValueSupport.metalDecodeLayers(c.asQ8_0Layers(), false);
     }
 
     @Override
     public boolean metalBatchedPrefillDefault(DataType weights) {
-        return weights == DataType.F16 || weights == DataType.Q8_0;
+        return weights == DataType.F16 || NATIVE_QUANTIZED.contains(weights);
     }
 
     /**
@@ -106,7 +137,12 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
             // Batched prefill attention and projections on Apple MLX (MlxPrefill).
             return Set.of(DataType.F16, DataType.Q8_0);
         }
-        return BackendId.CUDA.equals(backend) ? Set.of(DataType.F16, DataType.Q8_0) : Set.of();
+        // Every quantized type through cuBLAS over the same FP16-decoded weights; on MLX only
+        // Q8_0 until part 5 (decision 2), so a Metal session with any other file runs the JIT
+        // kernels.
+        return BackendId.CUDA.equals(backend)
+                ? TornadoSupportSets.F16_AND_NATIVE_QUANTIZED
+                : Set.of();
     }
 
     /** The tensor-core layers' attention, split-K and decoded-projection buffers. */
@@ -117,9 +153,15 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
             int batchSize,
             ExecutionPolicy policy,
             boolean fp16Cache) {
+        // MLX only for the types Metal's native libraries take here (nativeLibraryWeights).
         var mlx =
-                MlxPrefill.resolve(policy, weights, config)
-                        .map(m -> MlxPrefill.workspace(weights, config, batchSize, false, false));
+                nativeLibraryWeights(BackendId.METAL).contains(weights)
+                        ? MlxPrefill.resolve(policy, weights, config)
+                                .map(
+                                        m ->
+                                                MlxPrefill.workspace(
+                                                        weights, config, batchSize, false, false))
+                        : Optional.<BatchPrefillWorkspace>empty();
         if (mlx.isPresent()) {
             return mlx;
         }
@@ -133,7 +175,7 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
                             .Qwen3FP16LayersBatchPrefillMMA.workspace(
                             qwen3, batchSize, policy, fp16Cache));
         }
-        if (weights == DataType.Q8_0) {
+        if (NATIVE_QUANTIZED.contains(weights)) {
             return Optional.of(
                     org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill
                             .Qwen3Q8_0LayersBatchPrefillMMA.workspace(

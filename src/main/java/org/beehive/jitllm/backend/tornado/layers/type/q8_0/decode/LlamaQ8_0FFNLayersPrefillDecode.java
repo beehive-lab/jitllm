@@ -66,6 +66,9 @@ public class LlamaQ8_0FFNLayersPrefillDecode extends LlamaQ8_0FFNLayers {
                 state.workspace.wrapHb,
                 state.workspace.positionHolder);
         layer.consumeFromDevice(pred, state.workspace.wrapBlockTable);
+        if (splitsGateUp()) {
+            layer.consumeFromDevice(pred, state.workspace.wrapHb2);
+        }
         return layer;
     }
     // @formatter:on

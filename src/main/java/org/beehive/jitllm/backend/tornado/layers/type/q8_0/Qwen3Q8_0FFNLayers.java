@@ -8,16 +8,19 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
+import org.beehive.jitllm.backend.tornado.layers.QuantizedProjections;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.RmsReductionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.SplitKvAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
@@ -68,6 +71,9 @@ public class Qwen3Q8_0FFNLayers
      */
     private static final int PACKED_LOCAL = 32;
 
+    /** The per-weight projections of a layer that is not entirely Q8_0. */
+    private final QuantizedProjections projections;
+
     // @formatter:off
     /**
      * How many adjacent transformer layers one decode graph holds.
@@ -107,6 +113,9 @@ public class Qwen3Q8_0FFNLayers
         this.nEmbdHead = nEmbdHeadV;
         this.nEmbdGqa = nEmbdVGqa;
         this.gqa = config.numberOfHeads() / config.numberOfKeyValueHeads();
+        this.projections =
+                new QuantizedProjections(
+                        context, state.workspace, LOCAL_WORK_GROUP_SIZE_ALLOC, PACKED_LOCAL);
         setupFFNLayers();
     }
 
@@ -171,7 +180,9 @@ public class Qwen3Q8_0FFNLayers
         for (int i = 0; i < config.numberOfLayers(); i++) {
             String l = layerGraphName(i) + "." + layerTaskPrefix(i);
             gridScheduler.addWorkerGrid(l + "attn_rms_reduce", rmsReduceWorker);
-            if (packed) {
+            if (nativeLayer(i)) {
+                addNativeWorkerGrids(gridScheduler, l, i, qDim0, kvDim0);
+            } else if (packed) {
                 gridScheduler.addWorkerGrid(
                         l + "attn_rms_apply", PackedActivationTasks.quantizeWorker(config.dim()));
                 gridScheduler.addWorkerGrid(l + "qkv_projection", packedWorker(fusedQKVRows));
@@ -300,7 +311,36 @@ public class Qwen3Q8_0FFNLayers
         }
 
         // Fused RMS Apply + QKV Projection
-        if (PackedActivationTasks.enabled()) {
+        if (nativeLayer(layerIndex)) {
+            projections.rmsApply(
+                    unifiedLayer,
+                    tp + "attn_rms_apply",
+                    weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                    qwen3State.workspace.temp);
+            // Three projections rather than one fused kernel: wq, wk and wv can be different
+            // representations in the same layer, and one kernel cannot decode two block formats.
+            projections.matvec(
+                    unifiedLayer,
+                    tp + "q_proj",
+                    qwen3State.workspace.wrapQ,
+                    weights.wqLayered[layerIndex],
+                    inputDim,
+                    qDim);
+            projections.matvec(
+                    unifiedLayer,
+                    tp + "k_proj",
+                    qwen3State.workspace.wrapK,
+                    weights.wkLayered[layerIndex],
+                    inputDim,
+                    kvDim);
+            projections.matvec(
+                    unifiedLayer,
+                    tp + "v_proj",
+                    qwen3State.workspace.wrapV,
+                    weights.wvLayered[layerIndex],
+                    inputDim,
+                    kvDim);
+        } else if (PackedActivationTasks.enabled()) {
             PackedActivationTasks.rmsApplyAndQuantize(
                     unifiedLayer,
                     tp + "attn_rms_apply",
@@ -513,7 +553,16 @@ public class Qwen3Q8_0FFNLayers
         }
 
         // Output Projection with Residual
-        if (PackedActivationTasks.enabled()) {
+        if (nativeLayer(layerIndex)) {
+            projections.residualMatvec(
+                    unifiedLayer,
+                    tp + "attn_out_quantize",
+                    tp + "attn_output_proj",
+                    qwen3State.workspace.wrapXb,
+                    weights.woLayered[layerIndex],
+                    qDim,
+                    config.dim());
+        } else if (PackedActivationTasks.enabled()) {
             // The attention output is a new activation: quantized fresh for the projection.
             PackedActivationTasks.quantize(
                     unifiedLayer,
@@ -582,7 +631,20 @@ public class Qwen3Q8_0FFNLayers
         }
 
         // Fused RMS Apply + Gate/Up Projection + SiLU + GLU
-        if (PackedActivationTasks.enabled()) {
+        if (nativeLayer(layerIndex)) {
+            projections.rmsApply(
+                    unifiedLayer,
+                    tp + "ffn_rms_apply",
+                    weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                    qwen3State.workspace.tempFFN);
+            projections.gateUp(
+                    unifiedLayer,
+                    tp + "ffn_gate_up",
+                    weights.w1Layered[layerIndex],
+                    weights.w3Layered[layerIndex],
+                    config.dim(),
+                    config.hiddenDim());
+        } else if (PackedActivationTasks.enabled()) {
             PackedActivationTasks.rmsApplyAndQuantize(
                     unifiedLayer,
                     tp + "ffn_rms_apply",
@@ -633,7 +695,16 @@ public class Qwen3Q8_0FFNLayers
         }
 
         // Down Projection with Residual
-        if (PackedActivationTasks.enabled()) {
+        if (nativeLayer(layerIndex)) {
+            projections.residualMatvec(
+                    unifiedLayer,
+                    tp + "ffn_down_quantize",
+                    tp + "ffn_down_proj",
+                    qwen3State.workspace.wrapHb,
+                    weights.w2Layered[layerIndex],
+                    config.hiddenDim(),
+                    config.dim());
+        } else if (PackedActivationTasks.enabled()) {
             // SwiGLU's output, quantized fresh for the down projection.
             PackedActivationTasks.quantize(
                     unifiedLayer,
@@ -681,6 +752,68 @@ public class Qwen3Q8_0FFNLayers
     }
 
     // @formatter:on
+
+    /**
+     * Whether a layer holds any projection in a representation other than Q8_0, as a Q4_K_M file's
+     * do. Such a layer applies each norm once and projects one weight at a time, each through the
+     * kernel for its own type ({@link QuantizedProjections}), as Devstral's layers do; an all-Q8_0
+     * layer keeps its fused kernels.
+     */
+    private boolean nativeLayer(int layerIndex) {
+        for (TornadoTensor w :
+                new TornadoTensor[] {
+                    weights.wqLayered[layerIndex],
+                    weights.wkLayered[layerIndex],
+                    weights.wvLayered[layerIndex],
+                    weights.woLayered[layerIndex],
+                    weights.w1Layered[layerIndex],
+                    weights.w2Layered[layerIndex],
+                    weights.w3Layered[layerIndex]
+                }) {
+            if (w.dataType() != DataType.Q8_0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether some layer runs its gate and up projections apart, which needs {@code wrapHb2}. */
+    protected boolean splitsGateUp() {
+        for (int i = 0; i < config.numberOfLayers(); i++) {
+            if (nativeLayer(i)
+                    && !projections.fusedGateUp(weights.w1Layered[i], weights.w3Layered[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The grids of a layer that projects one weight at a time: one workgroup per output row. */
+    private void addNativeWorkerGrids(
+            GridScheduler scheduler, String l, int layerIndex, int qDim, int kvDim) {
+        WorkerGrid rmsApplyWorker = projections.rmsApplyWorker(config.dim());
+        scheduler.addWorkerGrid(l + "attn_rms_apply", rmsApplyWorker);
+        scheduler.addWorkerGrid(l + "q_proj", projections.worker(qDim));
+        scheduler.addWorkerGrid(l + "k_proj", projections.worker(kvDim));
+        scheduler.addWorkerGrid(l + "v_proj", projections.worker(kvDim));
+        scheduler.addWorkerGrid(l + "attn_output_proj", projections.worker(config.dim()));
+        scheduler.addWorkerGrid(l + "ffn_rms_apply", rmsApplyWorker);
+        projections.addGateUpGrids(
+                scheduler,
+                l,
+                "ffn_gate_up",
+                weights.w1Layered[layerIndex],
+                weights.w3Layered[layerIndex],
+                config.hiddenDim());
+        scheduler.addWorkerGrid(l + "ffn_down_proj", projections.worker(config.dim()));
+        if (projections.packed()) {
+            scheduler.addWorkerGrid(
+                    l + "attn_out_quantize", PackedActivationTasks.quantizeWorker(qDim));
+            scheduler.addWorkerGrid(
+                    l + "ffn_down_quantize",
+                    PackedActivationTasks.quantizeWorker(config.hiddenDim()));
+        }
+    }
 
     /**
      * Returns the explicit predecessor graph name for consumeFromDevice.
@@ -740,6 +873,10 @@ public class Qwen3Q8_0FFNLayers
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
             unifiedLayer.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION, state.workspace.wrapAttSplit);
+            if (splitsGateUp()) {
+                unifiedLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, qwen3State.workspace.wrapHb2);
+            }
         } else {
             // Subsequent layers: consume from the previous layer graph BY NAME. The no-arg
             // consume form does not propagate the persisted KV cache in interpreter mode, so
@@ -763,6 +900,9 @@ public class Qwen3Q8_0FFNLayers
             unifiedLayer.consumeFromDevice(
                     pred, qwen3State.workspace.tempQcur, qwen3State.workspace.tempKcur); //
             unifiedLayer.consumeFromDevice(pred, state.workspace.wrapAttSplit);
+            if (splitsGateUp()) {
+                unifiedLayer.consumeFromDevice(pred, qwen3State.workspace.wrapHb2);
+            }
         }
         return unifiedLayer;
     }

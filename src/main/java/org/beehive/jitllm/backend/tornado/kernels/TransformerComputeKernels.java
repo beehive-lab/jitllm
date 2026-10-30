@@ -225,6 +225,74 @@ public class TransformerComputeKernels {
         wrapX.set(globalId, scale * (q - 8));
     }
 
+    /**
+     * The embedding row, decoded from Q4_K super-blocks into FP32.
+     *
+     * <p>The Q4_K twin of {@link #convertQ4_0toFP32}: the row is staged as 144-byte super-blocks of
+     * 256 weights, and its length is a multiple of 256.
+     */
+    public static void convertQ4_KtoFP32(KernelContext context, ByteArray x, FloatArray wrapX) {
+        int globalId = context.globalIdx;
+        if (globalId >= wrapX.getSize()) {
+            return;
+        }
+        int blockIdx = globalId / 256;
+        wrapX.set(
+                globalId,
+                TransformerComputeKernelsQ4_K.decode(x, blockIdx * 144, globalId - blockIdx * 256));
+    }
+
+    /**
+     * The embedding row, decoded from Q6_K super-blocks into FP32.
+     *
+     * <p>The Q6_K twin of {@link #convertQ4_0toFP32}: the row is staged as 210-byte super-blocks of
+     * 256 weights, and its length is a multiple of 256.
+     */
+    public static void convertQ6_KtoFP32(KernelContext context, ByteArray x, FloatArray wrapX) {
+        int globalId = context.globalIdx;
+        if (globalId >= wrapX.getSize()) {
+            return;
+        }
+        int blockIdx = globalId / 256;
+        wrapX.set(
+                globalId,
+                TransformerComputeKernelsQ6_K.decode(x, blockIdx * 210, globalId - blockIdx * 256));
+    }
+
+    /**
+     * The embedding row, decoded from Q4_1 blocks into FP32.
+     *
+     * <p>The Q4_1 twin of {@link #convertQ4_0toFP32}: the row is staged as 20-byte blocks of 32
+     * weights, each {@code d * q + m}.
+     */
+    public static void convertQ4_1toFP32(KernelContext context, ByteArray x, FloatArray wrapX) {
+        int globalId = context.globalIdx;
+        if (globalId >= wrapX.getSize()) {
+            return;
+        }
+        int blockIdx = globalId / 32;
+        wrapX.set(
+                globalId,
+                TransformerComputeKernelsQ4_1.decode(x, blockIdx * 20, globalId - blockIdx * 32));
+    }
+
+    /**
+     * The embedding row, decoded from Q5_K super-blocks into FP32.
+     *
+     * <p>The Q5_K twin of {@link #convertQ4_0toFP32}: the row is staged as 176-byte super-blocks of
+     * 256 weights, and its length is a multiple of 256.
+     */
+    public static void convertQ5_KtoFP32(KernelContext context, ByteArray x, FloatArray wrapX) {
+        int globalId = context.globalIdx;
+        if (globalId >= wrapX.getSize()) {
+            return;
+        }
+        int blockIdx = globalId / 256;
+        wrapX.set(
+                globalId,
+                TransformerComputeKernelsQ5_K.decode(x, blockIdx * 176, globalId - blockIdx * 256));
+    }
+
     public static void convertQ8_0toFP32(KernelContext context, ByteArray x, FloatArray wrapX) {
         int globalId = context.globalIdx;
         int totalElements = wrapX.getSize();

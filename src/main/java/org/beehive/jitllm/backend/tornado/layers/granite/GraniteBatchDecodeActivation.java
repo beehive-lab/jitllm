@@ -1,12 +1,15 @@
 package org.beehive.jitllm.backend.tornado.layers.granite;
 
+import org.beehive.jitllm.backend.tornado.kernels.GraniteBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.GraniteKernels;
+import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.granite.GraniteConfiguration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -48,19 +51,28 @@ public class GraniteBatchDecodeActivation implements ActivationTaskGraph {
 
     public GraniteBatchDecodeActivation(
             State state, GraniteConfiguration config, String lastBatchLayerId, boolean isQ8) {
+        this(state, config, lastBatchLayerId, isQ8 ? DataType.Q8_0 : DataType.F16);
+    }
+
+    /**
+     * @param embedding the token embedding tensor's own representation, which is what is staged
+     *     into {@code embeddingX} and converted on the device
+     */
+    public GraniteBatchDecodeActivation(
+            State state, GraniteConfiguration config, String lastBatchLayerId, DataType embedding) {
         this.dim = config.dim();
         this.embeddingScale = config.embeddingScale();
+        this.kept = Activation.keptEmbedding(embedding);
         KernelContext ctx = new KernelContext();
-        this.itg = buildGraph(ctx, state, lastBatchLayerId, isQ8, false).snapshot();
+        this.itg = buildGraph(ctx, state, lastBatchLayerId, embedding).snapshot();
     }
+
+    /** Whether the row is decoded by its own type, then multiplied by its own task. */
+    private final boolean kept;
 
     // @formatter:off
     private TaskGraph buildGraph(
-            KernelContext ctx,
-            State state,
-            String lastBatchLayerId,
-            boolean isQ8,
-            boolean q4Embeddings) {
+            KernelContext ctx, State state, String lastBatchLayerId, DataType embedding) {
         boolean fp16KV = state.usesFp16KeyValueCache();
         Object keyCache = fp16KV ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
         Object valueCache =
@@ -73,7 +85,21 @@ public class GraniteBatchDecodeActivation implements ActivationTaskGraph {
         // The block table travels the same chain as the caches it addresses: the batch-prefill
         // graphs allocate it, this graph passes it through, decode layer 0 consumes it.
         tg.consumeFromDevice(lastBatchLayerId, state.workspace.wrapBlockTable);
-        if (isQ8) {
+        if (kept) {
+            tg.task(
+                    "updateX",
+                    Activation.embeddingRowDecode(embedding),
+                    ctx,
+                    (ByteArray) state.workspace.embeddingX,
+                    state.workspace.wrapX);
+            tg.task(
+                    "scaleX",
+                    GraniteBatchPrefillKernels::batchedScale,
+                    ctx,
+                    state.workspace.wrapX,
+                    embeddingScale,
+                    dim);
+        } else if (embedding == DataType.Q8_0) {
             tg.task(
                     "updateX",
                     GraniteKernels::convertQ8_0toFP32withGraniteScale,
@@ -105,6 +131,10 @@ public class GraniteBatchDecodeActivation implements ActivationTaskGraph {
     public GridScheduler updateGridScheduler(GridScheduler scheduler) {
         scheduler.addWorkerGrid(
                 "decodeActivation.updateX", WorkerGridFactory.genericWorker(dim, 128));
+        if (kept) {
+            scheduler.addWorkerGrid(
+                    "decodeActivation.scaleX", WorkerGridFactory.genericWorker(dim, 128));
+        }
         return scheduler;
     }
 }

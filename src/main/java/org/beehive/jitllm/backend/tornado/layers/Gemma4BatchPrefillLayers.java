@@ -17,6 +17,9 @@ import org.beehive.jitllm.backend.tornado.kernels.MlxPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TensorCoreAttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
@@ -707,10 +710,11 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     /**
      * Refuses a projection this plan has no decoder for, by name.
      *
-     * <p>Three block layouts reach the trunk: 34 bytes to thirty-two weights for Q8_0, 18 for Q4_0,
-     * and 20 for Q4_1 — which this family needs for exactly four tensors, {@code ffn_down} on
-     * blocks 0-3 of the Q4_0 file. Reading one as another is a plausible-looking activation and
-     * wrong output, so an unknown representation is a missing case and not something to guess at.
+     * <p>Six block layouts reach the trunk: 34 bytes to thirty-two weights for Q8_0, 18 for Q4_0,
+     * 20 for Q4_1 ({@code ffn_down} on blocks 0-3 of the Q4_0 file), and 144, 176 and 210 bytes to
+     * 256 for Q4_K, Q5_K and Q6_K, which a K-quant file kept as it is mixes per tensor. Reading one
+     * as another is a plausible-looking activation and wrong output, so an unknown representation
+     * is a missing case and not something to guess at.
      */
     // @formatter:on
     private static void requireDecodable(TornadoTensor t, String name) {
@@ -718,13 +722,16 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         if (type != DataType.Q8_0
                 && type != DataType.Q4_0
                 && type != DataType.Q4_1
+                && type != DataType.Q4_K
+                && type != DataType.Q5_K
+                && type != DataType.Q6_K
                 && type != DataType.F16) {
             throw new UnsupportedOperationException(
                     "gemma4 batched prefill has no decoder for "
                             + type
                             + " ("
                             + name
-                            + "); the trunk must be Q8_0, Q4_0, Q4_1 or F16");
+                            + "); the trunk must be Q8_0, Q4_0, Q4_1, Q4_K, Q5_K, Q6_K or F16");
         }
     }
 
@@ -776,6 +783,26 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             w.asByteArray(),
                             state.workspace.weightsF16Scratch,
                             destOffset);
+            case Q4_K, Q5_K, Q6_K ->
+                    layer.task(
+                            taskName,
+                            switch (w.dataType()) {
+                                case Q4_K -> TransformerComputeKernelsQ4_K::dequantizeQ4_KToFP16;
+                                case Q5_K -> TransformerComputeKernelsQ5_K::dequantizeQ5_KToFP16;
+                                default -> TransformerComputeKernelsQ6_K::dequantizeQ6_KToFP16;
+                            },
+                            context,
+                            w.asByteArray(),
+                            state.workspace.weightsF16Scratch,
+                            destOffset,
+                            // Elements: 256 to a super-block of 144, 176 or 210 bytes.
+                            w.asByteArray().getSize()
+                                    / switch (w.dataType()) {
+                                        case Q4_K -> 144;
+                                        case Q5_K -> 176;
+                                        default -> 210;
+                                    }
+                                    * 256);
             case F16 ->
                     layer.task(
                             taskName,
@@ -1049,14 +1076,27 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             int off) {
         simdgroupTasks.put(layer.getTaskGraphName() + "." + task, d);
         if (w instanceof TornadoTensor t) {
-            if (t.dataType() != DataType.Q8_0) {
-                throw new UnsupportedOperationException(
-                        "gemma4 batched prefill on Metal reads Q8_0 projections only, not "
-                                + t.dataType());
-            }
             layer.task(
                     task,
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ8Strided,
+                    switch (t.dataType()) {
+                        case Q8_0 ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ8Strided;
+                        case Q4_0 ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ4_0Strided;
+                        case Q4_1 ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ4_1Strided;
+                        case Q4_K ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ4_KStrided;
+                        case Q5_K ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ5_KStrided;
+                        case Q6_K ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ6_KStrided;
+                        default ->
+                                throw new UnsupportedOperationException(
+                                        "gemma4 batched prefill on Metal has no SIMD-group GEMM for "
+                                                + t.dataType()
+                                                + " projections");
+                    },
                     context,
                     x,
                     out,

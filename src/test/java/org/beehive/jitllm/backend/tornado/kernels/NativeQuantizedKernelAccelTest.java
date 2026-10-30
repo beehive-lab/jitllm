@@ -278,8 +278,18 @@ public class NativeQuantizedKernelAccelTest {
     // @formatter:on
     @Test
     public void theFusedQ4_0GateUpSwiGluRunsOnTheDevice() throws Exception {
-        byte[] rawGate = randomBlocks(GGMLType.Q4_0, 991L);
-        byte[] rawUp = randomBlocks(GGMLType.Q4_0, 4242L);
+        checkFusedGateUp(GGMLType.Q4_0);
+    }
+
+    /** The same for Q5_K, whose fused kernel the single-token layers run in floating point. */
+    @Test
+    public void theFusedQ5_KGateUpSwiGluRunsOnTheDevice() throws Exception {
+        checkFusedGateUp(GGMLType.Q5_K);
+    }
+
+    private static void checkFusedGateUp(GGMLType type) throws Exception {
+        byte[] rawGate = randomBlocks(type, 991L);
+        byte[] rawUp = randomBlocks(type, 4242L);
 
         FloatArray x = new FloatArray(N);
         for (int i = 0; i < N; i++) {
@@ -294,8 +304,14 @@ public class NativeQuantizedKernelAccelTest {
             MemorySegment.copy(rawGate, 0, gateSegment, ValueLayout.JAVA_BYTE, 0, rawGate.length);
             MemorySegment upSegment = arena.allocate(rawUp.length);
             MemorySegment.copy(rawUp, 0, upSegment, ValueLayout.JAVA_BYTE, 0, rawUp.length);
-            FloatTensor gate = new Q4_0FloatTensor(D * N, gateSegment);
-            FloatTensor up = new Q4_0FloatTensor(D * N, upSegment);
+            FloatTensor gate =
+                    type == GGMLType.Q4_0
+                            ? new Q4_0FloatTensor(D * N, gateSegment)
+                            : new Q5_KFloatTensor(D * N, gateSegment);
+            FloatTensor up =
+                    type == GGMLType.Q4_0
+                            ? new Q4_0FloatTensor(D * N, upSegment)
+                            : new Q5_KFloatTensor(D * N, upSegment);
             for (int row = 0; row < D; row++) {
                 float gateSum = 0f;
                 float upSum = 0f;
@@ -319,7 +335,9 @@ public class NativeQuantizedKernelAccelTest {
                                 DataTransferMode.FIRST_EXECUTION, x, gateWeights, upWeights, out)
                         .task(
                                 "ffn",
-                                TransformerComputeKernelsQ4_0::fusedFFNGateUpSiLUQ4_0,
+                                type == GGMLType.Q4_0
+                                        ? TransformerComputeKernelsQ4_0::fusedFFNGateUpSiLUQ4_0
+                                        : TransformerComputeKernelsQ5_K::fusedFFNGateUpSiLUQ5_K,
                                 context,
                                 x,
                                 out,

@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport;
@@ -15,6 +16,7 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -29,9 +31,26 @@ public final class GranitePlanProvider implements TornadoPlanProvider {
         return ID;
     }
 
+    /** F16, and every quantized representation a kept load holds. */
     @Override
     public Set<DataType> supportedDataTypes() {
+        return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
+    }
+
+    /** What a load keeps whatever the backend: F16 and Q8_0. The rest depends on the backend. */
+    @Override
+    public Set<DataType> nativeTensorTypes() {
         return TornadoSupportSets.BOTH_REPRESENTATIONS;
+    }
+
+    /**
+     * Every quantized type kept exactly where the loader keeps it: {@link
+     * TornadoPlanProvider#retainsNative}.
+     */
+    @Override
+    public DeviceRetention deviceRetention(
+            Map<String, DataType> sourceTypes, int layers, BackendId backend) {
+        return TornadoPlanProvider.nativeRetention(nativeTensorTypes(), backend);
     }
 
     @Override
@@ -50,17 +69,17 @@ public final class GranitePlanProvider implements TornadoPlanProvider {
     /** Single-token and batched-prefill plans, on the NVIDIA-class decode layers. */
     @Override
     public Optional<String> fp16KeyValueUnsupported(Combination c) {
-        return Fp16KeyValueSupport.singleTokenAndBatchedNvidiaLayers(c);
+        return Fp16KeyValueSupport.singleTokenAndBatchedNvidiaLayers(c.asQ8_0Layers());
     }
 
     @Override
     public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
-        return Fp16KeyValueSupport.metalSingleTokenAndBatchedLayers(c);
+        return Fp16KeyValueSupport.metalSingleTokenAndBatchedLayers(c.asQ8_0Layers());
     }
 
     @Override
     public boolean metalBatchedPrefillDefault(DataType weights) {
-        return weights == DataType.F16 || weights == DataType.Q8_0;
+        return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED.contains(weights);
     }
 
     /**
@@ -77,8 +96,9 @@ public final class GranitePlanProvider implements TornadoPlanProvider {
     }
 
     /**
-     * The batched prefill's projections through cuBLAS: Q8_0 weights decoded to FP16 first; F16
-     * weights' output and down projections.
+     * The batched prefill's projections through cuBLAS: quantized weights decoded to FP16 first;
+     * F16 weights' output and down projections. MLX on Metal for F16 and Q8_0, and no other
+     * quantized type until part 5 (decision 2).
      */
     @Override
     public Set<DataType> nativeLibraryWeights(BackendId backend) {
@@ -86,7 +106,9 @@ public final class GranitePlanProvider implements TornadoPlanProvider {
             // Batched prefill attention and projections on Apple MLX (MlxPrefill).
             return Set.of(DataType.F16, DataType.Q8_0);
         }
-        return BackendId.CUDA.equals(backend) ? Set.of(DataType.Q8_0, DataType.F16) : Set.of();
+        return BackendId.CUDA.equals(backend)
+                ? TornadoSupportSets.F16_AND_NATIVE_QUANTIZED
+                : Set.of();
     }
 
     /** On Metal under native libraries, what the MLX prefill allocates ({@code MlxPrefill}). */
@@ -97,7 +119,10 @@ public final class GranitePlanProvider implements TornadoPlanProvider {
             int batchSize,
             ExecutionPolicy policy,
             boolean fp16Cache) {
-        return MlxPrefill.resolve(policy, weights, config)
-                .map(mlx -> MlxPrefill.workspace(weights, config, batchSize, false, false));
+        // MLX only for the types Metal's native libraries take here (nativeLibraryWeights).
+        return nativeLibraryWeights(BackendId.METAL).contains(weights)
+                ? MlxPrefill.resolve(policy, weights, config)
+                        .map(mlx -> MlxPrefill.workspace(weights, config, batchSize, false, false))
+                : Optional.empty();
     }
 }

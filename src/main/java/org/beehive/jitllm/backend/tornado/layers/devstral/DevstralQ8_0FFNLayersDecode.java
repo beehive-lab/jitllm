@@ -57,6 +57,9 @@ public class DevstralQ8_0FFNLayersDecode extends DevstralQ8_0FFNLayers {
                     weights.freq_cis_imagFlat.asFloatArray());
             layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, keyCache(), valueCache());
             layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, state.workspace.wrapBlockTable);
+            if (splitsGateUp()) {
+                layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, state.workspace.wrapHb2);
+            }
         } else {
             String pred = GraphNames.layer(layerIndex - 1);
             layer.consumeFromDevice(
@@ -75,6 +78,9 @@ public class DevstralQ8_0FFNLayersDecode extends DevstralQ8_0FFNLayers {
                     weights.freq_cis_realFlat.asFloatArray(),
                     weights.freq_cis_imagFlat.asFloatArray());
             layer.consumeFromDevice(pred, state.workspace.wrapBlockTable);
+            if (splitsGateUp()) {
+                layer.consumeFromDevice(pred, state.workspace.wrapHb2);
+            }
         }
         return layer;
     }

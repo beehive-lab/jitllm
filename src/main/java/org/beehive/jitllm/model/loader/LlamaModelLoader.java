@@ -3,11 +3,11 @@ package org.beehive.jitllm.model.loader;
 import static org.beehive.jitllm.model.loader.ModelLoader.*;
 
 import java.nio.channels.FileChannel;
-import java.util.HashMap;
 import java.util.Map;
 import org.beehive.jitllm.auxiliary.Pair;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.plan.LlamaPlanProvider;
+import org.beehive.jitllm.backend.tornado.plan.TornadoPlanProvider;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
 import org.beehive.jitllm.format.DataTypeMapping;
@@ -20,6 +20,7 @@ import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
 import org.beehive.jitllm.model.format.LlamaChatFormat;
 import org.beehive.jitllm.model.llama.Llama;
 import org.beehive.jitllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
@@ -130,87 +131,103 @@ public class LlamaModelLoader extends AbstractModelLoader<Llama, LlamaConfigurat
             Pair<float[], float[]> ropeFreqs,
             GGMLTensorEntry tokenEmbeddings,
             GGMLTensorEntry outputWeight) {
-        DataType weightType =
-                DataTypeMapping.materializedType(outputWeight.ggmlType(), ExecutionTarget.GPU);
-
         final int nl = config.numberOfLayers();
+        BackendId backend = TornadoDevices.current().backend();
 
-        // A Q4_0 file's per-layer weights are kept as they are rather than materialized as Q8_0,
-        // which would take 4.5 bits per weight to 8.5 and roughly double what the model occupies on
-        // the device. DataType.Q4_0 is the marker for "this model's per-layer weights are Q4_0,
-        // kept as they are"; it selects the Q4_0 plan.
-        //
-        // The type is decided by the per-layer weights, not by the output projection, because those
-        // are what the layer graph reads. A Q4_0 file leaves token_embd — the output projection
-        // too, when they are tied — as Q6_K, so the output weight alone would say Q8_0 and select
-        // the wrong plan.
-        boolean retainQ4_0 =
-                LlamaPlanProvider.retainsQ4_0(
-                        sourceTypes(tensorEntries), nl, TornadoDevices.current().backend());
-        if (retainQ4_0) {
+        // The Q4_0 layers run a file whose per-layer weights are all Q4_0 (ffn_down may be Q4_1),
+        // decided by those weights, not by the output projection: a Q4_0 file leaves token_embd -
+        // the output projection too, when they are tied - as Q6_K. DataType.Q4_0 selects them.
+        boolean q4_0Layers = LlamaPlanProvider.retainsQ4_0(sourceTypes(tensorEntries), nl, backend);
+        // On CUDA and Metal every tensor stays as the file stores it; elsewhere Q4_0 is kept for
+        // the Q4_0 layers only, and everything else is converted to Q8_0 as before.
+        boolean retain = TornadoPlanProvider.retainsNative(backend);
+
+        TornadoTensor[] wq =
+                perLayer(
+                        retain,
+                        q4_0Layers,
+                        nl,
+                        i -> tensorEntries.get("blk." + i + ".attn_q.weight"));
+        TornadoTensor[] wk =
+                perLayer(
+                        retain,
+                        q4_0Layers,
+                        nl,
+                        i -> tensorEntries.get("blk." + i + ".attn_k.weight"));
+        TornadoTensor[] wv =
+                perLayer(
+                        retain,
+                        q4_0Layers,
+                        nl,
+                        i -> tensorEntries.get("blk." + i + ".attn_v.weight"));
+        TornadoTensor[] wo =
+                perLayer(
+                        retain,
+                        q4_0Layers,
+                        nl,
+                        i -> tensorEntries.get("blk." + i + ".attn_output.weight"));
+        TornadoTensor[] w1 =
+                perLayer(
+                        retain,
+                        q4_0Layers,
+                        nl,
+                        i -> tensorEntries.get("blk." + i + ".ffn_gate.weight"));
+        // ffn_down keeps its own type: llama.cpp's Q4_0 recipe writes some layers' down projection
+        // as Q4_1, and the layer graph picks the kernel per layer.
+        TornadoTensor[] w2 =
+                retain || q4_0Layers
+                        ? loadArrayOfTornadoTensorsNative(
+                                nl, i -> tensorEntries.get("blk." + i + ".ffn_down.weight"))
+                        : loadArrayOfTornadoTensors(
+                                nl, i -> tensorEntries.get("blk." + i + ".ffn_down.weight"));
+        TornadoTensor[] w3 =
+                perLayer(
+                        retain,
+                        q4_0Layers,
+                        nl,
+                        i -> tensorEntries.get("blk." + i + ".ffn_up.weight"));
+
+        DataType weightType;
+        if (q4_0Layers) {
             weightType = DataType.Q4_0;
-        }
-
-        // Validate supported types
-        if (weightType != DataType.F16
-                && weightType != DataType.Q8_0
-                && weightType != DataType.Q4_0) {
-            throw new UnsupportedOperationException(
-                    "Type: " + weightType + " currently not supported for TornadoVM weights.");
+        } else if (retain) {
+            weightType = q8_0LayersType(wq, wk, wv, wo, w1, w2, w3);
+        } else {
+            weightType =
+                    DataTypeMapping.materializedType(outputWeight.ggmlType(), ExecutionTarget.GPU);
+            // Validate supported types
+            if (weightType != DataType.F16 && weightType != DataType.Q8_0) {
+                throw new UnsupportedOperationException(
+                        "Type: " + weightType + " currently not supported for TornadoVM weights.");
+            }
         }
 
         // Load all tensors uniformly as TornadoTensor hierarchy
         LlamaTornadoWeights weights =
                 new LlamaTornadoWeights(
-                        loadTornadoTensor(tokenEmbeddings),
+                        retain
+                                ? loadTornadoTensorNative(tokenEmbeddings)
+                                : loadTornadoTensor(tokenEmbeddings),
                         loadArrayOfTornadoTensors(
                                 nl,
                                 i -> tensorEntries.get("blk." + i + ".attn_norm.weight")), // fp32
-                        perLayerQuantized(
-                                retainQ4_0,
-                                nl,
-                                i -> tensorEntries.get("blk." + i + ".attn_q.weight")),
-                        perLayerQuantized(
-                                retainQ4_0,
-                                nl,
-                                i -> tensorEntries.get("blk." + i + ".attn_k.weight")),
-                        perLayerQuantized(
-                                retainQ4_0,
-                                nl,
-                                i -> tensorEntries.get("blk." + i + ".attn_v.weight")),
-                        perLayerQuantized(
-                                retainQ4_0,
-                                nl,
-                                i -> tensorEntries.get("blk." + i + ".attn_output.weight")),
+                        wq,
+                        wk,
+                        wv,
+                        wo,
                         loadArrayOfTornadoTensors(
                                 nl,
                                 i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")), // fp32
-                        perLayerQuantized(
-                                retainQ4_0,
-                                nl,
-                                i -> tensorEntries.get("blk." + i + ".ffn_gate.weight")),
-                        // ffn_down keeps its own type: llama.cpp's Q4_0 recipe writes some layers'
-                        // down
-                        // projection as Q4_1, and the layer graph picks the kernel per layer.
-                        retainQ4_0
-                                ? loadArrayOfTornadoTensorsNative(
-                                        nl, i -> tensorEntries.get("blk." + i + ".ffn_down.weight"))
-                                : loadArrayOfTornadoTensors(
-                                        nl,
-                                        i -> tensorEntries.get("blk." + i + ".ffn_down.weight")),
-                        perLayerQuantized(
-                                retainQ4_0,
-                                nl,
-                                i -> tensorEntries.get("blk." + i + ".ffn_up.weight")),
+                        w1,
+                        w2,
+                        w3,
                         loadTornadoTensor(tensorEntries.get("output_norm.weight")), // fp32
                         TornadoTensorLoader.fromFloats(ropeFreqs.first()),
                         TornadoTensorLoader.fromFloats(ropeFreqs.second()),
                         // Q4_0 files keep the output projection as Q6_K. Kept as it is, the logits
-                        // graph
-                        // reads it with the packed-integer Q6_K kernel instead of a Q8_0 copy that
-                        // is a
-                        // quarter larger and read in floating point.
-                        retainQ4_0 && outputWeight.ggmlType() == GGMLType.Q6_K
+                        // graph reads it with the packed-integer Q6_K kernel instead of a Q8_0 copy
+                        // that is a quarter larger and read in floating point.
+                        retain || (q4_0Layers && outputWeight.ggmlType() == GGMLType.Q6_K)
                                 ? loadTornadoTensorNative(outputWeight)
                                 : loadTornadoTensor(outputWeight),
                         weightType);
@@ -220,26 +237,51 @@ public class LlamaModelLoader extends AbstractModelLoader<Llama, LlamaConfigurat
     // @formatter:on
 
     /**
-     * A per-layer weight array, retaining Q4_0 when the whole layer stack is Q4_0.
+     * A per-layer weight array: as the file stores it where the load keeps every tensor ({@code
+     * retain}); otherwise Q4_0 kept for the Q4_0 layers and everything else converted to Q8_0.
      *
      * <p>All or nothing on purpose. A graph that mixed a retained Q4_0 tensor into a plan whose
-     * kernels read Q8_0 blocks would be reading one block layout as another — 18-byte blocks
-     * addressed as 34-byte ones — which produces weights of plausible magnitude and fluent, wrong
-     * text. There is no per-tensor dispatch in these layers, so the decision is made once for the
-     * model.
+     * kernels read Q8_0 blocks would be reading one block layout as another; a kept file instead
+     * runs the layers that read each tensor by its type.
      */
-    private static TornadoTensor[] perLayerQuantized(
-            boolean retainQ4_0, int layers, java.util.function.IntFunction<GGMLTensorEntry> entry) {
-        return retainQ4_0
+    private static TornadoTensor[] perLayer(
+            boolean retain,
+            boolean q4_0Layers,
+            int layers,
+            java.util.function.IntFunction<GGMLTensorEntry> entry) {
+        if (retain) {
+            return loadArrayOfTornadoTensorsNative(layers, entry);
+        }
+        return q4_0Layers
                 ? loadArrayOfTornadoTensorsRetainingQ4_0(layers, entry)
                 : loadArrayOfTornadoTensors(layers, entry);
     }
 
-    /** Each tensor's representation in the file, by name: what the retention rule reads. */
-    private static Map<String, DataType> sourceTypes(Map<String, GGMLTensorEntry> tensorEntries) {
-        Map<String, DataType> types = new HashMap<>();
-        tensorEntries.forEach(
-                (name, entry) -> types.put(name, DataTypeMapping.sourceType(entry.ggmlType())));
-        return types;
+    /**
+     * What a kept file that does not run the Q4_0 layers reports: F16 or Q8_0 when its projections
+     * all are, and otherwise the first projection type that is neither Q8_0 nor Q4_0, so that the
+     * Q8_0 layers, which read each tensor by its type, are the ones that run it.
+     *
+     * @throws ModelLoadException for a file mixing only Q4_0 and Q8_0 projections, which no
+     *     llama.cpp recipe writes and no Llama plan reads
+     */
+    private static DataType q8_0LayersType(TornadoTensor[]... projections) {
+        boolean q4_0 = false;
+        for (TornadoTensor[] layers : projections) {
+            for (TornadoTensor w : layers) {
+                DataType type = w.dataType();
+                if (type == DataType.Q4_0) {
+                    q4_0 = true;
+                } else if (type != DataType.Q8_0) {
+                    return type;
+                }
+            }
+        }
+        if (q4_0) {
+            throw new ModelLoadException(
+                    "this Llama file mixes Q4_0 and Q8_0 projections without the layout the Q4_0"
+                            + " layers read; no Llama plan reads that mix");
+        }
+        return DataType.Q8_0;
     }
 }

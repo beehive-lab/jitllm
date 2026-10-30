@@ -119,25 +119,17 @@ public class ForwardPlanFactory {
 
     /**
      * Dispatches on the representation the weights were <b>materialized</b> in, not on what the
-     * file held. The two differ for every quantization the device has no kernel for: a Q4_K or Q4_0
-     * file arrives here as {@link DataType#Q8_0}, which is exactly the plan it needs.
-     *
-     * <p>The format-decoded types are unreachable rather than unimplemented — nothing materializes
-     * a device tensor in them — so they are refused by name instead of promising a plan that could
-     * not be built.
+     * file held. The two differ wherever a family converts: a Q4_K file arrives here as {@link
+     * DataType#Q8_0} from a family that converts it, and as Q4_K from one that keeps it, and the
+     * family's provider admits exactly what its loader keeps.
      */
     static ForwardPlan create(DataType quantization, ExecutionMode mode, State state, Model model) {
         // The representation errors come first, before any provider is consulted: they are facts
         // about materialization, true for every architecture, and asking a provider about a dtype
         // that never reaches the device would scatter one answer across ten files.
         switch (quantization) {
-            case F16, Q8_0, Q4_K, Q4_0 -> {}
+            case F16, Q8_0, Q4_0, Q4_1, Q4_K, Q5_K, Q6_K -> {}
             case F32 -> throw new UnsupportedOperationException("F32 plans not yet implemented");
-            case Q4_1, Q5_K, Q6_K ->
-                    throw new UnsupportedOperationException(
-                            quantization
-                                    + " is decoded during compute and is never materialized on the"
-                                    + " device; it should have been mapped to Q8_0 at load");
             case BF16 ->
                     throw new UnsupportedOperationException(
                             "BF16 is narrowed to F16 when materialized for the device; it should have"

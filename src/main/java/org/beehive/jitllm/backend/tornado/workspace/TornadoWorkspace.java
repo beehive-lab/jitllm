@@ -309,6 +309,15 @@ public final class TornadoWorkspace {
     public FloatArray wrapSharedOutput;
 
     /**
+     * A {@code qwen2moe} layer that projects each weight by its own type: the routed slots' up
+     * projections, their down projections one per slot, and the shared expert's up projection.
+     */
+    public FloatArray wrapExpertUp;
+
+    public FloatArray wrapExpertDown;
+    public FloatArray wrapSharedUp;
+
+    /**
      * A {@code qwen35moe} token's expert activations: every selected expert's hidden rows, then the
      * shared expert's.
      */
@@ -348,6 +357,11 @@ public final class TornadoWorkspace {
     public FloatArray wrapGroupedExpertDown;
     public FloatArray wrapSharedHiddenBatch;
     public FloatArray wrapSharedWeightBatch;
+
+    /** The batched counterparts of {@link #wrapExpertUp} and {@link #wrapSharedUp}. */
+    public FloatArray wrapGroupedExpertUp;
+
+    public FloatArray wrapSharedUpBatch;
     public FloatArray tempQcur;
     public FloatArray tempKcur;
 

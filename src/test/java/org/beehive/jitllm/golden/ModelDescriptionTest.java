@@ -39,6 +39,16 @@ public class ModelDescriptionTest {
         describedAsItLoads(GoldenFixture.Fixture.LLAMA_3_2_1B_Q8_0);
     }
 
+    /**
+     * A family whose file declares another name than the identity its model and plan provider
+     * carry: {@code qwen2moe} against {@code qwen2-moe}. The preflight looks the plan provider up
+     * by the described identity.
+     */
+    @Test
+    public void qwen2MoEIsDescribedAsItLoads() throws Exception {
+        describedAsItLoads(GoldenFixture.Fixture.QWEN1_5_MOE_A2_7B_Q4_0);
+    }
+
     private void describedAsItLoads(GoldenFixture.Fixture fixture) throws Exception {
         Path file = GoldenFixture.locate(fixture);
         assumeTrue(GoldenFixture.absentMessage(fixture), file != null);

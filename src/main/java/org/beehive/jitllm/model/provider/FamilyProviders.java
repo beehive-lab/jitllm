@@ -81,11 +81,12 @@ public final class FamilyProviders {
     /**
      * Qwen2's mixture-of-experts sibling. It declares {@code qwen2moe}, not {@code qwen2}, and its
      * weight set is different enough (routed and shared experts, no dense FFN) that the Qwen2
-     * loader cannot read it.
+     * loader cannot read it. Its identity is {@code qwen2-moe}, which the model and its plan
+     * provider carry too.
      */
     public static final class Qwen2MoEProvider extends FamilyProvider {
         public Qwen2MoEProvider() {
-            super("qwen2moe");
+            super("qwen2-moe");
         }
 
         @Override

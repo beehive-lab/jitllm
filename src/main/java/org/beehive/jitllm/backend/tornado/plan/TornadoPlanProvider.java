@@ -1,10 +1,12 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import java.util.EnumSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
+import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
@@ -150,6 +152,39 @@ public interface TornadoPlanProvider {
                                                         : model.createNewState()));
         stage.resolveExecutionPolicy(session.executionPolicy());
         return stage;
+    }
+
+    // @formatter:off
+    /**
+     * Whether a load keeps every tensor as the file stores it, rather than converting Q4_0, Q4_1
+     * and the K-quants to Q8_0: on every device backend (CUDA, Metal and OpenCL), where a migrated
+     * family's every path reads each tensor by its own type (the single-token projections, the
+     * batched prefill, the tensor-core prefill and the embedding row).
+     *
+     * <p>OpenCL came last: the per-type float kernels, the tiled batch projections included,
+     * compile and match their host references there, and no migrated family's parity there is worse
+     * than it was on the Q8_0 copies.
+     *
+     * <p>The one rule for a migrated family's loader and its memory preflight ({@link
+     * #deviceRetention}), so the two cannot disagree about what a tensor becomes.
+     */
+    // @formatter:on
+    static boolean retainsNative(BackendId backend) {
+        return BackendId.CUDA.equals(backend)
+                || BackendId.METAL.equals(backend)
+                || BackendId.OPENCL.equals(backend);
+    }
+
+    /**
+     * What a migrated family's load keeps on a {@code backend} device: {@code kept} everywhere, and
+     * every quantized type besides where {@link #retainsNative} holds.
+     */
+    static DeviceRetention nativeRetention(Set<DataType> kept, BackendId backend) {
+        Set<DataType> retained = EnumSet.copyOf(kept);
+        if (retainsNative(backend)) {
+            retained.addAll(TornadoSupportSets.NATIVE_QUANTIZED);
+        }
+        return DeviceRetention.retaining(retained);
     }
 
     // ── What this family's layers can build ───────────────────────────────────

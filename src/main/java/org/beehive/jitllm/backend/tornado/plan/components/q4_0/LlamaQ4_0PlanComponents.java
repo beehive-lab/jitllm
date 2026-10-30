@@ -26,6 +26,7 @@ import org.beehive.jitllm.inference.state.LlamaState;
 import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 // @formatter:off
 /**
@@ -33,8 +34,8 @@ import org.beehive.jitllm.model.llama.LlamaConfiguration;
  *
  * <p>Mixed by construction, because the file is. {@code llama-quantize ... Q4_0} writes every
  * {@code blk.*} weight as Q4_0 (and some {@code ffn_down} as Q4_1), with {@code token_embd} as Q4_0
- * or Q6_K, which is materialized as Q8_0 for the host-side embedding lookup. So the transformer
- * layers read Q4_0, the embedding is Q8_0, and the logits layer reads the output projection in its
+ * or Q6_K, which is kept as it is on CUDA and Metal and materialized as Q8_0 elsewhere. So the
+ * transformer layers read Q4_0, and the embedding and the logits layer read their tensors in their
  * own representation.
  *
  * <p>Single-token decode, and batched prefill with its projections run by cuBLAS ({@code
@@ -76,19 +77,22 @@ public class LlamaQ4_0PlanComponents
 
     @Override
     public ActivationTaskGraph batchPrefillActivation(int batchSize) {
-        // Metal: the host decodes the Q4_0 embeddings into the FP32 batch carrier for the
-        // SIMD-group layers. CUDA: the embedding is Q8_0 (materialized from Q4_0 or Q6_K),
-        // decoded on the device for the cuBLAS and tensor-core layers.
-        return BatchPrefillGemmPolicy.simdgroup()
-                ? new BatchPrefillActivation(state, config, batchSize, true)
-                : new BatchPrefillQ8DeviceActivation(state, config, batchSize);
+        // Metal: the host decodes the embeddings into the FP32 batch carrier for the SIMD-group
+        // layers. CUDA: a Q8_0 or Q4_0 embedding is decoded on the device for the cuBLAS and
+        // tensor-core layers; any other kept embedding (Q6_K) the host decodes, as on Metal.
+        DataType embedding = weights.getTokenEmbeddingTable().dataType();
+        if (!BatchPrefillGemmPolicy.simdgroup()
+                && (embedding == DataType.Q8_0 || embedding == DataType.Q4_0)) {
+            return new BatchPrefillQ8DeviceActivation(state, config, batchSize, embedding);
+        }
+        return new BatchPrefillActivation(state, config, batchSize, true);
     }
 
     @Override
     public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
-        return BatchPrefillGemmPolicy.simdgroup()
-                ? new BatchDecodeActivation(state, config, lastBatchLayerId, true, true)
-                : new BatchDecodeActivation(state, config, lastBatchLayerId, true);
+        // The embedding tensor's own representation, which is what the passes stage.
+        return new BatchDecodeActivation(
+                state, config, lastBatchLayerId, weights.getTokenEmbeddingTable().dataType());
     }
 
     @Override

@@ -8,6 +8,11 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.tensor.standard.Q4_1FloatTensor;
+import org.beehive.jitllm.tensor.standard.Q4_KFloatTensor;
+import org.beehive.jitllm.tensor.standard.Q5_KFloatTensor;
+import org.beehive.jitllm.tensor.standard.Q6_KFloatTensor;
 
 /** The accelerated <b>batched prefill</b> pass and its decode step. */
 public final class TornadoBatchPrefillPass {
@@ -249,6 +254,35 @@ public final class TornadoBatchPrefillPass {
                                     }
                                 });
             }
+            case Q4_1, Q4_K, Q5_K, Q6_K -> {
+                // Kept as the file stores it: decoded here into the FP32 batch carrier through the
+                // CPU tensor for that format, rows in parallel, as the branches above decode
+                // theirs.
+                var embTable = weights.getTokenEmbeddingTable();
+                MemorySegment rows = embTable.asByteArray().getSegment();
+                FloatTensor table =
+                        switch (embTable.dataType()) {
+                            case Q4_1 ->
+                                    new Q4_1FloatTensor((int) (rows.byteSize() / 20 * 32), rows);
+                            case Q4_K ->
+                                    new Q4_KFloatTensor((int) (rows.byteSize() / 144 * 256), rows);
+                            case Q5_K ->
+                                    new Q5_KFloatTensor((int) (rows.byteSize() / 176 * 256), rows);
+                            default ->
+                                    new Q6_KFloatTensor((int) (rows.byteSize() / 210 * 256), rows);
+                        };
+                int dim = config.dim();
+                IntStream.range(0, chunkSize)
+                        .parallel()
+                        .forEach(
+                                b -> {
+                                    int rowStart = tokens[b] * dim;
+                                    for (int j = 0; j < dim; j++) {
+                                        state.workspace.wrapXBatch.set(
+                                                b * dim + j, table.getFloat(rowStart + j));
+                                    }
+                                });
+            }
             default ->
                     throw new IllegalArgumentException(
                             "Unsupported embedding weight type: "
@@ -330,6 +364,25 @@ public final class TornadoBatchPrefillPass {
                 long bytesPerToken = (long) blocksPerToken * Q4_0_BLOCK_BYTES;
                 MemorySegment.copy(
                         embTable,
+                        (long) token * bytesPerToken,
+                        state.workspace.embeddingX.getSegment(),
+                        0L,
+                        bytesPerToken);
+            }
+            case Q4_1, Q4_K, Q5_K, Q6_K -> {
+                // Kept as the file stores it, decoded on the device: 20 bytes per 32 weights
+                // (Q4_1), or 144, 176 or 210 per 256 (Q4_K, Q5_K, Q6_K).
+                MemorySegment tokenEmbeddings =
+                        weights.getTokenEmbeddingTable().asByteArray().getSegment();
+                long bytesPerToken =
+                        switch (weights.getTokenEmbeddingTable().dataType()) {
+                            case Q4_1 -> (long) (config.dim() / 32) * 20;
+                            case Q4_K -> (long) (config.dim() / 256) * 144;
+                            case Q5_K -> (long) (config.dim() / 256) * 176;
+                            default -> (long) (config.dim() / 256) * 210;
+                        };
+                MemorySegment.copy(
+                        tokenEmbeddings,
                         (long) token * bytesPerToken,
                         state.workspace.embeddingX.getSegment(),
                         0L,

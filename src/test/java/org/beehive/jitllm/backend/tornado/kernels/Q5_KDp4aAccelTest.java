@@ -220,6 +220,23 @@ public class Q5_KDp4aAccelTest {
             float[] destination,
             ProgramIdentity.SourceRecorder recorder)
             throws Exception {
+        return run(name, host, raw, n, rows, destination, recorder, false);
+    }
+
+    /**
+     * {@code plain} runs {@link TransformerComputeKernelsQ5_K#matrixVectorGenericQ5_KDP4A}, which
+     * stores the product, instead of the residual form, which adds it to {@code destination}.
+     */
+    private static float[] run(
+            String name,
+            float[] host,
+            byte[] raw,
+            int n,
+            int rows,
+            float[] destination,
+            ProgramIdentity.SourceRecorder recorder,
+            boolean plain)
+            throws Exception {
         FloatArray x = new FloatArray(n);
         for (int i = 0; i < n; i++) {
             x.set(i, host[i]);
@@ -250,8 +267,10 @@ public class Q5_KDp4aAccelTest {
                                 sums)
                         .task(
                                 "matvec",
-                                TransformerComputeKernelsQ5_K
-                                        ::matrixVectorGenericWithResidualQ5_KDP4A,
+                                plain
+                                        ? TransformerComputeKernelsQ5_K::matrixVectorGenericQ5_KDP4A
+                                        : TransformerComputeKernelsQ5_K
+                                                ::matrixVectorGenericWithResidualQ5_KDP4A,
                                 new KernelContext(),
                                 quants,
                                 scales,
@@ -374,6 +393,28 @@ public class Q5_KDp4aAccelTest {
                 worst <= 1e-4 * largest);
     }
 
+    /**
+     * The plain form stores exactly what the residual form adds to zero: the same lanes, quants and
+     * reduction, so the same bits. Its destination starts nonzero, so a residual add would show.
+     */
+    @Test
+    public void thePlainFormStoresWhatTheResidualFormAdds() throws Exception {
+        int n = SSM_OUT_N;
+        int rows = 32;
+        byte[] raw = adversarialWeights(rows, n, 4242L);
+        float[] host = new float[n];
+        for (int i = 0; i < n; i++) {
+            host[i] = (float) Math.cos(0.013 * i) * (1.0f + (i % 5) * 0.5f);
+        }
+        float[] stale = new float[rows];
+        java.util.Arrays.fill(stale, 7.0f);
+        float[] plain = run("plain", host, raw, n, rows, stale, null, true);
+        float[] residual = run("residual", host, raw, n, rows, new float[rows], null, false);
+        for (int row = 0; row < rows; row++) {
+            assertEquals("row " + row, residual[row], plain[row], 0.0f);
+        }
+    }
+
     /** A zero activation contributes nothing at all — not even through the minimum term. */
     @Test
     public void aZeroActivationContributesNothing() throws Exception {
@@ -463,5 +504,98 @@ public class Q5_KDp4aAccelTest {
         }
         System.out.printf("[Q5_K DP4A] generated code: dp4a present, %d shuffles%n", shuffles);
         assertEquals("one shuffle per butterfly step", 5, shuffles);
+    }
+
+    /**
+     * The fused gate/up, {@code silu(w1·x) * (w3·x)} in one launch, against the same-quantization
+     * reference of each projection. The gate's SiLU must see the row's whole reduction: applied per
+     * warp it would still produce plausible numbers.
+     */
+    @Test
+    public void fusedGateUpMatchesSwiGLUOfTheTwoProjections() throws Exception {
+        int n = SSM_OUT_N;
+        int rows = 32;
+        byte[] gateRaw = adversarialWeights(rows, n, 6061L);
+        byte[] upRaw = adversarialWeights(rows, n, 6062L);
+        float[] host = new float[n];
+        for (int i = 0; i < n; i++) {
+            host[i] = (float) Math.sin(0.011 * i) * (1.0f + (i % 3) * 0.5f);
+        }
+        double[] gate = reference(host, gateRaw, n, rows);
+        double[] up = reference(host, upRaw, n, rows);
+
+        FloatArray x = new FloatArray(n);
+        for (int i = 0; i < n; i++) {
+            x.set(i, host[i]);
+        }
+        IntArray quants = new IntArray(n / 4);
+        FloatArray scales = new FloatArray(n / QK);
+        IntArray sums = new IntArray(n / QK);
+        quants.init(0);
+        scales.init(0.0f);
+        sums.init(0);
+        FloatArray hb = new FloatArray(rows);
+        hb.init(7.0f);
+        ByteArray w1 = toDevice(gateRaw);
+        ByteArray w3 = toDevice(upRaw);
+        TaskGraph graph =
+                new TaskGraph("gateUp")
+                        .transferToDevice(
+                                DataTransferMode.EVERY_EXECUTION,
+                                x,
+                                w1,
+                                w3,
+                                quants,
+                                scales,
+                                sums,
+                                hb)
+                        .task(
+                                "quantize",
+                                TransformerComputeKernelsQ4_0::quantizeActivationQ8Blocks,
+                                new KernelContext(),
+                                x,
+                                quants,
+                                scales,
+                                sums)
+                        .task(
+                                "matvec",
+                                TransformerComputeKernelsQ5_K::fusedFFNGateUpSiLUQ5_KDP4A,
+                                new KernelContext(),
+                                quants,
+                                scales,
+                                sums,
+                                hb,
+                                w1,
+                                w3,
+                                n,
+                                rows,
+                                LOCAL)
+                        .transferToHost(DataTransferMode.EVERY_EXECUTION, hb);
+        GridScheduler scheduler = new GridScheduler();
+        WorkerGrid1D quantizeWorker = new WorkerGrid1D(n);
+        quantizeWorker.setLocalWork(QK, 1, 1);
+        scheduler.addWorkerGrid("gateUp.quantize", quantizeWorker);
+        WorkerGrid1D matvecWorker = new WorkerGrid1D(rows * LOCAL);
+        matvecWorker.setLocalWork(LOCAL, 1, 1);
+        scheduler.addWorkerGrid("gateUp.matvec", matvecWorker);
+        try (TornadoExecutionPlan plan = new TornadoExecutionPlan(graph.snapshot())) {
+            plan.withGridScheduler(scheduler).execute();
+        }
+
+        double largest = 0;
+        double worst = 0;
+        for (int row = 0; row < rows; row++) {
+            double g = gate[row];
+            double expected = g / (1.0 + Math.exp(-g)) * up[row];
+            assertTrue("row " + row + " is " + hb.get(row), Float.isFinite(hb.get(row)));
+            largest = Math.max(largest, Math.abs(expected));
+            worst = Math.max(worst, Math.abs(expected - hb.get(row)));
+        }
+        System.out.printf(
+                "[Q5_K DP4A] fused gate/up n=%d: worst %.6g, largest |out| %.6g%n",
+                n, worst, largest);
+        assertTrue(
+                "worst deviation " + worst + " against largest output " + largest,
+                worst <= 1e-4 * largest);
     }
 }

@@ -9,6 +9,9 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0Packed;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
@@ -210,7 +213,33 @@ public class Gemma4Q8_0FFNLayers
      */
     private boolean packedFor(int layerIndex) {
         DataType type = weights.wqLayered[layerIndex].dataType();
-        return (type == DataType.Q4_0 || type == DataType.Q8_0) && packedIntegerDot();
+        return (type == DataType.Q4_0
+                        || type == DataType.Q8_0
+                        || type == DataType.Q4_1
+                        || type == DataType.Q4_K
+                        || type == DataType.Q5_K
+                        || type == DataType.Q6_K)
+                && packedIntegerDot();
+    }
+
+    /**
+     * Whether a layer projects gate and up apart and multiplies them by their own task: they are
+     * not one representation with a fused GeGLU kernel (Q8_0, Q4_0). A K-quant file's layers do.
+     */
+    private boolean splitGateUp(int layerIndex) {
+        DataType gate = weights.w1Layered[layerIndex].dataType();
+        return gate != weights.w3Layered[layerIndex].dataType()
+                || (gate != DataType.Q8_0 && gate != DataType.Q4_0);
+    }
+
+    /** Whether some layer of this stage runs gate and up apart, which needs {@code wrapHb2}. */
+    private boolean anySplitGateUp() {
+        for (int i = firstLayer; i < endLayer(config.numberOfLayers()); i++) {
+            if (splitGateUp(i)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether this device runs the packed-integer projections at all. */
@@ -693,6 +722,34 @@ public class Gemma4Q8_0FFNLayers
                     weights.w3Layered[layerIndex].asByteArray(),
                     dim,
                     ffnLen);
+        } else if (splitGateUp(layerIndex)) {
+            // Gate into wrapHb and up into wrapHb2, each by its own type, then GeGLU in place.
+            addProjection(
+                    unifiedLayer,
+                    tn(layerIndex, "ffn_gate"),
+                    gemma4State.workspace.wrapXb,
+                    gemma4State.workspace.wrapHb,
+                    weights.w1Layered[layerIndex],
+                    dim,
+                    ffnLen,
+                    packed);
+            addProjection(
+                    unifiedLayer,
+                    tn(layerIndex, "ffn_up"),
+                    gemma4State.workspace.wrapXb,
+                    gemma4State.workspace.wrapHb2,
+                    weights.w3Layered[layerIndex],
+                    dim,
+                    ffnLen,
+                    packed);
+            unifiedLayer.task(
+                    tn(layerIndex, "ffn_gate_up"),
+                    Gemma4Kernels::pleGateGeluMul,
+                    context,
+                    gemma4State.workspace.wrapHb,
+                    gemma4State.workspace.wrapHb2,
+                    0,
+                    ffnLen);
         } else if (packed && weights.w1Layered[layerIndex].dataType() == DataType.Q8_0) {
             unifiedLayer.task(
                     tn(layerIndex, "ffn_gate_up"),
@@ -1099,6 +1156,10 @@ public class Gemma4Q8_0FFNLayers
                     gemma4State.workspace.wrapPerLayerProjScratch,
                     gemma4State.workspace.wrapPerLayerGate,
                     gemma4State.workspace.wrapPerLayerOut);
+            if (anySplitGateUp()) {
+                unifiedLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, gemma4State.workspace.wrapHb2);
+            }
             bindKeyValueCache(unifiedLayer);
         } else {
             unifiedLayer.consumeFromDevice(
@@ -1117,6 +1178,10 @@ public class Gemma4Q8_0FFNLayers
                     gemma4State.workspace.wrapPerLayerGate,
                     gemma4State.workspace.wrapPerLayerOut,
                     gemma4State.workspace.positionHolder);
+            if (anySplitGateUp()) {
+                unifiedLayer.consumeFromDevice(
+                        previousGraphName(layerIndex), gemma4State.workspace.wrapHb2);
+            }
         }
         return unifiedLayer;
     }
@@ -1272,10 +1337,19 @@ public class Gemma4Q8_0FFNLayers
                     projectionLocalSize(d));
             return;
         }
-        if (packedActivation && w.dataType() == DataType.Q4_1) {
+        if (packedActivation
+                && (w.dataType() == DataType.Q4_1
+                        || w.dataType() == DataType.Q4_K
+                        || w.dataType() == DataType.Q5_K
+                        || w.dataType() == DataType.Q6_K)) {
             tg.task(
                     taskName,
-                    TransformerComputeKernelsQ4_1::matrixVectorGenericQ4_1DP4A,
+                    switch (w.dataType()) {
+                        case Q4_K -> TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_KDP4A;
+                        case Q5_K -> TransformerComputeKernelsQ5_K::matrixVectorGenericQ5_KDP4A;
+                        case Q6_K -> TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_KDP4A;
+                        default -> TransformerComputeKernelsQ4_1::matrixVectorGenericQ4_1DP4A;
+                    },
                     context,
                     gemma4State.workspace.wrapXbQuants,
                     gemma4State.workspace.wrapXbScales,
@@ -1361,6 +1435,21 @@ public class Gemma4Q8_0FFNLayers
                             n,
                             d,
                             projectionLocalSize(d));
+            case Q4_K, Q5_K, Q6_K ->
+                    tg.task(
+                            taskName,
+                            switch (w.dataType()) {
+                                case Q4_K -> TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_K;
+                                case Q5_K -> TransformerComputeKernelsQ5_K::matrixVectorGenericQ5_K;
+                                default -> TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_K;
+                            },
+                            context,
+                            in,
+                            out,
+                            w.asByteArray(),
+                            n,
+                            d,
+                            projectionLocalSize(d));
             case F32 ->
                     tg.task(
                             taskName,
@@ -1429,7 +1518,7 @@ public class Gemma4Q8_0FFNLayers
      */
     private static Object weightArray(TornadoTensor w) {
         return switch (w.dataType()) {
-            case Q8_0, Q4_0, Q4_1 -> w.asByteArray();
+            case Q8_0, Q4_0, Q4_1, Q4_K, Q5_K, Q6_K -> w.asByteArray();
             case F16 -> w.asHalfFloatArray();
             case F32 -> w.asFloatArray();
             default ->
@@ -1570,7 +1659,17 @@ public class Gemma4Q8_0FFNLayers
 
             gridScheduler.addWorkerGrid(prefix + "ffn_norm_reduce", rmsReduceWorker);
             gridScheduler.addWorkerGrid(prefix + "ffn_norm_apply", normApplyWorker);
-            gridScheduler.addWorkerGrid(prefix + "ffn_gate_up", ffnGateUpWorker);
+            if (splitGateUp(i)) {
+                gridScheduler.addWorkerGrid(
+                        prefix + "ffn_gate", projectionGrid(weights.w1Layered[i], ffnLen));
+                gridScheduler.addWorkerGrid(
+                        prefix + "ffn_up", projectionGrid(weights.w3Layered[i], ffnLen));
+                gridScheduler.addWorkerGrid(
+                        prefix + "ffn_gate_up",
+                        WorkerGridFactory.genericWorker((ffnLen + 255) / 256 * 256, 256));
+            } else {
+                gridScheduler.addWorkerGrid(prefix + "ffn_gate_up", ffnGateUpWorker);
+            }
             gridScheduler.addWorkerGrid(
                     prefix + "ffn_down_proj", projectionGrid(weights.w2Layered[i], dim));
             gridScheduler.addWorkerGrid(prefix + "post_ffn_reduce", rmsReduceWorker);

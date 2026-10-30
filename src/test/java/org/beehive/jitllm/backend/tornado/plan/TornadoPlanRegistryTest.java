@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Map;
@@ -22,8 +23,16 @@ public class TornadoPlanRegistryTest {
     public void theMigratedProvidersDeclareTheInventoriedMatrix() {
         var llama = provider("llama");
         assertEquals(
-                "both representations, plus the Q4_0 it retains rather than materializes",
-                Set.of(DataType.F16, DataType.Q8_0, DataType.Q4_0),
+                "both representations, the Q4_0 of its Q4_0 layers, and the types a file kept on"
+                        + " CUDA or Metal reports",
+                Set.of(
+                        DataType.F16,
+                        DataType.Q8_0,
+                        DataType.Q4_0,
+                        DataType.Q4_1,
+                        DataType.Q4_K,
+                        DataType.Q5_K,
+                        DataType.Q6_K),
                 llama.supportedDataTypes());
         // Declared for the family, not per representation: Q4_0 has single-token kernels only, and
         // the registry refuses the other two modes for it by name rather than on a cast.
@@ -32,8 +41,15 @@ public class TornadoPlanRegistryTest {
 
         var mistral = provider("mistral");
         assertEquals(
-                "both representations",
-                Set.of(DataType.F16, DataType.Q8_0),
+                "both representations, and the types a file kept on CUDA or Metal reports",
+                Set.of(
+                        DataType.F16,
+                        DataType.Q8_0,
+                        DataType.Q4_0,
+                        DataType.Q4_1,
+                        DataType.Q4_K,
+                        DataType.Q5_K,
+                        DataType.Q6_K),
                 mistral.supportedDataTypes());
         assertEquals(
                 "single-token and batched prefill/decode (Llama's layer graphs)",
@@ -89,7 +105,8 @@ public class TornadoPlanRegistryTest {
     }
 
     /**
-     * Qwen2-MoE: registered, {@code Q8_0} only, and {@code F16} is a refusal rather than a gap.
+     * Qwen2-MoE: registered, quantized representations only, and {@code F16} is a refusal rather
+     * than a gap.
      *
      * <p>The shape that made the registry's protocol matter. If an unsupported dtype returned an
      * empty result, this family would have looked unmigrated and — while the switch still existed —
@@ -99,7 +116,11 @@ public class TornadoPlanRegistryTest {
     @Test
     public void aRegisteredProviderWithAnUnsupportedDtypeIsNotAnUnmigratedArchitecture() {
         var moe = provider("qwen2-moe");
-        assertEquals("Q8_0 only", Set.of(DataType.Q8_0), moe.supportedDataTypes());
+        assertEquals(
+                "the quantized representations a kept load holds",
+                org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets.NATIVE_QUANTIZED,
+                moe.supportedDataTypes());
+        assertFalse("F16 is refused", moe.supportedDataTypes().contains(DataType.F16));
         assertEquals(
                 "STANDARD and batch prefill, but not sequential prefill",
                 Set.of(ExecutionMode.STANDARD, ExecutionMode.BATCH_PREFILL_DECODE),

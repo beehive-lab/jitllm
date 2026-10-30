@@ -650,7 +650,7 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     }
 
     // gemmMMA family: 256 threads/block (1D within block), grid over M- and N-blocks.
-    static WorkerGrid mmaGrid(int paddedM, int N) {
+    protected static WorkerGrid mmaGrid(int paddedM, int N) {
         int mBlocks = paddedM / 128; // BM
         int nBlocks = N / 128; // BN
         WorkerGrid2D g = new WorkerGrid2D(mBlocks * 256, nBlocks);
@@ -658,7 +658,7 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         return g;
     }
 
-    static WorkerGrid elementwiseGrid(int n) { // n must be a multiple of 256
+    protected static WorkerGrid elementwiseGrid(int n) { // n must be a multiple of 256
         WorkerGrid1D g = new WorkerGrid1D(n);
         g.setLocalWork(256, 1, 1);
         return g;

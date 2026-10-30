@@ -381,6 +381,23 @@ public final class ModelLoader {
         return array;
     }
 
+    /**
+     * What a model loaded with {@link #loadTornadoTensorNative} reports for these projections: the
+     * first type other than Q8_0, or Q8_0 when they all are. A Q4_K_M file reports Q4_K; a file
+     * that mixes Q8_0 with other types reports the first other type, so nothing that serves only
+     * uniform Q8_0 files (MLX) takes it.
+     */
+    public static DataType keptType(TornadoTensor[]... projections) {
+        for (TornadoTensor[] layers : projections) {
+            for (TornadoTensor w : layers) {
+                if (w.dataType() != DataType.Q8_0) {
+                    return w.dataType();
+                }
+            }
+        }
+        return DataType.Q8_0;
+    }
+
     /** {@link #loadArrayOfTornadoTensors} that retains Q4_0. */
     public static TornadoTensor[] loadArrayOfTornadoTensorsRetainingQ4_0(
             int size, IntFunction<GGMLTensorEntry> getTensorEntry) {

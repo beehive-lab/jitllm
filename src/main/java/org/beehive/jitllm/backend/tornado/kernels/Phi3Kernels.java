@@ -371,4 +371,62 @@ public class Phi3Kernels {
             output.set(rowId, silu * up);
         }
     }
+
+    /**
+     * Splits the fused {@code [q | k | v]} projection of one token into Q, K and V. One thread per
+     * element of {@code qkv}.
+     *
+     * @param qkv the fused projection [dim + 2 * kvDim]
+     * @param q output [dim]
+     * @param k output [kvDim]
+     * @param v output [kvDim]
+     */
+    public static void splitQKV(
+            KernelContext context,
+            FloatArray qkv,
+            FloatArray q,
+            FloatArray k,
+            FloatArray v,
+            int dim,
+            int kvDim) {
+        int i = context.globalIdx;
+        if (i < dim) {
+            q.set(i, qkv.get(i));
+        } else if (i < dim + kvDim) {
+            k.set(i - dim, qkv.get(i));
+        } else if (i < dim + 2 * kvDim) {
+            v.set(i - dim - kvDim, qkv.get(i));
+        }
+    }
+
+    /**
+     * {@code hb[i] = SiLU(gateUp[i]) * gateUp[hidden + i]} over the fused {@code [gate | up]}
+     * projection of one token. One thread per element of {@code hb}.
+     */
+    public static void siluGateUp(
+            KernelContext context, FloatArray gateUp, FloatArray hb, int hidden) {
+        int i = context.globalIdx;
+        if (i < hidden) {
+            float gate = gateUp.get(i);
+            float silu = gate / (1.0f + TornadoMath.exp(-gate));
+            hb.set(i, silu * gateUp.get(hidden + i));
+        }
+    }
+
+    /**
+     * {@link #siluGateUp} for each row of a batch: {@code hb[b][i] = SiLU(gateUp[b][i]) *
+     * gateUp[b][hidden + i]}, over the first {@code rows} rows. One thread per element of {@code
+     * hb}.
+     */
+    public static void siluGateUpBatch(
+            KernelContext context, FloatArray gateUp, FloatArray hb, int hidden, int rows) {
+        int id = context.globalIdx;
+        if (id < rows * hidden) {
+            int b = id / hidden;
+            int i = id - b * hidden;
+            float gate = gateUp.get(b * 2 * hidden + i);
+            float silu = gate / (1.0f + TornadoMath.exp(-gate));
+            hb.set(id, silu * gateUp.get(b * 2 * hidden + hidden + i));
+        }
+    }
 }

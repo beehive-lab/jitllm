@@ -63,6 +63,13 @@ public class Gemma4BatchDecodeActivation implements ActivationTaskGraph {
                         .transferToDevice(
                                 DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX);
         switch (embedding) {
+            case Q4_1, Q4_K, Q5_K, Q6_K ->
+                    tg.task(
+                            "updateX",
+                            Activation.embeddingRowDecode(embedding),
+                            ctx,
+                            (ByteArray) state.workspace.embeddingX,
+                            state.workspace.wrapX);
             case Q4_0 ->
                     tg.task(
                             "updateX",

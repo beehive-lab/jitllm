@@ -54,6 +54,9 @@ public class GraniteQ8_0FFNLayersDecode extends GraniteQ8_0FFNLayers {
                     state.workspace.wrapHb);
             layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, keyCache(), valueCache());
             layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, state.workspace.wrapBlockTable);
+            if (splitsGateUp()) {
+                layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, state.workspace.wrapHb2);
+            }
         } else {
             String pred = layerGraphName(layerIndex - 1);
             layer.consumeFromDevice(
@@ -70,6 +73,9 @@ public class GraniteQ8_0FFNLayersDecode extends GraniteQ8_0FFNLayers {
                     state.workspace.wrapHb,
                     state.workspace.positionHolder);
             layer.consumeFromDevice(pred, state.workspace.wrapBlockTable);
+            if (splitsGateUp()) {
+                layer.consumeFromDevice(pred, state.workspace.wrapHb2);
+            }
         }
         return layer;
     }

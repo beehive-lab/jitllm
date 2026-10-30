@@ -68,7 +68,8 @@ public class DevstralQ8_0PlanComponents implements BatchPrefillDecodeForwardPlan
 
     @Override
     public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
-        return new BatchDecodeActivation(state, config, lastBatchLayerId, true);
+        return new BatchDecodeActivation(
+                state, config, lastBatchLayerId, weights.getTokenEmbeddingTable().dataType());
     }
 
     @Override

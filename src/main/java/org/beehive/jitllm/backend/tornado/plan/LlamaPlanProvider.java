@@ -1,5 +1,7 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import static org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets.NATIVE_QUANTIZED;
+
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.Optional;
@@ -65,17 +67,31 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
                         decode.maxBlocksPerSlot()));
     }
 
-    /** The FP16 and Q8_0 logits sample on the device; a Q4_0 file's logits are the Q8_0 layer. */
+    /**
+     * The FP16 and Q8_0 logits sample on the device, and so do every quantized file's: they are the
+     * Q8_0 logits layer, whichever representation the output projection holds.
+     */
     @Override
     public boolean deviceSampling(DataType weights) {
-        return weights == DataType.F16 || weights == DataType.Q8_0 || weights == DataType.Q4_0;
+        return weights == DataType.F16 || NATIVE_QUANTIZED.contains(weights);
     }
 
+    /**
+     * F16, Q8_0 and Q4_0 as before, and the types a kept file reports when it runs the Q8_0 layers
+     * one weight at a time: Q4_1, Q4_K, Q5_K, Q6_K.
+     */
     @Override
     public Set<DataType> supportedDataTypes() {
-        // BOTH_REPRESENTATIONS plus Q4_0, which this family retains rather than materializing.
-        // Q4_0 is single-token only; the registry refuses the other modes by name.
-        return java.util.Set.of(DataType.F16, DataType.Q8_0, DataType.Q4_0);
+        return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
+    }
+
+    /**
+     * What a load keeps on every backend: F16, Q8_0, and Q4_0 for the Q4_0 layers. The other types
+     * are kept where {@link TornadoPlanProvider#retainsNative} holds.
+     */
+    @Override
+    public Set<DataType> nativeTensorTypes() {
+        return Set.of(DataType.F16, DataType.Q8_0, DataType.Q4_0);
     }
 
     /** Its Q4_0 layers read Q4_0 projections prepacked. */
@@ -85,34 +101,22 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
     }
 
     /**
-     * Q4_0 is kept only when {@link #retainsQ4_0} says so; otherwise every tensor is materialized
-     * as Q8_0, as the loader does.
-     *
-     * <p>When Q4_0 is kept, the loader also keeps a Q4_1 {@code ffn_down} and a Q6_K output
-     * projection as they are, which this still predicts at Q8_0: an over-estimate, the safe
-     * direction.
+     * Every quantized type kept where the loader keeps it ({@link
+     * TornadoPlanProvider#retainsNative}). Elsewhere Q4_0 is kept only when {@link #retainsQ4_0}
+     * says so, and everything else materialized as Q8_0, as the loader does; a kept Q4_1 {@code
+     * ffn_down} and Q6_K output projection are then still predicted at Q8_0: an over-estimate, the
+     * safe direction.
      */
     @Override
     public DeviceRetention deviceRetention(
             Map<String, DataType> sourceTypes, int layers, BackendId backend) {
         Set<DataType> retained = EnumSet.copyOf(nativeTensorTypes());
-        if (!retainsQ4_0(sourceTypes, layers, backend)) {
+        if (TornadoPlanProvider.retainsNative(backend)) {
+            retained.addAll(NATIVE_QUANTIZED);
+        } else if (!retainsQ4_0(sourceTypes, layers, backend)) {
             retained.remove(DataType.Q4_0);
         }
         return DeviceRetention.retaining(retained);
-    }
-
-    /**
-     * Whether a Q4_0 file's weights are kept as they are, rather than materialized as Q8_0.
-     *
-     * <p>On by default — retaining is the point. It is switchable so the two can be measured
-     * against each other on <b>one file</b>, which is the only comparison that isolates the
-     * representation: comparing a Q4_0 model against a separately quantized Q8_0 one measures the
-     * quantization as well. It is also the fallback if a device turns out to miscompile the Q4_0
-     * kernels, the way the warp path did on OpenCL.
-     */
-    private static boolean retainQ4_0Enabled() {
-        return !"false".equalsIgnoreCase(System.getProperty("jitllm.q4_0.retain", "true"));
     }
 
     private static final String[] PROJECTIONS = {
@@ -120,10 +124,10 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
     };
 
     /**
-     * Whether a Llama load keeps its Q4_0 projections as they are: {@code jitllm.q4_0.retain} is
-     * not {@code false}, and every per-layer weight the Q4_0 layer graph reads is Q4_0, except
-     * {@code ffn_down}, which may also be Q4_1. The one rule, asked by the loader and by the memory
-     * preflight, so the two cannot disagree about what a tensor becomes.
+     * Whether a Llama load runs the Q4_0 layers: every per-layer weight the Q4_0 layer graph reads
+     * is Q4_0, except {@code ffn_down}, which may also be Q4_1. Asked by the loader, and by the
+     * memory preflight where the file is otherwise converted ({@link
+     * TornadoPlanProvider#retainsNative}), so the two cannot disagree about what a tensor becomes.
      *
      * <p>The norms are F32 and are read by dtype-independent kernels, so they are not consulted;
      * these seven are the ones a Q4_0 kernel would decode. {@code llama-quantize ... Q4_0} gives
@@ -139,7 +143,7 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
      */
     public static boolean retainsQ4_0(
             Map<String, DataType> sourceTypes, int layers, BackendId backend) {
-        if (!retainQ4_0Enabled() || layers <= 0) {
+        if (layers <= 0) {
             return false;
         }
         boolean q4_1DownAllowed = !BackendId.METAL.equals(backend);
@@ -221,22 +225,34 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
                 : Optional.empty();
     }
 
-    /** The NVIDIA-class decode layers, whose Q4_0 path writes FP16 too. */
+    /**
+     * The NVIDIA-class decode layers, whose Q4_0 path writes FP16 too. A file that runs the Q8_0
+     * layers one weight at a time is answered as Q8_0.
+     */
     @Override
     public Optional<String> fp16KeyValueUnsupported(Combination c) {
-        return Fp16KeyValueSupport.nvidiaDecodeLayers(c, true);
+        return Fp16KeyValueSupport.nvidiaDecodeLayers(asQ8_0Layers(c), true);
     }
 
     @Override
     public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
-        return Fp16KeyValueSupport.metalDecodeLayers(c, true);
+        return Fp16KeyValueSupport.metalDecodeLayers(asQ8_0Layers(c), true);
+    }
+
+    /** {@code c} with a file that runs the Q8_0 layers answered as Q8_0; Q4_0 has its own. */
+    private static Combination asQ8_0Layers(Combination c) {
+        return c.weights() == DataType.Q4_0 ? c : c.asQ8_0Layers();
     }
 
     @Override
     public boolean metalBatchedPrefillDefault(DataType weights) {
-        return weights == DataType.F16 || weights == DataType.Q8_0 || weights == DataType.Q4_0;
+        return weights == DataType.F16 || NATIVE_QUANTIZED.contains(weights);
     }
 
+    /**
+     * MLX on Metal for F16, Q8_0 and Q4_0 as before, and no other quantized type until part 5
+     * (decision 2); cuBLAS on CUDA over every type decoded to FP16.
+     */
     @Override
     public Set<DataType> nativeLibraryWeights(BackendId backend) {
         if (BackendId.METAL.equals(backend)) {
@@ -244,7 +260,7 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
             return Set.of(DataType.F16, DataType.Q8_0, DataType.Q4_0);
         }
         return BackendId.CUDA.equals(backend)
-                ? Set.of(DataType.Q4_0, DataType.Q8_0, DataType.F16)
+                ? TornadoSupportSets.F16_AND_NATIVE_QUANTIZED
                 : Set.of();
     }
 
@@ -256,9 +272,15 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
             int batchSize,
             ExecutionPolicy policy,
             boolean fp16Cache) {
+        // MLX only for the types Metal's native libraries take here (nativeLibraryWeights).
         var mlx =
-                MlxPrefill.resolve(policy, weights, config)
-                        .map(m -> MlxPrefill.workspace(weights, config, batchSize, false, false));
+                nativeLibraryWeights(BackendId.METAL).contains(weights)
+                        ? MlxPrefill.resolve(policy, weights, config)
+                                .map(
+                                        m ->
+                                                MlxPrefill.workspace(
+                                                        weights, config, batchSize, false, false))
+                        : Optional.<BatchPrefillWorkspace>empty();
         if (mlx.isPresent()) {
             return mlx;
         }
@@ -271,7 +293,8 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
                             .LlamaFP16LayersBatchPrefillMMA.workspace(
                             config, batchSize, policy, fp16Cache));
         }
-        if (weights == DataType.Q8_0) {
+        if (weights == DataType.Q8_0
+                || (NATIVE_QUANTIZED.contains(weights) && weights != DataType.Q4_0)) {
             return Optional.of(
                     org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill
                             .LlamaQ8_0LayersBatchPrefillMMA.workspace(

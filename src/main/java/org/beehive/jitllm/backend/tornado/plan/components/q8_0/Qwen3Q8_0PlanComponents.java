@@ -57,7 +57,9 @@ public class Qwen3Q8_0PlanComponents implements BatchPrefillDecodeForwardPlanCom
 
     @Override
     public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
-        return new BatchDecodeActivation(state, config, lastBatchLayerId, true);
+        // The embedding tensor's own representation: Q8_0, or Q4_K or Q6_K kept from a Q4_K_M file.
+        return new BatchDecodeActivation(
+                state, config, lastBatchLayerId, weights.getTokenEmbeddingTable().dataType());
     }
 
     // ── Transformer layer TaskGraphs ──────────────────────────────────────────
