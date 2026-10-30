@@ -10366,4 +10366,1216 @@ public final class TransformerBatchPrefillSimdgroupKernels {
             context.localBarrier();
         }
     }
+
+    // @formatter:off
+    /**
+     * {@link #batchedGemmQ8WithResidual} with the weights staged as FP16 (the activations stay
+     * FP32, the sums FP32), 128 threads per workgroup and indices carried across the loop. {@code
+     * n} must be a multiple of 64. Grid: {@code ceil(d / 64) * ceil(batch / 64)} workgroups of 128
+     * threads.
+     */
+    // @formatter:on
+    public static void batchedGemmQ8WithResidualHalfTiles(
+            KernelContext context,
+            FloatArray inputBatch,
+            FloatArray outputBatch,
+            ByteArray w,
+            int n,
+            int d,
+            int batch) {
+        HalfFloat[] sa = context.allocateHalfFloatLocalArray(2048);
+        float[] sb = context.allocateFloatLocalArray(2048);
+        float[] cs = context.allocateFloatLocalArray(256);
+        int tid = context.localIdx;
+        int sg = tid >> 5;
+        int lane = tid & 31;
+        int grp = context.groupIdx;
+        int rowTiles = (d + 63) >> 6;
+        int r0 = (grp % rowTiles) << 6;
+        int b0 = (grp / rowTiles) << 6;
+        boolean full = b0 + 64 <= batch && r0 + 64 <= d;
+        int lr = tid >> 1;
+        int kh = (tid & 1) << 4;
+        int aBase = ((((tid & 1) << 4) + (lr >> 3)) << 6) + (lr & 7);
+        int bBase = ((((tid & 1) << 4) + (lr >> 3)) << 6) + ((lr & 7) << 3);
+        int ca = (sg & 1) << 8;
+        int cb = (sg >> 1) << 8;
+        int blk = TornadoMath.min(r0 + lr, d - 1) * (n >> 5) * 34;
+        int q = blk + 2 + kh;
+        int xi = TornadoMath.min(b0 + lr, batch - 1) * n + kh;
+        int cbase = (b0 + ((sg >> 1) << 5)) * d + r0 + ((sg & 1) << 5);
+        Matrix8x8Float c0 = context.simdgroupMatrixZero();
+        Matrix8x8Float c1 = context.simdgroupMatrixZero();
+        Matrix8x8Float c2 = context.simdgroupMatrixZero();
+        Matrix8x8Float c3 = context.simdgroupMatrixZero();
+        Matrix8x8Float c4 = context.simdgroupMatrixZero();
+        Matrix8x8Float c5 = context.simdgroupMatrixZero();
+        Matrix8x8Float c6 = context.simdgroupMatrixZero();
+        Matrix8x8Float c7 = context.simdgroupMatrixZero();
+        Matrix8x8Float c8 = context.simdgroupMatrixZero();
+        Matrix8x8Float c9 = context.simdgroupMatrixZero();
+        Matrix8x8Float c10 = context.simdgroupMatrixZero();
+        Matrix8x8Float c11 = context.simdgroupMatrixZero();
+        Matrix8x8Float c12 = context.simdgroupMatrixZero();
+        Matrix8x8Float c13 = context.simdgroupMatrixZero();
+        Matrix8x8Float c14 = context.simdgroupMatrixZero();
+        Matrix8x8Float c15 = context.simdgroupMatrixZero();
+        if (full) {
+            c0 = context.simdgroupMatrixLoad(outputBatch, cbase + 0 * d + 0, d);
+            c1 = context.simdgroupMatrixLoad(outputBatch, cbase + 0 * d + 8, d);
+            c2 = context.simdgroupMatrixLoad(outputBatch, cbase + 0 * d + 16, d);
+            c3 = context.simdgroupMatrixLoad(outputBatch, cbase + 0 * d + 24, d);
+            c4 = context.simdgroupMatrixLoad(outputBatch, cbase + 8 * d + 0, d);
+            c5 = context.simdgroupMatrixLoad(outputBatch, cbase + 8 * d + 8, d);
+            c6 = context.simdgroupMatrixLoad(outputBatch, cbase + 8 * d + 16, d);
+            c7 = context.simdgroupMatrixLoad(outputBatch, cbase + 8 * d + 24, d);
+            c8 = context.simdgroupMatrixLoad(outputBatch, cbase + 16 * d + 0, d);
+            c9 = context.simdgroupMatrixLoad(outputBatch, cbase + 16 * d + 8, d);
+            c10 = context.simdgroupMatrixLoad(outputBatch, cbase + 16 * d + 16, d);
+            c11 = context.simdgroupMatrixLoad(outputBatch, cbase + 16 * d + 24, d);
+            c12 = context.simdgroupMatrixLoad(outputBatch, cbase + 24 * d + 0, d);
+            c13 = context.simdgroupMatrixLoad(outputBatch, cbase + 24 * d + 8, d);
+            c14 = context.simdgroupMatrixLoad(outputBatch, cbase + 24 * d + 16, d);
+            c15 = context.simdgroupMatrixLoad(outputBatch, cbase + 24 * d + 24, d);
+        }
+        for (int k0 = 0; k0 < n; k0 += 32) {
+            float sc = w.getHalfFloat(blk).getFloat32();
+            float a0 = w.get(q + 0) * sc;
+            float a1 = w.get(q + 1) * sc;
+            float a2 = w.get(q + 2) * sc;
+            float a3 = w.get(q + 3) * sc;
+            float a4 = w.get(q + 4) * sc;
+            float a5 = w.get(q + 5) * sc;
+            float a6 = w.get(q + 6) * sc;
+            float a7 = w.get(q + 7) * sc;
+            float a8 = w.get(q + 8) * sc;
+            float a9 = w.get(q + 9) * sc;
+            float a10 = w.get(q + 10) * sc;
+            float a11 = w.get(q + 11) * sc;
+            float a12 = w.get(q + 12) * sc;
+            float a13 = w.get(q + 13) * sc;
+            float a14 = w.get(q + 14) * sc;
+            float a15 = w.get(q + 15) * sc;
+            float y0 = inputBatch.get(xi + 0);
+            float y1 = inputBatch.get(xi + 1);
+            float y2 = inputBatch.get(xi + 2);
+            float y3 = inputBatch.get(xi + 3);
+            float y4 = inputBatch.get(xi + 4);
+            float y5 = inputBatch.get(xi + 5);
+            float y6 = inputBatch.get(xi + 6);
+            float y7 = inputBatch.get(xi + 7);
+            float y8 = inputBatch.get(xi + 8);
+            float y9 = inputBatch.get(xi + 9);
+            float y10 = inputBatch.get(xi + 10);
+            float y11 = inputBatch.get(xi + 11);
+            float y12 = inputBatch.get(xi + 12);
+            float y13 = inputBatch.get(xi + 13);
+            float y14 = inputBatch.get(xi + 14);
+            float y15 = inputBatch.get(xi + 15);
+            context.localBarrier();
+            sa[aBase + 0] = new HalfFloat(a0);
+            sa[aBase + 8] = new HalfFloat(a1);
+            sa[aBase + 16] = new HalfFloat(a2);
+            sa[aBase + 24] = new HalfFloat(a3);
+            sa[aBase + 32] = new HalfFloat(a4);
+            sa[aBase + 40] = new HalfFloat(a5);
+            sa[aBase + 48] = new HalfFloat(a6);
+            sa[aBase + 56] = new HalfFloat(a7);
+            sa[aBase + 512] = new HalfFloat(a8);
+            sa[aBase + 520] = new HalfFloat(a9);
+            sa[aBase + 528] = new HalfFloat(a10);
+            sa[aBase + 536] = new HalfFloat(a11);
+            sa[aBase + 544] = new HalfFloat(a12);
+            sa[aBase + 552] = new HalfFloat(a13);
+            sa[aBase + 560] = new HalfFloat(a14);
+            sa[aBase + 568] = new HalfFloat(a15);
+            sb[bBase + 0] = y0;
+            sb[bBase + 1] = y1;
+            sb[bBase + 2] = y2;
+            sb[bBase + 3] = y3;
+            sb[bBase + 4] = y4;
+            sb[bBase + 5] = y5;
+            sb[bBase + 6] = y6;
+            sb[bBase + 7] = y7;
+            sb[bBase + 512] = y8;
+            sb[bBase + 513] = y9;
+            sb[bBase + 514] = y10;
+            sb[bBase + 515] = y11;
+            sb[bBase + 516] = y12;
+            sb[bBase + 517] = y13;
+            sb[bBase + 518] = y14;
+            sb[bBase + 519] = y15;
+            context.localBarrier();
+            for (int ik = 0; ik < 4; ik++) {
+                int pa = ca + (ik << 9);
+                int pb = cb + (ik << 9);
+                Matrix8x8Half m0 = context.simdgroupMatrixLoad(sa, pa + 0, 8);
+                Matrix8x8Half m1 = context.simdgroupMatrixLoad(sa, pa + 64, 8);
+                Matrix8x8Half m2 = context.simdgroupMatrixLoad(sa, pa + 128, 8);
+                Matrix8x8Half m3 = context.simdgroupMatrixLoad(sa, pa + 192, 8);
+                Matrix8x8Float n0 = context.simdgroupMatrixLoad(sb, pb + 0, 8);
+                Matrix8x8Float n1 = context.simdgroupMatrixLoad(sb, pb + 64, 8);
+                Matrix8x8Float n2 = context.simdgroupMatrixLoad(sb, pb + 128, 8);
+                Matrix8x8Float n3 = context.simdgroupMatrixLoad(sb, pb + 192, 8);
+                c0 = context.simdgroupMatrixMultiplyAccumulate(n0, m0, c0);
+                c1 = context.simdgroupMatrixMultiplyAccumulate(n0, m1, c1);
+                c2 = context.simdgroupMatrixMultiplyAccumulate(n0, m2, c2);
+                c3 = context.simdgroupMatrixMultiplyAccumulate(n0, m3, c3);
+                c4 = context.simdgroupMatrixMultiplyAccumulate(n1, m0, c4);
+                c5 = context.simdgroupMatrixMultiplyAccumulate(n1, m1, c5);
+                c6 = context.simdgroupMatrixMultiplyAccumulate(n1, m2, c6);
+                c7 = context.simdgroupMatrixMultiplyAccumulate(n1, m3, c7);
+                c8 = context.simdgroupMatrixMultiplyAccumulate(n2, m0, c8);
+                c9 = context.simdgroupMatrixMultiplyAccumulate(n2, m1, c9);
+                c10 = context.simdgroupMatrixMultiplyAccumulate(n2, m2, c10);
+                c11 = context.simdgroupMatrixMultiplyAccumulate(n2, m3, c11);
+                c12 = context.simdgroupMatrixMultiplyAccumulate(n3, m0, c12);
+                c13 = context.simdgroupMatrixMultiplyAccumulate(n3, m1, c13);
+                c14 = context.simdgroupMatrixMultiplyAccumulate(n3, m2, c14);
+                c15 = context.simdgroupMatrixMultiplyAccumulate(n3, m3, c15);
+            }
+            blk += 34;
+            q += 34;
+            xi += 32;
+        }
+        if (full) {
+            context.simdgroupMatrixStore(c0, outputBatch, cbase + 0 * d + 0, d);
+            context.simdgroupMatrixStore(c1, outputBatch, cbase + 0 * d + 8, d);
+            context.simdgroupMatrixStore(c2, outputBatch, cbase + 0 * d + 16, d);
+            context.simdgroupMatrixStore(c3, outputBatch, cbase + 0 * d + 24, d);
+            context.simdgroupMatrixStore(c4, outputBatch, cbase + 8 * d + 0, d);
+            context.simdgroupMatrixStore(c5, outputBatch, cbase + 8 * d + 8, d);
+            context.simdgroupMatrixStore(c6, outputBatch, cbase + 8 * d + 16, d);
+            context.simdgroupMatrixStore(c7, outputBatch, cbase + 8 * d + 24, d);
+            context.simdgroupMatrixStore(c8, outputBatch, cbase + 16 * d + 0, d);
+            context.simdgroupMatrixStore(c9, outputBatch, cbase + 16 * d + 8, d);
+            context.simdgroupMatrixStore(c10, outputBatch, cbase + 16 * d + 16, d);
+            context.simdgroupMatrixStore(c11, outputBatch, cbase + 16 * d + 24, d);
+            context.simdgroupMatrixStore(c12, outputBatch, cbase + 24 * d + 0, d);
+            context.simdgroupMatrixStore(c13, outputBatch, cbase + 24 * d + 8, d);
+            context.simdgroupMatrixStore(c14, outputBatch, cbase + 24 * d + 16, d);
+            context.simdgroupMatrixStore(c15, outputBatch, cbase + 24 * d + 24, d);
+        } else {
+            int t0 = b0 + ((sg >> 1) << 5);
+            int rr = r0 + ((sg & 1) << 5);
+            context.localBarrier();
+            context.simdgroupMatrixStore(c0, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c1, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c2, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c3, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c4, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c5, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c6, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c7, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c8, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c9, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c10, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c11, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c12, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c13, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c14, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c15, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch && r < d) {
+                    outputBatch.set(t * d + r, outputBatch.get(t * d + r) + cs[(sg << 6) + e]);
+                }
+            }
+        }
+    }
+
+    // @formatter:off
+    /**
+     * {@link #batchedGemmQKVQ8} with the weights staged as FP16, as {@link
+     * #batchedGemmQ8WithResidualHalfTiles}. Grid: {@code ((qDim + 2 * kvDim) / 64) * ceil(batch /
+     * 64)} workgroups of 128 threads.
+     */
+    // @formatter:on
+    public static void batchedGemmQKVQ8HalfTiles(
+            KernelContext context,
+            FloatArray x,
+            FloatArray q,
+            FloatArray k,
+            FloatArray v,
+            ByteArray wq,
+            ByteArray wk,
+            ByteArray wv,
+            int dim,
+            int qDim,
+            int kvDim,
+            int batch) {
+        HalfFloat[] sa = context.allocateHalfFloatLocalArray(2048);
+        float[] sb = context.allocateFloatLocalArray(2048);
+        float[] cs = context.allocateFloatLocalArray(256);
+        int tid = context.localIdx;
+        int sg = tid >> 5;
+        int lane = tid & 31;
+        int grp = context.groupIdx;
+        int rowTiles = (qDim + 2 * kvDim) >> 6;
+        int r0 = (grp % rowTiles) << 6;
+        int b0 = (grp / rowTiles) << 6;
+        boolean full = b0 + 64 <= batch;
+        int which = r0 < qDim ? 0 : (r0 < qDim + kvDim ? 1 : 2);
+        int local0 = which == 0 ? r0 : (which == 1 ? r0 - qDim : r0 - qDim - kvDim);
+        int width = which == 0 ? qDim : kvDim;
+        int lr = tid >> 1;
+        int kh = (tid & 1) << 4;
+        int aBase = ((((tid & 1) << 4) + (lr >> 3)) << 6) + (lr & 7);
+        int bBase = ((((tid & 1) << 4) + (lr >> 3)) << 6) + ((lr & 7) << 3);
+        int ca = (sg & 1) << 8;
+        int cb = (sg >> 1) << 8;
+        int blk = (local0 + lr) * (dim >> 5) * 34;
+        int qi = blk + 2 + kh;
+        int xi = TornadoMath.min(b0 + lr, batch - 1) * dim + kh;
+        int cbase = (b0 + ((sg >> 1) << 5)) * width + local0 + ((sg & 1) << 5);
+        Matrix8x8Float c0 = context.simdgroupMatrixZero();
+        Matrix8x8Float c1 = context.simdgroupMatrixZero();
+        Matrix8x8Float c2 = context.simdgroupMatrixZero();
+        Matrix8x8Float c3 = context.simdgroupMatrixZero();
+        Matrix8x8Float c4 = context.simdgroupMatrixZero();
+        Matrix8x8Float c5 = context.simdgroupMatrixZero();
+        Matrix8x8Float c6 = context.simdgroupMatrixZero();
+        Matrix8x8Float c7 = context.simdgroupMatrixZero();
+        Matrix8x8Float c8 = context.simdgroupMatrixZero();
+        Matrix8x8Float c9 = context.simdgroupMatrixZero();
+        Matrix8x8Float c10 = context.simdgroupMatrixZero();
+        Matrix8x8Float c11 = context.simdgroupMatrixZero();
+        Matrix8x8Float c12 = context.simdgroupMatrixZero();
+        Matrix8x8Float c13 = context.simdgroupMatrixZero();
+        Matrix8x8Float c14 = context.simdgroupMatrixZero();
+        Matrix8x8Float c15 = context.simdgroupMatrixZero();
+        for (int k0 = 0; k0 < dim; k0 += 32) {
+            float a0;
+            float a1;
+            float a2;
+            float a3;
+            float a4;
+            float a5;
+            float a6;
+            float a7;
+            float a8;
+            float a9;
+            float a10;
+            float a11;
+            float a12;
+            float a13;
+            float a14;
+            float a15;
+            float sc;
+            if (which == 0) {
+                sc = wq.getHalfFloat(blk).getFloat32();
+                a0 = wq.get(qi + 0) * sc;
+                a1 = wq.get(qi + 1) * sc;
+                a2 = wq.get(qi + 2) * sc;
+                a3 = wq.get(qi + 3) * sc;
+                a4 = wq.get(qi + 4) * sc;
+                a5 = wq.get(qi + 5) * sc;
+                a6 = wq.get(qi + 6) * sc;
+                a7 = wq.get(qi + 7) * sc;
+                a8 = wq.get(qi + 8) * sc;
+                a9 = wq.get(qi + 9) * sc;
+                a10 = wq.get(qi + 10) * sc;
+                a11 = wq.get(qi + 11) * sc;
+                a12 = wq.get(qi + 12) * sc;
+                a13 = wq.get(qi + 13) * sc;
+                a14 = wq.get(qi + 14) * sc;
+                a15 = wq.get(qi + 15) * sc;
+            } else if (which == 1) {
+                sc = wk.getHalfFloat(blk).getFloat32();
+                a0 = wk.get(qi + 0) * sc;
+                a1 = wk.get(qi + 1) * sc;
+                a2 = wk.get(qi + 2) * sc;
+                a3 = wk.get(qi + 3) * sc;
+                a4 = wk.get(qi + 4) * sc;
+                a5 = wk.get(qi + 5) * sc;
+                a6 = wk.get(qi + 6) * sc;
+                a7 = wk.get(qi + 7) * sc;
+                a8 = wk.get(qi + 8) * sc;
+                a9 = wk.get(qi + 9) * sc;
+                a10 = wk.get(qi + 10) * sc;
+                a11 = wk.get(qi + 11) * sc;
+                a12 = wk.get(qi + 12) * sc;
+                a13 = wk.get(qi + 13) * sc;
+                a14 = wk.get(qi + 14) * sc;
+                a15 = wk.get(qi + 15) * sc;
+            } else {
+                sc = wv.getHalfFloat(blk).getFloat32();
+                a0 = wv.get(qi + 0) * sc;
+                a1 = wv.get(qi + 1) * sc;
+                a2 = wv.get(qi + 2) * sc;
+                a3 = wv.get(qi + 3) * sc;
+                a4 = wv.get(qi + 4) * sc;
+                a5 = wv.get(qi + 5) * sc;
+                a6 = wv.get(qi + 6) * sc;
+                a7 = wv.get(qi + 7) * sc;
+                a8 = wv.get(qi + 8) * sc;
+                a9 = wv.get(qi + 9) * sc;
+                a10 = wv.get(qi + 10) * sc;
+                a11 = wv.get(qi + 11) * sc;
+                a12 = wv.get(qi + 12) * sc;
+                a13 = wv.get(qi + 13) * sc;
+                a14 = wv.get(qi + 14) * sc;
+                a15 = wv.get(qi + 15) * sc;
+            }
+            float y0 = x.get(xi + 0);
+            float y1 = x.get(xi + 1);
+            float y2 = x.get(xi + 2);
+            float y3 = x.get(xi + 3);
+            float y4 = x.get(xi + 4);
+            float y5 = x.get(xi + 5);
+            float y6 = x.get(xi + 6);
+            float y7 = x.get(xi + 7);
+            float y8 = x.get(xi + 8);
+            float y9 = x.get(xi + 9);
+            float y10 = x.get(xi + 10);
+            float y11 = x.get(xi + 11);
+            float y12 = x.get(xi + 12);
+            float y13 = x.get(xi + 13);
+            float y14 = x.get(xi + 14);
+            float y15 = x.get(xi + 15);
+            context.localBarrier();
+            sa[aBase + 0] = new HalfFloat(a0);
+            sa[aBase + 8] = new HalfFloat(a1);
+            sa[aBase + 16] = new HalfFloat(a2);
+            sa[aBase + 24] = new HalfFloat(a3);
+            sa[aBase + 32] = new HalfFloat(a4);
+            sa[aBase + 40] = new HalfFloat(a5);
+            sa[aBase + 48] = new HalfFloat(a6);
+            sa[aBase + 56] = new HalfFloat(a7);
+            sa[aBase + 512] = new HalfFloat(a8);
+            sa[aBase + 520] = new HalfFloat(a9);
+            sa[aBase + 528] = new HalfFloat(a10);
+            sa[aBase + 536] = new HalfFloat(a11);
+            sa[aBase + 544] = new HalfFloat(a12);
+            sa[aBase + 552] = new HalfFloat(a13);
+            sa[aBase + 560] = new HalfFloat(a14);
+            sa[aBase + 568] = new HalfFloat(a15);
+            sb[bBase + 0] = y0;
+            sb[bBase + 1] = y1;
+            sb[bBase + 2] = y2;
+            sb[bBase + 3] = y3;
+            sb[bBase + 4] = y4;
+            sb[bBase + 5] = y5;
+            sb[bBase + 6] = y6;
+            sb[bBase + 7] = y7;
+            sb[bBase + 512] = y8;
+            sb[bBase + 513] = y9;
+            sb[bBase + 514] = y10;
+            sb[bBase + 515] = y11;
+            sb[bBase + 516] = y12;
+            sb[bBase + 517] = y13;
+            sb[bBase + 518] = y14;
+            sb[bBase + 519] = y15;
+            context.localBarrier();
+            for (int ik = 0; ik < 4; ik++) {
+                int pa = ca + (ik << 9);
+                int pb = cb + (ik << 9);
+                Matrix8x8Half m0 = context.simdgroupMatrixLoad(sa, pa + 0, 8);
+                Matrix8x8Half m1 = context.simdgroupMatrixLoad(sa, pa + 64, 8);
+                Matrix8x8Half m2 = context.simdgroupMatrixLoad(sa, pa + 128, 8);
+                Matrix8x8Half m3 = context.simdgroupMatrixLoad(sa, pa + 192, 8);
+                Matrix8x8Float n0 = context.simdgroupMatrixLoad(sb, pb + 0, 8);
+                Matrix8x8Float n1 = context.simdgroupMatrixLoad(sb, pb + 64, 8);
+                Matrix8x8Float n2 = context.simdgroupMatrixLoad(sb, pb + 128, 8);
+                Matrix8x8Float n3 = context.simdgroupMatrixLoad(sb, pb + 192, 8);
+                c0 = context.simdgroupMatrixMultiplyAccumulate(n0, m0, c0);
+                c1 = context.simdgroupMatrixMultiplyAccumulate(n0, m1, c1);
+                c2 = context.simdgroupMatrixMultiplyAccumulate(n0, m2, c2);
+                c3 = context.simdgroupMatrixMultiplyAccumulate(n0, m3, c3);
+                c4 = context.simdgroupMatrixMultiplyAccumulate(n1, m0, c4);
+                c5 = context.simdgroupMatrixMultiplyAccumulate(n1, m1, c5);
+                c6 = context.simdgroupMatrixMultiplyAccumulate(n1, m2, c6);
+                c7 = context.simdgroupMatrixMultiplyAccumulate(n1, m3, c7);
+                c8 = context.simdgroupMatrixMultiplyAccumulate(n2, m0, c8);
+                c9 = context.simdgroupMatrixMultiplyAccumulate(n2, m1, c9);
+                c10 = context.simdgroupMatrixMultiplyAccumulate(n2, m2, c10);
+                c11 = context.simdgroupMatrixMultiplyAccumulate(n2, m3, c11);
+                c12 = context.simdgroupMatrixMultiplyAccumulate(n3, m0, c12);
+                c13 = context.simdgroupMatrixMultiplyAccumulate(n3, m1, c13);
+                c14 = context.simdgroupMatrixMultiplyAccumulate(n3, m2, c14);
+                c15 = context.simdgroupMatrixMultiplyAccumulate(n3, m3, c15);
+            }
+            blk += 34;
+            qi += 34;
+            xi += 32;
+        }
+        if (full) {
+            if (which == 0) {
+                context.simdgroupMatrixStore(c0, q, cbase + 0 * qDim + 0, qDim);
+                context.simdgroupMatrixStore(c1, q, cbase + 0 * qDim + 8, qDim);
+                context.simdgroupMatrixStore(c2, q, cbase + 0 * qDim + 16, qDim);
+                context.simdgroupMatrixStore(c3, q, cbase + 0 * qDim + 24, qDim);
+                context.simdgroupMatrixStore(c4, q, cbase + 8 * qDim + 0, qDim);
+                context.simdgroupMatrixStore(c5, q, cbase + 8 * qDim + 8, qDim);
+                context.simdgroupMatrixStore(c6, q, cbase + 8 * qDim + 16, qDim);
+                context.simdgroupMatrixStore(c7, q, cbase + 8 * qDim + 24, qDim);
+                context.simdgroupMatrixStore(c8, q, cbase + 16 * qDim + 0, qDim);
+                context.simdgroupMatrixStore(c9, q, cbase + 16 * qDim + 8, qDim);
+                context.simdgroupMatrixStore(c10, q, cbase + 16 * qDim + 16, qDim);
+                context.simdgroupMatrixStore(c11, q, cbase + 16 * qDim + 24, qDim);
+                context.simdgroupMatrixStore(c12, q, cbase + 24 * qDim + 0, qDim);
+                context.simdgroupMatrixStore(c13, q, cbase + 24 * qDim + 8, qDim);
+                context.simdgroupMatrixStore(c14, q, cbase + 24 * qDim + 16, qDim);
+                context.simdgroupMatrixStore(c15, q, cbase + 24 * qDim + 24, qDim);
+            } else if (which == 1) {
+                context.simdgroupMatrixStore(c0, k, cbase + 0 * kvDim + 0, kvDim);
+                context.simdgroupMatrixStore(c1, k, cbase + 0 * kvDim + 8, kvDim);
+                context.simdgroupMatrixStore(c2, k, cbase + 0 * kvDim + 16, kvDim);
+                context.simdgroupMatrixStore(c3, k, cbase + 0 * kvDim + 24, kvDim);
+                context.simdgroupMatrixStore(c4, k, cbase + 8 * kvDim + 0, kvDim);
+                context.simdgroupMatrixStore(c5, k, cbase + 8 * kvDim + 8, kvDim);
+                context.simdgroupMatrixStore(c6, k, cbase + 8 * kvDim + 16, kvDim);
+                context.simdgroupMatrixStore(c7, k, cbase + 8 * kvDim + 24, kvDim);
+                context.simdgroupMatrixStore(c8, k, cbase + 16 * kvDim + 0, kvDim);
+                context.simdgroupMatrixStore(c9, k, cbase + 16 * kvDim + 8, kvDim);
+                context.simdgroupMatrixStore(c10, k, cbase + 16 * kvDim + 16, kvDim);
+                context.simdgroupMatrixStore(c11, k, cbase + 16 * kvDim + 24, kvDim);
+                context.simdgroupMatrixStore(c12, k, cbase + 24 * kvDim + 0, kvDim);
+                context.simdgroupMatrixStore(c13, k, cbase + 24 * kvDim + 8, kvDim);
+                context.simdgroupMatrixStore(c14, k, cbase + 24 * kvDim + 16, kvDim);
+                context.simdgroupMatrixStore(c15, k, cbase + 24 * kvDim + 24, kvDim);
+            } else {
+                context.simdgroupMatrixStore(c0, v, cbase + 0 * kvDim + 0, kvDim);
+                context.simdgroupMatrixStore(c1, v, cbase + 0 * kvDim + 8, kvDim);
+                context.simdgroupMatrixStore(c2, v, cbase + 0 * kvDim + 16, kvDim);
+                context.simdgroupMatrixStore(c3, v, cbase + 0 * kvDim + 24, kvDim);
+                context.simdgroupMatrixStore(c4, v, cbase + 8 * kvDim + 0, kvDim);
+                context.simdgroupMatrixStore(c5, v, cbase + 8 * kvDim + 8, kvDim);
+                context.simdgroupMatrixStore(c6, v, cbase + 8 * kvDim + 16, kvDim);
+                context.simdgroupMatrixStore(c7, v, cbase + 8 * kvDim + 24, kvDim);
+                context.simdgroupMatrixStore(c8, v, cbase + 16 * kvDim + 0, kvDim);
+                context.simdgroupMatrixStore(c9, v, cbase + 16 * kvDim + 8, kvDim);
+                context.simdgroupMatrixStore(c10, v, cbase + 16 * kvDim + 16, kvDim);
+                context.simdgroupMatrixStore(c11, v, cbase + 16 * kvDim + 24, kvDim);
+                context.simdgroupMatrixStore(c12, v, cbase + 24 * kvDim + 0, kvDim);
+                context.simdgroupMatrixStore(c13, v, cbase + 24 * kvDim + 8, kvDim);
+                context.simdgroupMatrixStore(c14, v, cbase + 24 * kvDim + 16, kvDim);
+                context.simdgroupMatrixStore(c15, v, cbase + 24 * kvDim + 24, kvDim);
+            }
+        } else {
+            int t0 = b0 + ((sg >> 1) << 5);
+            int rr = local0 + ((sg & 1) << 5);
+            context.localBarrier();
+            context.simdgroupMatrixStore(c0, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c1, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c2, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c3, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 0 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c4, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c5, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c6, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c7, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 8 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c8, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c9, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c10, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c11, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 16 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c12, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 0 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c13, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 8 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c14, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 16 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+            context.localBarrier();
+            context.simdgroupMatrixStore(c15, cs, sg << 6, 8);
+            context.localBarrier();
+            for (int e = lane; e < 64; e += 32) {
+                int t = t0 + 24 + (e >> 3);
+                int r = rr + 24 + (e & 7);
+                if (t < batch) {
+                    float val = cs[(sg << 6) + e];
+                    if (which == 0) {
+                        q.set(t * qDim + r, val);
+                    } else if (which == 1) {
+                        k.set(t * kvDim + r, val);
+                    } else {
+                        v.set(t * kvDim + r, val);
+                    }
+                }
+            }
+        }
+    }
+
+    // @formatter:off
+    /**
+     * {@link #batchedGemmRmsNormFFNGateUpQ8} with the weights staged as FP16, as {@link
+     * #batchedGemmQ8WithResidualHalfTiles}. A tile holds 32 gate rows and the 32 matching up rows.
+     * Grid: {@code ceil(hiddenDim / 32) * ceil(batch / 64)} workgroups of 128 threads.
+     */
+    // @formatter:on
+    public static void batchedGemmRmsNormFFNGateUpQ8HalfTiles(
+            KernelContext context,
+            FloatArray x,
+            FloatArray hb,
+            FloatArray rmsWeights,
+            FloatArray scaleBatch,
+            ByteArray w1,
+            ByteArray w3,
+            int dim,
+            int hiddenDim,
+            int batch) {
+        HalfFloat[] sa = context.allocateHalfFloatLocalArray(2048);
+        float[] sb = context.allocateFloatLocalArray(2048);
+        float[] cs = context.allocateFloatLocalArray(512);
+        int tid = context.localIdx;
+        int sg = tid >> 5;
+        int lane = tid & 31;
+        int grp = context.groupIdx;
+        int rowTiles = (hiddenDim + 31) >> 5;
+        int r0 = (grp % rowTiles) << 5;
+        int b0 = (grp / rowTiles) << 6;
+        int lr = tid >> 1;
+        int kh = (tid & 1) << 4;
+        int aBase = ((((tid & 1) << 4) + (lr >> 3)) << 6) + (lr & 7);
+        int bBase = ((((tid & 1) << 4) + (lr >> 3)) << 6) + ((lr & 7) << 3);
+        int ca = (sg & 1) << 8;
+        int cb = (sg >> 1) << 8;
+        boolean up = ((lr >> 4) & 1) == 1;
+        int row = TornadoMath.min(r0 + ((lr >> 5) << 4) + (lr & 15), hiddenDim - 1);
+        int blk = row * (dim >> 5) * 34;
+        int qi = blk + 2 + kh;
+        int tok = TornadoMath.min(b0 + lr, batch - 1);
+        int xi = tok * dim + kh;
+        int ri = kh;
+        float xsc = scaleBatch.get(tok);
+        Matrix8x8Float c0 = context.simdgroupMatrixZero();
+        Matrix8x8Float c1 = context.simdgroupMatrixZero();
+        Matrix8x8Float c2 = context.simdgroupMatrixZero();
+        Matrix8x8Float c3 = context.simdgroupMatrixZero();
+        Matrix8x8Float c4 = context.simdgroupMatrixZero();
+        Matrix8x8Float c5 = context.simdgroupMatrixZero();
+        Matrix8x8Float c6 = context.simdgroupMatrixZero();
+        Matrix8x8Float c7 = context.simdgroupMatrixZero();
+        Matrix8x8Float c8 = context.simdgroupMatrixZero();
+        Matrix8x8Float c9 = context.simdgroupMatrixZero();
+        Matrix8x8Float c10 = context.simdgroupMatrixZero();
+        Matrix8x8Float c11 = context.simdgroupMatrixZero();
+        Matrix8x8Float c12 = context.simdgroupMatrixZero();
+        Matrix8x8Float c13 = context.simdgroupMatrixZero();
+        Matrix8x8Float c14 = context.simdgroupMatrixZero();
+        Matrix8x8Float c15 = context.simdgroupMatrixZero();
+        for (int k0 = 0; k0 < dim; k0 += 32) {
+            float a0;
+            float a1;
+            float a2;
+            float a3;
+            float a4;
+            float a5;
+            float a6;
+            float a7;
+            float a8;
+            float a9;
+            float a10;
+            float a11;
+            float a12;
+            float a13;
+            float a14;
+            float a15;
+            float sc;
+            if (!up) {
+                sc = w1.getHalfFloat(blk).getFloat32();
+                a0 = w1.get(qi + 0) * sc;
+                a1 = w1.get(qi + 1) * sc;
+                a2 = w1.get(qi + 2) * sc;
+                a3 = w1.get(qi + 3) * sc;
+                a4 = w1.get(qi + 4) * sc;
+                a5 = w1.get(qi + 5) * sc;
+                a6 = w1.get(qi + 6) * sc;
+                a7 = w1.get(qi + 7) * sc;
+                a8 = w1.get(qi + 8) * sc;
+                a9 = w1.get(qi + 9) * sc;
+                a10 = w1.get(qi + 10) * sc;
+                a11 = w1.get(qi + 11) * sc;
+                a12 = w1.get(qi + 12) * sc;
+                a13 = w1.get(qi + 13) * sc;
+                a14 = w1.get(qi + 14) * sc;
+                a15 = w1.get(qi + 15) * sc;
+            } else {
+                sc = w3.getHalfFloat(blk).getFloat32();
+                a0 = w3.get(qi + 0) * sc;
+                a1 = w3.get(qi + 1) * sc;
+                a2 = w3.get(qi + 2) * sc;
+                a3 = w3.get(qi + 3) * sc;
+                a4 = w3.get(qi + 4) * sc;
+                a5 = w3.get(qi + 5) * sc;
+                a6 = w3.get(qi + 6) * sc;
+                a7 = w3.get(qi + 7) * sc;
+                a8 = w3.get(qi + 8) * sc;
+                a9 = w3.get(qi + 9) * sc;
+                a10 = w3.get(qi + 10) * sc;
+                a11 = w3.get(qi + 11) * sc;
+                a12 = w3.get(qi + 12) * sc;
+                a13 = w3.get(qi + 13) * sc;
+                a14 = w3.get(qi + 14) * sc;
+                a15 = w3.get(qi + 15) * sc;
+            }
+            float y0 = x.get(xi + 0) * rmsWeights.get(ri + 0) * xsc;
+            float y1 = x.get(xi + 1) * rmsWeights.get(ri + 1) * xsc;
+            float y2 = x.get(xi + 2) * rmsWeights.get(ri + 2) * xsc;
+            float y3 = x.get(xi + 3) * rmsWeights.get(ri + 3) * xsc;
+            float y4 = x.get(xi + 4) * rmsWeights.get(ri + 4) * xsc;
+            float y5 = x.get(xi + 5) * rmsWeights.get(ri + 5) * xsc;
+            float y6 = x.get(xi + 6) * rmsWeights.get(ri + 6) * xsc;
+            float y7 = x.get(xi + 7) * rmsWeights.get(ri + 7) * xsc;
+            float y8 = x.get(xi + 8) * rmsWeights.get(ri + 8) * xsc;
+            float y9 = x.get(xi + 9) * rmsWeights.get(ri + 9) * xsc;
+            float y10 = x.get(xi + 10) * rmsWeights.get(ri + 10) * xsc;
+            float y11 = x.get(xi + 11) * rmsWeights.get(ri + 11) * xsc;
+            float y12 = x.get(xi + 12) * rmsWeights.get(ri + 12) * xsc;
+            float y13 = x.get(xi + 13) * rmsWeights.get(ri + 13) * xsc;
+            float y14 = x.get(xi + 14) * rmsWeights.get(ri + 14) * xsc;
+            float y15 = x.get(xi + 15) * rmsWeights.get(ri + 15) * xsc;
+            context.localBarrier();
+            sa[aBase + 0] = new HalfFloat(a0);
+            sa[aBase + 8] = new HalfFloat(a1);
+            sa[aBase + 16] = new HalfFloat(a2);
+            sa[aBase + 24] = new HalfFloat(a3);
+            sa[aBase + 32] = new HalfFloat(a4);
+            sa[aBase + 40] = new HalfFloat(a5);
+            sa[aBase + 48] = new HalfFloat(a6);
+            sa[aBase + 56] = new HalfFloat(a7);
+            sa[aBase + 512] = new HalfFloat(a8);
+            sa[aBase + 520] = new HalfFloat(a9);
+            sa[aBase + 528] = new HalfFloat(a10);
+            sa[aBase + 536] = new HalfFloat(a11);
+            sa[aBase + 544] = new HalfFloat(a12);
+            sa[aBase + 552] = new HalfFloat(a13);
+            sa[aBase + 560] = new HalfFloat(a14);
+            sa[aBase + 568] = new HalfFloat(a15);
+            sb[bBase + 0] = y0;
+            sb[bBase + 1] = y1;
+            sb[bBase + 2] = y2;
+            sb[bBase + 3] = y3;
+            sb[bBase + 4] = y4;
+            sb[bBase + 5] = y5;
+            sb[bBase + 6] = y6;
+            sb[bBase + 7] = y7;
+            sb[bBase + 512] = y8;
+            sb[bBase + 513] = y9;
+            sb[bBase + 514] = y10;
+            sb[bBase + 515] = y11;
+            sb[bBase + 516] = y12;
+            sb[bBase + 517] = y13;
+            sb[bBase + 518] = y14;
+            sb[bBase + 519] = y15;
+            context.localBarrier();
+            for (int ik = 0; ik < 4; ik++) {
+                int pa = ca + (ik << 9);
+                int pb = cb + (ik << 9);
+                Matrix8x8Half m0 = context.simdgroupMatrixLoad(sa, pa + 0, 8);
+                Matrix8x8Half m1 = context.simdgroupMatrixLoad(sa, pa + 64, 8);
+                Matrix8x8Half m2 = context.simdgroupMatrixLoad(sa, pa + 128, 8);
+                Matrix8x8Half m3 = context.simdgroupMatrixLoad(sa, pa + 192, 8);
+                Matrix8x8Float n0 = context.simdgroupMatrixLoad(sb, pb + 0, 8);
+                Matrix8x8Float n1 = context.simdgroupMatrixLoad(sb, pb + 64, 8);
+                Matrix8x8Float n2 = context.simdgroupMatrixLoad(sb, pb + 128, 8);
+                Matrix8x8Float n3 = context.simdgroupMatrixLoad(sb, pb + 192, 8);
+                c0 = context.simdgroupMatrixMultiplyAccumulate(n0, m0, c0);
+                c1 = context.simdgroupMatrixMultiplyAccumulate(n0, m1, c1);
+                c2 = context.simdgroupMatrixMultiplyAccumulate(n0, m2, c2);
+                c3 = context.simdgroupMatrixMultiplyAccumulate(n0, m3, c3);
+                c4 = context.simdgroupMatrixMultiplyAccumulate(n1, m0, c4);
+                c5 = context.simdgroupMatrixMultiplyAccumulate(n1, m1, c5);
+                c6 = context.simdgroupMatrixMultiplyAccumulate(n1, m2, c6);
+                c7 = context.simdgroupMatrixMultiplyAccumulate(n1, m3, c7);
+                c8 = context.simdgroupMatrixMultiplyAccumulate(n2, m0, c8);
+                c9 = context.simdgroupMatrixMultiplyAccumulate(n2, m1, c9);
+                c10 = context.simdgroupMatrixMultiplyAccumulate(n2, m2, c10);
+                c11 = context.simdgroupMatrixMultiplyAccumulate(n2, m3, c11);
+                c12 = context.simdgroupMatrixMultiplyAccumulate(n3, m0, c12);
+                c13 = context.simdgroupMatrixMultiplyAccumulate(n3, m1, c13);
+                c14 = context.simdgroupMatrixMultiplyAccumulate(n3, m2, c14);
+                c15 = context.simdgroupMatrixMultiplyAccumulate(n3, m3, c15);
+            }
+            blk += 34;
+            qi += 34;
+            xi += 32;
+            ri += 32;
+        }
+        int t0 = b0 + ((sg >> 1) << 5);
+        int rr = r0 + ((sg & 1) << 4);
+        context.localBarrier();
+        context.simdgroupMatrixStore(c0, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c2, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 0 + (e >> 3);
+            int r = rr + 0 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c1, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c3, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 0 + (e >> 3);
+            int r = rr + 8 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c4, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c6, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 8 + (e >> 3);
+            int r = rr + 0 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c5, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c7, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 8 + (e >> 3);
+            int r = rr + 8 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c8, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c10, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 16 + (e >> 3);
+            int r = rr + 0 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c9, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c11, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 16 + (e >> 3);
+            int r = rr + 8 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c12, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c14, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 24 + (e >> 3);
+            int r = rr + 0 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+        context.localBarrier();
+        context.simdgroupMatrixStore(c13, cs, sg << 7, 8);
+        context.simdgroupMatrixStore(c15, cs, (sg << 7) + 64, 8);
+        context.localBarrier();
+        for (int e = lane; e < 64; e += 32) {
+            int t = t0 + 24 + (e >> 3);
+            int r = rr + 8 + (e & 7);
+            if (t < batch && r < hiddenDim) {
+                float gv = cs[(sg << 7) + e];
+                hb.set(
+                        t * hiddenDim + r,
+                        (gv / (1.0f + TornadoMath.exp(-gv))) * cs[(sg << 7) + 64 + e]);
+            }
+        }
+    }
 }
