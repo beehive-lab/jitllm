@@ -1,5 +1,7 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode;
 
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanPrefillDecode;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LlamaQ8_0FFNLayers;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.LlamaState;
@@ -9,7 +11,7 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 
 /**
  * Decode transformer-layer TaskGraphs for the single-token prefill/decode plan ({@link
- * org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanPrefillDecode}).
+ * TornadoVMMasterPlanPrefillDecode}).
  *
  * <p>Layer 0 delegates to {@link LlamaQ8_0FFNLayers#configureLayerDataTransfers} which includes
  * {@code FIRST_EXECUTION} for {@code wrapKeyCache} and {@code wrapValueCache}, allocating the KV
@@ -20,12 +22,11 @@ public class LlamaQ8_0FFNLayersPrefillDecode extends LlamaQ8_0FFNLayers {
 
     // @formatter:off
     public LlamaQ8_0FFNLayersPrefillDecode(
-            String taskGraph,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     // @formatter:on
@@ -41,7 +42,7 @@ public class LlamaQ8_0FFNLayersPrefillDecode extends LlamaQ8_0FFNLayers {
 
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "decodeActivation" : layerGraphName(layerIndex - 1);
+        return (layerIndex == 0) ? GraphNames.DECODE_ACTIVATION : layerGraphName(layerIndex - 1);
     }
 
     // @formatter:off

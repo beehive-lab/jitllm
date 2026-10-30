@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -49,8 +50,7 @@ public final class FP16Projections {
      * Whether a batched prefill under {@code policy} keeps resident decoded copies of layers that
      * hold {@code weights} weights.
      */
-    public static boolean resident(
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy, long weights) {
+    public static boolean resident(ExecutionPolicy policy, long weights) {
         return switch (policy.decodedProjections()) {
             case RESIDENT -> true;
             case PER_CHUNK -> false;

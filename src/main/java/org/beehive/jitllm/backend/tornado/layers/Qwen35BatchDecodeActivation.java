@@ -51,7 +51,7 @@ public class Qwen35BatchDecodeActivation implements ActivationTaskGraph {
             Qwen35TornadoWeights weights,
             String lastBatchLayerId) {
         TaskGraph graph =
-                new TaskGraph("decodeActivation")
+                new TaskGraph(GraphNames.DECODE_ACTIVATION)
                         .consumeFromDevice(lastBatchLayerId, keyStore(state), valueStore(state))
                         .consumeFromDevice(lastBatchLayerId, state.workspace.wrapBlockTable)
                         .consumeFromDevice(

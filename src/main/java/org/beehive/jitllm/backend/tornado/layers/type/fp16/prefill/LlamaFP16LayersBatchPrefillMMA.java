@@ -3,11 +3,13 @@ package org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill;
 import java.util.List;
 import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.SplitKGemm;
 import org.beehive.jitllm.backend.tornado.layers.TensorCoreBatchAttention;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
@@ -16,6 +18,7 @@ import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -29,7 +32,7 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 /**
  * Batched-prefill transformer-layer TaskGraphs for the unified batched prefill-decode plan ({@link
- * org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode}).
+ * TornadoVMMasterPlanBatchPrefillDecode}).
  *
  * <p>One {@link ImmutableTaskGraph} per transformer layer, each processing {@code batchSize} tokens
  * simultaneously via {@link TransformerBatchPrefillKernels}.
@@ -119,10 +122,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     /** What these layers allocate for one session at {@code batchSize}; see the constructor. */
     public static BatchPrefillWorkspace workspace(
-            Configuration config,
-            int batchSize,
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy,
-            boolean fp16Cache) {
+            Configuration config, int batchSize, ExecutionPolicy policy, boolean fp16Cache) {
         int padded = (batchSize + 127) & ~127;
         int qDim = config.numberOfHeads() * config.headSize();
         boolean nativeGemm = NativePrefillSupport.nativeProjections(policy);
@@ -211,7 +211,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     // @formatter:off
     private TaskGraph createBatchPrefillLayerTaskGraph(int layerIndex) {
-        String graphName = "batchPrefillLayer_" + layerIndex;
+        String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
 
         TaskGraph batchPrefillLayer = new TaskGraph(graphName);
@@ -256,11 +256,12 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             // wrapXBatch produced by the prefillActivation graph and persists in device memory
             // to consume it from there we should use the explicit uniqueTaskGraph name
             // the no-arg form would use current graph name, which causes NPE without CUDA Graphs
-            batchPrefillLayer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            batchPrefillLayer.consumeFromDevice(
+                    GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
         } else {
             // for the same reasons as above, we should use the explicit uniqueTaskGraph name to
             // consume
-            String pred = "batchPrefillLayer_" + (layerIndex - 1);
+            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
             batchPrefillLayer.consumeFromDevice(
                     pred,
                     context,
@@ -295,7 +296,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
         } else {
             batchPrefillLayer.consumeFromDevice(
-                    "batchPrefillLayer_" + (layerIndex - 1), state.workspace.wrapBlockTable);
+                    GraphNames.batchPrefillLayer(layerIndex - 1), state.workspace.wrapBlockTable);
         }
 
         // Per-layer weights: upload once
@@ -770,14 +771,14 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         WorkerGrid mmaDimWorker = mmaGrid(paddedBatch, dim); // woProj, w2Proj
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String p = "batchPrefillLayer_" + i + ".";
+            String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApplyWorker);
             scheduler.addWorkerGrid(p + "qkvProj", mmaQkvWorker);
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
             addFamilyTaskGrids(scheduler, p, i);
             if (tcAttention != null) {
-                tcAttention.addGrids(scheduler, "batchPrefillLayer_" + i);
+                tcAttention.addGrids(scheduler, GraphNames.batchPrefillLayer(i));
             } else {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }

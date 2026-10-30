@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.qwen2moe;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen2MoEBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.Qwen35MoeBatchFeedForward;
 import org.beehive.jitllm.backend.tornado.layers.qwen2.Qwen2Q8_0LayersBatchPrefillMMA;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -123,7 +124,7 @@ public class Qwen2MoEQ8_0LayersBatchPrefillMMA extends Qwen2Q8_0LayersBatchPrefi
                     DataTransferMode.EVERY_EXECUTION, state.workspace.activeBatchSizeHolder);
             batchPrefillLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, moeScratch());
         } else {
-            String pred = "batchPrefillLayer_" + (layerIndex - 1);
+            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
             batchPrefillLayer.consumeFromDevice(pred, state.workspace.activeBatchSizeHolder);
             batchPrefillLayer.consumeFromDevice(pred, moeScratch());
         }

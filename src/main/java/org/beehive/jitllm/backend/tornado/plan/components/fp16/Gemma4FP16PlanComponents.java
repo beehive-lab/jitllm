@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.Gemma4FP16FFNLayers;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.Gemma4LogitsFP16Layer;
@@ -17,6 +18,7 @@ import org.beehive.jitllm.inference.state.Gemma4State;
 import org.beehive.jitllm.inference.weights.tornado.Gemma4TornadoWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
  * FP16 plan components for the Gemma 4 architecture.
@@ -45,18 +47,17 @@ public class Gemma4FP16PlanComponents implements BatchPrefillDecodeForwardPlanCo
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new Gemma4FP16FFNLayers("gemma4FFN", state, weights, config, schedulerType);
+        return new Gemma4FP16FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new Gemma4LogitsFP16Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new Gemma4LogitsFP16Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── The batched prefill/decode plan ───────────────────────────────────────
@@ -67,9 +68,7 @@ public class Gemma4FP16PlanComponents implements BatchPrefillDecodeForwardPlanCo
      */
     @Override
     public ActivationTaskGraph batchPrefillActivation(int batchSize) {
-        boolean f16Embedding =
-                weights.getTokenEmbeddingTable().dataType()
-                        == org.beehive.jitllm.runtime.tensor.DataType.F16;
+        boolean f16Embedding = weights.getTokenEmbeddingTable().dataType() == DataType.F16;
         return new BatchPrefillActivation(state, config, batchSize, !f16Embedding);
     }
 
@@ -85,13 +84,12 @@ public class Gemma4FP16PlanComponents implements BatchPrefillDecodeForwardPlanCo
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new Gemma4FP16FFNLayers("gemma4FFN", state, weights, config, schedulerType, true);
+        return new Gemma4FP16FFNLayers(state, weights, config, schedulerType, true);
     }
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
-        return new Gemma4LogitsFP16Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new Gemma4LogitsFP16Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     /** Not declared by the provider: the batched plan is this family's prefill path. */

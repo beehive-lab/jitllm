@@ -23,12 +23,11 @@ public class GraniteQ8_0FFNLayers
         extends AbstractTransformerLayerTaskGraphs<GraniteTornadoWeights, GraniteConfiguration> {
 
     public GraniteQ8_0FFNLayers(
-            String taskGraphName,
             GraniteState state,
             GraniteTornadoWeights weights,
             GraniteConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         setupFFNLayers();
     }
 

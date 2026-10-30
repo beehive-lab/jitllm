@@ -1,10 +1,13 @@
 package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 
+import org.beehive.jitllm.backend.cpu.InferenceCore;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4AttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.Activation;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Gemma4State;
@@ -24,9 +27,8 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
  * between sliding-window and full-attention layers (and are baked into each layer's task graph as
  * compile-time constants -- see {@link Gemma4Configuration#headDim}), some layers reuse an earlier
  * layer's KV cache instead of computing their own, the FFN uses GeGLU, and every layer mixes in a
- * per-layer embedding (PLE) contribution. See {@link
- * org.beehive.jitllm.backend.cpu.InferenceCore#forwardJavaGemma4} for the reference computation
- * each task mirrors.
+ * per-layer embedding (PLE) contribution. See {@link InferenceCore#forwardJavaGemma4} for the
+ * reference computation each task mirrors.
  *
  * <p>Layer 0's task graph additionally carries one-time-per-token setup that the reference
  * implementation performs before the layer loop: scaling the token embedding by {@code sqrt(dim)},
@@ -71,12 +73,11 @@ public class Gemma4FP16FFNLayers
     private final boolean fp16KeyValue;
 
     public Gemma4FP16FFNLayers(
-            String taskGraphName,
             Gemma4State state,
             Gemma4TornadoWeights weights,
             Gemma4Configuration config,
             SchedulerType schedulerType) {
-        this(taskGraphName, state, weights, config, schedulerType, false);
+        this(state, weights, config, schedulerType, false);
     }
 
     /**
@@ -86,13 +87,12 @@ public class Gemma4FP16FFNLayers
      *     batch-prefill graphs already uploaded
      */
     public Gemma4FP16FFNLayers(
-            String taskGraphName,
             Gemma4State state,
             Gemma4TornadoWeights weights,
             Gemma4Configuration config,
             SchedulerType schedulerType,
             boolean batchedPlan) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.batchedPlan = batchedPlan;
         this.gemma4State = state;
         this.fp16KeyValue = state.usesFp16KeyValueCache();
@@ -120,7 +120,7 @@ public class Gemma4FP16FFNLayers
 
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        var taskGraphName = "layer_" + layerIndex;
+        var taskGraphName = GraphNames.layer(layerIndex);
         final int headDim = config.headDim(layerIndex);
         final boolean isSwa = config.isSwa(layerIndex);
         final boolean hasOwnKv = config.hasOwnKv(layerIndex);
@@ -139,7 +139,9 @@ public class Gemma4FP16FFNLayers
         if (batchedPlan) {
             // A graph that consumes anything by name takes nothing through an unnamed consume.
             unifiedLayer.consumeFromDevice(
-                    layerIndex == 0 ? "decodeActivation" : "layer_" + (layerIndex - 1),
+                    layerIndex == 0
+                            ? GraphNames.DECODE_ACTIVATION
+                            : GraphNames.layer(layerIndex - 1),
                     gemma4State.workspace.wrapX);
             // The projections the batch-prefill graph of this layer already uploaded; K and V
             // only where the layer has its own, as there.
@@ -158,7 +160,8 @@ public class Gemma4FP16FFNLayers
                         weights.wkLayered[layerIndex].asHalfFloatArray(),
                         weights.wvLayered[layerIndex].asHalfFloatArray());
             }
-            unifiedLayer.consumeFromDevice("batchPrefillLayer_" + layerIndex, shared.toArray());
+            unifiedLayer.consumeFromDevice(
+                    GraphNames.batchPrefillLayer(layerIndex), shared.toArray());
         } else {
             unifiedLayer.consumeFromDevice(gemma4State.workspace.wrapX);
             unifiedLayer.transferToDevice(
@@ -602,11 +605,10 @@ public class Gemma4FP16FFNLayers
 
     /**
      * One-time-per-token setup tasks, prepended to layer 0's graph: scales the token embedding by
-     * {@code sqrt(dim)} (Gemma4 scales embeddings on input -- the generic {@link
-     * org.beehive.jitllm.backend.tornado.layers.Activation} task graph that produced {@code wrapX}
-     * doesn't know about this), then computes the per-layer embedding inputs from the per-layer
-     * model projection and the (host-gathered) per-token per-layer-token-embedding row. Mirrors
-     * steps 1-2 of {@link org.beehive.jitllm.backend.cpu.InferenceCore#forwardJavaGemma4}.
+     * {@code sqrt(dim)} (Gemma4 scales embeddings on input -- the generic {@link Activation} task
+     * graph that produced {@code wrapX} doesn't know about this), then computes the per-layer
+     * embedding inputs from the per-layer model projection and the (host-gathered) per-token
+     * per-layer-token-embedding row. Mirrors steps 1-2 of {@link InferenceCore#forwardJavaGemma4}.
      */
     private void appendPLESetupTasks(TaskGraph unifiedLayer) {
         unifiedLayer.task(
@@ -693,14 +695,15 @@ public class Gemma4FP16FFNLayers
                 unifiedLayer.consumeFromDevice(
                         "batchPrefillLayer_0", weights.perLayerProjNorm.asFloatArray());
                 unifiedLayer.consumeFromDevice(
-                        "batchPrefillLayer_" + firstLayerOfKind(true),
+                        GraphNames.batchPrefillLayer(firstLayerOfKind(true)),
                         weights.freqCisRealSwa.asFloatArray(),
                         weights.freqCisImagSwa.asFloatArray());
                 unifiedLayer.consumeFromDevice(
-                        "batchPrefillLayer_" + firstLayerOfKind(false),
+                        GraphNames.batchPrefillLayer(firstLayerOfKind(false)),
                         weights.freqCisRealFull.asFloatArray(),
                         weights.freqCisImagFull.asFloatArray());
-                unifiedLayer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
+                unifiedLayer.consumeFromDevice(
+                        GraphNames.DECODE_ACTIVATION, keyCache(), valueCache());
             } else {
                 unifiedLayer.transferToDevice(
                         DataTransferMode.FIRST_EXECUTION,
@@ -728,7 +731,7 @@ public class Gemma4FP16FFNLayers
                     gemma4State.workspace.wrapPerLayerOut);
         } else if (batchedPlan) {
             unifiedLayer.consumeFromDevice(
-                    "layer_" + (layerIndex - 1),
+                    GraphNames.layer(layerIndex - 1),
                     context,
                     gemma4State.workspace.wrapXb,
                     gemma4State.workspace.wrapXb2,
@@ -799,7 +802,7 @@ public class Gemma4FP16FFNLayers
                 WorkerGridFactory.genericWorker(perLayerTotal, LOCAL_WORK_GROUP_SIZE_ALLOC));
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String prefix = "layer_" + i + ".";
+            String prefix = GraphNames.layer(i) + ".";
             int headDim = config.headDim(i);
             boolean hasOwnKv = config.hasOwnKv(i);
             int qDim = nHead * headDim;

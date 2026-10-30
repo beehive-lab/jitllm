@@ -1,5 +1,11 @@
 package org.beehive.jitllm.backend.tornado.tensor;
 
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+
 // @formatter:off
 /**
  * Whether a load packs its projections ({@link PackedTiles}): every Q8_0 projection whose shape
@@ -38,8 +44,7 @@ public final class PackedWeights {
     private static final int GEMM_ROWS = 128;
 
     /** The policy of the load running on this thread, if a caller scoped one. */
-    private static final ThreadLocal<org.beehive.jitllm.runtime.policy.ExecutionPolicy> LOAD =
-            new ThreadLocal<>();
+    private static final ThreadLocal<ExecutionPolicy> LOAD = new ThreadLocal<>();
 
     private PackedWeights() {}
 
@@ -48,8 +53,8 @@ public final class PackedWeights {
      * chosen for the policy the model is loaded with, not for the process's properties, and a load
      * on another thread is not affected.
      */
-    public static <T, E extends Exception> T loading(
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy, Load<T, E> load) throws E {
+    public static <T, E extends Exception> T loading(ExecutionPolicy policy, Load<T, E> load)
+            throws E {
         var previous = LOAD.get();
         LOAD.set(policy);
         try {
@@ -70,19 +75,16 @@ public final class PackedWeights {
     }
 
     /** The policy the current load chooses representations for. */
-    public static org.beehive.jitllm.runtime.policy.ExecutionPolicy loadPolicy() {
+    public static ExecutionPolicy loadPolicy() {
         var scoped = LOAD.get();
-        return scoped != null
-                ? scoped
-                : org.beehive.jitllm.runtime.policy.ExecutionPolicy.fromSystemProperties();
+        return scoped != null ? scoped : ExecutionPolicy.fromSystemProperties();
     }
 
     /**
      * Why packed projections cannot run under {@code policy}, or empty when they can: a batched
      * prefill whose width the int8 GEMM, the only packed prefill kernel, does not tile.
      */
-    public static java.util.Optional<String> unsupported(
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy) {
+    public static java.util.Optional<String> unsupported(ExecutionPolicy policy) {
         return prefillWidthTiles(policy)
                 ? java.util.Optional.empty()
                 : java.util.Optional.of(
@@ -127,26 +129,19 @@ public final class PackedWeights {
 
     /** CUDA, with the packed-integer dot products and int8 tensor cores the packed kernels use. */
     private static boolean deviceRunsPackedKernels() {
-        var device = org.beehive.jitllm.backend.tornado.device.TornadoDevices.current();
+        var device = TornadoDevices.current();
         var capabilities = device.capabilities();
-        return org.beehive.jitllm.runtime.backend.BackendId.CUDA.equals(device.backend())
-                && capabilities.supports(
-                        org.beehive.jitllm.runtime.backend.DeviceCapability.PACKED_INTEGER_DOT)
-                && capabilities.supports(
-                        org.beehive.jitllm.runtime.backend.DeviceCapability.INT8_TENSOR_CORE_MMA);
+        return BackendId.CUDA.equals(device.backend())
+                && capabilities.supports(DeviceCapability.PACKED_INTEGER_DOT)
+                && capabilities.supports(DeviceCapability.INT8_TENSOR_CORE_MMA);
     }
 
     /**
      * A batched prefill's width fills the int8 GEMM's row tiles, the only packed prefill kernel.
      */
-    private static boolean prefillWidthTiles(
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy) {
-        if (policy.phaseStrategy()
-                != org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
-            return true;
-        }
-        int width = policy.prefillBatchSize();
-        return width == 1 || width % GEMM_ROWS == 0;
+    private static boolean prefillWidthTiles(ExecutionPolicy policy) {
+        return ExecutionMode.of(policy) != ExecutionMode.BATCH_PREFILL_DECODE
+                || policy.prefillBatchSize() % GEMM_ROWS == 0;
     }
 
     /** The refusal for a path that has no kernel over packed tiles. */

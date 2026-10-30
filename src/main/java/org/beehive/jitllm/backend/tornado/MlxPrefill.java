@@ -5,6 +5,7 @@ import java.util.function.BooleanSupplier;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
@@ -87,8 +88,7 @@ public record MlxPrefill(DataType weights, Projections projections) {
     public static Optional<MlxPrefill> resolve(
             ExecutionPolicy policy, DataType weights, Configuration config) {
         if (!policy.nativeLibraries()
-                || policy.phaseStrategy() != ExecutionPolicy.PhaseStrategy.PREFILL_DECODE
-                || policy.prefillBatchSize() <= 1
+                || ExecutionMode.of(policy) != ExecutionMode.BATCH_PREFILL_DECODE
                 || !BackendId.METAL.equals(TornadoDevices.target().backend())
                 || (weights != DataType.F16 && weights != DataType.Q8_0 && weights != DataType.Q4_0)
                 || !available()) {

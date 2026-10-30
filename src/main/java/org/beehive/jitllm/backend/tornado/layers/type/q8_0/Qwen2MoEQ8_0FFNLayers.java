@@ -6,6 +6,7 @@ import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen2MoEState;
@@ -31,12 +32,11 @@ public class Qwen2MoEQ8_0FFNLayers
     protected final Qwen2MoEState moeState;
 
     public Qwen2MoEQ8_0FFNLayers(
-            String taskGraphName,
             Qwen2MoEState state,
             Qwen2MoETornadoWeights weights,
             Qwen2MoEConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.moeState = state;
         setupFFNLayers();
     }
@@ -57,22 +57,24 @@ public class Qwen2MoEQ8_0FFNLayers
         ropeWorker.setLocalWork(1, 1, 1);
 
         int attentionLocalSize = Math.min(config.headSize(), 64);
-        WorkerGrid attentionWorker = new WorkerGrid1D(config.numberOfHeads() * attentionLocalSize);
-        attentionWorker.setLocalWork(attentionLocalSize, 1, 1);
+        WorkerGrid attentionWorker =
+                WorkerGridFactory.genericWorker(
+                        config.numberOfHeads() * attentionLocalSize, attentionLocalSize);
 
-        WorkerGrid dimElementWorker = new WorkerGrid1D(config.dim());
-        dimElementWorker.setLocalWork(LOCAL_WORK_GROUP_SIZE_ALLOC, 1, 1);
+        WorkerGrid dimElementWorker =
+                WorkerGridFactory.genericWorker(config.dim(), LOCAL_WORK_GROUP_SIZE_ALLOC);
         WorkerGrid dimWorker = workerForRows(config.dim());
         WorkerGrid routerWorker = workerForRows(config.numberOfExperts());
-        WorkerGrid topKWorker = new WorkerGrid1D(LOCAL_WORK_GROUP_SIZE_ALLOC);
-        topKWorker.setLocalWork(LOCAL_WORK_GROUP_SIZE_ALLOC, 1, 1);
+        WorkerGrid topKWorker =
+                WorkerGridFactory.genericWorker(
+                        LOCAL_WORK_GROUP_SIZE_ALLOC, LOCAL_WORK_GROUP_SIZE_ALLOC);
         // Fused routed-expert launch: the slot index is folded into the work-group id.
         WorkerGrid allExpertsHiddenWorker =
                 workerForRows(config.moeHiddenDim() * config.numberOfExpertsUsed());
         WorkerGrid sharedHiddenWorker = workerForRows(config.sharedExpertHiddenDim());
 
         for (int layer = 0; layer < config.numberOfLayers(); layer++) {
-            String prefix = "layer_" + layer + ".";
+            String prefix = GraphNames.layer(layer) + ".";
             scheduler.addWorkerGrid(prefix + "attn_rms_reduce", rmsNormWorker);
             scheduler.addWorkerGrid(prefix + "attn_rms_qkv_projection", qkvWorker);
             scheduler.addWorkerGrid(prefix + "fused_qkv_bias", qkvBiasWorker);
@@ -94,8 +96,9 @@ public class Qwen2MoEQ8_0FFNLayers
 
     /** Creates a grid where one GPU work-group computes one output row. */
     private WorkerGrid workerForRows(int rows) {
-        WorkerGrid worker = new WorkerGrid1D(rows * LOCAL_WORK_GROUP_SIZE_ALLOC);
-        worker.setLocalWork(LOCAL_WORK_GROUP_SIZE_ALLOC, 1, 1);
+        WorkerGrid worker =
+                WorkerGridFactory.genericWorker(
+                        rows * LOCAL_WORK_GROUP_SIZE_ALLOC, LOCAL_WORK_GROUP_SIZE_ALLOC);
         return worker;
     }
 
@@ -105,7 +108,7 @@ public class Qwen2MoEQ8_0FFNLayers
      */
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        TaskGraph layer = new TaskGraph("layer_" + layerIndex);
+        TaskGraph layer = new TaskGraph(GraphNames.layer(layerIndex));
         // Reuse wrapX produced by the previous TaskGraph on the GPU.
         String predecessor = predecessorGraphName(layerIndex);
         if (predecessor == null) {

@@ -234,8 +234,7 @@ public class Qwen35GraphTopologyAccelTest {
         System.setProperty("use.tornadovm", "true");
         try {
             Qwen35State state = new Qwen35State(config, -1);
-            return new Qwen35FFNLayers(
-                    "qwen35FFN", state, weights(config), config, SchedulerType.NVIDIA);
+            return new Qwen35FFNLayers(state, weights(config), config, SchedulerType.NVIDIA);
         } finally {
             if (previous == null) {
                 System.clearProperty("use.tornadovm");
@@ -544,7 +543,7 @@ public class Qwen35GraphTopologyAccelTest {
         try {
             Qwen35State state = new Qwen35State(config, -1);
             return new Qwen35FFNLayersBatchDecode(
-                    "qwen35FFN", state, weights(config), config, SchedulerType.NVIDIA);
+                    state, weights(config), config, SchedulerType.NVIDIA);
         } finally {
             if (previous == null) {
                 System.clearProperty("use.tornadovm");
@@ -1320,7 +1319,7 @@ public class Qwen35GraphTopologyAccelTest {
             // One recurrent block's output projection, re-quantized.
             mixed.ssmOut[0] = blocked(DataType.Q4_0, config.deltaNetValueDim() * DIM);
             after =
-                    new Qwen35FFNLayers("qwen35FFN", state, mixed, config, SchedulerType.NVIDIA)
+                    new Qwen35FFNLayers(state, mixed, config, SchedulerType.NVIDIA)
                             .dispatchInventory();
         } finally {
             if (previous == null) {

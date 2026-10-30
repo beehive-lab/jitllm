@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.devstral;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
@@ -43,12 +44,11 @@ public abstract class DevstralLayerTaskGraphs
     protected static final int PACKED_LOCAL = 64;
 
     protected DevstralLayerTaskGraphs(
-            String taskGraphName,
             State state,
             LlamaTornadoWeights weights,
             DevstralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     /**
@@ -290,7 +290,7 @@ public abstract class DevstralLayerTaskGraphs
 
     /** Registers the attention tasks' grids for {@code layerIndex}, matching the kernel chosen. */
     protected void addAttentionWorkerGrids(GridScheduler scheduler, int layerIndex) {
-        String prefix = "layer_" + layerIndex + ".";
+        String prefix = GraphNames.layer(layerIndex) + ".";
         int splits = attentionSplits();
         if (splits == 0) {
             scheduler.addWorkerGrid(
@@ -320,7 +320,7 @@ public abstract class DevstralLayerTaskGraphs
         WorkerGrid rmsReduceWorker = rmsReduceWorker(rmsNormWorker);
         WorkerGrid ropeWithCacheWorker = WorkerGridFactory.genericWorker(config.qDim() / 2, 512);
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String prefix = "layer_" + i + ".";
+            String prefix = GraphNames.layer(i) + ".";
             scheduler.addWorkerGrid(prefix + "attn_rms_reduce", rmsReduceWorker);
             scheduler.addWorkerGrid(prefix + "ffn_rms_reduce", rmsReduceWorker);
             scheduler.addWorkerGrid(prefix + "rope_and_kv_cache", ropeWithCacheWorker);

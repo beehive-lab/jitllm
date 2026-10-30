@@ -12,8 +12,10 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefill
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupFP16Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillAttention;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.LlamaFP16LayersBatchPrefill;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen2State;
@@ -30,9 +32,8 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
  * Qwen2 batched-prefill transformer-layer TaskGraphs (Llama's, with the Q/K/V biases and NeoX RoPE)
  * for the unified batched prefill-decode plan (Q8_0).
  *
- * <p>Mirrors {@link
- * org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.LlamaFP16LayersBatchPrefill} but uses
- * Q8_0 kernels with inline dequantization. Key differences from the FP16 path:
+ * <p>Mirrors {@link LlamaFP16LayersBatchPrefill} but uses Q8_0 kernels with inline dequantization.
+ * Key differences from the FP16 path:
  *
  * <ul>
  *   <li>{@code wrapXBatch} is filled with dequantized FP32 embeddings by the host before the
@@ -119,7 +120,7 @@ public class Qwen2Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
     // @formatter:off
     private TaskGraph createBatchPrefillLayerTaskGraph(int layerIndex) {
-        String graphName = "batchPrefillLayer_" + layerIndex;
+        String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
 
         TaskGraph layer = new TaskGraph(graphName);
@@ -144,9 +145,9 @@ public class Qwen2Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.workspace.wrapHbBatch,
                     keyCache(),
                     valueCache());
-            layer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            layer.consumeFromDevice(GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
         } else {
-            String pred = "batchPrefillLayer_" + (layerIndex - 1);
+            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
             layer.consumeFromDevice(
                     pred,
                     context,
@@ -171,13 +172,13 @@ public class Qwen2Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
         } else {
             layer.consumeFromDevice(
-                    "batchPrefillLayer_" + (layerIndex - 1), state.workspace.wrapBlockTable);
+                    GraphNames.batchPrefillLayer(layerIndex - 1), state.workspace.wrapBlockTable);
         }
         if (mlxAttention != null) {
-            mlxAttention.declare(layer, layerIndex, "batchPrefillLayer_" + (layerIndex - 1));
+            mlxAttention.declare(layer, layerIndex, GraphNames.batchPrefillLayer(layerIndex - 1));
         }
         if (mlxProjections != null) {
-            mlxProjections.declare(layer, layerIndex, "batchPrefillLayer_" + (layerIndex - 1));
+            mlxProjections.declare(layer, layerIndex, GraphNames.batchPrefillLayer(layerIndex - 1));
         }
 
         // Per-layer weights: upload once (Q8_0 format)
@@ -619,7 +620,7 @@ public class Qwen2Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
             ropeLocal--;
         }
         WorkerGrid ropeWorker = WorkerGridFactory.genericWorker(ropeGlobal, ropeLocal);
-        int optLocal = findOptimalLocalSize(headSz);
+        int optLocal = WorkerGridFactory.findOptimalLocalSize(headSz);
         WorkerGrid attnWorker =
                 WorkerGridFactory.genericWorker(batchSize * nHeads * optLocal, optLocal);
         WorkerGrid matVecDimWorker =
@@ -633,7 +634,7 @@ public class Qwen2Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         WorkerGrid biasWorker =
                 WorkerGridFactory.genericWorker(((biasRows + 255) / 256) * 256, 256);
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String p = "batchPrefillLayer_" + i + ".";
+            String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_qkv_bias", biasWorker);
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             if (mlxProjections == null) {
@@ -668,7 +669,7 @@ public class Qwen2Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     WorkerGridFactory.genericWorker(
                             ((hidDim + 31) / 32) * tokenTiles * local, local);
             for (int i = 0; i < config.numberOfLayers(); i++) {
-                String p = "batchPrefillLayer_" + i + ".";
+                String p = GraphNames.batchPrefillLayer(i) + ".";
                 scheduler.addWorkerGrid(p + "batch_qkv", sgQkv);
                 scheduler.addWorkerGrid(p + "batch_attn_out", sgDim);
                 scheduler.addWorkerGrid(p + "batch_ffn_gate_up", sgHid);
@@ -688,22 +689,10 @@ public class Qwen2Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                                     * TransformerPagedKvBatchPrefillSimdgroupKernels.THREADS,
                             TransformerPagedKvBatchPrefillSimdgroupKernels.THREADS);
             for (int i = 0; i < config.numberOfLayers(); i++) {
-                scheduler.addWorkerGrid("batchPrefillLayer_" + i + ".batch_attention", sgAttn);
+                scheduler.addWorkerGrid(
+                        GraphNames.batchPrefillLayer(i) + ".batch_attention", sgAttn);
             }
         }
-    }
-
-    private static int findOptimalLocalSize(int size) {
-        int optimal = Math.min(size, 64);
-        if (size % optimal != 0) {
-            for (int s = 64; s >= 1; s--) {
-                if (size % s == 0) {
-                    optimal = s;
-                    break;
-                }
-            }
-        }
-        return optimal;
     }
 
     public List<ImmutableTaskGraph> getLayerImmutableTaskGraphs() {

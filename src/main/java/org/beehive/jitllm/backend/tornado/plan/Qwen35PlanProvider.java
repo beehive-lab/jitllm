@@ -121,6 +121,18 @@ public final class Qwen35PlanProvider implements TornadoPlanProvider {
     }
 
     @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return c.weights() == DataType.Q4_0 || c.weights() == DataType.Q8_0
+                ? Optional.empty()
+                : Optional.of("the qwen35 " + c.weights() + " layers are not verified on Metal");
+    }
+
+    @Override
+    public boolean metalBatchedPrefillDefault(DataType weights) {
+        return weights == DataType.F16 || weights == DataType.Q8_0 || weights == DataType.Q4_0;
+    }
+
+    @Override
     public Set<DataType> nativeLibraryWeights(BackendId backend) {
         return BackendId.CUDA.equals(backend) ? Set.of(DataType.Q8_0) : Set.of();
     }

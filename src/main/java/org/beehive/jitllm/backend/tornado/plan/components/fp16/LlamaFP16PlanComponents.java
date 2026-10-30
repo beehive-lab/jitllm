@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.LlamaFP16FFNLayers;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.LogitsFP16Layer;
@@ -58,12 +59,12 @@ public class LlamaFP16PlanComponents implements BatchPrefillDecodeForwardPlanCom
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
     public ActivationTaskGraph prefillDecodeActivation() {
-        return new Activation("decodeActivation", state, weights, config);
+        return new Activation(GraphNames.DECODE_ACTIVATION, state, weights, config);
     }
 
     @Override
@@ -80,17 +81,17 @@ public class LlamaFP16PlanComponents implements BatchPrefillDecodeForwardPlanCom
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new LlamaFP16FFNLayers("llamaFFN", state, weights, config, schedulerType);
+        return new LlamaFP16FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public TransformerLayerTaskGraphs prefillDecodeTransformerLayers() {
-        return new LlamaFP16FFNLayersPrefillDecode("decode", state, weights, config, schedulerType);
+        return new LlamaFP16FFNLayersPrefillDecode(state, weights, config, schedulerType);
     }
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new LlamaFP16FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new LlamaFP16FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
@@ -105,13 +106,11 @@ public class LlamaFP16PlanComponents implements BatchPrefillDecodeForwardPlanCom
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsFP16Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsFP16Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
-        return new LogitsFP16LayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsFP16LayerDecode(state, weights, config, previousGraphId, schedulerType);
     }
 }

@@ -5,6 +5,9 @@ import org.beehive.jitllm.backend.tornado.kernels.Phi3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
+import org.beehive.jitllm.backend.tornado.layers.phi3.Phi3MlxLayerWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
@@ -39,12 +42,11 @@ public class Phi3FP16FFNLayers
     private final boolean useSimd32 = SchedulerDetectionService.isSubgroupShuffle32Supported();
 
     public Phi3FP16FFNLayers(
-            String taskGraphName,
             Phi3State state,
             Phi3TornadoWeights weights,
             Phi3Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.phi3State = state;
         this.opSize = config.dim() + 2 * (config.numberOfKeyValueHeads() * config.headSize());
         setupFFNLayers();
@@ -88,15 +90,17 @@ public class Phi3FP16FFNLayers
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
             // === Attention Block ===
-            gridScheduler.addWorkerGrid("layer_" + i + ".attn_rms_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid("layer_" + i + ".attn_rms_qkv_projection", fusedQkvWorker);
-            gridScheduler.addWorkerGrid("layer_" + i + ".rope_and_kv_cache", ropeWorker);
-            gridScheduler.addWorkerGrid("layer_" + i + ".attention", parallelAttentionWorker);
-            gridScheduler.addWorkerGrid("layer_" + i + ".attn_output_proj", matmul1Worker);
+            gridScheduler.addWorkerGrid(GraphNames.layer(i) + ".attn_rms_reduce", rmsReduceWorker);
+            gridScheduler.addWorkerGrid(
+                    GraphNames.layer(i) + ".attn_rms_qkv_projection", fusedQkvWorker);
+            gridScheduler.addWorkerGrid(GraphNames.layer(i) + ".rope_and_kv_cache", ropeWorker);
+            gridScheduler.addWorkerGrid(
+                    GraphNames.layer(i) + ".attention", parallelAttentionWorker);
+            gridScheduler.addWorkerGrid(GraphNames.layer(i) + ".attn_output_proj", matmul1Worker);
             // === FFN Block ===
-            gridScheduler.addWorkerGrid("layer_" + i + ".ffn_rms_reduce", rmsReduceWorker);
-            gridScheduler.addWorkerGrid("layer_" + i + ".rms_ffn_silu", fusedFFNWorker);
-            gridScheduler.addWorkerGrid("layer_" + i + ".ffn_down_proj", ffnDownWorker);
+            gridScheduler.addWorkerGrid(GraphNames.layer(i) + ".ffn_rms_reduce", rmsReduceWorker);
+            gridScheduler.addWorkerGrid(GraphNames.layer(i) + ".rms_ffn_silu", fusedFFNWorker);
+            gridScheduler.addWorkerGrid(GraphNames.layer(i) + ".ffn_down_proj", ffnDownWorker);
         }
         return gridScheduler;
     }
@@ -145,7 +149,7 @@ public class Phi3FP16FFNLayers
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
         Phi3TornadoWeights weights = (Phi3TornadoWeights) this.weights;
-        var taskGraphName = "layer_" + layerIndex;
+        var taskGraphName = GraphNames.layer(layerIndex);
         var unifiedLayer = new TaskGraph(taskGraphName);
 
         String wrapXSrc = predecessorGraphName(layerIndex);
@@ -474,9 +478,7 @@ public class Phi3FP16FFNLayers
 
     /** Phi-3's fused QKV and gate/up tensors, which the MLX prefill multiplies as they are. */
     @Override
-    protected org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections.LayerWeights
-            mlxLayerWeights(int layerIndex) {
-        return org.beehive.jitllm.backend.tornado.layers.phi3.Phi3MlxLayerWeights.of(
-                (Phi3TornadoWeights) weights, layerIndex);
+    protected MlxPrefillProjections.LayerWeights mlxLayerWeights(int layerIndex) {
+        return Phi3MlxLayerWeights.of((Phi3TornadoWeights) weights, layerIndex);
     }
 }

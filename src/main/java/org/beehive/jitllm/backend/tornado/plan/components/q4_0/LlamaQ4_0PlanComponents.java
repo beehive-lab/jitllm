@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.llama.LlamaQ4_0LayersBatchPrefill;
 import org.beehive.jitllm.backend.tornado.layers.type.q4_0.LlamaQ4_0FFNLayers;
@@ -58,18 +59,17 @@ public class LlamaQ4_0PlanComponents
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new LlamaQ4_0FFNLayers("layers", state, weights, config, schedulerType);
+        return new LlamaQ4_0FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsQ8_0Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsQ8_0Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── Batched prefill + decode ──────────────────────────────────────────────
@@ -95,9 +95,9 @@ public class LlamaQ4_0PlanComponents
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
         if (BatchPrefillGemmPolicy.simdgroup()) {
             return new org.beehive.jitllm.backend.tornado.layers.llama.LlamaQ4_0FFNLayersDecode(
-                    "decode", state, weights, config, schedulerType);
+                    state, weights, config, schedulerType);
         }
-        return new LlamaQ4_0FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new LlamaQ4_0FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
@@ -109,16 +109,14 @@ public class LlamaQ4_0PlanComponents
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
-        return new LogitsQ8_0LayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsQ8_0LayerDecode(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── Pipeline stages ───────────────────────────────────────────────────────
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers(int firstLayer, int endLayer) {
-        return new LlamaQ4_0FFNLayers(
-                "layers", state, weights, config, schedulerType, firstLayer, endLayer);
+        return new LlamaQ4_0FFNLayers(state, weights, config, schedulerType, firstLayer, endLayer);
     }
 
     @Override
@@ -142,7 +140,7 @@ public class LlamaQ4_0PlanComponents
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers(int firstLayer, int endLayer) {
         return new LlamaQ4_0FFNLayersDecode(
-                "decode", state, weights, config, schedulerType, firstLayer, endLayer);
+                state, weights, config, schedulerType, firstLayer, endLayer);
     }
 
     // ── Sequential prefill/decode: not implemented for Q4_0 ──────────────────

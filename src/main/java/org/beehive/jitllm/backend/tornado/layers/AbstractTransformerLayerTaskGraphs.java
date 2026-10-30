@@ -58,8 +58,8 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
     protected final Optional<MlxPrefill> mlxPrefill;
 
     protected AbstractTransformerLayerTaskGraphs(
-            String taskGraphName, State state, W weights, C config, SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config);
+            State state, W weights, C config, SchedulerType schedulerType) {
+        super(state, weights, config);
         this.packedHalf2Attention = state.executionPolicy().packedHalf2Attention();
         this.scalarFp16KeyValueReads = state.executionPolicy().scalarFp16KeyValueReads();
         this.weights = weights;
@@ -115,7 +115,7 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
 
     /** The graph holding {@code layerIndex}, named for the first layer in it. */
     protected String layerGraphName(int layerIndex) {
-        return "layer_" + (layerIndex - (layerIndex - firstLayer) % layersPerGraph());
+        return GraphNames.layer(layerIndex - (layerIndex - firstLayer) % layersPerGraph());
     }
 
     /**

@@ -4,12 +4,15 @@ import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers;
+import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.fp16.Gemma4FP16PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.q8_0.Gemma4Q8_0PlanComponents;
 import org.beehive.jitllm.inference.state.Gemma4State;
 import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
@@ -62,8 +65,7 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
      * <p>The batched plan is declared for the family, not for a representation — {@code
      * supportedModes()} has no dtype to answer for. What decides per representation is whether that
      * representation's components implement the batched interface; the registry refuses the rest by
-     * name. Today Q8_0's do and Q4_0's do not, because the batched projections are tensor-core
-     * GEMMs over 34-byte blocks.
+     * name. Q8_0 and Q4_0 both route to {@code Gemma4Q8_0PlanComponents}, which does.
      */
     // @formatter:on
     @Override
@@ -148,6 +150,18 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
         return Optional.empty();
     }
 
+    @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return c.weights() == DataType.Q8_0
+                ? Optional.empty()
+                : Optional.of("the gemma4 " + c.weights() + " FP16 cache is not verified on Metal");
+    }
+
+    @Override
+    public boolean metalBatchedPrefillDefault(DataType weights) {
+        return weights == DataType.F16 || weights == DataType.Q8_0;
+    }
+
     /**
      * CUDA: the projections through cuBLAS over the weights decoded to FP16. Metal: the Q8_0
      * projections on Apple MLX, attention kept on the SIMD-group kernels.
@@ -162,14 +176,13 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
 
     /** The MLX projections' FP16 copies (or affine repack) and staging, on Metal. */
     @Override
-    public Optional<org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
-            batchPrefillWorkspace(
-                    DataType weights,
-                    org.beehive.jitllm.model.Configuration config,
-                    int batchSize,
-                    ExecutionPolicy policy,
-                    boolean fp16Cache) {
-        if (!(config instanceof org.beehive.jitllm.model.gemma4.Gemma4Configuration gemma4)) {
+    public Optional<BatchPrefillWorkspace> batchPrefillWorkspace(
+            DataType weights,
+            Configuration config,
+            int batchSize,
+            ExecutionPolicy policy,
+            boolean fp16Cache) {
+        if (!(config instanceof Gemma4Configuration gemma4)) {
             return Optional.empty();
         }
         return Gemma4BatchPrefillLayers.mlxPrefill(policy, weights, gemma4)

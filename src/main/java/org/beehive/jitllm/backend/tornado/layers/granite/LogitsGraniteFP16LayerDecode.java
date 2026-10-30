@@ -15,13 +15,12 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 public class LogitsGraniteFP16LayerDecode extends LogitsGraniteFP16Layer {
 
     public LogitsGraniteFP16LayerDecode(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config, lastTaskGraphID, schedulerType);
+        super(state, weights, config, lastTaskGraphID, schedulerType);
     }
 
     private Object keyCache() {

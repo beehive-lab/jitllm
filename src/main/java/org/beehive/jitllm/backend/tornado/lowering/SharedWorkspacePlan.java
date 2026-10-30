@@ -4,6 +4,7 @@ import java.util.Objects;
 import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoLogits;
 import org.beehive.jitllm.inference.Logits;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
@@ -35,7 +36,7 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 public final class SharedWorkspacePlan implements TornadoVMMasterPlan, InvocationBoundary {
 
     @Override
-    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
+    public ExecutionInfo executionInfo() {
         synchronized (lock) {
             return shared.executionInfo();
         }

@@ -1,8 +1,10 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 
+import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.LlamaState;
@@ -18,12 +20,11 @@ public class MistralQ8_0FFNLayers
 
     // @formatter:off
     public MistralQ8_0FFNLayers(
-            String taskGraphName,
             LlamaState state,
             LlamaTornadoWeights weights,
             MistralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         setupFFNLayers();
     }
 
@@ -32,7 +33,7 @@ public class MistralQ8_0FFNLayers
     // @formatter:off
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        var layerTaskGraphName = "layer_" + layerIndex;
+        var layerTaskGraphName = GraphNames.layer(layerIndex);
         TaskGraph unifiedLayer = new TaskGraph(layerTaskGraphName);
 
         // === Data Setup ===
@@ -279,21 +280,23 @@ public class MistralQ8_0FFNLayers
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_rms_reduce", rmsReduceWorker);
-            tornadoForwardScheduler.addWorkerGrid("layer_" + i + ".attn_rms_apply", rmsNormWorker);
-            tornadoForwardScheduler.addWorkerGrid("layer_" + i + ".qkv_projection", fusedQkvWorker);
+                    GraphNames.layer(i) + ".attn_rms_reduce", rmsReduceWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".rope_and_kv_cache", ropeWithCacheWorker);
+                    GraphNames.layer(i) + ".attn_rms_apply", rmsNormWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attention", parallelAttentionWorker);
+                    GraphNames.layer(i) + ".qkv_projection", fusedQkvWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".attn_output_proj", configDimRowMajorGlobalWorker);
+                    GraphNames.layer(i) + ".rope_and_kv_cache", ropeWithCacheWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".ffn_rms_reduce", rmsReduceWorker);
+                    GraphNames.layer(i) + ".attention", parallelAttentionWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".rms_ffn_gate_up", configHiddenDimRowMajorWorker);
+                    GraphNames.layer(i) + ".attn_output_proj", configDimRowMajorGlobalWorker);
             tornadoForwardScheduler.addWorkerGrid(
-                    "layer_" + i + ".ffn_down_proj", configDimRowMajorGlobalWorker);
+                    GraphNames.layer(i) + ".ffn_rms_reduce", rmsReduceWorker);
+            tornadoForwardScheduler.addWorkerGrid(
+                    GraphNames.layer(i) + ".rms_ffn_gate_up", configHiddenDimRowMajorWorker);
+            tornadoForwardScheduler.addWorkerGrid(
+                    GraphNames.layer(i) + ".ffn_down_proj", configDimRowMajorGlobalWorker);
         }
 
         return tornadoForwardScheduler;
@@ -388,7 +391,6 @@ public class MistralQ8_0FFNLayers
     @Override
     protected boolean useFp16KVCache() {
         return state.usesFp16KeyValueCache()
-                && (org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.nvidiaDevice()
-                        || metalBackend());
+                && (Fp16KeyValueSupport.nvidiaDevice() || metalBackend());
     }
 }

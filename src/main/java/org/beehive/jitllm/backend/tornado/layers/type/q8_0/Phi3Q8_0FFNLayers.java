@@ -5,7 +5,9 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
+import org.beehive.jitllm.backend.tornado.layers.phi3.Phi3MlxLayerWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -37,12 +39,11 @@ public class Phi3Q8_0FFNLayers
     private final int opSize;
 
     public Phi3Q8_0FFNLayers(
-            String taskGraphName,
             Phi3State state,
             Phi3TornadoWeights weights,
             Phi3Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.phi3State = state;
         this.opSize = config.dim() + 2 * (config.numberOfKeyValueHeads() * config.headSize());
         setupFFNLayers();
@@ -643,9 +644,7 @@ public class Phi3Q8_0FFNLayers
 
     /** Phi-3's fused QKV and gate/up tensors, which the MLX prefill multiplies as they are. */
     @Override
-    protected org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections.LayerWeights
-            mlxLayerWeights(int layerIndex) {
-        return org.beehive.jitllm.backend.tornado.layers.phi3.Phi3MlxLayerWeights.of(
-                (Phi3TornadoWeights) weights, layerIndex);
+    protected MlxPrefillProjections.LayerWeights mlxLayerWeights(int layerIndex) {
+        return Phi3MlxLayerWeights.of((Phi3TornadoWeights) weights, layerIndex);
     }
 }

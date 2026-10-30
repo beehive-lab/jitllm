@@ -9,6 +9,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TensorCoreBatchAttention;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.LlamaFP16LayersBatchPrefillMMA;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
@@ -16,6 +17,7 @@ import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -117,10 +119,7 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     /** What these layers allocate for one session at {@code batchSize}; see the constructor. */
     public static BatchPrefillWorkspace workspace(
-            Qwen3Configuration config,
-            int batchSize,
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy,
-            boolean fp16Cache) {
+            Qwen3Configuration config, int batchSize, ExecutionPolicy policy, boolean fp16Cache) {
         int padded = (batchSize + 127) & ~127;
         int headSize = config.numberOfHeadsValue();
         long attention =
@@ -219,7 +218,7 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     }
 
     private TaskGraph createBatchPrefillLayerTaskGraph(int layerIndex) {
-        String graphName = "batchPrefillLayer_" + layerIndex;
+        String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
 
         TaskGraph batchPrefillLayer = new TaskGraph(graphName);
@@ -256,9 +255,10 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             // the kernels reading a mapping that no longer exists, silently.
             batchPrefillLayer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
-            batchPrefillLayer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            batchPrefillLayer.consumeFromDevice(
+                    GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
         } else {
-            String pred = "batchPrefillLayer_" + (layerIndex - 1);
+            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
             batchPrefillLayer.consumeFromDevice(
                     pred,
                     context,
@@ -556,14 +556,14 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         WorkerGrid ewHidWorker = elementwiseGrid(batchSize * hidDim); // swiglu
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String p = "batchPrefillLayer_" + i + ".";
+            String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApplyWorker);
             scheduler.addWorkerGrid(p + "qkvProj", mmaQkvWorker);
             scheduler.addWorkerGrid(p + "batch_qk_rmsnorm", qkRmsNormWorker);
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
             if (tcAttention != null) {
-                tcAttention.addGrids(scheduler, "batchPrefillLayer_" + i);
+                tcAttention.addGrids(scheduler, GraphNames.batchPrefillLayer(i));
             } else {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }

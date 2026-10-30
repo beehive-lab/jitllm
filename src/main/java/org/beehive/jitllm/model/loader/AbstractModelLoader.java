@@ -5,6 +5,7 @@ import java.nio.channels.FileChannel;
 import java.util.Map;
 import org.beehive.jitllm.auxiliary.Pair;
 import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.format.DataTypeMapping;
 import org.beehive.jitllm.format.GGMLTensorEntry;
 import org.beehive.jitllm.format.GGMLType;
@@ -141,7 +142,7 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
                                 fileChannel,
                                 gguf.getTensorDataOffset(),
                                 gguf.getTensorInfos(),
-                                org.beehive.jitllm.backend.tornado.device.TornadoDevices.current());
+                                TornadoDevices.current());
             } else {
                 tensorEntries =
                         GGUF.loadTensorsStandard(

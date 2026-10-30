@@ -2,11 +2,13 @@ package org.beehive.jitllm.backend.tornado;
 
 import org.beehive.jitllm.auxiliary.RunMetrics;
 import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
+import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.plan.PrefillDecodeForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.layout.PrefillDecodeForwardTaskGraphLayout;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -50,7 +52,7 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
             System.getLogger(TornadoVMMasterPlanPrefillDecode.class.getName());
 
     @Override
-    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
+    public ExecutionInfo executionInfo() {
         return PlanDiagnostics.describe(
                 state, "prefill-decode", 1, "JIT kernels (no tensor-core MMA)", "JIT kernels");
     }
@@ -97,7 +99,7 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
             executionPlan.withPreCompilation();
             long warmupTime = System.nanoTime();
 
-            org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(executionPlan, packedRepack);
+            PackedRepack.run(executionPlan, packedRepack);
             forceCopyInReadOnlyData();
             long copyTime = System.nanoTime();
 
@@ -161,7 +163,7 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
     }
 
     /** The graphs that repack the packed weights on the GPU before the warm-up, or null. */
-    private org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs packedRepack;
+    private PackedRepack.Graphs packedRepack;
 
     // ── Initialisation ────────────────────────────────────────────────────────
 
@@ -278,15 +280,6 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
 
     @Override
     public void freeTornadoExecutionPlan() {
-        // Free the buffers, then close the plan. freeDeviceMemory() alone returns the device
-        // allocations but leaves the plan — and its compiled code and task graphs — alive, so a
-        // process that opens and closes several plans keeps accumulating them until the device
-        // budget runs out. A session that has been closed must cost nothing.
-        executionPlan.freeDeviceMemory();
-        try {
-            executionPlan.close();
-        } catch (Exception e) {
-            throw new IllegalStateException("failed to close the TornadoVM execution plan", e);
-        }
+        ExecutionPlanRelease.close(executionPlan);
     }
 }

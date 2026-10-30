@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.plan.BatchPrefillDecodeForwardPlan;
+import org.beehive.jitllm.backend.tornado.plan.layout.BatchPrefillDecodeForwardTaskGraphLayout;
 
 // @formatter:off
 /**
@@ -27,8 +28,7 @@ import org.beehive.jitllm.backend.tornado.plan.BatchPrefillDecodeForwardPlan;
  *       2N+2)
  * </ul>
  *
- * Note: Consult also the {@link
- * org.beehive.jitllm.backend.tornado.plan.layout.BatchPrefillDecodeForwardTaskGraphLayout}
+ * Note: Consult also the {@link BatchPrefillDecodeForwardTaskGraphLayout}
  */
 // @formatter:on
 public interface BatchPrefillDecodeForwardPlanComponents

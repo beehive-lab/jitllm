@@ -7,16 +7,19 @@ import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.pipeline.PipelineTransport;
 import org.beehive.jitllm.backend.tornado.pipeline.StageOwnership;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
+import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.StagedForwardPlanComponents;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.DeviceSplit;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -114,11 +117,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                             throw new UnsupportedOperationException(
                                     PlanSupport.refusal(architecture, model, reason));
                         });
-        this.batched =
-                policy.phaseStrategy()
-                                == org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy
-                                        .PREFILL_DECODE
-                        && policy.prefillBatchSize() > 1;
+        this.batched = ExecutionMode.of(policy) == ExecutionMode.BATCH_PREFILL_DECODE;
         this.batchSize = batched ? policy.prefillBatchSize() : 1;
         ExecutionMode mode = batched ? ExecutionMode.BATCH_PREFILL_DECODE : ExecutionMode.STANDARD;
 
@@ -128,7 +127,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
         this.plans = new TornadoExecutionPlan[stageCount];
         this.prefillGraphs = batched ? new int[stageCount][] : null;
         this.tokenGraphs = new int[stageCount][];
-        var repack = new org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs[stageCount];
+        var repack = new PackedRepack.Graphs[stageCount];
 
         int[] bounds = split.layerBounds(layers, ForwardPlanFactory.stageLayerAlignment(model));
         this.transport = PipelineTransport.create(split.transport(), devices);
@@ -151,7 +150,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
             // Before the warm-up, which is the first execution of the graphs that read the
             // weights.
             for (int s = 0; s < stageCount; s++) {
-                org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(plans[s], repack[s]);
+                PackedRepack.run(plans[s], repack[s]);
             }
             forceCopyInReadOnlyData();
         } catch (RuntimeException e) {
@@ -179,7 +178,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
         if (s == 0) {
             add(components.singleTokenActivation(), graphs, scheduler);
         } else {
-            TaskGraph receive = new TaskGraph("activationUpdate");
+            TaskGraph receive = new TaskGraph(GraphNames.ACTIVATION_UPDATE);
             transport.addTokenReceive(receive, s, stageState.workspace.wrapX, s - 1);
             graphs.add(receive.snapshot());
         }
@@ -234,7 +233,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                 state.workspace.embeddingQ8Batch = stageState.workspace.embeddingQ8Batch;
             }
         } else {
-            TaskGraph receive = new TaskGraph("prefillActivation");
+            TaskGraph receive = new TaskGraph(GraphNames.PREFILL_ACTIVATION);
             transport.addReceive(receive, s, stageState.workspace.wrapXBatch, s - 1);
             graphs.add(receive.snapshot());
         }
@@ -259,7 +258,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
         } else {
             // Only the hidden state: the first decode layer takes this stage's cache straight
             // from its last prefill layer.
-            TaskGraph receive = new TaskGraph("decodeActivation");
+            TaskGraph receive = new TaskGraph(GraphNames.DECODE_ACTIVATION);
             transport.addTokenReceive(receive, s, stageState.workspace.wrapX, s - 1);
             graphs.add(receive.snapshot());
         }
@@ -320,7 +319,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
             ExecutionMode mode,
             PipelineTransport created,
             TornadoDevice[] devices,
-            org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs[] repack) {
+            PackedRepack.Graphs[] repack) {
         TornadoDevices.building(
                 TornadoDevices.of(devices[s]),
                 () -> {
@@ -339,7 +338,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
             ExecutionMode mode,
             PipelineTransport created,
             TornadoDevice[] devices,
-            org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs[] repack) {
+            PackedRepack.Graphs[] repack) {
         State stageState = ForwardPlanFactory.stageState(model, state, first, end, batchSize);
         StagedForwardPlanComponents components =
                 ForwardPlanFactory.stageComponents(mode, stageState, model);
@@ -408,7 +407,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
     }
 
     @Override
-    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
+    public ExecutionInfo executionInfo() {
         StringBuilder description =
                 new StringBuilder(
                         "pipeline ("

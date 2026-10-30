@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlan
 import org.beehive.jitllm.backend.tornado.plan.components.StagedForwardPlanComponents;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.ModelType;
 import org.beehive.jitllm.runtime.tensor.DataType;
 
 // @formatter:off
@@ -14,7 +15,7 @@ import org.beehive.jitllm.runtime.tensor.DataType;
  *
  * <ol>
  *   <li>Quantization ({@link DataType} — the representation the weights were materialized in)
- *   <li>Model family ({@link org.beehive.jitllm.model.ModelType})
+ *   <li>Model family ({@link ModelType})
  *   <li>Execution mode ({@link ExecutionMode})
  * </ol>
  *

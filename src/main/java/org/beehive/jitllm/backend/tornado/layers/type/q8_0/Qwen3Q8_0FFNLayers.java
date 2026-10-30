@@ -6,6 +6,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.RmsReductionPolicy;
@@ -93,12 +94,11 @@ public class Qwen3Q8_0FFNLayers
     }
 
     public Qwen3Q8_0FFNLayers(
-            String taskGraphName,
             Qwen3State state,
             Qwen3TornadoWeights weights,
             Qwen3Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.qwen3State = state;
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHeadK = config.numberOfHeadsKey();
@@ -692,10 +692,9 @@ public class Qwen3Q8_0FFNLayers
      * generations. Decode subclasses override this.
      */
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "activationUpdate" : layerGraphName(layerIndex - 1);
+        return (layerIndex == 0) ? GraphNames.ACTIVATION_UPDATE : layerGraphName(layerIndex - 1);
     }
 
-    /** Configure data transfers for first and subsequent layers */
     /** The key cache every graph of this family binds: FP16 when the state holds one. */
     protected Object keyCache() {
         return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
@@ -708,6 +707,7 @@ public class Qwen3Q8_0FFNLayers
                 : state.workspace.wrapValueCache;
     }
 
+    /** Configure data transfers for first and subsequent layers */
     protected TaskGraph configureLayerDataTransfers(TaskGraph unifiedLayer, int layerIndex) {
         if (layerIndex == 0) {
             // First layer: Transfer temporary buffers and QKV state every execution

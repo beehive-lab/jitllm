@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.granite;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.IntStream;
+import org.beehive.jitllm.backend.tornado.BatchPrefillSupport;
 import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.kernels.GraniteBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
@@ -10,6 +11,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgro
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupFP16Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillAttention;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -27,11 +29,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 // @formatter:off
 /**
  * Granite batched-prefill transformer-layer TaskGraphs (Q8_0 weights), on the Metal SIMD-group
- * kernels only ({@link org.beehive.jitllm.backend.tornado.BatchPrefillSupport} refuses the family
- * elsewhere). Llama's layer with Granite's multipliers: the embedding multiplier is applied to the
- * batch by the first layer, the attention multiplier replaces {@code 1 / sqrt(headSize)}, and the
- * residual multiplier scales both projections that are added to the stream. RoPE rotates
- * interleaved pairs with the frequency computed from {@code ropeTheta}.
+ * kernels only ({@link BatchPrefillSupport} refuses the family elsewhere). Llama's layer with
+ * Granite's multipliers: the embedding multiplier is applied to the batch by the first layer, the
+ * attention multiplier replaces {@code 1 / sqrt(headSize)}, and the residual multiplier scales both
+ * projections that are added to the stream. RoPE rotates interleaved pairs with the frequency
+ * computed from {@code ropeTheta}.
  */
 // @formatter:on
 public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayerTaskGraphs {
@@ -120,7 +122,7 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
     }
 
     private TaskGraph createBatchPrefillLayerTaskGraph(int layerIndex) {
-        String graphName = "batchPrefillLayer_" + layerIndex;
+        String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == config.numberOfLayers() - 1) {
             lastLayerTaskGraphID = graphName;
         }
@@ -143,7 +145,7 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
                     state.workspace.wrapHbBatch,
                     keyCache(),
                     valueCache());
-            layer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            layer.consumeFromDevice(GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
             // EVERY_EXECUTION: a lease change rewrites the table, and a stale index is still valid.
             layer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
@@ -155,7 +157,7 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
                     config.embeddingScale(),
                     batchSize * dim);
         } else {
-            String pred = "batchPrefillLayer_" + (layerIndex - 1);
+            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
             layer.consumeFromDevice(
                     pred,
                     context,
@@ -173,10 +175,10 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
             layer.consumeFromDevice(pred, state.workspace.wrapBlockTable);
         }
         if (mlxAttention != null) {
-            mlxAttention.declare(layer, layerIndex, "batchPrefillLayer_" + (layerIndex - 1));
+            mlxAttention.declare(layer, layerIndex, GraphNames.batchPrefillLayer(layerIndex - 1));
         }
         if (mlxProjections != null) {
-            mlxProjections.declare(layer, layerIndex, "batchPrefillLayer_" + (layerIndex - 1));
+            mlxProjections.declare(layer, layerIndex, GraphNames.batchPrefillLayer(layerIndex - 1));
         }
         layer.transferToDevice(
                 DataTransferMode.FIRST_EXECUTION,
@@ -505,7 +507,7 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
                 WorkerGridFactory.genericWorker(((hidDim + 31) / 32) * tokenTiles * local, local);
         scheduler.addWorkerGrid("batchPrefillLayer_0.batch_embedding_scale", scaleWorker);
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String p = "batchPrefillLayer_" + i + ".";
+            String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             if (mlxProjections != null) {
                 mlxProjections.addGrids(scheduler, p);

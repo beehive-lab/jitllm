@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedQ8_0LogitsLayer;
 import org.beehive.jitllm.backend.tornado.layers.PackedQ8_0LogitsLayerDecode;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
@@ -36,18 +37,17 @@ public class DevstralQ8_0PlanComponents implements BatchPrefillDecodeForwardPlan
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new DevstralQ8_0FFNLayers("devstralFFN", state, weights, config, schedulerType);
+        return new DevstralQ8_0FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new PackedQ8_0LogitsLayer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new PackedQ8_0LogitsLayer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── Batched prefill/decode ───────────────────────────────────────────────
@@ -73,13 +73,13 @@ public class DevstralQ8_0PlanComponents implements BatchPrefillDecodeForwardPlan
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new DevstralQ8_0FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new DevstralQ8_0FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
         return new PackedQ8_0LogitsLayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+                state, weights, config, previousGraphId, schedulerType);
     }
 
     /** Devstral has no sequential prefill/decode plan; its provider refuses the mode. */

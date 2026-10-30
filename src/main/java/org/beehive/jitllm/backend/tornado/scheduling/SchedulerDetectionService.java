@@ -18,13 +18,6 @@ public class SchedulerDetectionService {
         return TornadoDevices.target().capabilities().supports(DeviceCapability.WARP_SHUFFLE);
     }
 
-    /**
-     * Whether the active device's {@code KernelContext.simdShuffleDown} produces correct results
-     * for the fused Q/K/V projection kernel's 32-lane butterfly reduction — verified on Metal, and
-     * deliberately independent of {@link #isWarpShuffleSupported()} (CUDA's answer to a different
-     * question). Where this is false, the fused QKV projection uses the shared-memory reduction
-     * kernel instead ({@code fusedQKVMatmulX}), which works everywhere.
-     */
     /** Whether packed FP16 pair arithmetic holds CPU parity here. */
     public static boolean isPackedHalf2MathSupported() {
         return TornadoDevices.target().capabilities().supports(DeviceCapability.PACKED_HALF2_MATH);

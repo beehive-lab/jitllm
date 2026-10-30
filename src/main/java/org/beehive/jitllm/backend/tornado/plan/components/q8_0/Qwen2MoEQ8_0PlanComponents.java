@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.qwen2moe.Qwen2MoEQ8_0LayersBatchPrefillMMA;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LogitsQ8_0Layer;
@@ -39,12 +40,12 @@ public final class Qwen2MoEQ8_0PlanComponents implements BatchPrefillDecodeForwa
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
     public ActivationTaskGraph prefillDecodeActivation() {
-        return new Activation("decodeActivation", state, weights, config);
+        return new Activation(GraphNames.DECODE_ACTIVATION, state, weights, config);
     }
 
     @Override
@@ -59,17 +60,17 @@ public final class Qwen2MoEQ8_0PlanComponents implements BatchPrefillDecodeForwa
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new Qwen2MoEQ8_0FFNLayers("qwen2MoEFFN", state, weights, config, schedulerType);
+        return new Qwen2MoEQ8_0FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public TransformerLayerTaskGraphs prefillDecodeTransformerLayers() {
-        return new Qwen2MoEQ8_0FFNLayers("decode", state, weights, config, schedulerType);
+        return new Qwen2MoEQ8_0FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new Qwen2MoEQ8_0FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new Qwen2MoEQ8_0FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
@@ -82,13 +83,11 @@ public final class Qwen2MoEQ8_0PlanComponents implements BatchPrefillDecodeForwa
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsQ8_0Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsQ8_0Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
-        return new LogitsQ8_0LayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsQ8_0LayerDecode(state, weights, config, previousGraphId, schedulerType);
     }
 }

@@ -4,8 +4,10 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0Packed;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LlamaQ8_0FFNLayers;
+import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
@@ -49,24 +51,40 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
 
     public LlamaQ4_0FFNLayers(
-            String taskGraphName,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     /** The layers {@code [firstLayer, endLayer)} only; see the Q8_0 constructor. */
     public LlamaQ4_0FFNLayers(
-            String taskGraphName,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType,
             int firstLayer,
             int endLayer) {
-        super(taskGraphName, state, weights, config, schedulerType, firstLayer, endLayer);
+        super(state, weights, config, schedulerType, firstLayer, endLayer);
+    }
+
+    /**
+     * Each layer names the graph it consumes from: the packed projections are consumed by name from
+     * their repack graph, and a graph that consumes anything by name takes nothing through an
+     * unnamed consume. The first layer takes its input from the activation graph, which is also the
+     * name of a later pipeline stage's receiving graph.
+     */
+    @Override
+    protected String predecessorGraphName(int layerIndex) {
+        return layerIndex > firstLayer
+                ? layerGraphName(layerIndex - 1)
+                : GraphNames.ACTIVATION_UPDATE;
+    }
+
+    @Override
+    protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
+        return appendFFNLayer(null, layerIndex);
     }
 
     // @formatter:off
@@ -89,22 +107,6 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
      * </pre>
      */
     // @formatter:on
-    /**
-     * Each layer names the graph it consumes from: the packed projections are consumed by name from
-     * their repack graph, and a graph that consumes anything by name takes nothing through an
-     * unnamed consume. The first layer takes its input from the activation graph, which is also the
-     * name of a later pipeline stage's receiving graph.
-     */
-    @Override
-    protected String predecessorGraphName(int layerIndex) {
-        return layerIndex > firstLayer ? layerGraphName(layerIndex - 1) : "activationUpdate";
-    }
-
-    @Override
-    protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        return appendFFNLayer(null, layerIndex);
-    }
-
     @Override
     protected TaskGraph appendFFNLayer(TaskGraph existing, int layerIndex) {
         boolean firstInGraph = existing == null;
@@ -136,9 +138,7 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
         String weightSrc = weightSourceGraphName(layerIndex);
         Object[][] binding = weightBinding(weightSrc, layerIndex, layerWeights);
         if (binding[0].length > 0) {
-            unifiedLayer.consumeFromDevice(
-                    weightSrc,
-                    org.beehive.jitllm.backend.tornado.plan.PackedRepack.deviceArrays(binding[0]));
+            unifiedLayer.consumeFromDevice(weightSrc, PackedRepack.deviceArrays(binding[0]));
         }
         if (binding[1].length > 0) {
             state.workspace.packedRepack.upload(unifiedLayer, binding[1]);

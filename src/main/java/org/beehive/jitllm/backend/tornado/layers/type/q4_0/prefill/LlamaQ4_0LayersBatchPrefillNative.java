@@ -2,6 +2,8 @@ package org.beehive.jitllm.backend.tornado.layers.type.q4_0.prefill;
 
 import java.util.List;
 import java.util.stream.IntStream;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.BatchMmaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4BatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
@@ -10,7 +12,9 @@ import org.beehive.jitllm.backend.tornado.kernels.TensorCoreAttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.LlamaState;
@@ -148,9 +152,7 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
         this.firstLayer = firstLayer;
         this.endLayer = endLayer;
         this.scratch = scratchFor(state, config);
-        this.int8 =
-                batchSize % Int8GemmKernels.I8_BM == 0
-                        && org.beehive.jitllm.backend.tornado.TensorCoreSupport.isInt8MmaCapable();
+        this.int8 = batchSize % Int8GemmKernels.I8_BM == 0 && TensorCoreSupport.isInt8MmaCapable();
         int widest = Math.max(config.dim(), config.hiddenDim());
         this.q8 = int8 ? TornadoWorkspaces.bytes(batchSize * widest) : null;
         this.q8Scales = int8 ? TornadoWorkspaces.floats(batchSize * widest / 32) : null;
@@ -160,8 +162,7 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
                 state.usesFp16KeyValueCache()
                         && batchSize % 128 == 0
                         && config.headSize() % 128 == 0
-                        && org.beehive.jitllm.backend.tornado.TensorCoreSupport
-                                .isTensorCoreCapableBackend();
+                        && TensorCoreSupport.isTensorCoreCapableBackend();
         this.paddedPositions = (config.contextLength() + 127) / 128 * 128;
         this.headsPerPass = headsPerPass(config.numberOfHeads(), batchSize, paddedPositions);
         if (tcAttention) {
@@ -224,7 +225,7 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
 
     // @formatter:off
     private TaskGraph createLayer(int layerIndex) {
-        String graphName = "batchPrefillLayer_" + layerIndex;
+        String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == endLayer - 1) {
             lastLayerTaskGraphID = graphName;
         }
@@ -266,12 +267,12 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
             layer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.batchStartPosHolder);
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, intermediates);
-            layer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            layer.consumeFromDevice(GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
             // Every execution: a lease change rewrites the table.
             layer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
         } else {
-            String pred = "batchPrefillLayer_" + (layerIndex - 1);
+            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
             layer.consumeFromDevice(pred, intermediates);
             layer.consumeFromDevice(
                     pred,
@@ -743,7 +744,7 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
 
     /** The streaming multiprocessors of the device this plan is built for; 0 when unknown. */
     private static int smCount() {
-        return org.beehive.jitllm.backend.tornado.device.TornadoDevices.target().computeUnits();
+        return TornadoDevices.target().computeUnits();
     }
 
     /** K splits that best fill the device with 128 x 128 tiles, as the other int8 prefills. */
@@ -831,8 +832,7 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
     private void dequantize(TaskGraph layer, String name, TornadoTensor w, int offset) {
         if (w.isPackedQ4()) {
             // A packed weight has only the int8 GEMM.
-            throw org.beehive.jitllm.backend.tornado.tensor.PackedWeights.noPackedKernel(
-                    "llama batch-prefill task '" + name + "'");
+            throw PackedWeights.noPackedKernel("llama batch-prefill task '" + name + "'");
         }
         DataType type = w.dataType();
         if (type == DataType.Q4_0) {
@@ -912,7 +912,7 @@ public class LlamaQ4_0LayersBatchPrefillNative implements BatchPrefillTransforme
                 WorkerGridFactory.genericWorker(batchSize * nHeads * attnLocal, attnLocal);
 
         for (int i = firstLayer; i < endLayer; i++) {
-            String p = "batchPrefillLayer_" + i + ".";
+            String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_attn_rms", rms);
             scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApply);
             if (!int8(i, weights.wqLayered, weights.wkLayered, weights.wvLayered)) {

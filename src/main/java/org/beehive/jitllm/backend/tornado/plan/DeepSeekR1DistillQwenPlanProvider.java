@@ -4,12 +4,15 @@ import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
+import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
+import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.fp16.Qwen2FP16PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.q8_0.Qwen2Q8_0PlanComponents;
 import org.beehive.jitllm.inference.state.Qwen2State;
 import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
@@ -50,6 +53,16 @@ public final class DeepSeekR1DistillQwenPlanProvider implements TornadoPlanProvi
         return Fp16KeyValueSupport.singleTokenAndBatchedNvidiaLayers(c);
     }
 
+    @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return Fp16KeyValueSupport.metalSingleTokenAndBatchedLayers(c);
+    }
+
+    @Override
+    public boolean metalBatchedPrefillDefault(DataType weights) {
+        return weights == DataType.F16 || weights == DataType.Q8_0;
+    }
+
     /**
      * The batched prefill's projections through cuBLAS: Q8_0 weights decoded to FP16 first; F16
      * weights' output and down projections.
@@ -65,17 +78,13 @@ public final class DeepSeekR1DistillQwenPlanProvider implements TornadoPlanProvi
 
     /** On Metal under native libraries, what the MLX prefill allocates ({@code MlxPrefill}). */
     @Override
-    public Optional<org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
-            batchPrefillWorkspace(
-                    DataType weights,
-                    org.beehive.jitllm.model.Configuration config,
-                    int batchSize,
-                    ExecutionPolicy policy,
-                    boolean fp16Cache) {
-        return org.beehive.jitllm.backend.tornado.MlxPrefill.resolve(policy, weights, config)
-                .map(
-                        mlx ->
-                                org.beehive.jitllm.backend.tornado.MlxPrefill.workspace(
-                                        weights, config, batchSize, false, false));
+    public Optional<BatchPrefillWorkspace> batchPrefillWorkspace(
+            DataType weights,
+            Configuration config,
+            int batchSize,
+            ExecutionPolicy policy,
+            boolean fp16Cache) {
+        return MlxPrefill.resolve(policy, weights, config)
+                .map(mlx -> MlxPrefill.workspace(weights, config, batchSize, false, false));
     }
 }

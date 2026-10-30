@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.plan.SingleTokenForwardPlan;
+import org.beehive.jitllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout;
 
 // @formatter:off
 /**
@@ -22,8 +23,7 @@ import org.beehive.jitllm.backend.tornado.plan.SingleTokenForwardPlan;
  *   <li>{@link #singleTokenLogits(String)} — final RMSNorm + vocabulary projection (graph N+1)
  * </ul>
  *
- * Note: Consult also the {@link
- * org.beehive.jitllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout}
+ * Note: Consult also the {@link SingleTokenForwardTaskGraphLayout}
  */
 // @formatter:on
 public interface SingleTokenForwardPlanComponents {

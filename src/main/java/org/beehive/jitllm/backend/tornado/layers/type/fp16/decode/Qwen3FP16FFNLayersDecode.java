@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.layers.type.fp16.decode;
 
 import java.util.ArrayList;
 import java.util.List;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.Qwen3FP16FFNLayers;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.Qwen3FP16LayersBatchPrefillMMA;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
@@ -23,12 +24,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class Qwen3FP16FFNLayersDecode extends Qwen3FP16FFNLayers {
 
     public Qwen3FP16FFNLayersDecode(
-            String taskGraph,
             Qwen3State state,
             Qwen3TornadoWeights weights,
             Qwen3Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     // @formatter:off
@@ -71,7 +71,7 @@ public class Qwen3FP16FFNLayersDecode extends Qwen3FP16FFNLayers {
      */
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "decodeActivation" : layerGraphName(layerIndex - 1);
+        return (layerIndex == 0) ? GraphNames.DECODE_ACTIVATION : layerGraphName(layerIndex - 1);
     }
 
     @Override
@@ -102,8 +102,8 @@ public class Qwen3FP16FFNLayersDecode extends Qwen3FP16FFNLayers {
                     qwen3State.workspace.wrapHb);
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, state.workspace.wrapAttSplit);
             // KV cache already allocated by batch prefill; relay from decode activation graph.
-            layer.consumeFromDevice("decodeActivation", keyCache, valueCache);
-            layer.consumeFromDevice("decodeActivation", state.workspace.wrapBlockTable);
+            layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, keyCache, valueCache);
+            layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, state.workspace.wrapBlockTable);
         } else {
             String pred = layerGraphName(layerIndex - 1);
             layer.consumeFromDevice(

@@ -18,6 +18,8 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0D
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0Packed;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.plan.FusedOperandSupport;
+import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
+import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
@@ -25,6 +27,9 @@ import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Qwen35State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
 import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.Device;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -124,23 +129,20 @@ public class Qwen35FFNLayers
     protected final Qwen35FeedForward feedForward;
 
     public Qwen35FFNLayers(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
             SchedulerType schedulerType) {
-        this(taskGraphName, state, weights, config, schedulerType, "activationUpdate");
+        this(state, weights, config, schedulerType, GraphNames.ACTIVATION_UPDATE);
     }
 
     public Qwen35FFNLayers(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
             SchedulerType schedulerType,
             String activationGraphName) {
         this(
-                taskGraphName,
                 state,
                 weights,
                 config,
@@ -157,7 +159,6 @@ public class Qwen35FFNLayers
      * room for every layer and uses its own.
      */
     public Qwen35FFNLayers(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
@@ -166,7 +167,6 @@ public class Qwen35FFNLayers
             int firstLayer,
             int endLayer) {
         this(
-                taskGraphName,
                 state,
                 weights,
                 config,
@@ -182,7 +182,6 @@ public class Qwen35FFNLayers
      * the dense SwiGLU when it is not null: a family built on this one.
      */
     public Qwen35FFNLayers(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
@@ -191,7 +190,7 @@ public class Qwen35FFNLayers
             int firstLayer,
             int endLayer,
             Qwen35FeedForward feedForward) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         if (feedForward != null && !dp4a()) {
             throw new UnsupportedOperationException(
                     "this feed-forward reads a quantized activation, which needs a device with"
@@ -1018,19 +1017,14 @@ public class Qwen35FFNLayers
     // @formatter:on
     private int attentionSplits() {
         if (laneHead256Attention()) {
-            return org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy.head256Splits(
-                    Qwen35Configuration.DECODE_ATTENTION_SPLITS);
+            return LaneAttentionPolicy.head256Splits(Qwen35Configuration.DECODE_ATTENTION_SPLITS);
         }
-        var device = org.beehive.jitllm.backend.tornado.device.TornadoDevices.target();
+        var device = TornadoDevices.target();
         boolean eligible =
                 fp16Kv()
                         && config.headSize() == SPLIT_KV_MAX_HEAD
-                        && org.beehive.jitllm.runtime.backend.BackendId.CUDA.equals(
-                                device.backend())
-                        && device.capabilities()
-                                .supports(
-                                        org.beehive.jitllm.runtime.backend.DeviceCapability
-                                                .SPLIT_KV_ATTENTION);
+                        && BackendId.CUDA.equals(device.backend())
+                        && device.capabilities().supports(DeviceCapability.SPLIT_KV_ATTENTION);
         return eligible ? Qwen35Configuration.DECODE_ATTENTION_SPLITS : 1;
     }
 
@@ -1039,23 +1033,20 @@ public class Qwen35FFNLayers
      * (Metal), over whichever cache precision this state holds.
      */
     private boolean laneHead256Attention() {
-        return org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy
-                .laneCooperativeAttentionHead256(config.headSize());
+        return LaneAttentionPolicy.laneCooperativeAttentionHead256(config.headSize());
     }
 
-    /** Whether this state's key/value store is half precision. */
     /**
      * Whether decode attention takes 8-position key/value tiles: on Metal, where two 16-position
      * float tiles of this family's 256-wide head (32 KB) plus the query do not fit the 32 KB of
      * threadgroup memory.
      */
     private boolean narrowAttentionTiles() {
-        return org.beehive.jitllm.runtime.backend.BackendId.METAL.equals(
-                        org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
-                                .backend())
+        return BackendId.METAL.equals(TornadoDevices.current().backend())
                 && (2 * 16 + 1) * config.headSize() * Float.BYTES > 32 * 1024;
     }
 
+    /** Whether this state's key/value store is half precision. */
     protected boolean fp16Kv() {
         return state.usesFp16KeyValueCache();
     }
@@ -1154,7 +1145,7 @@ public class Qwen35FFNLayers
      * this family's 128-wide value head.
      */
     // @formatter:on
-    public static long deltaRuleWorkGroupLimit(org.beehive.jitllm.runtime.backend.Device device) {
+    public static long deltaRuleWorkGroupLimit(Device device) {
         return Math.min(device.maxWorkGroupSize(), PORTABLE_SPLIT_WORKGROUP);
     }
 
@@ -1932,10 +1923,7 @@ public class Qwen35FFNLayers
         }
         String source = weightSourceGraphName(layerIndex);
         if (source != null) {
-            layer.consumeFromDevice(
-                    source,
-                    org.beehive.jitllm.backend.tornado.plan.PackedRepack.deviceArrays(
-                            tensors.toArray()));
+            layer.consumeFromDevice(source, PackedRepack.deviceArrays(tensors.toArray()));
         } else {
             state.workspace.packedRepack.upload(layer, tensors.toArray());
         }
@@ -2076,8 +2064,7 @@ public class Qwen35FFNLayers
         // the per-head kernel keeps the worker it has always had.
         WorkerGrid attention =
                 splits > 1 && laneHead256Attention()
-                        ? org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy
-                                .head256Worker(config.numberOfHeads() * splits)
+                        ? LaneAttentionPolicy.head256Worker(config.numberOfHeads() * splits)
                         : splits > 1
                                 ? WorkerGridFactory.genericWorker(
                                         config.numberOfHeads() * splits * SPLIT_KV_LOCAL,

@@ -256,8 +256,7 @@ public final class ArchRules {
      *
      * <p>Adding an architecture should mean adding a provider, not editing switch statements spread
      * across packages. Dispatch on {@code ModelType} is what this targets, not the enum's
-     * existence: it is expected to survive as an internal identifier long after loading moves to
-     * the provider SPI, and the legacy path still selects it with {@code -Djitllm.providers=false}.
+     * existence: it survives as an internal identifier, and loading goes through the provider SPI.
      *
      * <p>The provider package is exempt because that is where enumerating families is the point.
      */
