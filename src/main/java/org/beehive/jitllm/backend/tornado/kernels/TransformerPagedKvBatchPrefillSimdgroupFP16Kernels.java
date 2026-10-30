@@ -5062,4 +5062,954 @@ public final class TransformerPagedKvBatchPrefillSimdgroupFP16Kernels {
             context.localBarrier();
         }
     }
+
+    /** Queries per workgroup of {@link #batchedFlashAttentionKVFP16PagedHead128Rows8}. */
+    public static final int ROWS8_QUERY_TILE = 8;
+
+    // @formatter:off
+    /**
+     * {@link #batchedFlashAttentionKVFP16PagedHead128} with 8 queries per workgroup instead of 32.
+     * Each step takes 64 keys: every SIMD group scores 16 of them, the softmax runs in SIMD-group
+     * sums and shuffles, and every SIMD group adds 32 of the output dimensions. Three barriers per
+     * step. Grid: {@code ceil(batch / ROWS8_QUERY_TILE) * nHeads} workgroups of 128 threads.
+     */
+    // @formatter:on
+    public static void batchedFlashAttentionKVFP16PagedHead128Rows8(
+            KernelContext context,
+            IntArray batchStartPosHolder,
+            FloatArray wrapQBatch,
+            HalfFloatArray wrapKeyCache,
+            HalfFloatArray wrapValueCache,
+            FloatArray wrapXbBatch,
+            int nHeads,
+            int headSize,
+            int kvDim,
+            int kvMul,
+            int layerIndex,
+            IntArray blockTable,
+            int blockCfg,
+            int blockStride,
+            int dim) {
+        float[] qs = context.allocateFloatLocalArray(1024);
+        float[] ss = context.allocateFloatLocalArray(512);
+        float[] dg = context.allocateFloatLocalArray(64);
+        float[] vt = context.allocateFloatLocalArray(1024);
+        int tid = context.localIdx;
+        int sg = tid >> 5;
+        int lane = tid & 31;
+        int grp = context.groupIdx;
+        int tile = grp / nHeads;
+        int h = grp % nHeads;
+        int active = batchStartPosHolder.get(1);
+        int t0 = tile << 3;
+        if (t0 >= active) {
+            return;
+        }
+        int start = batchStartPosHolder.get(0);
+        int slot = batchStartPosHolder.get(2);
+        int layerOff = KvBlockAddress.layerOffset(layerIndex, kvDim, blockCfg);
+        int headOff = (h / kvMul) * headSize;
+        float scale = 1.0f / TornadoMath.sqrt(headSize);
+        int lastValid = start + active - 1;
+        int maxPos = start + TornadoMath.min(t0 + 7, active - 1);
+        int lastGroup = maxPos & ~7;
+        for (int e = tid; e < 1024; e += 128) {
+            qs[e] =
+                    wrapQBatch.get(
+                                    TornadoMath.min(t0 + (e >> 7), active - 1) * dim
+                                            + h * headSize
+                                            + (e & 127))
+                            * scale;
+        }
+        if (tid < 64) {
+            dg[tid] = 0.0f;
+        }
+        context.localBarrier();
+        int ra = sg;
+        int rb = sg + 4;
+        int posA = start + TornadoMath.min(t0 + ra, active - 1);
+        int posB = start + TornadoMath.min(t0 + rb, active - 1);
+        float mA = Float.NEGATIVE_INFINITY;
+        float lA = 0.0f;
+        float mB = Float.NEGATIVE_INFINITY;
+        float lB = 0.0f;
+        Matrix8x8Float zero = context.simdgroupMatrixZero();
+        Matrix8x8Float o0 = context.simdgroupMatrixZero();
+        Matrix8x8Float o1 = context.simdgroupMatrixZero();
+        Matrix8x8Float o2 = context.simdgroupMatrixZero();
+        Matrix8x8Float o3 = context.simdgroupMatrixZero();
+        int dOff = sg << 5;
+        for (int kb0 = 0; kb0 <= maxPos; kb0 += 64) {
+            int kpA = kb0 + (sg << 4);
+            int kpB = kpA + 8;
+            int baseA =
+                    KvBlockAddress.offset(
+                                    blockTable,
+                                    slot,
+                                    TornadoMath.min(kpA, lastGroup),
+                                    layerOff,
+                                    kvDim,
+                                    blockCfg,
+                                    blockStride)
+                            + headOff;
+            int baseB =
+                    KvBlockAddress.offset(
+                                    blockTable,
+                                    slot,
+                                    TornadoMath.min(kpB, lastGroup),
+                                    layerOff,
+                                    kvDim,
+                                    blockCfg,
+                                    blockStride)
+                            + headOff;
+            Matrix8x8Float sA = context.simdgroupMatrixZero();
+            Matrix8x8Float sB = context.simdgroupMatrixZero();
+            Matrix8x8Float q0 = context.simdgroupMatrixLoad(qs, 0, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q0,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 0, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q0,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 0, kvDim),
+                            sB);
+            Matrix8x8Float q8 = context.simdgroupMatrixLoad(qs, 8, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q8,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 8, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q8,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 8, kvDim),
+                            sB);
+            Matrix8x8Float q16 = context.simdgroupMatrixLoad(qs, 16, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q16,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 16, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q16,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 16, kvDim),
+                            sB);
+            Matrix8x8Float q24 = context.simdgroupMatrixLoad(qs, 24, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q24,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 24, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q24,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 24, kvDim),
+                            sB);
+            Matrix8x8Float q32 = context.simdgroupMatrixLoad(qs, 32, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q32,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 32, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q32,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 32, kvDim),
+                            sB);
+            Matrix8x8Float q40 = context.simdgroupMatrixLoad(qs, 40, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q40,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 40, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q40,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 40, kvDim),
+                            sB);
+            Matrix8x8Float q48 = context.simdgroupMatrixLoad(qs, 48, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q48,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 48, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q48,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 48, kvDim),
+                            sB);
+            Matrix8x8Float q56 = context.simdgroupMatrixLoad(qs, 56, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q56,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 56, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q56,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 56, kvDim),
+                            sB);
+            Matrix8x8Float q64 = context.simdgroupMatrixLoad(qs, 64, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q64,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 64, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q64,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 64, kvDim),
+                            sB);
+            Matrix8x8Float q72 = context.simdgroupMatrixLoad(qs, 72, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q72,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 72, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q72,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 72, kvDim),
+                            sB);
+            Matrix8x8Float q80 = context.simdgroupMatrixLoad(qs, 80, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q80,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 80, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q80,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 80, kvDim),
+                            sB);
+            Matrix8x8Float q88 = context.simdgroupMatrixLoad(qs, 88, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q88,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 88, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q88,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 88, kvDim),
+                            sB);
+            Matrix8x8Float q96 = context.simdgroupMatrixLoad(qs, 96, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q96,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 96, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q96,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 96, kvDim),
+                            sB);
+            Matrix8x8Float q104 = context.simdgroupMatrixLoad(qs, 104, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q104,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 104, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q104,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 104, kvDim),
+                            sB);
+            Matrix8x8Float q112 = context.simdgroupMatrixLoad(qs, 112, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q112,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 112, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q112,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 112, kvDim),
+                            sB);
+            Matrix8x8Float q120 = context.simdgroupMatrixLoad(qs, 120, 128);
+            sA =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q120,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseA + 120, kvDim),
+                            sA);
+            sB =
+                    context.simdgroupMatrixMultiplyAccumulate(
+                            q120,
+                            context.simdgroupMatrixLoadTransposed(wrapKeyCache, baseB + 120, kvDim),
+                            sB);
+            context.simdgroupMatrixStore(sA, ss, sg << 4, 64);
+            context.simdgroupMatrixStore(sB, ss, (sg << 4) + 8, 64);
+            context.localBarrier();
+            float x1A = kb0 + lane <= posA ? ss[(ra << 6) + lane] : Float.NEGATIVE_INFINITY;
+            float x2A =
+                    kb0 + lane + 32 <= posA ? ss[(ra << 6) + lane + 32] : Float.NEGATIVE_INFINITY;
+            float mxA = TornadoMath.max(x1A, x2A);
+            mxA = TornadoMath.max(mxA, context.simdShuffleDown(mxA, 16));
+            mxA = TornadoMath.max(mxA, context.simdShuffleDown(mxA, 8));
+            mxA = TornadoMath.max(mxA, context.simdShuffleDown(mxA, 4));
+            mxA = TornadoMath.max(mxA, context.simdShuffleDown(mxA, 2));
+            mxA = TornadoMath.max(mxA, context.simdShuffleDown(mxA, 1));
+            mxA = TornadoMath.max(mA, context.simdBroadcastFirst(mxA));
+            float alA = mA == Float.NEGATIVE_INFINITY ? 0.0f : TornadoMath.exp(mA - mxA);
+            float p1A = kb0 + lane <= posA ? TornadoMath.exp(x1A - mxA) : 0.0f;
+            float p2A = kb0 + lane + 32 <= posA ? TornadoMath.exp(x2A - mxA) : 0.0f;
+            lA = lA * alA + context.simdSum(p1A + p2A);
+            mA = mxA;
+            ss[(ra << 6) + lane] = p1A;
+            ss[(ra << 6) + lane + 32] = p2A;
+            float x1B = kb0 + lane <= posB ? ss[(rb << 6) + lane] : Float.NEGATIVE_INFINITY;
+            float x2B =
+                    kb0 + lane + 32 <= posB ? ss[(rb << 6) + lane + 32] : Float.NEGATIVE_INFINITY;
+            float mxB = TornadoMath.max(x1B, x2B);
+            mxB = TornadoMath.max(mxB, context.simdShuffleDown(mxB, 16));
+            mxB = TornadoMath.max(mxB, context.simdShuffleDown(mxB, 8));
+            mxB = TornadoMath.max(mxB, context.simdShuffleDown(mxB, 4));
+            mxB = TornadoMath.max(mxB, context.simdShuffleDown(mxB, 2));
+            mxB = TornadoMath.max(mxB, context.simdShuffleDown(mxB, 1));
+            mxB = TornadoMath.max(mB, context.simdBroadcastFirst(mxB));
+            float alB = mB == Float.NEGATIVE_INFINITY ? 0.0f : TornadoMath.exp(mB - mxB);
+            float p1B = kb0 + lane <= posB ? TornadoMath.exp(x1B - mxB) : 0.0f;
+            float p2B = kb0 + lane + 32 <= posB ? TornadoMath.exp(x2B - mxB) : 0.0f;
+            lB = lB * alB + context.simdSum(p1B + p2B);
+            mB = mxB;
+            ss[(rb << 6) + lane] = p1B;
+            ss[(rb << 6) + lane + 32] = p2B;
+            if (lane == 0) {
+                dg[ra * 9] = alA;
+                dg[rb * 9] = alB;
+            }
+            context.localBarrier();
+            Matrix8x8Float da = context.simdgroupMatrixLoad(dg, 0, 8);
+            o0 = context.simdgroupMatrixMultiplyAccumulate(da, o0, zero);
+            o1 = context.simdgroupMatrixMultiplyAccumulate(da, o1, zero);
+            o2 = context.simdgroupMatrixMultiplyAccumulate(da, o2, zero);
+            o3 = context.simdgroupMatrixMultiplyAccumulate(da, o3, zero);
+            int kp0 = kb0 + 0;
+            if (kp0 <= maxPos) {
+                Matrix8x8Float p0 = context.simdgroupMatrixLoad(ss, 0, 64);
+                if (kp0 + 7 > lastValid) {
+                    for (int e = lane; e < 256; e += 32) {
+                        int kp = kp0 + (e >> 5);
+                        float vv = 0.0f;
+                        if (kp <= lastValid) {
+                            vv =
+                                    wrapValueCache
+                                            .get(
+                                                    KvBlockAddress.offset(
+                                                                    blockTable,
+                                                                    slot,
+                                                                    kp,
+                                                                    layerOff,
+                                                                    kvDim,
+                                                                    blockCfg,
+                                                                    blockStride)
+                                                            + headOff
+                                                            + dOff
+                                                            + (e & 31))
+                                            .getFloat32();
+                        }
+                        vt[(sg << 8) + e] = vv;
+                    }
+                    context.localBarrier();
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p0, context.simdgroupMatrixLoad(vt, (sg << 8) + 0, 32), o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p0, context.simdgroupMatrixLoad(vt, (sg << 8) + 8, 32), o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p0, context.simdgroupMatrixLoad(vt, (sg << 8) + 16, 32), o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p0, context.simdgroupMatrixLoad(vt, (sg << 8) + 24, 32), o3);
+                    context.localBarrier();
+                } else {
+                    int vb0 =
+                            KvBlockAddress.offset(
+                                            blockTable,
+                                            slot,
+                                            kp0,
+                                            layerOff,
+                                            kvDim,
+                                            blockCfg,
+                                            blockStride)
+                                    + headOff
+                                    + dOff;
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p0,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb0 + 0, kvDim),
+                                    o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p0,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb0 + 8, kvDim),
+                                    o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p0,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb0 + 16, kvDim),
+                                    o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p0,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb0 + 24, kvDim),
+                                    o3);
+                }
+            }
+            int kp1 = kb0 + 8;
+            if (kp1 <= maxPos) {
+                Matrix8x8Float p1 = context.simdgroupMatrixLoad(ss, 8, 64);
+                if (kp1 + 7 > lastValid) {
+                    for (int e = lane; e < 256; e += 32) {
+                        int kp = kp1 + (e >> 5);
+                        float vv = 0.0f;
+                        if (kp <= lastValid) {
+                            vv =
+                                    wrapValueCache
+                                            .get(
+                                                    KvBlockAddress.offset(
+                                                                    blockTable,
+                                                                    slot,
+                                                                    kp,
+                                                                    layerOff,
+                                                                    kvDim,
+                                                                    blockCfg,
+                                                                    blockStride)
+                                                            + headOff
+                                                            + dOff
+                                                            + (e & 31))
+                                            .getFloat32();
+                        }
+                        vt[(sg << 8) + e] = vv;
+                    }
+                    context.localBarrier();
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p1, context.simdgroupMatrixLoad(vt, (sg << 8) + 0, 32), o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p1, context.simdgroupMatrixLoad(vt, (sg << 8) + 8, 32), o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p1, context.simdgroupMatrixLoad(vt, (sg << 8) + 16, 32), o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p1, context.simdgroupMatrixLoad(vt, (sg << 8) + 24, 32), o3);
+                    context.localBarrier();
+                } else {
+                    int vb1 =
+                            KvBlockAddress.offset(
+                                            blockTable,
+                                            slot,
+                                            kp1,
+                                            layerOff,
+                                            kvDim,
+                                            blockCfg,
+                                            blockStride)
+                                    + headOff
+                                    + dOff;
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p1,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb1 + 0, kvDim),
+                                    o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p1,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb1 + 8, kvDim),
+                                    o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p1,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb1 + 16, kvDim),
+                                    o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p1,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb1 + 24, kvDim),
+                                    o3);
+                }
+            }
+            int kp2 = kb0 + 16;
+            if (kp2 <= maxPos) {
+                Matrix8x8Float p2 = context.simdgroupMatrixLoad(ss, 16, 64);
+                if (kp2 + 7 > lastValid) {
+                    for (int e = lane; e < 256; e += 32) {
+                        int kp = kp2 + (e >> 5);
+                        float vv = 0.0f;
+                        if (kp <= lastValid) {
+                            vv =
+                                    wrapValueCache
+                                            .get(
+                                                    KvBlockAddress.offset(
+                                                                    blockTable,
+                                                                    slot,
+                                                                    kp,
+                                                                    layerOff,
+                                                                    kvDim,
+                                                                    blockCfg,
+                                                                    blockStride)
+                                                            + headOff
+                                                            + dOff
+                                                            + (e & 31))
+                                            .getFloat32();
+                        }
+                        vt[(sg << 8) + e] = vv;
+                    }
+                    context.localBarrier();
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p2, context.simdgroupMatrixLoad(vt, (sg << 8) + 0, 32), o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p2, context.simdgroupMatrixLoad(vt, (sg << 8) + 8, 32), o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p2, context.simdgroupMatrixLoad(vt, (sg << 8) + 16, 32), o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p2, context.simdgroupMatrixLoad(vt, (sg << 8) + 24, 32), o3);
+                    context.localBarrier();
+                } else {
+                    int vb2 =
+                            KvBlockAddress.offset(
+                                            blockTable,
+                                            slot,
+                                            kp2,
+                                            layerOff,
+                                            kvDim,
+                                            blockCfg,
+                                            blockStride)
+                                    + headOff
+                                    + dOff;
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p2,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb2 + 0, kvDim),
+                                    o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p2,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb2 + 8, kvDim),
+                                    o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p2,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb2 + 16, kvDim),
+                                    o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p2,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb2 + 24, kvDim),
+                                    o3);
+                }
+            }
+            int kp3 = kb0 + 24;
+            if (kp3 <= maxPos) {
+                Matrix8x8Float p3 = context.simdgroupMatrixLoad(ss, 24, 64);
+                if (kp3 + 7 > lastValid) {
+                    for (int e = lane; e < 256; e += 32) {
+                        int kp = kp3 + (e >> 5);
+                        float vv = 0.0f;
+                        if (kp <= lastValid) {
+                            vv =
+                                    wrapValueCache
+                                            .get(
+                                                    KvBlockAddress.offset(
+                                                                    blockTable,
+                                                                    slot,
+                                                                    kp,
+                                                                    layerOff,
+                                                                    kvDim,
+                                                                    blockCfg,
+                                                                    blockStride)
+                                                            + headOff
+                                                            + dOff
+                                                            + (e & 31))
+                                            .getFloat32();
+                        }
+                        vt[(sg << 8) + e] = vv;
+                    }
+                    context.localBarrier();
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p3, context.simdgroupMatrixLoad(vt, (sg << 8) + 0, 32), o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p3, context.simdgroupMatrixLoad(vt, (sg << 8) + 8, 32), o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p3, context.simdgroupMatrixLoad(vt, (sg << 8) + 16, 32), o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p3, context.simdgroupMatrixLoad(vt, (sg << 8) + 24, 32), o3);
+                    context.localBarrier();
+                } else {
+                    int vb3 =
+                            KvBlockAddress.offset(
+                                            blockTable,
+                                            slot,
+                                            kp3,
+                                            layerOff,
+                                            kvDim,
+                                            blockCfg,
+                                            blockStride)
+                                    + headOff
+                                    + dOff;
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p3,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb3 + 0, kvDim),
+                                    o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p3,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb3 + 8, kvDim),
+                                    o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p3,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb3 + 16, kvDim),
+                                    o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p3,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb3 + 24, kvDim),
+                                    o3);
+                }
+            }
+            int kp4 = kb0 + 32;
+            if (kp4 <= maxPos) {
+                Matrix8x8Float p4 = context.simdgroupMatrixLoad(ss, 32, 64);
+                if (kp4 + 7 > lastValid) {
+                    for (int e = lane; e < 256; e += 32) {
+                        int kp = kp4 + (e >> 5);
+                        float vv = 0.0f;
+                        if (kp <= lastValid) {
+                            vv =
+                                    wrapValueCache
+                                            .get(
+                                                    KvBlockAddress.offset(
+                                                                    blockTable,
+                                                                    slot,
+                                                                    kp,
+                                                                    layerOff,
+                                                                    kvDim,
+                                                                    blockCfg,
+                                                                    blockStride)
+                                                            + headOff
+                                                            + dOff
+                                                            + (e & 31))
+                                            .getFloat32();
+                        }
+                        vt[(sg << 8) + e] = vv;
+                    }
+                    context.localBarrier();
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p4, context.simdgroupMatrixLoad(vt, (sg << 8) + 0, 32), o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p4, context.simdgroupMatrixLoad(vt, (sg << 8) + 8, 32), o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p4, context.simdgroupMatrixLoad(vt, (sg << 8) + 16, 32), o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p4, context.simdgroupMatrixLoad(vt, (sg << 8) + 24, 32), o3);
+                    context.localBarrier();
+                } else {
+                    int vb4 =
+                            KvBlockAddress.offset(
+                                            blockTable,
+                                            slot,
+                                            kp4,
+                                            layerOff,
+                                            kvDim,
+                                            blockCfg,
+                                            blockStride)
+                                    + headOff
+                                    + dOff;
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p4,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb4 + 0, kvDim),
+                                    o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p4,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb4 + 8, kvDim),
+                                    o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p4,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb4 + 16, kvDim),
+                                    o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p4,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb4 + 24, kvDim),
+                                    o3);
+                }
+            }
+            int kp5 = kb0 + 40;
+            if (kp5 <= maxPos) {
+                Matrix8x8Float p5 = context.simdgroupMatrixLoad(ss, 40, 64);
+                if (kp5 + 7 > lastValid) {
+                    for (int e = lane; e < 256; e += 32) {
+                        int kp = kp5 + (e >> 5);
+                        float vv = 0.0f;
+                        if (kp <= lastValid) {
+                            vv =
+                                    wrapValueCache
+                                            .get(
+                                                    KvBlockAddress.offset(
+                                                                    blockTable,
+                                                                    slot,
+                                                                    kp,
+                                                                    layerOff,
+                                                                    kvDim,
+                                                                    blockCfg,
+                                                                    blockStride)
+                                                            + headOff
+                                                            + dOff
+                                                            + (e & 31))
+                                            .getFloat32();
+                        }
+                        vt[(sg << 8) + e] = vv;
+                    }
+                    context.localBarrier();
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p5, context.simdgroupMatrixLoad(vt, (sg << 8) + 0, 32), o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p5, context.simdgroupMatrixLoad(vt, (sg << 8) + 8, 32), o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p5, context.simdgroupMatrixLoad(vt, (sg << 8) + 16, 32), o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p5, context.simdgroupMatrixLoad(vt, (sg << 8) + 24, 32), o3);
+                    context.localBarrier();
+                } else {
+                    int vb5 =
+                            KvBlockAddress.offset(
+                                            blockTable,
+                                            slot,
+                                            kp5,
+                                            layerOff,
+                                            kvDim,
+                                            blockCfg,
+                                            blockStride)
+                                    + headOff
+                                    + dOff;
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p5,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb5 + 0, kvDim),
+                                    o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p5,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb5 + 8, kvDim),
+                                    o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p5,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb5 + 16, kvDim),
+                                    o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p5,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb5 + 24, kvDim),
+                                    o3);
+                }
+            }
+            int kp6 = kb0 + 48;
+            if (kp6 <= maxPos) {
+                Matrix8x8Float p6 = context.simdgroupMatrixLoad(ss, 48, 64);
+                if (kp6 + 7 > lastValid) {
+                    for (int e = lane; e < 256; e += 32) {
+                        int kp = kp6 + (e >> 5);
+                        float vv = 0.0f;
+                        if (kp <= lastValid) {
+                            vv =
+                                    wrapValueCache
+                                            .get(
+                                                    KvBlockAddress.offset(
+                                                                    blockTable,
+                                                                    slot,
+                                                                    kp,
+                                                                    layerOff,
+                                                                    kvDim,
+                                                                    blockCfg,
+                                                                    blockStride)
+                                                            + headOff
+                                                            + dOff
+                                                            + (e & 31))
+                                            .getFloat32();
+                        }
+                        vt[(sg << 8) + e] = vv;
+                    }
+                    context.localBarrier();
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p6, context.simdgroupMatrixLoad(vt, (sg << 8) + 0, 32), o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p6, context.simdgroupMatrixLoad(vt, (sg << 8) + 8, 32), o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p6, context.simdgroupMatrixLoad(vt, (sg << 8) + 16, 32), o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p6, context.simdgroupMatrixLoad(vt, (sg << 8) + 24, 32), o3);
+                    context.localBarrier();
+                } else {
+                    int vb6 =
+                            KvBlockAddress.offset(
+                                            blockTable,
+                                            slot,
+                                            kp6,
+                                            layerOff,
+                                            kvDim,
+                                            blockCfg,
+                                            blockStride)
+                                    + headOff
+                                    + dOff;
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p6,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb6 + 0, kvDim),
+                                    o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p6,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb6 + 8, kvDim),
+                                    o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p6,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb6 + 16, kvDim),
+                                    o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p6,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb6 + 24, kvDim),
+                                    o3);
+                }
+            }
+            int kp7 = kb0 + 56;
+            if (kp7 <= maxPos) {
+                Matrix8x8Float p7 = context.simdgroupMatrixLoad(ss, 56, 64);
+                if (kp7 + 7 > lastValid) {
+                    for (int e = lane; e < 256; e += 32) {
+                        int kp = kp7 + (e >> 5);
+                        float vv = 0.0f;
+                        if (kp <= lastValid) {
+                            vv =
+                                    wrapValueCache
+                                            .get(
+                                                    KvBlockAddress.offset(
+                                                                    blockTable,
+                                                                    slot,
+                                                                    kp,
+                                                                    layerOff,
+                                                                    kvDim,
+                                                                    blockCfg,
+                                                                    blockStride)
+                                                            + headOff
+                                                            + dOff
+                                                            + (e & 31))
+                                            .getFloat32();
+                        }
+                        vt[(sg << 8) + e] = vv;
+                    }
+                    context.localBarrier();
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p7, context.simdgroupMatrixLoad(vt, (sg << 8) + 0, 32), o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p7, context.simdgroupMatrixLoad(vt, (sg << 8) + 8, 32), o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p7, context.simdgroupMatrixLoad(vt, (sg << 8) + 16, 32), o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p7, context.simdgroupMatrixLoad(vt, (sg << 8) + 24, 32), o3);
+                    context.localBarrier();
+                } else {
+                    int vb7 =
+                            KvBlockAddress.offset(
+                                            blockTable,
+                                            slot,
+                                            kp7,
+                                            layerOff,
+                                            kvDim,
+                                            blockCfg,
+                                            blockStride)
+                                    + headOff
+                                    + dOff;
+                    o0 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p7,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb7 + 0, kvDim),
+                                    o0);
+                    o1 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p7,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb7 + 8, kvDim),
+                                    o1);
+                    o2 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p7,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb7 + 16, kvDim),
+                                    o2);
+                    o3 =
+                            context.simdgroupMatrixMultiplyAccumulate(
+                                    p7,
+                                    context.simdgroupMatrixLoad(wrapValueCache, vb7 + 24, kvDim),
+                                    o3);
+                }
+            }
+            context.localBarrier();
+        }
+        if (lane == 0) {
+            dg[ra * 9] = lA > 0.0f ? 1.0f / lA : 0.0f;
+            dg[rb * 9] = lB > 0.0f ? 1.0f / lB : 0.0f;
+        }
+        context.localBarrier();
+        Matrix8x8Float dn = context.simdgroupMatrixLoad(dg, 0, 8);
+        o0 = context.simdgroupMatrixMultiplyAccumulate(dn, o0, zero);
+        o1 = context.simdgroupMatrixMultiplyAccumulate(dn, o1, zero);
+        o2 = context.simdgroupMatrixMultiplyAccumulate(dn, o2, zero);
+        o3 = context.simdgroupMatrixMultiplyAccumulate(dn, o3, zero);
+        int outBase = t0 * dim + h * headSize + dOff;
+        if (t0 + 8 <= active) {
+            context.simdgroupMatrixStore(o0, wrapXbBatch, outBase + 0, dim);
+            context.simdgroupMatrixStore(o1, wrapXbBatch, outBase + 8, dim);
+            context.simdgroupMatrixStore(o2, wrapXbBatch, outBase + 16, dim);
+            context.simdgroupMatrixStore(o3, wrapXbBatch, outBase + 24, dim);
+        } else {
+            context.simdgroupMatrixStore(o0, vt, (sg << 8) + 0, 8);
+            context.simdgroupMatrixStore(o1, vt, (sg << 8) + 64, 8);
+            context.simdgroupMatrixStore(o2, vt, (sg << 8) + 128, 8);
+            context.simdgroupMatrixStore(o3, vt, (sg << 8) + 192, 8);
+            context.localBarrier();
+            for (int e = lane; e < 256; e += 32) {
+                int r = (e & 63) >> 3;
+                if (t0 + r < active) {
+                    wrapXbBatch.set(
+                            outBase + r * dim + ((e >> 6) << 3) + (e & 7), vt[(sg << 8) + e]);
+                }
+            }
+        }
+    }
 }
