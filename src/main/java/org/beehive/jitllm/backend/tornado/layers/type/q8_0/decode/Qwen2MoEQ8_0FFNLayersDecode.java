@@ -41,12 +41,12 @@ public final class Qwen2MoEQ8_0FFNLayersDecode extends Qwen2MoEQ8_0FFNLayers {
                 weights.v_biasLayered[layerIndex].asFloatArray(),
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
                 weights.routerGateLayered[layerIndex].asFloatArray(),
-                weights.gateExpertsLayered[layerIndex].asByteArray(),
-                weights.upExpertsLayered[layerIndex].asByteArray(),
-                weights.downExpertsLayered[layerIndex].asByteArray(),
-                weights.sharedGateLayered[layerIndex].asByteArray(),
-                weights.sharedUpLayered[layerIndex].asByteArray(),
-                weights.sharedDownLayered[layerIndex].asByteArray(),
+                weights.gateExpertsLayered[layerIndex].asRepackedByteArray(),
+                weights.upExpertsLayered[layerIndex].asRepackedByteArray(),
+                weights.downExpertsLayered[layerIndex].asRepackedByteArray(),
+                weights.sharedGateLayered[layerIndex].asRepackedByteArray(),
+                weights.sharedUpLayered[layerIndex].asRepackedByteArray(),
+                weights.sharedDownLayered[layerIndex].asRepackedByteArray(),
                 weights.sharedGateInputLayered[layerIndex].asFloatArray());
     }
 
