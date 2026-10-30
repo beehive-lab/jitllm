@@ -788,7 +788,8 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                 WorkerGridFactory.genericWorker(
                         batchSize * qkvRows * LOCAL_WORK_GROUP_SIZE, LOCAL_WORK_GROUP_SIZE);
 
-        int gemmLocal = simdgroupGemm() ? 128 : 256;
+        int gemmLocal =
+                simdgroupGemm() ? TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS : 256;
         int hidTile = simdgroupGemm() ? 32 : 64;
         WorkerGrid gemmDimWorker =
                 WorkerGridFactory.genericWorker(
@@ -841,11 +842,8 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         WorkerGridFactory.genericWorker(
                                 (batchSize * hidDim + 255) / 256 * 256, 256));
             } else if (simdgroupGemm()) {
-                int threads = TransformerBatchPrefillSimdgroupKernels.THREADS;
                 scheduler.addWorkerGrid(
-                        p + "batch_ffn_gate_up",
-                        WorkerGridFactory.genericWorker(
-                                ((hidDim + 31) / 32) * ((batchSize + 63) / 64) * threads, threads));
+                        p + "batch_ffn_gate_up", batchProjections().gateUpWorker(w1, hidDim));
             } else if (w1.dataType() == DataType.Q8_0) {
                 scheduler.addWorkerGrid(
                         p + "batch_ffn_gate_up", tiledGemm() ? gemmHidWorker : matVecHidWorker);

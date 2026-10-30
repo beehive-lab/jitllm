@@ -758,11 +758,6 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         }
 
         if (mlxProjections == null) {
-            int tokenTiles = (batchSize + 63) / 64;
-            int local = TransformerBatchPrefillSimdgroupKernels.THREADS;
-            WorkerGrid sgHid =
-                    WorkerGridFactory.genericWorker(
-                            ((hidDim + 31) / 32) * tokenTiles * local, local);
             for (int i = 0; i < config.numberOfLayers(); i++) {
                 if (!nativeLayer(i)) {
                     continue;
@@ -790,7 +785,8 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                             WorkerGridFactory.genericWorker(
                                     (batchSize * hidDim + 255) / 256 * 256, 256));
                 } else if (simdgroupGemm()) {
-                    scheduler.addWorkerGrid(p + "batch_ffn_gate_up", sgHid);
+                    scheduler.addWorkerGrid(
+                            p + "batch_ffn_gate_up", projections.gateUpWorker(w1, hidDim));
                 } else if (w1.dataType() == DataType.Q8_0) {
                     scheduler.addWorkerGrid(p + "batch_ffn_gate_up", matVecHidWorker);
                 } else {

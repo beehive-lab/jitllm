@@ -600,7 +600,7 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             if (mlxProjections == null && nativeLayer(i)) {
                 scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApplyWorker);
-                addNativeWorkerGrids(scheduler, p, i, rmsApplyWorker, qkvWorker, hidWorker);
+                addNativeWorkerGrids(scheduler, p, i, rmsApplyWorker, qkvWorker);
                 scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
                 scheduler.addWorkerGrid(p + "batch_ffn_rms", rmsWorker);
@@ -635,8 +635,7 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
             String p,
             int i,
             WorkerGrid rmsApplyWorker,
-            WorkerGrid qkvWorker,
-            WorkerGrid hidWorker) {
+            WorkerGrid qkvWorker) {
         int dim = config.dim();
         int kvDim = config.kvDim();
         int hidDim = config.hiddenDim();
@@ -663,7 +662,7 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
             scheduler.addWorkerGrid(p + "batch_ffn_up", projections.worker(w3, hidDim));
             scheduler.addWorkerGrid(p + "batch_ffn_gate_up", hidScale);
         } else {
-            scheduler.addWorkerGrid(p + "batch_ffn_gate_up", hidWorker);
+            scheduler.addWorkerGrid(p + "batch_ffn_gate_up", projections.gateUpWorker(w1, hidDim));
         }
         scheduler.addWorkerGrid(p + "batch_ffn_down_scale", hidScale);
         scheduler.addWorkerGrid(

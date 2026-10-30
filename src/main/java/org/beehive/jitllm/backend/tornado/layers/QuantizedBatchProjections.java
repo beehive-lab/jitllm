@@ -20,8 +20,11 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 /**
  * The JIT batched-prefill projections of a layer whose weights stay in the file's own
  * representations: each weight's kernel and grid chosen from its type, on SIMD-group matrices
- * (Metal) or as tiled batch projections elsewhere. The batched counterpart of {@link
- * QuantizedProjections}; the tensor-core prefill decodes to FP16 instead ({@link FP16Projections}).
+ * (Metal) or as tiled batch projections elsewhere. On SIMD-group matrices a Q4_0, Q4_1, Q4_K, Q5_K
+ * or Q6_K weight is staged as FP16 ({@code ...HalfTiles} kernels, {@link
+ * TransformerBatchPrefillSimdgroupKernels#HALF_TILES_THREADS} threads). The batched counterpart of
+ * {@link QuantizedProjections}; the tensor-core prefill decodes to FP16 instead ({@link
+ * FP16Projections}).
  *
  * <p>A Q8_0 weight in such a layer runs the family's own Q8_0 kernels: SIMD-group, the scalar tiled
  * GEMMs where the family has them ({@code tiledQ8}), or per-row matvecs. Only the residual form
@@ -103,30 +106,36 @@ public final class QuantizedBatchProjections {
                             ? switch (type) {
                                 case Q4_0 ->
                                         TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmQ4_0WithResidual;
+                                                ::batchedGemmQ4_0WithResidualHalfTiles;
                                 case Q4_1 ->
                                         TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmQ4_1WithResidual;
+                                                ::batchedGemmQ4_1WithResidualHalfTiles;
                                 case Q4_K ->
                                         TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmQ4_KWithResidual;
+                                                ::batchedGemmQ4_KWithResidualHalfTiles;
                                 case Q5_K ->
                                         TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmQ5_KWithResidual;
+                                                ::batchedGemmQ5_KWithResidualHalfTiles;
                                 default ->
                                         TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmQ6_KWithResidual;
+                                                ::batchedGemmQ6_KWithResidualHalfTiles;
                             }
                             : switch (type) {
                                 case Q4_0 ->
-                                        TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_0;
+                                        TransformerBatchPrefillSimdgroupKernels
+                                                ::batchedGemmQ4_0HalfTiles;
                                 case Q4_1 ->
-                                        TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_1;
+                                        TransformerBatchPrefillSimdgroupKernels
+                                                ::batchedGemmQ4_1HalfTiles;
                                 case Q4_K ->
-                                        TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_K;
+                                        TransformerBatchPrefillSimdgroupKernels
+                                                ::batchedGemmQ4_KHalfTiles;
                                 case Q5_K ->
-                                        TransformerBatchPrefillSimdgroupKernels::batchedGemmQ5_K;
-                                default -> TransformerBatchPrefillSimdgroupKernels::batchedGemmQ6_K;
+                                        TransformerBatchPrefillSimdgroupKernels
+                                                ::batchedGemmQ5_KHalfTiles;
+                                default ->
+                                        TransformerBatchPrefillSimdgroupKernels
+                                                ::batchedGemmQ6_KHalfTiles;
                             },
                     context,
                     x,
@@ -221,19 +230,19 @@ public final class QuantizedBatchProjections {
                             : switch (type) {
                                 case Q4_0 ->
                                         TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmRmsNormFFNGateUpQ4_0;
+                                                ::batchedGemmRmsNormFFNGateUpQ4_0HalfTiles;
                                 case Q4_1 ->
                                         TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmRmsNormFFNGateUpQ4_1;
+                                                ::batchedGemmRmsNormFFNGateUpQ4_1HalfTiles;
                                 case Q4_K ->
                                         TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmRmsNormFFNGateUpQ4_K;
+                                                ::batchedGemmRmsNormFFNGateUpQ4_KHalfTiles;
                                 case Q5_K ->
                                         TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmRmsNormFFNGateUpQ5_K;
+                                                ::batchedGemmRmsNormFFNGateUpQ5_KHalfTiles;
                                 default ->
                                         TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmRmsNormFFNGateUpQ6_K;
+                                                ::batchedGemmRmsNormFFNGateUpQ6_KHalfTiles;
                             },
                     context,
                     ws.wrapXBatch,
@@ -284,6 +293,19 @@ public final class QuantizedBatchProjections {
                 batchSize * hidDim);
     }
 
+    /**
+     * The grid of {@link #gateUp}'s fused task on SIMD-group matrices for {@code w1}'s type, {@code
+     * hidDim} outputs: 32 gate and 32 up rows per workgroup.
+     */
+    public WorkerGrid gateUpWorker(TornadoTensor w1, int hidDim) {
+        int threads =
+                w1.dataType() == DataType.Q8_0
+                        ? TransformerBatchPrefillSimdgroupKernels.THREADS
+                        : TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS;
+        return WorkerGridFactory.genericWorker(
+                ((hidDim + 31) / 32) * ((batchSize + 63) / 64) * threads, threads);
+    }
+
     /** The grid of {@code w}'s projection to {@code rows} outputs, SIMD-group or tiled. */
     public WorkerGrid worker(TornadoTensor w, int rows) {
         int batchTiles = (batchSize + 63) / 64;
@@ -296,7 +318,7 @@ public final class QuantizedBatchProjections {
                     : WorkerGridFactory.genericWorker(batchSize * rows * matVecLocal, matVecLocal);
         }
         if (simdgroup) {
-            int threads = TransformerBatchPrefillSimdgroupKernels.THREADS;
+            int threads = TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS;
             return WorkerGridFactory.genericWorker(
                     ((rows + 63) / 64) * batchTiles * threads, threads);
         }
