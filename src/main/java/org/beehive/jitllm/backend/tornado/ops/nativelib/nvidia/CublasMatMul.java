@@ -1,6 +1,5 @@
 package org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia;
 
-import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
 import org.beehive.jitllm.backend.tornado.ops.DecodedMatMul;
 import org.beehive.jitllm.backend.tornado.ops.Step;
 import org.beehive.jitllm.backend.tornado.ops.Target;

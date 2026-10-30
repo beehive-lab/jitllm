@@ -1,8 +1,9 @@
-package org.beehive.jitllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.common.LibraryTaskDescriptor;
 import uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider;
@@ -84,11 +85,11 @@ public final class NativePrefillSupport {
             int batch, int heads, int seqQ, int seqKv, int headDim, float scale, boolean causal) {}
 
     /**
-     * How the probe answers. Package-private and swappable so a test can simulate a host whose
-     * fused SDPA is absent or present-but-unusable, which no property and no fixture can otherwise
-     * produce on a machine whose toolkit supports it.
+     * How the probe answers. Swappable so a test can simulate a host whose fused SDPA is absent or
+     * present-but-unusable, which no property and no fixture can otherwise produce on a machine
+     * whose toolkit supports it.
      */
-    interface SdpaProbe {
+    public interface SdpaProbe {
         boolean usable(SdpaShape shape);
     }
 
@@ -98,7 +99,7 @@ public final class NativePrefillSupport {
     private static final Map<SdpaShape, Boolean> SDPA_CACHE = new ConcurrentHashMap<>();
 
     /** Installs a probe for a test; returns the previous one so the test can restore it. */
-    static SdpaProbe setSdpaProbeForTesting(SdpaProbe probe) {
+    public static SdpaProbe setSdpaProbeForTesting(SdpaProbe probe) {
         SdpaProbe previous = sdpaProbe;
         sdpaProbe = probe;
         SDPA_CACHE.clear();
@@ -132,7 +133,7 @@ public final class NativePrefillSupport {
     }
 
     /** The cuBLAS the TornadoVM binding, and the cuDNN builds it pairs with, load. */
-    static final String CUBLAS_LT_SONAME = "libcublasLt.so.12";
+    public static final String CUBLAS_LT_SONAME = "libcublasLt.so.12";
 
     // @formatter:off
     /**
