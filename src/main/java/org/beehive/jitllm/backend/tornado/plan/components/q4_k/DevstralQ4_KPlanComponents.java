@@ -61,9 +61,17 @@ public class DevstralQ4_KPlanComponents implements BatchPrefillDecodeForwardPlan
 
     // ── Batched prefill/decode ───────────────────────────────────────────────
 
-    /** the F16 tensor-core layers, each Q4_K (or Q6_K) projection decoded into FP16 first. */
+    /**
+     * On Metal, the MLX layers; elsewhere the F16 tensor-core layers, each Q4_K (or Q6_K)
+     * projection decoded into FP16 first.
+     */
     @Override
     public BatchPrefillTransformerLayerTaskGraphs batchPrefillTransformerLayers(int batchSize) {
+        if (org.beehive.jitllm.runtime.backend.BackendId.METAL.equals(
+                org.beehive.jitllm.backend.tornado.device.TornadoDevices.target().backend())) {
+            return new org.beehive.jitllm.backend.tornado.layers.devstral
+                    .DevstralLayersBatchPrefillMlx(state, weights, config, batchSize);
+        }
         return new DevstralQ4_KLayersBatchPrefillMMA(state, weights, config, batchSize);
     }
 

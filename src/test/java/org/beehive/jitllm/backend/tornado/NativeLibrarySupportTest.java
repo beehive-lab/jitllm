@@ -207,6 +207,15 @@ public class NativeLibrarySupportTest {
                         BackendId.METAL,
                         false));
         assertEquals(
+                "devstral Q4_K has an MLX path for its projections and attention",
+                Optional.empty(),
+                check(
+                        "devstral",
+                        DataType.Q4_K,
+                        ExecutionMode.BATCH_PREFILL_DECODE,
+                        BackendId.METAL,
+                        false));
+        assertEquals(
                 "llama retains Q4_0 and has an MLX path for it",
                 Optional.empty(),
                 check(

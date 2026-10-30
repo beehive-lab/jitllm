@@ -90,4 +90,53 @@ public class BatchPrefillSupportTest {
         assertTrue(message, message.contains("--batch-prefill-size"));
         assertFalse(message, message.contains("--fp32-kv-cache"));
     }
+
+    @Test
+    public void devstralQ4KOnMetalRunsOnMlxOrIsRefusedNamingIt() {
+        Optional<String> reason =
+                check(
+                        "devstral",
+                        DataType.Q4_K,
+                        ExecutionMode.BATCH_PREFILL_DECODE,
+                        BackendId.METAL,
+                        false);
+        // Whether MLX loads is this host's answer; either it does, or the refusal says why.
+        assertTrue(reason.orElse(""), reason.isEmpty() || reason.get().contains("MLX"));
+        assertTrue(
+                check(
+                                "devstral",
+                                DataType.Q8_0,
+                                ExecutionMode.BATCH_PREFILL_DECODE,
+                                BackendId.METAL,
+                                false)
+                        .isPresent());
+    }
+
+    @Test
+    public void devstralOnMetalNeedsNativeLibrariesAskedFor() {
+        Combination metal =
+                new Combination(
+                        "devstral",
+                        DataType.Q4_K,
+                        ExecutionMode.BATCH_PREFILL_DECODE,
+                        BackendId.METAL,
+                        false,
+                        false,
+                        false);
+        Optional<String> without =
+                BatchPrefillSupport.needsNativeProjections(
+                        metal,
+                        org.beehive.jitllm.runtime.policy.ExecutionPolicy.builder()
+                                .nativeLibraries(false)
+                                .build());
+        assertTrue(without.isPresent());
+        assertTrue(without.get(), without.get().contains("--with-native-libraries"));
+        assertEquals(
+                Optional.empty(),
+                BatchPrefillSupport.needsNativeProjections(
+                        metal,
+                        org.beehive.jitllm.runtime.policy.ExecutionPolicy.builder()
+                                .nativeLibraries(true)
+                                .build()));
+    }
 }

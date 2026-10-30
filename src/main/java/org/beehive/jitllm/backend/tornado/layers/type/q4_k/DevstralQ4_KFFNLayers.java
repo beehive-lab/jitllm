@@ -4,6 +4,8 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
+import org.beehive.jitllm.backend.tornado.layers.MlxDecodeProjections;
+import org.beehive.jitllm.backend.tornado.layers.MlxWeightCache;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.layers.devstral.DevstralLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
@@ -63,26 +65,41 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
         } else {
             unifiedLayer.consumeFromDevice(state.workspace.wrapX);
         }
-        Object[] layerWeights = {
-            weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-            weights.wqLayered[layerIndex].asByteArray(),
-            weights.wkLayered[layerIndex].asByteArray(),
-            weights.wvLayered[layerIndex].asByteArray(),
-            weights.woLayered[layerIndex].asByteArray(),
-            weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-            weights.w1Layered[layerIndex].asByteArray(),
-            weights.w2Layered[layerIndex].asByteArray(),
-            weights.w3Layered[layerIndex].asByteArray()
-        };
-        String weightSrc = weightSourceGraphName(layerIndex);
-        if (weightSrc != null) {
-            unifiedLayer.consumeFromDevice(weightSrc, layerWeights);
-        } else {
-            unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
-        }
+        MlxDecodeProjections mlx = mlxDecode(layerIndex);
+        // On MLX the projections are MLX's form of them, bound from the prefill graph below; the
+        // file's own blocks are never uploaded.
+        Object[] layerWeights =
+                mlx != null
+                        ? new Object[] {
+                            weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                            weights.rms_ffn_weightLayered[layerIndex].asFloatArray()
+                        }
+                        : new Object[] {
+                            weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                            weights.wqLayered[layerIndex].asByteArray(),
+                            weights.wkLayered[layerIndex].asByteArray(),
+                            weights.wvLayered[layerIndex].asByteArray(),
+                            weights.woLayered[layerIndex].asByteArray(),
+                            weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                            weights.w1Layered[layerIndex].asByteArray(),
+                            weights.w2Layered[layerIndex].asByteArray(),
+                            weights.w3Layered[layerIndex].asByteArray()
+                        };
+        // From the batched prefill's graph where it uploaded them; the projections an MLX prefill
+        // replaced with its own form are uploaded here (weightsNotProvidedBySource).
+        bindLayerWeights(unifiedLayer, weightSourceGraphName(layerIndex), layerIndex, layerWeights);
         unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
         bindSharedScratch(unifiedLayer, layerIndex);
-        boolean packed = packed();
+        if (mlx != null) {
+            mlx.declare(
+                    unifiedLayer,
+                    layerIndex,
+                    layerIndex == firstLayer,
+                    "layer_" + (layerIndex - 1),
+                    weightSourceGraphName(layerIndex));
+        }
+        // MLX reads the FP32 normed activation, not the packed int8 one.
+        boolean packed = packed() && mlx == null;
 
         unifiedLayer.task(
                 "attn_rms_reduce",
@@ -123,33 +140,37 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
                     state.workspace.temp);
         }
 
-        // Three projections rather than one fused kernel: a K-quant file's wq, wk and wv can be
-        // different representations in the same layer, and one kernel cannot decode two block
-        // formats. Selected per tensor, at graph-construction time.
-        matvec(
-                unifiedLayer,
-                "q_proj",
-                state.workspace.wrapXb,
-                state.workspace.wrapQ,
-                weights.wqLayered[layerIndex],
-                config.dim(),
-                config.qDim());
-        matvec(
-                unifiedLayer,
-                "k_proj",
-                state.workspace.wrapXb,
-                state.workspace.wrapK,
-                weights.wkLayered[layerIndex],
-                config.dim(),
-                config.kvDim());
-        matvec(
-                unifiedLayer,
-                "v_proj",
-                state.workspace.wrapXb,
-                state.workspace.wrapV,
-                weights.wvLayered[layerIndex],
-                config.dim(),
-                config.kvDim());
+        if (mlx != null) {
+            mlx.qkv(unifiedLayer, layerIndex);
+        } else {
+            // Three projections rather than one fused kernel: a K-quant file's wq, wk and wv can be
+            // different representations in the same layer, and one kernel cannot decode two block
+            // formats. Selected per tensor, at graph-construction time.
+            matvec(
+                    unifiedLayer,
+                    "q_proj",
+                    state.workspace.wrapXb,
+                    state.workspace.wrapQ,
+                    weights.wqLayered[layerIndex],
+                    config.dim(),
+                    config.qDim());
+            matvec(
+                    unifiedLayer,
+                    "k_proj",
+                    state.workspace.wrapXb,
+                    state.workspace.wrapK,
+                    weights.wkLayered[layerIndex],
+                    config.dim(),
+                    config.kvDim());
+            matvec(
+                    unifiedLayer,
+                    "v_proj",
+                    state.workspace.wrapXb,
+                    state.workspace.wrapV,
+                    weights.wvLayered[layerIndex],
+                    config.dim(),
+                    config.kvDim());
+        }
 
         // Precomputed RoPE frequencies (YaRN-scaled)
         ropeAndKeyValueCache(unifiedLayer, layerIndex);
@@ -157,23 +178,27 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
         configureAttention(unifiedLayer, layerIndex);
 
         // O projection: n=qDim (input), d=dim (output)
-        if (packed) {
-            // The attention output is a new activation: quantized fresh for the projection.
-            PackedActivationTasks.quantize(
+        if (mlx != null) {
+            mlx.attentionOutput(unifiedLayer, layerIndex);
+        } else {
+            if (packed) {
+                // The attention output is a new activation: quantized fresh for the projection.
+                PackedActivationTasks.quantize(
+                        unifiedLayer,
+                        "attn_out_quantize",
+                        context,
+                        state.workspace,
+                        state.workspace.wrapXb);
+            }
+            residualMatvec(
                     unifiedLayer,
-                    "attn_out_quantize",
-                    context,
-                    state.workspace,
-                    state.workspace.wrapXb);
+                    "attn_output_proj",
+                    state.workspace.wrapXb,
+                    state.workspace.wrapX,
+                    weights.woLayered[layerIndex],
+                    config.qDim(),
+                    config.dim());
         }
-        residualMatvec(
-                unifiedLayer,
-                "attn_output_proj",
-                state.workspace.wrapXb,
-                state.workspace.wrapX,
-                weights.woLayered[layerIndex],
-                config.qDim(),
-                config.dim());
 
         unifiedLayer.task(
                 "ffn_rms_reduce",
@@ -214,6 +239,12 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
                     state.workspace.tempFFN);
         }
 
+        if (mlx != null) {
+            mlx.ffn(unifiedLayer, layerIndex);
+            unifiedLayer.persistOnDevice(state.workspace.wrapX);
+            mlx.persist(unifiedLayer);
+            return unifiedLayer;
+        }
         if (fusedGateUp(layerIndex)) {
             // Both Q4_K: gate, up and SwiGLU in one launch over the quantized activation.
             unifiedLayer.task(
@@ -277,6 +308,40 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
         unifiedLayer.persistOnDevice(state.workspace.wrapX);
 
         return unifiedLayer;
+    }
+
+    /** Built on first use: the graphs are built from the superclass's constructor. */
+    private MlxDecodeProjections mlxDecode;
+
+    private boolean mlxDecodeResolved;
+
+    // @formatter:off
+    /**
+     * The MLX decode projections, when these are the decode layers of a batched plan whose prefill
+     * runs on MLX in the affine form: the decode then reads the prefill's weights and the file's
+     * projection blocks are never uploaded. Null otherwise — the single-token plan, or a prefill on
+     * the tensor cores — and the Q4_K kernels run.
+     */
+    // @formatter:on
+    private MlxDecodeProjections mlxDecode(int layerIndex) {
+        if (!mlxDecodeResolved) {
+            mlxDecodeResolved = true;
+            mlxDecode =
+                    weightSourceGraphName(layerIndex) == null || mlxPrefill.isEmpty()
+                            ? null
+                            : MlxDecodeProjections.ifAffine(
+                                    mlxPrefill.get(),
+                                    MlxWeightCache.standard(),
+                                    state,
+                                    weights,
+                                    context,
+                                    config.numberOfLayers(),
+                                    config.dim(),
+                                    config.qDim(),
+                                    config.kvDim(),
+                                    config.hiddenDim());
+        }
+        return mlxDecode;
     }
 
     /** Whether gate, up and SwiGLU run as one packed launch: both projections Q4_K. */
@@ -372,6 +437,9 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
                 tornadoForwardScheduler.addWorkerGrid(l + "ffn_silu", siluWorker);
             }
             tornadoForwardScheduler.addWorkerGrid(l + "ffn_down_proj", dimRowsWorker);
+            if (mlxDecode != null) {
+                mlxDecode.addGrids(tornadoForwardScheduler, l);
+            }
             if (packed) {
                 tornadoForwardScheduler.addWorkerGrid(
                         l + "attn_out_quantize",

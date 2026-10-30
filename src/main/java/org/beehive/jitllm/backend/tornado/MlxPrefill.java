@@ -45,7 +45,7 @@ import uk.ac.manchester.tornado.mlx.provider.MlxLibraryProvider;
  * install mlx}) on an M4-class GPU or newer. Resolved lazily: nothing here loads the Objective-C
  * runtime or the kernel library unless a Metal session asks for native libraries.
  *
- * @param weights the model's projection weight type: F16, Q8_0 or Q4_0
+ * @param weights the model's projection weight type: F16, Q8_0, Q4_0 or Q4_K
  * @param projections the representation the MLX GEMMs read
  */
 // @formatter:on
@@ -65,9 +65,12 @@ public record MlxPrefill(DataType weights, Projections projections) {
     public static final int GROUP = 32;
 
     public MlxPrefill {
-        if (weights != DataType.F16 && weights != DataType.Q8_0 && weights != DataType.Q4_0) {
+        if (weights != DataType.F16
+                && weights != DataType.Q8_0
+                && weights != DataType.Q4_0
+                && weights != DataType.Q4_K) {
             throw new IllegalArgumentException(
-                    "MLX prefill reads F16, Q8_0 or Q4_0, not " + weights);
+                    "MLX prefill reads F16, Q8_0, Q4_0 or Q4_K, not " + weights);
         }
         if ((weights == DataType.F16) != (projections == Projections.FP16)) {
             throw new IllegalArgumentException(projections + " is not a form of " + weights);
@@ -80,8 +83,8 @@ public record MlxPrefill(DataType weights, Projections projections) {
      * kernels.
      *
      * <p>Present exactly when native libraries are asked for, the prefill is batched, the device is
-     * a Metal one, MLX's kernel library loads and the weights are F16, Q8_0 or Q4_0. Whether the
-     * family implements those weights on Metal is the admission's question ({@code
+     * a Metal one, MLX's kernel library loads and the weights are F16, Q8_0, Q4_0 or Q4_K. Whether
+     * the family implements those weights on Metal is the admission's question ({@code
      * NativeLibrarySupport}), asked before any plan is built.
      */
     public static Optional<MlxPrefill> resolve(
@@ -90,7 +93,10 @@ public record MlxPrefill(DataType weights, Projections projections) {
                 || policy.phaseStrategy() != ExecutionPolicy.PhaseStrategy.PREFILL_DECODE
                 || policy.prefillBatchSize() <= 1
                 || !BackendId.METAL.equals(TornadoDevices.target().backend())
-                || (weights != DataType.F16 && weights != DataType.Q8_0 && weights != DataType.Q4_0)
+                || (weights != DataType.F16
+                        && weights != DataType.Q8_0
+                        && weights != DataType.Q4_0
+                        && weights != DataType.Q4_K)
                 || !available()) {
             return Optional.empty();
         }
@@ -104,6 +110,15 @@ public record MlxPrefill(DataType weights, Projections projections) {
                             : Projections.AFFINE;
         }
         return Optional.of(new MlxPrefill(weights, projections));
+    }
+
+    /**
+     * Whether a projection held as {@code type} is one this prefill's weights may contain: the
+     * model's own representation, or for a Q4_K model the Q6_K a {@code Q4_K_M} file gives some of
+     * its tensors.
+     */
+    public boolean reads(DataType type) {
+        return type == weights || (weights == DataType.Q4_K && type == DataType.Q6_K);
     }
 
     /** Whether MLX's kernel library can be reached from this process at all. */
@@ -178,6 +193,7 @@ public record MlxPrefill(DataType weights, Projections projections) {
      * values, and an FP16 scale and bias per group of 32.
      */
     public static long affineBytes(DataType weights, long projections) {
+        // Q4_K at four bits; the Q6_K tensors of a Q4_K_M file repack at eight and are not in this.
         int bits = weights == DataType.Q8_0 ? 8 : 4;
         long groups = projections / GROUP;
         return projections * bits / 8 + 2L * Short.BYTES * groups;
