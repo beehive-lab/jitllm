@@ -231,7 +231,7 @@ public class Phi3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayerT
             } else {
                 layer.task(
                         "batch_qkv",
-                        TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVFusedQ8,
+                        TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVFusedQ8HalfTiles,
                         context,
                         state.workspace.wrapXbBatch,
                         state.workspace.wrapQBatch,
@@ -304,7 +304,7 @@ public class Phi3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayerT
         } else {
             layer.task(
                     "batch_attn_out",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ8WithResidual,
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ8WithResidualHalfTiles,
                     context,
                     state.workspace.wrapXbBatch,
                     state.workspace.wrapXBatch,
@@ -365,7 +365,8 @@ public class Phi3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayerT
         } else {
             layer.task(
                     "batch_ffn_gate_up",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmRmsNormFFNGateUpFusedQ8,
+                    TransformerBatchPrefillSimdgroupKernels
+                            ::batchedGemmRmsNormFFNGateUpFusedQ8HalfTiles,
                     context,
                     state.workspace.wrapXBatch,
                     state.workspace.wrapHbBatch,
@@ -377,7 +378,7 @@ public class Phi3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayerT
                     batchSize);
             layer.task(
                     "batch_ffn_down",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ8WithResidual,
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ8WithResidualHalfTiles,
                     context,
                     state.workspace.wrapHbBatch,
                     state.workspace.wrapXBatch,
@@ -536,7 +537,7 @@ public class Phi3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayerT
         int dim = config.dim();
         int kvDim = config.kvDim();
         int hidDim = config.hiddenDim();
-        int local = TransformerBatchPrefillSimdgroupKernels.THREADS;
+        int local = TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS;
         int tokenTiles = (batchSize + 63) / 64;
         WorkerGrid rmsWorker = WorkerGridFactory.genericWorker(batchSize, 1);
         WorkerGrid rmsApplyWorker = WorkerGridFactory.genericWorker(batchSize * dim, 256);

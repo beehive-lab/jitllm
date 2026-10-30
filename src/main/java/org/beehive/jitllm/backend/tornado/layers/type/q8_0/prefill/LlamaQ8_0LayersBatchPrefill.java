@@ -268,7 +268,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
             layer.task(
                     "batch_qkv",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8,
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8HalfTiles,
                     context,
                     state.workspace.wrapXbBatch,
                     state.workspace.wrapQBatch,
@@ -530,7 +530,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
             layer.task(
                     "batch_attn_out",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ8WithResidual,
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ8WithResidualHalfTiles,
                     context,
                     state.workspace.wrapXbBatch,
                     state.workspace.wrapXBatch,
@@ -578,7 +578,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
             layer.task(
                     "batch_ffn_gate_up",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmRmsNormFFNGateUpQ8,
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmRmsNormFFNGateUpQ8HalfTiles,
                     context,
                     state.workspace.wrapXBatch,
                     state.workspace.wrapHbBatch,
@@ -622,7 +622,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
             layer.task(
                     "batch_ffn_down",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ8WithResidual,
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ8WithResidualHalfTiles,
                     context,
                     state.workspace.wrapHbBatch,
                     state.workspace.wrapXBatch,
@@ -715,7 +715,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         }
 
         if (simdgroupGemm() && mlxProjections == null) {
-            int local = TransformerBatchPrefillSimdgroupKernels.THREADS;
+            int local = TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS;
             int tokenTiles = (batchSize + 63) / 64;
             int sgQkvRows = dim + 2 * kvDim;
             WorkerGrid sgQkv =

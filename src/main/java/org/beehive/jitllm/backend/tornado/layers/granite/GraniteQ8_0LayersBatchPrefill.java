@@ -256,7 +256,7 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
             } else {
                 layer.task(
                         "batch_qkv",
-                        TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8,
+                        TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8HalfTiles,
                         context,
                         state.workspace.wrapXbBatch,
                         state.workspace.wrapQBatch,
@@ -340,7 +340,8 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
         } else {
             layer.task(
                     "batch_attn_out",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ8WithScaledResidual,
+                    TransformerBatchPrefillSimdgroupKernels
+                            ::batchedGemmQ8WithScaledResidualHalfTiles,
                     context,
                     state.workspace.wrapXbBatch,
                     state.workspace.wrapXBatch,
@@ -389,7 +390,7 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
         } else {
             layer.task(
                     "batch_ffn_gate_up",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmRmsNormFFNGateUpQ8,
+                    TransformerBatchPrefillSimdgroupKernels::batchedGemmRmsNormFFNGateUpQ8HalfTiles,
                     context,
                     state.workspace.wrapXBatch,
                     state.workspace.wrapHbBatch,
@@ -402,7 +403,8 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
                     batchSize);
             layer.task(
                     "batch_ffn_down",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmQ8WithScaledResidual,
+                    TransformerBatchPrefillSimdgroupKernels
+                            ::batchedGemmQ8WithScaledResidualHalfTiles,
                     context,
                     state.workspace.wrapHbBatch,
                     state.workspace.wrapXBatch,
@@ -568,7 +570,7 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
         int dim = config.dim();
         int kvDim = config.kvDim();
         int hidDim = config.hiddenDim();
-        int local = TransformerBatchPrefillSimdgroupKernels.THREADS;
+        int local = TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS;
         int tokenTiles = (batchSize + 63) / 64;
         WorkerGrid scaleWorker =
                 WorkerGridFactory.genericWorker(((batchSize * dim + 255) / 256) * 256, 256);

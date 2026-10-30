@@ -20,8 +20,8 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 /**
  * The JIT batched-prefill projections of a layer whose weights stay in the file's own
  * representations: each weight's kernel and grid chosen from its type, on SIMD-group matrices
- * (Metal) or as tiled batch projections elsewhere. On SIMD-group matrices a Q4_0, Q4_1, Q4_K, Q5_K
- * or Q6_K weight is staged as FP16 ({@code ...HalfTiles} kernels, {@link
+ * (Metal) or as tiled batch projections elsewhere. On SIMD-group matrices every weight type is
+ * staged as FP16 ({@code ...HalfTiles} kernels, {@link
  * TransformerBatchPrefillSimdgroupKernels#HALF_TILES_THREADS} threads). The batched counterpart of
  * {@link QuantizedProjections}; the tensor-core prefill decodes to FP16 instead ({@link
  * FP16Projections}).
@@ -88,7 +88,8 @@ public final class QuantizedBatchProjections {
             layer.task(
                     name,
                     simdgroup
-                            ? TransformerBatchPrefillSimdgroupKernels::batchedGemmQ8WithResidual
+                            ? TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmQ8WithResidualHalfTiles
                             : tiledQ8
                                     ? TransformerBatchPrefillKernels::batchedGemmQ8WithResidual
                                     : TransformerBatchPrefillKernels::batchedMatVecWithResidualQ8,
@@ -221,7 +222,7 @@ public final class QuantizedBatchProjections {
                     type == DataType.Q8_0
                             ? (simdgroup
                                     ? TransformerBatchPrefillSimdgroupKernels
-                                            ::batchedGemmRmsNormFFNGateUpQ8
+                                            ::batchedGemmRmsNormFFNGateUpQ8HalfTiles
                                     : tiledQ8
                                             ? TransformerBatchPrefillKernels
                                                     ::batchedGemmRmsNormFFNGateUpQ8
@@ -298,10 +299,7 @@ public final class QuantizedBatchProjections {
      * hidDim} outputs: 32 gate and 32 up rows per workgroup.
      */
     public WorkerGrid gateUpWorker(TornadoTensor w1, int hidDim) {
-        int threads =
-                w1.dataType() == DataType.Q8_0
-                        ? TransformerBatchPrefillSimdgroupKernels.THREADS
-                        : TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS;
+        int threads = TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS;
         return WorkerGridFactory.genericWorker(
                 ((hidDim + 31) / 32) * ((batchSize + 63) / 64) * threads, threads);
     }
@@ -311,7 +309,8 @@ public final class QuantizedBatchProjections {
         int batchTiles = (batchSize + 63) / 64;
         DataType type = w.dataType();
         if (type == DataType.Q8_0) {
-            int gemmLocal = simdgroup ? TransformerBatchPrefillSimdgroupKernels.THREADS : 256;
+            int gemmLocal =
+                    simdgroup ? TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS : 256;
             return simdgroup || tiledQ8
                     ? WorkerGridFactory.genericWorker(
                             ((rows + 63) / 64) * batchTiles * gemmLocal, gemmLocal)
