@@ -29,6 +29,12 @@ public abstract class FloatTensor {
         return VECTOR_BIT_SIZE;
     }
 
+    /** Whether a quantized dot kernel has an implementation for this float vector width. */
+    static boolean supportsVectorizedDot(VectorSpecies<Float> species) {
+        return species != null
+                && (species.vectorBitSize() == 128 || species.vectorBitSize() == 256);
+    }
+
     // The use of Unsafe in this file is a temporary workaround to support native-image.
     static final Unsafe UNSAFE;
 
