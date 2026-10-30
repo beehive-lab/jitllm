@@ -314,9 +314,9 @@ public class Qwen3FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
                                             ::batchedFlashAttentionKVFP16PagedHead64
                                     : nEmbdHead == 96
                                             ? TransformerPagedKvBatchPrefillSimdgroupFP16Kernels
-                                                    ::batchedFlashAttentionKVFP16PagedHead96
+                                                    ::batchedFlashAttentionKVFP16PagedHead96Rows8
                                             : TransformerPagedKvBatchPrefillSimdgroupFP16Kernels
-                                                    ::batchedFlashAttentionKVFP16PagedHead128)
+                                                    ::batchedFlashAttentionKVFP16PagedHead128Rows8)
                             : TransformerPagedKvBatchPrefillKernels
                                     ::batchedFlashAttentionKVFP16Paged,
                     context,
@@ -471,9 +471,7 @@ public class Qwen3FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
                 laneAttention()
                         ? 32 * LaneAttentionPolicy.PREFILL_WARPS_PER_GROUP
                         : WorkerGridFactory.findOptimalLocalSize(nEmbdHead);
-        int attnTiles =
-                (batchSize + TransformerPagedKvBatchPrefillSimdgroupKernels.QUERY_TILE - 1)
-                        / TransformerPagedKvBatchPrefillSimdgroupKernels.QUERY_TILE;
+        int attnTiles = attentionTiles();
         WorkerGrid attnWorker =
                 simdgroupAttention()
                         ? WorkerGridFactory.genericWorker(
@@ -598,5 +596,17 @@ public class Qwen3FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
                 && config.dim() % 64 == 0
                 && config.hiddenDim() % 64 == 0
                 && qDim % 64 == 0;
+    }
+
+    /**
+     * The attention workgroups along the batch: 8 queries each over the FP16 cache for heads wider
+     * than 64 ({@code ...Rows8} kernels), 32 otherwise.
+     */
+    private int attentionTiles() {
+        int tile =
+                useFp16KVCache() && nEmbdHead != 64
+                        ? TransformerPagedKvBatchPrefillSimdgroupFP16Kernels.ROWS8_QUERY_TILE
+                        : TransformerPagedKvBatchPrefillSimdgroupKernels.QUERY_TILE;
+        return (batchSize + tile - 1) / tile;
     }
 }

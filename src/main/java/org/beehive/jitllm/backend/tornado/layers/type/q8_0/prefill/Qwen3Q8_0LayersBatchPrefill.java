@@ -358,7 +358,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                                             ::batchedFlashAttentionKVFP16PagedHead64
                                     : nEmbdHead == 96
                                             ? TransformerPagedKvBatchPrefillSimdgroupFP16Kernels
-                                                    ::batchedFlashAttentionKVFP16PagedHead96
+                                                    ::batchedFlashAttentionKVFP16PagedHead96Rows8
                                             : TransformerPagedKvBatchPrefillSimdgroupFP16Kernels
                                                     ::batchedFlashAttentionKVFP16PagedHead128Rows8)
                             : TransformerPagedKvBatchPrefillKernels
@@ -441,7 +441,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         ? 32 * LaneAttentionPolicy.PREFILL_WARPS_PER_GROUP
                         : WorkerGridFactory.findOptimalLocalSize(nEmbdHead);
         int queryTile =
-                useFp16KVCache() && nEmbdHead == 128
+                useFp16KVCache() && nEmbdHead != 64
                         ? TransformerPagedKvBatchPrefillSimdgroupFP16Kernels.ROWS8_QUERY_TILE
                         : TransformerPagedKvBatchPrefillSimdgroupKernels.QUERY_TILE;
         int attnTiles = (batchSize + queryTile - 1) / queryTile;

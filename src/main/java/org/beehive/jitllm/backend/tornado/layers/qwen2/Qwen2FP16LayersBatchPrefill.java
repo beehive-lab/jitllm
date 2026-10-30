@@ -345,7 +345,7 @@ public class Qwen2FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
                     batchPrefillLayer.task(
                             "batch_attention",
                             TransformerPagedKvBatchPrefillSimdgroupFP16Kernels
-                                    ::batchedFlashAttentionKVFP16PagedHead96,
+                                    ::batchedFlashAttentionKVFP16PagedHead96Rows8,
                             context,
                             state.workspace.batchStartPosHolder,
                             state.workspace.wrapQBatch,
@@ -365,7 +365,7 @@ public class Qwen2FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
                     batchPrefillLayer.task(
                             "batch_attention",
                             TransformerPagedKvBatchPrefillSimdgroupFP16Kernels
-                                    ::batchedFlashAttentionKVFP16PagedHead128,
+                                    ::batchedFlashAttentionKVFP16PagedHead128Rows8,
                             context,
                             state.workspace.batchStartPosHolder,
                             state.workspace.wrapQBatch,
@@ -695,12 +695,7 @@ public class Qwen2FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
         if (mlxAttention == null && simdgroupAttention()) {
             WorkerGrid sgAttn =
                     WorkerGridFactory.genericWorker(
-                            ((batchSize
-                                                    + TransformerPagedKvBatchPrefillSimdgroupKernels
-                                                            .QUERY_TILE
-                                                    - 1)
-                                            / TransformerPagedKvBatchPrefillSimdgroupKernels
-                                                    .QUERY_TILE)
+                            attentionTiles()
                                     * config.numberOfHeads()
                                     * TransformerPagedKvBatchPrefillSimdgroupKernels.THREADS,
                             TransformerPagedKvBatchPrefillSimdgroupKernels.THREADS);
@@ -761,5 +756,17 @@ public class Qwen2FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
 
     private int headSize() {
         return config.headSize();
+    }
+
+    /**
+     * The attention workgroups along the batch: 8 queries each over the FP16 cache for heads wider
+     * than 64 ({@code ...Rows8} kernels), 32 otherwise.
+     */
+    private int attentionTiles() {
+        int tile =
+                useFp16KVCache() && headSize() != 64
+                        ? TransformerPagedKvBatchPrefillSimdgroupFP16Kernels.ROWS8_QUERY_TILE
+                        : TransformerPagedKvBatchPrefillSimdgroupKernels.QUERY_TILE;
+        return (batchSize + tile - 1) / tile;
     }
 }
