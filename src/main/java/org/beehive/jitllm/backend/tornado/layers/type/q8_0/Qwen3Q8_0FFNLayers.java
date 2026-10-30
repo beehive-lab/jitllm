@@ -272,7 +272,7 @@ public class Qwen3Q8_0FFNLayers
             weights.w2Layered[layerIndex].asByteArray(), // FFN down projection
             weights.w3Layered[layerIndex].asByteArray() // FFN up projection
         };
-        bindLayerWeights(unifiedLayer, weightSourceGraphName(layerIndex), layerIndex, layerWeights);
+        bindLayerWeights(unifiedLayer, layerWeights);
         if (firstInGraph) {
             unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
             if (PackedActivationTasks.enabled()) {
@@ -905,18 +905,6 @@ public class Qwen3Q8_0FFNLayers
             }
         }
         return unifiedLayer;
-    }
-
-    /**
-     * The graph that has already uploaded this layer's weights, or {@code null} to upload them
-     * here.
-     *
-     * <p>A weight array bound with {@code transferToDevice} in two task graphs of one execution
-     * plan gets a device buffer in each, so the pool has to hold the whole model twice. See {@code
-     * LlamaFP16FFNLayers.weightSourceGraphName} for the full note.
-     */
-    protected String weightSourceGraphName(int layerIndex) {
-        return null;
     }
 
     /**

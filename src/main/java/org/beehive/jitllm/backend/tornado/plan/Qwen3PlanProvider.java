@@ -158,7 +158,7 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
             return Optional.of(
                     org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill
                             .Qwen3Q8_0LayersBatchPrefillMMA.workspace(
-                            qwen3, batchSize, policy, fp16Cache));
+                            qwen3, batchSize, policy, fp16Cache, weights));
         }
         return Optional.empty();
     }

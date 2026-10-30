@@ -27,6 +27,19 @@ public record BatchPrefillWorkspace(long decodedWeights, long residentBytes, lon
         return new BatchPrefillWorkspace(0, bytes, bytes);
     }
 
+    /** The sum of this workspace and {@code other}. */
+    public BatchPrefillWorkspace plus(BatchPrefillWorkspace other) {
+        return new BatchPrefillWorkspace(
+                decodedWeights + other.decodedWeights,
+                residentBytes + other.residentBytes,
+                perChunkBytes + other.perChunkBytes);
+    }
+
+    /** This workspace plus {@code bytes} that are the same whether decoded weights stay or not. */
+    public BatchPrefillWorkspace plus(long bytes) {
+        return plus(fixed(bytes));
+    }
+
     /** Whether the family decodes projections, so residency is a choice at all. */
     public boolean decodesProjections() {
         return decodedWeights > 0;

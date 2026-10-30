@@ -86,14 +86,4 @@ public class Qwen3Q8_0FFNLayersDecode extends Qwen3Q8_0FFNLayers {
         }
         return layer;
     }
-
-    /**
-     * This class builds the decode half of a batched prefill/decode plan, where the matching {@code
-     * batchPrefillLayer_<i>} graph has already uploaded this layer's weights and always runs first,
-     * so the decode graph binds that copy instead of a second one.
-     */
-    @Override
-    protected String weightSourceGraphName(int layerIndex) {
-        return GraphNames.batchPrefillLayer(layerIndex);
-    }
 }

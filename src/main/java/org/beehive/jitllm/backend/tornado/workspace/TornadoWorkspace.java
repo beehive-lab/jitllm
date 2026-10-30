@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.workspace;
 
+import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.inference.Logits;
@@ -35,6 +36,9 @@ public final class TornadoWorkspace {
 
     /** Which weights this session's plan prepacks, set when the plan is built. */
     public WeightPrepacking prepacking = WeightPrepacking.NONE;
+
+    /** Which task graph uploads each weight. Reset for every new execution plan. */
+    public WeightBindings weightBindings = new WeightBindings();
 
     public FloatArray wrapAttSplit;
     public FloatArray

@@ -362,5 +362,35 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
         }
     }
 
+    /**
+     * Adds {@code layerWeights} to {@code graph}. A weight another graph already uploaded (see
+     * {@link org.beehive.jitllm.backend.tornado.plan.WeightBindings}) is reused from that graph;
+     * the others are uploaded here and recorded.
+     *
+     * <p>Example: with batched prefill, decode reuses the weights {@code batchPrefillLayer_<i>}
+     * uploaded. Under MLX, prefill does not record the projections MLX replaces with its own
+     * copies, so decode uploads those itself.
+     */
+    protected final void bindLayerWeights(TaskGraph graph, Object[] layerWeights) {
+        var bindings = state.workspace.weightBindings;
+        java.util.Map<String, List<Object>> consumed = new java.util.LinkedHashMap<>();
+        List<Object> uploaded = new ArrayList<>();
+        for (Object w : layerWeights) {
+            String owner = bindings.owner(w);
+            if (owner == null) {
+                uploaded.add(w);
+            } else {
+                consumed.computeIfAbsent(owner, o -> new ArrayList<>()).add(w);
+            }
+        }
+        consumed.forEach((owner, weights) -> graph.consumeFromDevice(owner, weights.toArray()));
+        if (!uploaded.isEmpty()) {
+            graph.transferToDevice(
+                    uk.ac.manchester.tornado.api.enums.DataTransferMode.FIRST_EXECUTION,
+                    uploaded.toArray());
+            uploaded.forEach(w -> bindings.record(w, graph.getTaskGraphName()));
+        }
+    }
+
     private static final Object[] NO_WEIGHTS = new Object[0];
 }
