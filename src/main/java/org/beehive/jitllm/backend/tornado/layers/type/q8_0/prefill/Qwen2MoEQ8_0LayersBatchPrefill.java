@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen2MoEBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen2PagedKvKernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
@@ -85,8 +86,8 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
         configureMoE(layer, layerIndex);
         layer.persistOnDevice(
                 state.workspace.wrapXBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
+                keyCache(),
+                valueCache(),
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 weights.wqLayered[layerIndex].asByteArray(),
                 weights.wkLayered[layerIndex].asByteArray(),
@@ -123,8 +124,8 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
                     state.workspace.wrapQBatch,
                     state.workspace.wrapKBatch,
                     state.workspace.wrapVBatch,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.wrapRouterLogitsBatch,
                     state.workspace.wrapSelectedExpertsBatch,
                     state.workspace.wrapRoutingWeightsBatch,
@@ -153,8 +154,8 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
                     state.workspace.wrapQBatch,
                     state.workspace.wrapKBatch,
                     state.workspace.wrapVBatch,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
+                    keyCache(),
+                    valueCache(),
                     state.workspace.batchStartPosHolder,
                     state.workspace.activeBatchSizeHolder,
                     state.workspace.attnScaleBatch,
@@ -278,44 +279,88 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
                 dim,
                 kvDim);
 
-        layer.task(
-                "batch_rope_kv",
-                Qwen2PagedKvKernels::batchedRopeWithKVCacheQwen2Paged,
-                context,
-                state.workspace.batchStartPosHolder,
-                state.workspace.activeBatchSizeHolder,
-                state.workspace.wrapQBatch,
-                state.workspace.wrapKBatch,
-                state.workspace.wrapVBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                kvDim,
-                config.headSize(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride,
-                dim,
-                config.ropeTheta());
+        if (useFp16KVCache()) {
+            // Same split-half rotation as the FP32 kernel; batchStartPosHolder[1] is the chunk
+            // size.
+            layer.task(
+                    "batch_rope_kv",
+                    Qwen3PagedKvKernels::batchedRopeWithKVCacheQwen3FP16Paged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKBatch,
+                    state.workspace.wrapVBatch,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    config.ropeTheta(),
+                    kvDim,
+                    config.headSize(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        } else {
+            layer.task(
+                    "batch_rope_kv",
+                    Qwen2PagedKvKernels::batchedRopeWithKVCacheQwen2Paged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.activeBatchSizeHolder,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKBatch,
+                    state.workspace.wrapVBatch,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    kvDim,
+                    config.headSize(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim,
+                    config.ropeTheta());
+        }
 
-        layer.task(
-                "batch_attention",
-                TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionPaged,
-                context,
-                state.workspace.batchStartPosHolder,
-                state.workspace.wrapQBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache,
-                state.workspace.wrapXbBatch,
-                config.numberOfHeads(),
-                config.headSize(),
-                kvDim,
-                config.kvMul(),
-                layerIndex,
-                state.workspace.wrapBlockTable,
-                state.kvBlockCfg,
-                state.kvBlockStride,
-                dim);
+        if (useFp16KVCache()) {
+            layer.task(
+                    "batch_attention",
+                    TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionKVFP16Paged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    state.workspace.wrapXbBatch,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    kvDim,
+                    config.kvMul(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        } else {
+            layer.task(
+                    "batch_attention",
+                    TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionPaged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    state.workspace.wrapXbBatch,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    kvDim,
+                    config.kvMul(),
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    dim);
+        }
 
         if (nativeLayer(layerIndex)) {
             batchProjections()
@@ -840,6 +885,23 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
             localSize--;
         }
         return localSize;
+    }
+
+    /** Whether the state holds the key/value cache in FP16. */
+    private boolean useFp16KVCache() {
+        return state.usesFp16KeyValueCache();
+    }
+
+    /** The key cache every graph of this family binds: FP16 when the state holds one. */
+    private Object keyCache() {
+        return useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
+    }
+
+    /** The value cache in the representation the state holds. */
+    private Object valueCache() {
+        return useFp16KVCache()
+                ? state.workspace.wrapValueCacheFP16
+                : state.workspace.wrapValueCache;
     }
 
     @Override

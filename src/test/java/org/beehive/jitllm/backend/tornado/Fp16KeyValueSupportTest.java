@@ -209,6 +209,12 @@ public class Fp16KeyValueSupportTest {
         }
         for (ExecutionMode mode :
                 new ExecutionMode[] {ExecutionMode.STANDARD, ExecutionMode.BATCH_PREFILL_DECODE}) {
+            for (DataType weights : new DataType[] {DataType.Q4_0, DataType.Q6_K, DataType.Q8_0}) {
+                assertEquals(
+                        "qwen2-moe " + weights + " " + mode,
+                        Optional.empty(),
+                        check("qwen2-moe", weights, mode, BackendId.METAL, false, false));
+            }
             assertEquals(
                     Optional.empty(),
                     check("gemma4", DataType.Q8_0, mode, BackendId.METAL, false, false));

@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.plan;
 
 import java.util.Optional;
 import java.util.Set;
+import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
@@ -71,5 +72,14 @@ public final class Qwen2MoePlanProvider implements TornadoPlanProvider {
                             : Optional.of("the scalar batched prefill keeps an FP32 cache");
             case PREFILL_DECODE -> Optional.of("qwen2-moe has no sequential prefill/decode plan");
         };
+    }
+
+    /**
+     * The single-token layers and the scalar batched prefill write the FP16 cache on Metal. A kept
+     * file answers as the Q8_0 layers it runs.
+     */
+    @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return Fp16KeyValueSupport.metalSingleTokenAndBatchedLayers(c.asQ8_0Layers());
     }
 }
