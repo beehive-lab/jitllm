@@ -33,6 +33,13 @@ public final class TornadoWorkspace {
             new org.beehive.jitllm.backend.tornado.plan.PackedRepack();
 
     public FloatArray wrapAttSplit;
+
+    /** The {@code glm5next} decode plan's own arrays; null for every other family. */
+    public Glm5NextDeviceArrays glm5next;
+
+    /** The {@code glm5next} batched prefill's chunk-wide arrays; null without one. */
+    public Glm5NextBatchArrays glm5nextBatch;
+
     public FloatArray
             wrapLogits; // FloatArray wrapper for the logits tensor, compatible with TornadoVM for
     // GPU execution.

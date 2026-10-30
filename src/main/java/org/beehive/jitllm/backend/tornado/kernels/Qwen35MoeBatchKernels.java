@@ -43,7 +43,7 @@ public final class Qwen35MoeBatchKernels {
     /** Rows of one expert tile: four 16-row MMA sub-tiles sharing each staged weight tile. */
     public static final int TILE_ROWS = 64;
 
-    private static final int SUB_TILES = TILE_ROWS / 16;
+    static final int SUB_TILES = TILE_ROWS / 16;
 
     /** Output columns of one GEMM block. */
     public static final int TILE_COLS = 128;
@@ -55,10 +55,10 @@ public final class Qwen35MoeBatchKernels {
     private static final int BLOCK_BYTES = 34;
 
     /** Words of one round's activation tile per 32-block: 64 rows of 32 bytes. */
-    private static final int A_WORDS = 512;
+    static final int A_WORDS = 512;
 
     /** Words of one round's weight tile per 32-block: 128 columns of 32 bytes. */
-    private static final int B_WORDS = 1024;
+    static final int B_WORDS = 1024;
 
     /** The most tiles a chunk of {@code assignments} over {@code experts} experts can cut into. */
     public static int maxTiles(int assignments, int experts) {
@@ -374,7 +374,7 @@ public final class Qwen35MoeBatchKernels {
     }
 
     /** Stages one round's activation tile and scales: 64 rows, two blocks, four words a lane. */
-    private static void stageA(
+    static void stageA(
             KernelContext ctx,
             int[] aTile,
             float[] sA,
@@ -416,7 +416,7 @@ public final class Qwen35MoeBatchKernels {
      * Stages one round's weight tile of one matrix — 128 columns starting at weight row {@code
      * firstRow}, two blocks — and its scales: eight words a lane, read with 16-bit loads.
      */
-    private static void stageB(
+    static void stageB(
             int[] bTile,
             float[] sW,
             ByteArray w,

@@ -55,6 +55,7 @@ final class GgufRecognition {
                                 ? ArchitectureId.of("deepseek-r1-distill-qwen")
                                 : ArchitectureId.of("qwen2");
                 case "granitemoehybrid" -> ArchitectureId.of("granite");
+                case "glm5-next" -> ArchitectureId.of("glm5next");
                 case "mistral3" -> withinMistral3(name);
                 default -> ArchitectureId.of(declared);
             };

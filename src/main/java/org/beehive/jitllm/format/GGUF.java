@@ -316,7 +316,7 @@ public final class GGUF {
         // The key of the metadata. It is a standard GGUF string, with the following caveats:
         // - It must be a valid ASCII string.
         // - It must be a hierarchical key, where each segment is `lower_snake_case` and separated
-        // by a `.`.
+        // by a `.`; llama.cpp's architecture prefixes may also hold a `-` (glm5-next, gpt-oss).
         // - It must be at most 2^16-1/65535 bytes long.
         // Any keys that do not follow these rules are invalid.
         String key = readString(fileChannel); // gguf_string_t key;
@@ -327,6 +327,7 @@ public final class GGUF {
                                 ('a' <= cp && cp <= 'z')
                                         || ('0' <= cp && cp <= '9')
                                         || cp == '_'
+                                        || cp == '-'
                                         || cp == '.');
         Object value = readMetadataValue(fileChannel);
         return new Pair<>(key, value);

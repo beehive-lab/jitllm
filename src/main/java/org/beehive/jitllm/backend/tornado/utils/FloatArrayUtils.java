@@ -9,6 +9,12 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  */
 public final class FloatArrayUtils {
 
+    /**
+     * Below this argument {@code (float) Math.exp} rounds to exactly zero: {@code e^-104} is under
+     * half the smallest float subnormal.
+     */
+    public static final float EXP_UNDERFLOW = -104.0f;
+
     private FloatArrayUtils() {
         // Utility class, not meant to be instantiated
     }
@@ -60,11 +66,14 @@ public final class FloatArrayUtils {
             }
         }
 
-        // Apply exp(x-max) to each element and calculate sum
+        // Apply exp(x-max) to each element and calculate sum; below EXP_UNDERFLOW the float
+        // result is exactly zero, so the exponential is skipped
         float sum = 0.0f;
         for (int i = start; i < end; i++) {
             float exp;
-            if (TornadoVMSupport.isTornadoVMEnabled()) {
+            if (array.get(i) - maxVal < EXP_UNDERFLOW) {
+                exp = 0.0f;
+            } else if (TornadoVMSupport.isTornadoVMEnabled()) {
                 // Use TornadoMath for GPU execution if possible
                 exp = TornadoMath.exp(array.get(i) - maxVal);
             } else {
