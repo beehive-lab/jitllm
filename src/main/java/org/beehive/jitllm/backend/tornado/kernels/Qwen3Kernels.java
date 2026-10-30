@@ -1230,6 +1230,53 @@ public class Qwen3Kernels {
         }
     }
 
+    /**
+     * {@link #batchedFusedQKRmsNorm} with one SIMD group per token and head. Worker: {@code B *
+     * (nHeads + nHeadKv) * 32} threads in groups of 128.
+     */
+    public static void batchedFusedQKRmsNormSimdgroup(
+            KernelContext context,
+            FloatArray wrapQBatch,
+            FloatArray wrapKBatch,
+            FloatArray qWeights,
+            FloatArray kWeights,
+            int nHeads,
+            int nHeadKv,
+            int nEmbdHead,
+            int qDim,
+            int kvDim,
+            float rmsNormEps) {
+        int slot = context.globalIdx >> 5;
+        int lane = context.localIdx & 31;
+        int batchIdx = slot / (nHeads + nHeadKv);
+        int headSlot = slot % (nHeads + nHeadKv);
+        if (headSlot < nHeads) {
+            int headOffset = batchIdx * qDim + headSlot * nEmbdHead;
+            float sum = 0.0f;
+            for (int i = lane; i < nEmbdHead; i += 32) {
+                float val = wrapQBatch.get(headOffset + i);
+                sum += val * val;
+            }
+            float ss = 1.0f / TornadoMath.sqrt(context.simdSum(sum) / nEmbdHead + rmsNormEps);
+            for (int i = lane; i < nEmbdHead; i += 32) {
+                wrapQBatch.set(
+                        headOffset + i, qWeights.get(i) * ss * wrapQBatch.get(headOffset + i));
+            }
+        } else {
+            int headOffset = batchIdx * kvDim + (headSlot - nHeads) * nEmbdHead;
+            float sum = 0.0f;
+            for (int i = lane; i < nEmbdHead; i += 32) {
+                float val = wrapKBatch.get(headOffset + i);
+                sum += val * val;
+            }
+            float ss = 1.0f / TornadoMath.sqrt(context.simdSum(sum) / nEmbdHead + rmsNormEps);
+            for (int i = lane; i < nEmbdHead; i += 32) {
+                wrapKBatch.set(
+                        headOffset + i, kWeights.get(i) * ss * wrapKBatch.get(headOffset + i));
+            }
+        }
+    }
+
     // ── Packed-QKV variants for the tensor-core batch prefill path ───────────
     // These mirror batchedFusedQKRmsNorm / batchedRopeWithKVCacheQwen3 but read
     // and write the packed [q | k | v] buffer produced by gemmMMAQKV

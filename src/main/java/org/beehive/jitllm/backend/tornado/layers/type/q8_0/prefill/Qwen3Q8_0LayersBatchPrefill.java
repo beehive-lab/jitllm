@@ -292,7 +292,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
         layer.task(
                 "batch_qk_rmsnorm",
-                Qwen3Kernels::batchedFusedQKRmsNorm,
+                Qwen3Kernels::batchedFusedQKRmsNormSimdgroup,
                 context,
                 state.workspace.wrapQBatch,
                 state.workspace.wrapKBatch,
@@ -429,7 +429,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
     public void updateGridScheduler(GridScheduler scheduler) {
         WorkerGrid qkRmsNormWorker =
                 WorkerGridFactory.genericWorker(
-                        batchSize * (config.numberOfHeads() + nHeadKv) * nEmbdHead, nEmbdHead);
+                        batchSize * (config.numberOfHeads() + nHeadKv) * 32, 128);
 
         int ropeGlobal = batchSize * (qDim / 2);
         int ropeLocal = Math.min(512, ropeGlobal);
