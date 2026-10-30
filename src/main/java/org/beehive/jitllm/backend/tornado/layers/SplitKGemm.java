@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4BatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -130,6 +131,50 @@ public final class SplitKGemm {
         }
         layer.task(
                 task, Gemma4BatchPrefillKernels::gemmMMASplitK, context, a, b, partial, m, n, k, s);
+        layer.task(
+                task + "Reduce",
+                Gemma4BatchPrefillKernels::splitKReduce,
+                context,
+                partial,
+                c,
+                m * n,
+                s);
+        splitTasks.put(layer.getTaskGraphName() + "." + task, new int[] {m, n, s});
+    }
+
+    /**
+     * Whether {@link #gemmTiled} can multiply this shape: unsplit, or split into slices whose depth
+     * {@link Qwen35MMAKernels#gemmMMATiledBStaged} steps through.
+     */
+    boolean tiled(int m, int n, int k) {
+        int s = slices(m, n, k);
+        return s == 1 || (k / s) % 32 == 0;
+    }
+
+    /**
+     * {@link #gemm} over a weight decoded in the tile order of {@link
+     * Qwen35MMAKernels#gemmMMATiledB}, split as {@link #gemm} splits it. Unsplit, the grid is the
+     * caller's.
+     */
+    public void gemmTiled(
+            TaskGraph layer,
+            String task,
+            HalfFloatArray a,
+            HalfFloatArray b,
+            FloatArray c,
+            int m,
+            int n,
+            int k) {
+        int s = slices(m, n, k);
+        if (k % (32 * s) != 0) {
+            layer.task(task, Qwen35MMAKernels::gemmMMATiledB, context, a, b, c, m, n, k);
+            return;
+        }
+        if (s == 1) {
+            layer.task(task, Qwen35MMAKernels::gemmMMATiledBStaged, context, a, b, c, m, n, k, 1);
+            return;
+        }
+        layer.task(task, Qwen35MMAKernels::gemmMMATiledBStaged, context, a, b, partial, m, n, k, s);
         layer.task(
                 task + "Reduce",
                 Gemma4BatchPrefillKernels::splitKReduce,

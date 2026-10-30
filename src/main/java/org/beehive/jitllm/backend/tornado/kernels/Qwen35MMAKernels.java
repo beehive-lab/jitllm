@@ -1282,6 +1282,166 @@ public final class Qwen35MMAKernels {
 
     // @formatter:off
     /**
+     * {@link #gemmMMATiledB} with a depth step of 32 and both operands copied by 16-byte {@code
+     * cp.async} into two stages, so the copy of the next step overlaps the multiplications of this
+     * one: one barrier pair per 32 of depth instead of per 16. The A rows sit 40 halves apart in
+     * local memory, so that {@code ldmatrix} reads them without bank conflicts. Same tiles, B
+     * layout and result. With {@code slices > 1} each z-group of the grid multiplies one slice of
+     * the depth into {@code C[slice][M][N]}, for {@link Gemma4BatchPrefillKernels#splitKReduce}.
+     * Requires {@code (K / slices) % 32 == 0}. Worker: {@code WorkerGrid3D((M/128)*256, N/128,
+     * slices)}, local (256,1,1).
+     */
+    // @formatter:on
+    public static void gemmMMATiledBStaged(
+            KernelContext ctx,
+            HalfFloatArray A,
+            HalfFloatArray B,
+            FloatArray C,
+            int M,
+            int N,
+            int K,
+            int slices) {
+        int tid = ctx.localIdx;
+        int warpId = tid / WARP_SIZE;
+        int warpM = warpId / GEMM_WARPS_N;
+        int warpN = warpId % GEMM_WARPS_N;
+        int blockRow = GEMM_BM * ctx.groupIdx;
+        // Two stages of A (128 rows of 40 halves) and of B (two 16-deep tiles).
+        int[] aTile = ctx.allocateIntLocalArray(2 * 2560);
+        int[] bTile = ctx.allocateIntLocalArray(2 * 2 * GEMM_B_TILE_INTS);
+        float[] c00 = ctx.mmaFragment(0.0f);
+        float[] c01 = ctx.mmaFragment(0.0f);
+        float[] c02 = ctx.mmaFragment(0.0f);
+        float[] c03 = ctx.mmaFragment(0.0f);
+        float[] c04 = ctx.mmaFragment(0.0f);
+        float[] c05 = ctx.mmaFragment(0.0f);
+        float[] c06 = ctx.mmaFragment(0.0f);
+        float[] c07 = ctx.mmaFragment(0.0f);
+        float[] c10 = ctx.mmaFragment(0.0f);
+        float[] c11 = ctx.mmaFragment(0.0f);
+        float[] c12 = ctx.mmaFragment(0.0f);
+        float[] c13 = ctx.mmaFragment(0.0f);
+        float[] c14 = ctx.mmaFragment(0.0f);
+        float[] c15 = ctx.mmaFragment(0.0f);
+        float[] c16 = ctx.mmaFragment(0.0f);
+        float[] c17 = ctx.mmaFragment(0.0f);
+        // Each thread copies two 8-half chunks of A and two of B per step.
+        int aRow0 = tid >> 2;
+        int aRow1 = aRow0 + 64;
+        int aCol = (tid & 3) << 3;
+        int kSlice = K / slices;
+        int kBase = ctx.groupIdz * kSlice;
+        int gA0 = (blockRow + aRow0) * K + kBase + aCol;
+        int gA1 = (blockRow + aRow1) * K + kBase + aCol;
+        int sA0 = aRow0 * 20 + ((tid & 3) << 2);
+        int sA1 = aRow1 * 20 + ((tid & 3) << 2);
+        int numSteps = kSlice / 32;
+        int gB =
+                (ctx.groupIdy * (K / GEMM_BK) + kBase / GEMM_BK) * GEMM_B_TILE_INTS * 2
+                        + (tid << 3);
+        int sB = tid << 2;
+        ctx.asyncCopyToLocal16(aTile, sA0, A, gA0);
+        ctx.asyncCopyToLocal16(aTile, sA1, A, gA1);
+        ctx.asyncCopyToLocal16(bTile, sB, B, gB);
+        ctx.asyncCopyToLocal16(bTile, sB + 1024, B, gB + 2048);
+        ctx.asyncCopyCommit();
+        int aWarp = warpM * 32 * 80;
+        int bWarp = warpN * 8 * B_SUBTILE_BYTES;
+        for (int step = 0; step < numSteps; step++) {
+            int stage = step & 1;
+            if (step + 1 < numSteps) {
+                // The other stage was last read before the previous step's closing barrier.
+                int next = 1 - stage;
+                int kOff = (step + 1) * 32;
+                ctx.asyncCopyToLocal16(aTile, next * 2560 + sA0, A, gA0 + kOff);
+                ctx.asyncCopyToLocal16(aTile, next * 2560 + sA1, A, gA1 + kOff);
+                int gBNext = gB + (step + 1) * 4 * GEMM_B_TILE_INTS;
+                ctx.asyncCopyToLocal16(bTile, next * 2048 + sB, B, gBNext);
+                ctx.asyncCopyToLocal16(bTile, next * 2048 + sB + 1024, B, gBNext + 2048);
+                ctx.asyncCopyCommit();
+                ctx.asyncCopyWaitGroup(1);
+            } else {
+                ctx.asyncCopyWaitGroup(0);
+            }
+            ctx.localBarrier();
+            int aStage = stage * 10240 + aWarp;
+            int bStage = stage * 8192 + bWarp;
+            HalfFloat[] a0s0 = ctx.mmaLoadA(aTile, 40, aStage + 0);
+            HalfFloat[] a1s0 = ctx.mmaLoadA(aTile, 40, aStage + 1280);
+            HalfFloat[] b0s0 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 0);
+            HalfFloat[] b1s0 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 256);
+            HalfFloat[] b2s0 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 512);
+            HalfFloat[] b3s0 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 768);
+            HalfFloat[] b4s0 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 1024);
+            HalfFloat[] b5s0 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 1280);
+            HalfFloat[] b6s0 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 1536);
+            HalfFloat[] b7s0 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 1792);
+            c00 = ctx.mma(a0s0, b0s0, c00, MMAShape.M16N8K16);
+            c01 = ctx.mma(a0s0, b1s0, c01, MMAShape.M16N8K16);
+            c02 = ctx.mma(a0s0, b2s0, c02, MMAShape.M16N8K16);
+            c03 = ctx.mma(a0s0, b3s0, c03, MMAShape.M16N8K16);
+            c04 = ctx.mma(a0s0, b4s0, c04, MMAShape.M16N8K16);
+            c05 = ctx.mma(a0s0, b5s0, c05, MMAShape.M16N8K16);
+            c06 = ctx.mma(a0s0, b6s0, c06, MMAShape.M16N8K16);
+            c07 = ctx.mma(a0s0, b7s0, c07, MMAShape.M16N8K16);
+            c10 = ctx.mma(a1s0, b0s0, c10, MMAShape.M16N8K16);
+            c11 = ctx.mma(a1s0, b1s0, c11, MMAShape.M16N8K16);
+            c12 = ctx.mma(a1s0, b2s0, c12, MMAShape.M16N8K16);
+            c13 = ctx.mma(a1s0, b3s0, c13, MMAShape.M16N8K16);
+            c14 = ctx.mma(a1s0, b4s0, c14, MMAShape.M16N8K16);
+            c15 = ctx.mma(a1s0, b5s0, c15, MMAShape.M16N8K16);
+            c16 = ctx.mma(a1s0, b6s0, c16, MMAShape.M16N8K16);
+            c17 = ctx.mma(a1s0, b7s0, c17, MMAShape.M16N8K16);
+            HalfFloat[] a0s1 = ctx.mmaLoadA(aTile, 40, aStage + 32);
+            HalfFloat[] a1s1 = ctx.mmaLoadA(aTile, 40, aStage + 1312);
+            HalfFloat[] b0s1 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 4096);
+            HalfFloat[] b1s1 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 4352);
+            HalfFloat[] b2s1 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 4608);
+            HalfFloat[] b3s1 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 4864);
+            HalfFloat[] b4s1 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 5120);
+            HalfFloat[] b5s1 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 5376);
+            HalfFloat[] b6s1 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 5632);
+            HalfFloat[] b7s1 = ctx.mmaLoadB(bTile, GEMM_BK, bStage + 5888);
+            c00 = ctx.mma(a0s1, b0s1, c00, MMAShape.M16N8K16);
+            c01 = ctx.mma(a0s1, b1s1, c01, MMAShape.M16N8K16);
+            c02 = ctx.mma(a0s1, b2s1, c02, MMAShape.M16N8K16);
+            c03 = ctx.mma(a0s1, b3s1, c03, MMAShape.M16N8K16);
+            c04 = ctx.mma(a0s1, b4s1, c04, MMAShape.M16N8K16);
+            c05 = ctx.mma(a0s1, b5s1, c05, MMAShape.M16N8K16);
+            c06 = ctx.mma(a0s1, b6s1, c06, MMAShape.M16N8K16);
+            c07 = ctx.mma(a0s1, b7s1, c07, MMAShape.M16N8K16);
+            c10 = ctx.mma(a1s1, b0s1, c10, MMAShape.M16N8K16);
+            c11 = ctx.mma(a1s1, b1s1, c11, MMAShape.M16N8K16);
+            c12 = ctx.mma(a1s1, b2s1, c12, MMAShape.M16N8K16);
+            c13 = ctx.mma(a1s1, b3s1, c13, MMAShape.M16N8K16);
+            c14 = ctx.mma(a1s1, b4s1, c14, MMAShape.M16N8K16);
+            c15 = ctx.mma(a1s1, b5s1, c15, MMAShape.M16N8K16);
+            c16 = ctx.mma(a1s1, b6s1, c16, MMAShape.M16N8K16);
+            c17 = ctx.mma(a1s1, b7s1, c17, MMAShape.M16N8K16);
+            ctx.localBarrier();
+        }
+        int rBase = ctx.groupIdz * M + blockRow + warpM * GEMM_WM;
+        int cBase = GEMM_BN * ctx.groupIdy + warpN * GEMM_WN;
+        ctx.mmaStore(c00, C, rBase + 0, cBase + 0, N);
+        ctx.mmaStore(c01, C, rBase + 0, cBase + 8, N);
+        ctx.mmaStore(c02, C, rBase + 0, cBase + 16, N);
+        ctx.mmaStore(c03, C, rBase + 0, cBase + 24, N);
+        ctx.mmaStore(c04, C, rBase + 0, cBase + 32, N);
+        ctx.mmaStore(c05, C, rBase + 0, cBase + 40, N);
+        ctx.mmaStore(c06, C, rBase + 0, cBase + 48, N);
+        ctx.mmaStore(c07, C, rBase + 0, cBase + 56, N);
+        ctx.mmaStore(c10, C, rBase + 16, cBase + 0, N);
+        ctx.mmaStore(c11, C, rBase + 16, cBase + 8, N);
+        ctx.mmaStore(c12, C, rBase + 16, cBase + 16, N);
+        ctx.mmaStore(c13, C, rBase + 16, cBase + 24, N);
+        ctx.mmaStore(c14, C, rBase + 16, cBase + 32, N);
+        ctx.mmaStore(c15, C, rBase + 16, cBase + 40, N);
+        ctx.mmaStore(c16, C, rBase + 16, cBase + 48, N);
+        ctx.mmaStore(c17, C, rBase + 16, cBase + 56, N);
+    }
+
+    // @formatter:off
+    /**
      * {@link #gemmMMATiledB} with the residual folded into its epilogue: {@code X[M,N] += A x B} in
      * place of a store to a scratch and a separate add. Each lane reads the four elements of each
      * of its sixteen accumulators — element {@code i} of lane {@code l} of a 16 x 8 tile is row

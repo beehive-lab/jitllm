@@ -171,7 +171,7 @@ public final class FP16Projections {
                 && !gemm.nativeGemm()
                 && wholeRowBlocks
                 && m % 128 == 0
-                && gemm.slices(m, columns, k) == 1) {
+                && gemm.tiled(m, columns, k)) {
             projectTiled(layer, task, a, c, m, k, b, resident ? flag : neverDecoded, ws);
             return;
         }
@@ -345,7 +345,7 @@ public final class FP16Projections {
             layer.task(mark, TransformerBatchPrefillKernels::markDecoded, context, decoded, flag);
             markTasks.add(layer.getTaskGraphName() + "." + mark);
         }
-        layer.task(task, Qwen35MMAKernels::gemmMMATiledB, context, a, b, c, m, offset / k, k);
+        gemm.gemmTiled(layer, task, a, b, c, m, offset / k, k);
     }
 
     /**
