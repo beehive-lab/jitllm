@@ -78,50 +78,60 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
 
         long startTime = System.nanoTime();
         this.executionPlan = createExecutionPlan();
-        // Before compilation and the weight upload, so a plan that fails either still prints.
-        TaskGraphChainPrinter.printIfRequested(taskGraphChain(), model);
-        metrics.enableOn(executionPlan);
-        long planCreationTime = System.nanoTime();
-        if (ENABLE_TORNADOVM_INIT_TIME) {
-            // The device the plan was built for and the kernel families it was granted, then
-            // the batched-prefill path the layer builder actually chose from them; the same
-            // facts the tests read off the plan, reported where a user can see them.
-            var device = org.beehive.jitllm.backend.tornado.device.TornadoDevices.current();
-            LOGGER.log(
-                    System.Logger.Level.INFO,
-                    "TornadoVM device: {0} ({1}) capabilities {2}",
-                    device.displayName(),
-                    device.id().backend(),
-                    device.capabilities());
-            var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
-            if (layers
-                    instanceof
-                    org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers q) {
+        try {
+            // Before compilation and the weight upload, so a plan that fails either still prints.
+            TaskGraphChainPrinter.printIfRequested(taskGraphChain(), model);
+            metrics.enableOn(executionPlan);
+            long planCreationTime = System.nanoTime();
+            if (ENABLE_TORNADOVM_INIT_TIME) {
+                // The device the plan was built for and the kernel families it was granted, then
+                // the batched-prefill path the layer builder actually chose from them; the same
+                // facts the tests read off the plan, reported where a user can see them.
+                var device = org.beehive.jitllm.backend.tornado.device.TornadoDevices.current();
                 LOGGER.log(
                         System.Logger.Level.INFO,
-                        "qwen35 batched prefill: {0}",
-                        q.describeDispatch());
+                        "TornadoVM device: {0} ({1}) capabilities {2}",
+                        device.displayName(),
+                        device.id().backend(),
+                        device.capabilities());
+                var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
+                if (layers
+                        instanceof
+                        org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers q) {
+                    LOGGER.log(
+                            System.Logger.Level.INFO,
+                            "qwen35 batched prefill: {0}",
+                            q.describeDispatch());
+                }
             }
+
+            if (CUDA_GRAPHS) {
+                executionPlan.withAllGraphs().withCUDAGraph();
+            }
+            // Large one-shot uploads (the weights, below) chunked through pinned staging buffers
+            // instead of pinning each whole segment: measured 2.6 s off a 14.3 s cold start of the
+            // 27B model on CUDA, steady-state throughput unchanged; a no-op on the other backends.
+            executionPlan.withStagedTransfers();
+            executionPlan.withPreCompilation();
+            long warmupTime = System.nanoTime();
+
+            org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(executionPlan, packedRepack);
+            forceCopyInReadOnlyData();
+            long copyTime = System.nanoTime();
+
+            RunMetrics.setTornadoMetrics(
+                    planCreationTime - startTime,
+                    warmupTime - planCreationTime,
+                    copyTime - warmupTime);
+            metrics.reportSetUp(
+                    planCreationTime - startTime,
+                    warmupTime - planCreationTime,
+                    copyTime - warmupTime);
+        } catch (RuntimeException | Error failure) {
+            // Nobody else holds this plan yet, so nobody else can free its device memory.
+            ExecutionPlanRelease.closeAfter(failure, executionPlan);
+            throw failure;
         }
-
-        if (CUDA_GRAPHS) {
-            executionPlan.withAllGraphs().withCUDAGraph();
-        }
-        // Large one-shot uploads (the weights, below) chunked through pinned staging buffers
-        // instead of pinning each whole segment: measured 2.6 s off a 14.3 s cold start of the
-        // 27B model on CUDA, steady-state throughput unchanged; a no-op on the other backends.
-        executionPlan.withStagedTransfers();
-        executionPlan.withPreCompilation();
-        long warmupTime = System.nanoTime();
-
-        org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(executionPlan, packedRepack);
-        forceCopyInReadOnlyData();
-        long copyTime = System.nanoTime();
-
-        RunMetrics.setTornadoMetrics(
-                planCreationTime - startTime, warmupTime - planCreationTime, copyTime - warmupTime);
-        metrics.reportSetUp(
-                planCreationTime - startTime, warmupTime - planCreationTime, copyTime - warmupTime);
     }
 
     // ── Plan construction ─────────────────────────────────────────────────────
