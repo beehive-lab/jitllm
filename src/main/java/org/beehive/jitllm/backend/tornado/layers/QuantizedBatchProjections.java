@@ -21,7 +21,7 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * The JIT batched-prefill projections of a layer whose weights stay in the file's own
  * representations: each weight's kernel and grid chosen from its type, on SIMD-group matrices
  * (Metal) or as tiled batch projections elsewhere. On SIMD-group matrices every weight type is
- * staged as FP16 ({@code ...HalfTiles} kernels, {@link
+ * staged as FP16 where the grid is large enough ({@code ...HalfTiles} kernels, {@link
  * TransformerBatchPrefillSimdgroupKernels#HALF_TILES_THREADS} threads). The batched counterpart of
  * {@link QuantizedProjections}; the tensor-core prefill decodes to FP16 instead ({@link
  * FP16Projections}).
@@ -88,8 +88,11 @@ public final class QuantizedBatchProjections {
             layer.task(
                     name,
                     simdgroup
-                            ? TransformerBatchPrefillSimdgroupKernels
-                                    ::batchedGemmQ8WithResidualHalfTiles
+                            ? (halfTiles(d, 64)
+                                    ? TransformerBatchPrefillSimdgroupKernels
+                                            ::batchedGemmQ8WithResidualHalfTiles
+                                    : TransformerBatchPrefillSimdgroupKernels
+                                            ::batchedGemmQ8WithResidual)
                             : tiledQ8
                                     ? TransformerBatchPrefillKernels::batchedGemmQ8WithResidual
                                     : TransformerBatchPrefillKernels::batchedMatVecWithResidualQ8,
@@ -101,9 +104,10 @@ public final class QuantizedBatchProjections {
                     d,
                     simdgroup || tiledQ8 ? batchSize : matVecLocal);
         } else if (simdgroup) {
+            boolean half = halfTiles(d, 64);
             layer.task(
                     name,
-                    residual
+                    half && residual
                             ? switch (type) {
                                 case Q4_0 ->
                                         TransformerBatchPrefillSimdgroupKernels
@@ -121,23 +125,59 @@ public final class QuantizedBatchProjections {
                                         TransformerBatchPrefillSimdgroupKernels
                                                 ::batchedGemmQ6_KWithResidualHalfTiles;
                             }
-                            : switch (type) {
-                                case Q4_0 ->
-                                        TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmQ4_0HalfTiles;
-                                case Q4_1 ->
-                                        TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmQ4_1HalfTiles;
-                                case Q4_K ->
-                                        TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmQ4_KHalfTiles;
-                                case Q5_K ->
-                                        TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmQ5_KHalfTiles;
-                                default ->
-                                        TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmQ6_KHalfTiles;
-                            },
+                            : half
+                                    ? switch (type) {
+                                        case Q4_0 ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmQ4_0HalfTiles;
+                                        case Q4_1 ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmQ4_1HalfTiles;
+                                        case Q4_K ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmQ4_KHalfTiles;
+                                        case Q5_K ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmQ5_KHalfTiles;
+                                        default ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmQ6_KHalfTiles;
+                                    }
+                                    : residual
+                                            ? switch (type) {
+                                                case Q4_0 ->
+                                                        TransformerBatchPrefillSimdgroupKernels
+                                                                ::batchedGemmQ4_0WithResidual;
+                                                case Q4_1 ->
+                                                        TransformerBatchPrefillSimdgroupKernels
+                                                                ::batchedGemmQ4_1WithResidual;
+                                                case Q4_K ->
+                                                        TransformerBatchPrefillSimdgroupKernels
+                                                                ::batchedGemmQ4_KWithResidual;
+                                                case Q5_K ->
+                                                        TransformerBatchPrefillSimdgroupKernels
+                                                                ::batchedGemmQ5_KWithResidual;
+                                                default ->
+                                                        TransformerBatchPrefillSimdgroupKernels
+                                                                ::batchedGemmQ6_KWithResidual;
+                                            }
+                                            : switch (type) {
+                                                case Q4_0 ->
+                                                        TransformerBatchPrefillSimdgroupKernels
+                                                                ::batchedGemmQ4_0;
+                                                case Q4_1 ->
+                                                        TransformerBatchPrefillSimdgroupKernels
+                                                                ::batchedGemmQ4_1;
+                                                case Q4_K ->
+                                                        TransformerBatchPrefillSimdgroupKernels
+                                                                ::batchedGemmQ4_K;
+                                                case Q5_K ->
+                                                        TransformerBatchPrefillSimdgroupKernels
+                                                                ::batchedGemmQ5_K;
+                                                default ->
+                                                        TransformerBatchPrefillSimdgroupKernels
+                                                                ::batchedGemmQ6_K;
+                                            },
                     context,
                     x,
                     out,
@@ -221,30 +261,51 @@ public final class QuantizedBatchProjections {
                     "batch_ffn_gate_up",
                     type == DataType.Q8_0
                             ? (simdgroup
-                                    ? TransformerBatchPrefillSimdgroupKernels
-                                            ::batchedGemmRmsNormFFNGateUpQ8HalfTiles
+                                    ? (halfTiles(hidDim, 32)
+                                            ? TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmRmsNormFFNGateUpQ8HalfTiles
+                                            : TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmRmsNormFFNGateUpQ8)
                                     : tiledQ8
                                             ? TransformerBatchPrefillKernels
                                                     ::batchedGemmRmsNormFFNGateUpQ8
                                             : TransformerBatchPrefillKernels
                                                     ::batchedFusedRmsNormFFNGateUpQ8)
-                            : switch (type) {
-                                case Q4_0 ->
-                                        TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmRmsNormFFNGateUpQ4_0HalfTiles;
-                                case Q4_1 ->
-                                        TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmRmsNormFFNGateUpQ4_1HalfTiles;
-                                case Q4_K ->
-                                        TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmRmsNormFFNGateUpQ4_KHalfTiles;
-                                case Q5_K ->
-                                        TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmRmsNormFFNGateUpQ5_KHalfTiles;
-                                default ->
-                                        TransformerBatchPrefillSimdgroupKernels
-                                                ::batchedGemmRmsNormFFNGateUpQ6_KHalfTiles;
-                            },
+                            : halfTiles(hidDim, 32)
+                                    ? switch (type) {
+                                        case Q4_0 ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpQ4_0HalfTiles;
+                                        case Q4_1 ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpQ4_1HalfTiles;
+                                        case Q4_K ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpQ4_KHalfTiles;
+                                        case Q5_K ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpQ5_KHalfTiles;
+                                        default ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpQ6_KHalfTiles;
+                                    }
+                                    : switch (type) {
+                                        case Q4_0 ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpQ4_0;
+                                        case Q4_1 ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpQ4_1;
+                                        case Q4_K ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpQ4_K;
+                                        case Q5_K ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpQ5_K;
+                                        default ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpQ6_K;
+                                    },
                     context,
                     ws.wrapXBatch,
                     ws.wrapHbBatch,
@@ -299,7 +360,7 @@ public final class QuantizedBatchProjections {
      * hidDim} outputs: 32 gate and 32 up rows per workgroup.
      */
     public WorkerGrid gateUpWorker(TornadoTensor w1, int hidDim) {
-        int threads = TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS;
+        int threads = TransformerBatchPrefillSimdgroupKernels.threads(halfTiles(hidDim, 32));
         return WorkerGridFactory.genericWorker(
                 ((hidDim + 31) / 32) * ((batchSize + 63) / 64) * threads, threads);
     }
@@ -310,14 +371,16 @@ public final class QuantizedBatchProjections {
         DataType type = w.dataType();
         if (type == DataType.Q8_0) {
             int gemmLocal =
-                    simdgroup ? TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS : 256;
+                    simdgroup
+                            ? TransformerBatchPrefillSimdgroupKernels.threads(halfTiles(rows, 64))
+                            : 256;
             return simdgroup || tiledQ8
                     ? WorkerGridFactory.genericWorker(
                             ((rows + 63) / 64) * batchTiles * gemmLocal, gemmLocal)
                     : WorkerGridFactory.genericWorker(batchSize * rows * matVecLocal, matVecLocal);
         }
         if (simdgroup) {
-            int threads = TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS;
+            int threads = TransformerBatchPrefillSimdgroupKernels.threads(halfTiles(rows, 64));
             return WorkerGridFactory.genericWorker(
                     ((rows + 63) / 64) * batchTiles * threads, threads);
         }
@@ -340,5 +403,15 @@ public final class QuantizedBatchProjections {
         int rowGroups = (batchSize + rowTile - 1) / rowTile;
         int colGroups = (rows + colTile - 1) / colTile;
         return WorkerGridFactory.genericWorker(rowGroups * colGroups * TILED_LOCAL, TILED_LOCAL);
+    }
+
+    /**
+     * Whether a SIMD-group GEMM to {@code outputs} outputs, {@code rowsPerTile} to a workgroup,
+     * runs a {@code ...HalfTiles} kernel; see {@link
+     * TransformerBatchPrefillSimdgroupKernels#halfTiles}.
+     */
+    private boolean halfTiles(int outputs, int rowsPerTile) {
+        return TransformerBatchPrefillSimdgroupKernels.halfTiles(
+                (outputs + rowsPerTile - 1) / rowsPerTile, batchSize);
     }
 }

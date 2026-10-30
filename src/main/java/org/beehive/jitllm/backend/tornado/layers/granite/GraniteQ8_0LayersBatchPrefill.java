@@ -256,7 +256,9 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
             } else {
                 layer.task(
                         "batch_qkv",
-                        TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8HalfTiles,
+                        halfTilesQkv()
+                                ? TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8HalfTiles
+                                : TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8,
                         context,
                         state.workspace.wrapXbBatch,
                         state.workspace.wrapQBatch,
@@ -340,8 +342,11 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
         } else {
             layer.task(
                     "batch_attn_out",
-                    TransformerBatchPrefillSimdgroupKernels
-                            ::batchedGemmQ8WithScaledResidualHalfTiles,
+                    halfTilesDim()
+                            ? TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmQ8WithScaledResidualHalfTiles
+                            : TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmQ8WithScaledResidual,
                     context,
                     state.workspace.wrapXbBatch,
                     state.workspace.wrapXBatch,
@@ -390,7 +395,11 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
         } else {
             layer.task(
                     "batch_ffn_gate_up",
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmRmsNormFFNGateUpQ8HalfTiles,
+                    halfTilesHid()
+                            ? TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmRmsNormFFNGateUpQ8HalfTiles
+                            : TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmRmsNormFFNGateUpQ8,
                     context,
                     state.workspace.wrapXBatch,
                     state.workspace.wrapHbBatch,
@@ -403,8 +412,11 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
                     batchSize);
             layer.task(
                     "batch_ffn_down",
-                    TransformerBatchPrefillSimdgroupKernels
-                            ::batchedGemmQ8WithScaledResidualHalfTiles,
+                    halfTilesDim()
+                            ? TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmQ8WithScaledResidualHalfTiles
+                            : TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmQ8WithScaledResidual,
                     context,
                     state.workspace.wrapHbBatch,
                     state.workspace.wrapXBatch,
@@ -570,7 +582,9 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
         int dim = config.dim();
         int kvDim = config.kvDim();
         int hidDim = config.hiddenDim();
-        int local = TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS;
+        int qkvLocal = TransformerBatchPrefillSimdgroupKernels.threads(halfTilesQkv());
+        int dimLocal = TransformerBatchPrefillSimdgroupKernels.threads(halfTilesDim());
+        int hidLocal = TransformerBatchPrefillSimdgroupKernels.threads(halfTilesHid());
         int tokenTiles = (batchSize + 63) / 64;
         WorkerGrid scaleWorker =
                 WorkerGridFactory.genericWorker(((batchSize * dim + 255) / 256) * 256, 256);
@@ -578,7 +592,7 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
         WorkerGrid rmsApplyWorker = WorkerGridFactory.genericWorker(batchSize * dim, 256);
         WorkerGrid qkvWorker =
                 WorkerGridFactory.genericWorker(
-                        ((dim + 2 * kvDim) / 64) * tokenTiles * local, local);
+                        ((dim + 2 * kvDim) / 64) * tokenTiles * qkvLocal, qkvLocal);
         int ropeGlobal = batchSize * (dim / 2);
         int ropeLocal = Math.min(512, ropeGlobal);
         while (ropeLocal > 1 && ropeGlobal % ropeLocal != 0) {
@@ -593,9 +607,11 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
                                 * TransformerPagedKvBatchPrefillSimdgroupKernels.THREADS,
                         TransformerPagedKvBatchPrefillSimdgroupKernels.THREADS);
         WorkerGrid dimWorker =
-                WorkerGridFactory.genericWorker(((dim + 63) / 64) * tokenTiles * local, local);
+                WorkerGridFactory.genericWorker(
+                        ((dim + 63) / 64) * tokenTiles * dimLocal, dimLocal);
         WorkerGrid hidWorker =
-                WorkerGridFactory.genericWorker(((hidDim + 31) / 32) * tokenTiles * local, local);
+                WorkerGridFactory.genericWorker(
+                        ((hidDim + 31) / 32) * tokenTiles * hidLocal, hidLocal);
         scheduler.addWorkerGrid("batchPrefillLayer_0.batch_embedding_scale", scaleWorker);
         for (int i = 0; i < config.numberOfLayers(); i++) {
             String p = GraphNames.batchPrefillLayer(i) + ".";
@@ -754,5 +770,26 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
         return useFp16KVCache()
                 ? state.workspace.wrapValueCacheFP16
                 : state.workspace.wrapValueCache;
+    }
+
+    /**
+     * Whether the Q8_0 q|k|v GEMM runs the {@code ...HalfTiles} kernel; see {@link
+     * TransformerBatchPrefillSimdgroupKernels#halfTiles}.
+     */
+    private boolean halfTilesQkv() {
+        return TransformerBatchPrefillSimdgroupKernels.halfTiles(
+                (config.dim() + 2 * config.kvDim()) / 64, batchSize);
+    }
+
+    /** Whether the Q8_0 projections into the model width run the {@code ...HalfTiles} kernels. */
+    private boolean halfTilesDim() {
+        return TransformerBatchPrefillSimdgroupKernels.halfTiles(
+                (config.dim() + 63) / 64, batchSize);
+    }
+
+    /** Whether the Q8_0 gate|up GEMM runs the {@code ...HalfTiles} kernel. */
+    private boolean halfTilesHid() {
+        return TransformerBatchPrefillSimdgroupKernels.halfTiles(
+                (config.hiddenDim() + 31) / 32, batchSize);
     }
 }

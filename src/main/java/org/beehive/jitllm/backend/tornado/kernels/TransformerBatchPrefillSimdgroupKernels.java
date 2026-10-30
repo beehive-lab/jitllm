@@ -46,6 +46,28 @@ public final class TransformerBatchPrefillSimdgroupKernels {
     /** Threads per workgroup of the {@code ...HalfTiles} GEMMs. */
     public static final int HALF_TILES_THREADS = 128;
 
+    /**
+     * Fewest workgroups at which a {@code ...HalfTiles} GEMM beats the FP32-tile one ({@value
+     * #THREADS} threads): with fewer, its half-size workgroups leave the GPU short of threads. On
+     * an M4 Pro (20 GPU cores) a 1024-output residual GEMM crosses over between 192 and 256 tokens
+     * and a 2048-output one between 64 and 96, both near 64 workgroups.
+     */
+    public static final int HALF_TILES_MIN_GROUPS = 64;
+
+    /**
+     * Whether a GEMM with {@code rowTiles} workgroups along its outputs (64 rows each, 32 for a
+     * gate|up pair) and 64 tokens per workgroup along {@code batch} runs a {@code ...HalfTiles}
+     * kernel.
+     */
+    public static boolean halfTiles(int rowTiles, int batch) {
+        return rowTiles * ((batch + 63) / 64) >= HALF_TILES_MIN_GROUPS;
+    }
+
+    /** The threads per workgroup of a GEMM that {@link #halfTiles} or not. */
+    public static int threads(boolean halfTiles) {
+        return halfTiles ? HALF_TILES_THREADS : THREADS;
+    }
+
     private TransformerBatchPrefillSimdgroupKernels() {}
 
     // @formatter:off

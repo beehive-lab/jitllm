@@ -646,8 +646,11 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     "batch_qkv",
                     tiledQkv()
                             ? (simdgroupGemm()
-                                    ? TransformerBatchPrefillSimdgroupKernels
-                                            ::batchedGemmQKVQ8HalfTiles
+                                    ? (halfTilesQkv()
+                                            ? TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmQKVQ8HalfTiles
+                                            : TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmQKVQ8)
                                     : TransformerBatchPrefillKernels::batchedGemmQKVQ8)
                             : Qwen3Kernels::batchedFusedQKVMatmulQ8_0,
                     context,
@@ -684,8 +687,11 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     "batch_attn_out",
                     tiledGemm()
                             ? (simdgroupGemm()
-                                    ? TransformerBatchPrefillSimdgroupKernels
-                                            ::batchedGemmQ8WithResidualHalfTiles
+                                    ? (halfTilesDim()
+                                            ? TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmQ8WithResidualHalfTiles
+                                            : TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmQ8WithResidual)
                                     : TransformerBatchPrefillKernels::batchedGemmQ8WithResidual)
                             : TransformerBatchPrefillKernels::batchedMatVecWithResidualQ8,
                     context,
@@ -724,8 +730,11 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     "batch_ffn_gate_up",
                     tiledGemm()
                             ? (simdgroupGemm()
-                                    ? TransformerBatchPrefillSimdgroupKernels
-                                            ::batchedGemmRmsNormFFNGateUpQ8HalfTiles
+                                    ? (halfTilesHid()
+                                            ? TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmRmsNormFFNGateUpQ8HalfTiles
+                                            : TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmRmsNormFFNGateUpQ8)
                                     : TransformerBatchPrefillKernels::batchedGemmRmsNormFFNGateUpQ8)
                             : TransformerBatchPrefillKernels::batchedFusedRmsNormFFNGateUpQ8,
                     context,
@@ -761,8 +770,11 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     "batch_ffn_down",
                     tiledGemm()
                             ? (simdgroupGemm()
-                                    ? TransformerBatchPrefillSimdgroupKernels
-                                            ::batchedGemmQ8WithResidualHalfTiles
+                                    ? (halfTilesDim()
+                                            ? TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmQ8WithResidualHalfTiles
+                                            : TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmQ8WithResidual)
                                     : TransformerBatchPrefillKernels::batchedGemmQ8WithResidual)
                             : TransformerBatchPrefillKernels::batchedMatVecWithResidualQ8,
                     context,
@@ -788,19 +800,29 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                 WorkerGridFactory.genericWorker(
                         batchSize * qkvRows * LOCAL_WORK_GROUP_SIZE, LOCAL_WORK_GROUP_SIZE);
 
-        int gemmLocal =
-                simdgroupGemm() ? TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS : 256;
+        int dimLocal =
+                simdgroupGemm()
+                        ? TransformerBatchPrefillSimdgroupKernels.threads(halfTilesDim())
+                        : 256;
+        int hidLocal =
+                simdgroupGemm()
+                        ? TransformerBatchPrefillSimdgroupKernels.threads(halfTilesHid())
+                        : 256;
+        int qkvLocal =
+                simdgroupGemm()
+                        ? TransformerBatchPrefillSimdgroupKernels.threads(halfTilesQkv())
+                        : 256;
         int hidTile = simdgroupGemm() ? 32 : 64;
         WorkerGrid gemmDimWorker =
                 WorkerGridFactory.genericWorker(
-                        ((dim + 63) / 64) * ((batchSize + 63) / 64) * gemmLocal, gemmLocal);
+                        ((dim + 63) / 64) * ((batchSize + 63) / 64) * dimLocal, dimLocal);
         WorkerGrid gemmHidWorker =
                 WorkerGridFactory.genericWorker(
-                        ((hidDim + hidTile - 1) / hidTile) * ((batchSize + 63) / 64) * gemmLocal,
-                        gemmLocal);
+                        ((hidDim + hidTile - 1) / hidTile) * ((batchSize + 63) / 64) * hidLocal,
+                        hidLocal);
         WorkerGrid gemmQkvWorker =
                 WorkerGridFactory.genericWorker(
-                        ((qDim + 2 * kvDim) / 64) * ((batchSize + 63) / 64) * gemmLocal, gemmLocal);
+                        ((qDim + 2 * kvDim) / 64) * ((batchSize + 63) / 64) * qkvLocal, qkvLocal);
         WorkerGrid matVecDimWorker =
                 WorkerGridFactory.genericWorker(
                         batchSize * dim * LOCAL_WORK_GROUP_SIZE, LOCAL_WORK_GROUP_SIZE);
@@ -977,5 +999,26 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         return useFp16KVCache()
                 ? BatchPrefillGemmPolicy.simdgroupAttention(nEmbdHead)
                 : laneAttention() && BatchPrefillGemmPolicy.simdgroupAttention();
+    }
+
+    /**
+     * Whether the Q8_0 q|k|v GEMM runs the {@code ...HalfTiles} kernel; see {@link
+     * TransformerBatchPrefillSimdgroupKernels#halfTiles}.
+     */
+    private boolean halfTilesQkv() {
+        return TransformerBatchPrefillSimdgroupKernels.halfTiles(
+                (qDim + 2 * kvDim) / 64, batchSize);
+    }
+
+    /** Whether the Q8_0 projections into the model width run the {@code ...HalfTiles} kernels. */
+    private boolean halfTilesDim() {
+        return TransformerBatchPrefillSimdgroupKernels.halfTiles(
+                (config.dim() + 63) / 64, batchSize);
+    }
+
+    /** Whether the Q8_0 gate|up GEMM runs the {@code ...HalfTiles} kernel. */
+    private boolean halfTilesHid() {
+        return TransformerBatchPrefillSimdgroupKernels.halfTiles(
+                (config.hiddenDim() + 31) / 32, batchSize);
     }
 }
