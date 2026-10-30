@@ -197,6 +197,17 @@ public class NativeLibrarySupportTest {
                                 false));
             }
         }
+        for (DataType weights : new DataType[] {DataType.Q8_0, DataType.Q4_0}) {
+            assertEquals(
+                    "qwen35 " + weights + " has an MLX path for its projections",
+                    Optional.empty(),
+                    check(
+                            "qwen35",
+                            weights,
+                            ExecutionMode.BATCH_PREFILL_DECODE,
+                            BackendId.METAL,
+                            false));
+        }
         assertEquals(
                 "gemma4 Q8_0 has an MLX path for its projections",
                 Optional.empty(),
@@ -231,6 +242,15 @@ public class NativeLibrarySupportTest {
             assertTrue(family + " Q4_0", reason.isPresent());
             assertTrue(reason.get(), reason.get().contains("on metal"));
         }
+        assertTrue(
+                "qwen35 F16",
+                check(
+                                "qwen35",
+                                DataType.F16,
+                                ExecutionMode.BATCH_PREFILL_DECODE,
+                                BackendId.METAL,
+                                false)
+                        .isPresent());
         for (DataType weights : new DataType[] {DataType.F16, DataType.Q4_0}) {
             assertTrue(
                     "gemma4 " + weights,
@@ -242,7 +262,7 @@ public class NativeLibrarySupportTest {
                                     false)
                             .isPresent());
         }
-        for (String family : new String[] {"devstral", "qwen35", "qwen2-moe"}) {
+        for (String family : new String[] {"devstral", "qwen2-moe"}) {
             for (DataType weights : new DataType[] {DataType.F16, DataType.Q8_0, DataType.Q4_0}) {
                 assertTrue(
                         family + " " + weights,

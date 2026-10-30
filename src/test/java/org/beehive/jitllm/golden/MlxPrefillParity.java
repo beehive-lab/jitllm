@@ -63,6 +63,21 @@ abstract class MlxPrefillParity extends CpuGpuParity {
     }
 
     void assertMlxParity(Fixture fixture, Bounds bounds, Weights weights) throws Exception {
+        assertMlxParity(width -> assertParityBatched(fixture, bounds, width), weights);
+    }
+
+    /** {@link #assertMlxParity(Fixture, Bounds, Weights)} for a model file found by name. */
+    void assertMlxParity(java.nio.file.Path model, String label, Bounds bounds, Weights weights)
+            throws Exception {
+        assertMlxParity(width -> assertParityBatched(model, label, bounds, width), weights);
+    }
+
+    /** A batched parity run at a chunk width. */
+    interface BatchedParity {
+        GoldenCapture.Result run(int width) throws Exception;
+    }
+
+    private void assertMlxParity(BatchedParity parity, Weights weights) throws Exception {
         assumeTrue(
                 "the MLX prefill runs on Metal only",
                 BackendId.METAL.equals(TornadoDevices.current().backend()));
@@ -74,9 +89,7 @@ abstract class MlxPrefillParity extends CpuGpuParity {
             System.setProperty(ExecutionPolicy.DECODED_PROJECTIONS_PROPERTY, weights.property);
         }
         try {
-            GoldenCapture.Result gpu =
-                    assertParityBatched(
-                            fixture, bounds, weights == Weights.AFFINE ? AFFINE_WIDTH : WIDTH);
+            GoldenCapture.Result gpu = parity.run(weights == Weights.AFFINE ? AFFINE_WIDTH : WIDTH);
             assertTrue(
                     "the plan did not record its dispatch, so it cannot show it ran MLX",
                     gpu.gridScheduler != null);

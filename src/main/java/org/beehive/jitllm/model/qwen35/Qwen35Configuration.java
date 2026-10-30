@@ -346,4 +346,28 @@ public record Qwen35Configuration(
     public static boolean dequantGemmWidth(int batchSize) {
         return batchSize > 0 && batchSize % DEQUANT_GEMM_ROWS == 0;
     }
+
+    /**
+     * Counted by layer kind: an attention layer projects query and gate, key, value and output; a
+     * delta-net layer its convolution input, output gate, beta, alpha and readout. Every layer has
+     * the dense gate, up and down projections.
+     */
+    @Override
+    public long projectionWeights() {
+        long dim = dim();
+        long total = 0;
+        for (int l = 0; l < numberOfLayers(); l++) {
+            if (isRecurrentLayer(l)) {
+                total +=
+                        dim * (deltaNetConvDim() + deltaNetValueDim() + 2L * numberOfValueHeads())
+                                + (long) deltaNetValueDim() * dim;
+            } else {
+                total +=
+                        dim * (queryGateDim() + 2L * kvDim())
+                                + (long) attentionOutputInputDim() * dim;
+            }
+            total += 3L * dim * hiddenDim();
+        }
+        return total;
+    }
 }

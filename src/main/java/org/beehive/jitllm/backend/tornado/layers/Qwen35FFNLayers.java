@@ -1931,7 +1931,17 @@ public class Qwen35FFNLayers
             tensors.add(require(weights.attnKNorm, layerIndex, "attn_k_norm").asFloatArray());
         }
         String source = weightSourceGraphName(layerIndex);
-        if (source != null) {
+        if (source != null && mlxPrefill()) {
+            // The batched prefill multiplies MLX's own form of the projections and binds none of
+            // these; the norms and the recurrence's small tensors it still reads.
+            List<Object> consumed = new ArrayList<>();
+            List<Object> uploaded = new ArrayList<>();
+            for (Object t : tensors) {
+                (t instanceof TornadoTensor ? uploaded : consumed).add(t);
+            }
+            layer.consumeFromDevice(source, consumed.toArray());
+            state.workspace.packedRepack.upload(layer, uploaded.toArray());
+        } else if (source != null) {
             layer.consumeFromDevice(
                     source,
                     org.beehive.jitllm.backend.tornado.plan.PackedRepack.deviceArrays(
@@ -1939,6 +1949,13 @@ public class Qwen35FFNLayers
         } else {
             state.workspace.packedRepack.upload(layer, tensors.toArray());
         }
+    }
+
+    /** Whether the batched prefill these layers follow runs its projections on MLX. */
+    private boolean mlxPrefill() {
+        return feedForward == null
+                && Qwen35MlxPrefill.replacesProjections(
+                        qwen35State.executionPolicy(), weights.dataType(), config);
     }
 
     /** A tensor's device array, in whatever representation it is retained in. */
