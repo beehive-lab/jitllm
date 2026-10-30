@@ -1,7 +1,9 @@
 package org.beehive.jitllm.backend.tornado.plan.components.activation;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
+import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
@@ -46,10 +48,9 @@ public class Gemma4BatchDecodeActivation implements ActivationTaskGraph {
 
     // @formatter:off
     /**
-     * The conversion comes from the embedding tensor's own representation, as {@link
-     * org.beehive.jitllm.backend.tornado.layers.Activation} takes it, and not from the model's. A
-     * mixed file holds them apart — staging 18-byte blocks to be read as 34-byte ones is a
-     * plausible activation and wrong output.
+     * The conversion comes from the embedding tensor's own representation, as {@link Activation}
+     * takes it, and not from the model's. A mixed file holds them apart — staging 18-byte blocks to
+     * be read as 34-byte ones is a plausible activation and wrong output.
      */
     // @formatter:on
     private TaskGraph buildGraph(
@@ -57,11 +58,18 @@ public class Gemma4BatchDecodeActivation implements ActivationTaskGraph {
         DataType embedding =
                 weights instanceof TornadoWeights t ? t.getTokenEmbeddingTable().dataType() : null;
         TaskGraph tg =
-                new TaskGraph("decodeActivation")
+                new TaskGraph(GraphNames.DECODE_ACTIVATION)
                         .consumeFromDevice(lastBatchLayerId, keyCache(state), valueCache(state))
                         .transferToDevice(
                                 DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX);
         switch (embedding) {
+            case Q4_1, Q4_K, Q5_K, Q6_K ->
+                    tg.task(
+                            "updateX",
+                            Activation.embeddingRowDecode(embedding),
+                            ctx,
+                            (ByteArray) state.workspace.embeddingX,
+                            state.workspace.wrapX);
             case Q4_0 ->
                     tg.task(
                             "updateX",

@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
@@ -12,6 +13,7 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
@@ -50,26 +52,9 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
      */
     private boolean deviceSample() {
         return state.executionPolicy().samplingResidency()
-                == org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency.DEVICE;
+                == ExecutionPolicy.SamplingResidency.DEVICE;
     }
 
-    /**
-     * Vocabulary-projection reduction strategy: 32-lane subgroup shuffle where verified correct
-     * (Metal), shared-memory reduction elsewhere — the same selection {@code
-     * LlamaFP16FFNLayers.useSimd32Reduction} already uses for the per-layer QKV/residual/ FFN
-     * kernels, on the same {@code DeviceCapability.SUBGROUP_SHUFFLE_32} (Metal parity task 6
-     * follow-up: {@code matrixVectorGenericSimd32} is the vocabulary-shaped sibling, isolated and
-     * verified separately — see the accompanying review document).
-     *
-     * <p><b>Not cached in a field, deliberately.</b> {@link AbstractLogitsTaskGraph}'s constructor
-     * calls {@link #setupLogitsTaskGraph} — the overridden hook that reads this — through {@code
-     * super(.)}, which runs before this subclass's own field initializers do. A {@code private
-     * final boolean} field here would still hold its default {@code false} at that point, silently
-     * selecting the generic kernel even on Metal (caught by {@code
-     * MatrixVectorGenericSimd32AccelTest}'s sibling gate failing to reproduce the selection a full
-     * model run showed). Calling the (cheap, cached-inside) query directly at each use site avoids
-     * the ordering hazard entirely.
-     */
     // @formatter:off
     /**
      * Set by {@link #setupLogitsTaskGraph} when it installs the shuffle-reducing vocabulary kernel,
@@ -93,6 +78,23 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
     // @formatter:on
     private boolean vocabularyProjectionReducesWithShuffle;
 
+    /**
+     * Vocabulary-projection reduction strategy: 32-lane subgroup shuffle where verified correct
+     * (Metal), shared-memory reduction elsewhere — the same selection {@code
+     * LlamaFP16FFNLayers.useSimd32Reduction} already uses for the per-layer QKV/residual/ FFN
+     * kernels, on the same {@code DeviceCapability.SUBGROUP_SHUFFLE_32} (Metal parity task 6
+     * follow-up: {@code matrixVectorGenericSimd32} is the vocabulary-shaped sibling, isolated and
+     * verified separately — see the accompanying review document).
+     *
+     * <p><b>Not cached in a field, deliberately.</b> {@link AbstractLogitsTaskGraph}'s constructor
+     * calls {@link #setupLogitsTaskGraph} — the overridden hook that reads this — through {@code
+     * super(.)}, which runs before this subclass's own field initializers do. A {@code private
+     * final boolean} field here would still hold its default {@code false} at that point, silently
+     * selecting the generic kernel even on Metal (caught by {@code
+     * MatrixVectorGenericSimd32AccelTest}'s sibling gate failing to reproduce the selection a full
+     * model run showed). Calling the (cheap, cached-inside) query directly at each use site avoids
+     * the ordering hazard entirely.
+     */
     private static boolean useSimd32Reduction() {
         return SchedulerDetectionService.isSubgroupShuffle32Supported()
                 // The decode-shaped preference. This class is shared, so the preference reaches
@@ -102,13 +104,12 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
     }
 
     public LogitsFP16Layer(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config, lastTaskGraphID, schedulerType);
+        super(state, weights, config, lastTaskGraphID, schedulerType);
     }
 
     /**
@@ -127,7 +128,7 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
     // @formatter:off
     @Override
     protected TaskGraph setupLogitsTaskGraph(TornadoWeights weights, Configuration config) {
-        var logits = new TaskGraph("logits");
+        var logits = new TaskGraph(GraphNames.LOGITS);
         // === Data Setup ===
         configureAdditionalConsumes(logits);
         logits.consumeFromDevice(lastTaskGraphID, state.workspace.wrapX);

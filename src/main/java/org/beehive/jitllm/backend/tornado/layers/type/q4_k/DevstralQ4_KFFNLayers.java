@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.layers.devstral.DevstralLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
@@ -42,19 +43,18 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
 
     public DevstralQ4_KFFNLayers(
-            String taskGraphName,
             State state,
             LlamaTornadoWeights weights,
             DevstralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         setupFFNLayers();
     }
 
     // @formatter:off
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        var layerTaskGraphName = "layer_" + layerIndex;
+        var layerTaskGraphName = GraphNames.layer(layerIndex);
         TaskGraph unifiedLayer = new TaskGraph(layerTaskGraphName);
 
         String wrapXSrc = predecessorGraphName(layerIndex);
@@ -355,7 +355,7 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
         WorkerGrid siluWorker = WorkerGridFactory.genericWorker(config.hiddenDim(), 256);
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String l = "layer_" + i + ".";
+            String l = GraphNames.layer(i) + ".";
             tornadoForwardScheduler.addWorkerGrid(l + "attn_rms_apply", rmsApplyWorker);
             tornadoForwardScheduler.addWorkerGrid(l + "q_proj", qProjWorker);
             tornadoForwardScheduler.addWorkerGrid(l + "k_proj", kvProjWorker);

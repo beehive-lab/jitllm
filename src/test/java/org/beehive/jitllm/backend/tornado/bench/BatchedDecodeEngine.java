@@ -329,7 +329,13 @@ public class BatchedDecodeEngine {
         ImmutableTaskGraph logitsItg = logitsTg.snapshot();
 
         // ── Grid scheduler ──────────────────────────────────────────────────────
+        // Initialization, when the session uses weight prepacking: built after the layer graphs
+        // that
+        // register its weights, but listed first; the inference graphs follow it.
+        var prepacking = state.workspace.prepacker.buildTaskGraphs();
+
         GridScheduler gs = new GridScheduler();
+        prepacking.updateGridScheduler(gs);
         activation.updateGridScheduler(gs);
         updateLayerSched.accept(gs);
         gs.addWorkerGrid("batchLogits.rms_reduce", genericWorker(B * RMS_LOCAL, RMS_LOCAL));
@@ -340,19 +346,20 @@ public class BatchedDecodeEngine {
         }
 
         List<ImmutableTaskGraph> all = new ArrayList<>();
+        all.addAll(prepacking.getImmutableTaskGraphs());
         all.add(activation.getImmutableTaskGraph());
         all.addAll(layerITGs);
         all.add(logitsItg);
+        int activationIdx = prepacking.graphCount();
         int nLayers = layerITGs.size();
-        int logitsIdx = 1 + nLayers;
+        int logitsIdx = activationIdx + 1 + nLayers;
 
         MemorySegment embTable = weights.getTokenEmbeddingTable().asHalfFloatArray().getSegment();
         long dimBytes = (long) dim * Short.BYTES;
 
-        var packedRepack = state.workspace.packedRepack.appendGraphs(all, gs);
         try (TornadoExecutionPlan plan =
                 new TornadoExecutionPlan(all.toArray(new ImmutableTaskGraph[0]))) {
-            org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(plan, packedRepack);
+            prepacking.run(plan, gs);
 
             if (options.continuous()) {
                 return runContinuous(
@@ -820,9 +827,12 @@ public class BatchedDecodeEngine {
             int logitsIdx,
             boolean needLogits,
             boolean cudaGraphs) {
-        execGraph(plan, gs, 0, cudaGraphs);
+        // The activation and the layers sit right before the logits; prepacking graphs, if any,
+        // before them.
+        int activationIdx = logitsIdx - nLayers - 1;
+        execGraph(plan, gs, activationIdx, cudaGraphs);
         for (int l = 0; l < nLayers; l++) {
-            execGraph(plan, gs, 1 + l, cudaGraphs);
+            execGraph(plan, gs, activationIdx + 1 + l, cudaGraphs);
         }
         if (needLogits) {
             execGraph(plan, gs, logitsIdx, cudaGraphs);

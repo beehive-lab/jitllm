@@ -5,6 +5,8 @@ import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.Qwen3FP16LayersBatchPrefillMMA;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
@@ -25,10 +27,9 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * Qwen3 batched-DECODE transformer-layer TaskGraphs: B independent sequences, each with its own KV
  * region and position.
  *
- * <p>Structurally identical to {@link
- * org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.Qwen3FP16LayersBatchPrefillMMA}
- * (13-task MMA pipeline including the Qwen3 per-head Q/K RMS norm). Swaps the two KV-addressing
- * kernels for the per-slot decode variants over a B-sized KV cache:
+ * <p>Structurally identical to {@link Qwen3FP16LayersBatchPrefillMMA} (13-task MMA pipeline
+ * including the Qwen3 per-head Q/K RMS norm). Swaps the two KV-addressing kernels for the per-slot
+ * decode variants over a B-sized KV cache:
  *
  * <ul>
  *   <li>{@code batch_rope_kv} → {@link Qwen3Kernels#batchedDecodeRopeWithKVCacheQwen3Packed}
@@ -138,7 +139,7 @@ public class Qwen3FP16LayersBatchDecodeMMA implements BatchDecodeLayers {
 
     // @formatter:off
     private TaskGraph createLayerTaskGraph(int layerIndex) {
-        String graphName = "batchDecodeLayer_" + layerIndex;
+        String graphName = GraphNames.batchDecodeLayer(layerIndex);
         if (layerIndex == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
 
         TaskGraph g = new TaskGraph(graphName);
@@ -165,9 +166,9 @@ public class Qwen3FP16LayersBatchDecodeMMA implements BatchDecodeLayers {
                     state.workspace.woOut,
                     state.workspace.wrapHbFP16Batch,
                     state.workspace.w2Out);
-            g.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            g.consumeFromDevice(GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
         } else {
-            String pred = "batchDecodeLayer_" + (layerIndex - 1);
+            String pred = GraphNames.batchDecodeLayer(layerIndex - 1);
             if (paged) {
                 g.consumeFromDevice(pred, context, blockTable);
             }
@@ -486,7 +487,7 @@ public class Qwen3FP16LayersBatchDecodeMMA implements BatchDecodeLayers {
         WorkerGrid ewHidWorker = elementwiseGrid(batchSize * hidDim);
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String p = "batchDecodeLayer_" + i + ".";
+            String p = GraphNames.batchDecodeLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApplyWorker);
             scheduler.addWorkerGrid(p + "qkvProj", mmaQkvWorker);

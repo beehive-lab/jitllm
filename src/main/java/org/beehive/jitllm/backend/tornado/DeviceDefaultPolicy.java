@@ -67,10 +67,7 @@ public final class DeviceDefaultPolicy {
     private static java.util.Optional<String> refusal(
             Model model, ExecutionPolicy policy, StorageOptions storage) {
         try {
-            PlanSupport.require(model, policy, true);
-            Fp16KeyValueSupport.require(model, policy, storage, true);
-            NativeLibrarySupport.require(model, policy, true);
-            BatchPrefillSupport.require(model, policy, true);
+            PlanSupport.require(model, policy, storage, true);
             return java.util.Optional.empty();
         } catch (UnsupportedOperationException | IllegalArgumentException refused) {
             // The FP16 cache check refuses with IllegalArgumentException, the others with

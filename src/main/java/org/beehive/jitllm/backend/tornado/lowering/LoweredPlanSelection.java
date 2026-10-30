@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado.lowering;
 
 import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
@@ -14,6 +15,7 @@ import org.beehive.jitllm.runtime.backend.CompileOptions;
 import org.beehive.jitllm.runtime.backend.DeviceCapabilities;
 import org.beehive.jitllm.runtime.backend.DeviceCapability;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy.SamplingResidency;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -144,9 +146,7 @@ public final class LoweredPlanSelection {
      *     comes with it, over-counting a reservation rather than missing one
      */
     public static boolean mayHandle(
-            org.beehive.jitllm.runtime.model.ArchitectureId architecture,
-            DataType weightType,
-            ExecutionPolicy policy) {
+            ArchitectureId architecture, DataType weightType, ExecutionPolicy policy) {
         return switch (mode()) {
             case OFF -> false;
             case ON -> true;
@@ -257,8 +257,9 @@ public final class LoweredPlanSelection {
     /**
      * How this model's weights are represented <b>on the device</b>.
      *
-     * <p>Not what the file held: a Q4_0 or K-quant file is materialized as {@link DataType#Q8_0},
-     * and it is the materialized form the task graphs are built for and the signature must carry.
+     * <p>Not every tensor's: a model reports one representation (its projections') while it holds
+     * several, each kept as the file stores it, and it is the reported one the task graphs are
+     * selected by and the signature must carry.
      */
     private static DataType weightRepresentation(Model model) {
         return model.weights().dataType();
@@ -270,7 +271,7 @@ public final class LoweredPlanSelection {
             BindingDomain domain,
             ExecutionPolicy policy,
             DataType keyValueRepresentation) {
-        var device = org.beehive.jitllm.backend.tornado.device.TornadoDevices.current();
+        var device = TornadoDevices.current();
         return ProgramCacheKey.of(
                 describe(model, policy, keyValueRepresentation).signature(),
                 device.backend(),
@@ -368,6 +369,6 @@ public final class LoweredPlanSelection {
      * silently invalidate nothing while keying everything differently.
      */
     private static String deviceLabel() {
-        return org.beehive.jitllm.backend.tornado.device.TornadoDevices.current().displayName();
+        return TornadoDevices.current().displayName();
     }
 }

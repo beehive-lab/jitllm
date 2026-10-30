@@ -1,18 +1,24 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 
+import org.beehive.jitllm.backend.tornado.kernels.Phi3Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Phi3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
+import org.beehive.jitllm.backend.tornado.layers.QuantizedProjections;
+import org.beehive.jitllm.backend.tornado.layers.phi3.Phi3MlxLayerWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Phi3State;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.Phi3TornadoWeights;
 import org.beehive.jitllm.model.phi3.Phi3Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
@@ -37,14 +43,16 @@ public class Phi3Q8_0FFNLayers
     private final int opSize;
 
     public Phi3Q8_0FFNLayers(
-            String taskGraphName,
             Phi3State state,
             Phi3TornadoWeights weights,
             Phi3Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.phi3State = state;
         this.opSize = config.dim() + 2 * (config.numberOfKeyValueHeads() * config.headSize());
+        this.projections =
+                new QuantizedProjections(
+                        context, state.workspace, LOCAL_WORK_GROUP_SIZE_ALLOC, PACKED_LOCAL);
         setupFFNLayers();
     }
 
@@ -77,7 +85,9 @@ public class Phi3Q8_0FFNLayers
         for (int i = 0; i < config.numberOfLayers(); i++) {
             String l = layerGraphName(i) + "." + layerTaskPrefix(i);
             tornadoForwardScheduler.addWorkerGrid(l + "attn_rms_reduce", rmsReduceWorker);
-            if (packed) {
+            if (nativeLayer(i)) {
+                addNativeWorkerGrids(tornadoForwardScheduler, l, opSize);
+            } else if (packed) {
                 tornadoForwardScheduler.addWorkerGrid(
                         l + "attn_rms_apply", PackedActivationTasks.quantizeWorker(config.dim()));
                 tornadoForwardScheduler.addWorkerGrid(
@@ -239,7 +249,31 @@ public class Phi3Q8_0FFNLayers
                     config.rmsNormEps());
         }
 
-        if (packed) {
+        if (nativeLayer(layerIndex)) {
+            projections.rmsApply(
+                    unifiedLayer,
+                    tp + "attn_rms_apply",
+                    weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                    phi3State.workspace.temp);
+            // The fused [q | k | v] weight in its own representation, then split.
+            projections.matvec(
+                    unifiedLayer,
+                    tp + "qkv_projection",
+                    phi3State.workspace.wrapQkv,
+                    weights.wqkvLayered[layerIndex],
+                    config.dim(),
+                    opSize);
+            unifiedLayer.task(
+                    tp + "qkv_split",
+                    Phi3Kernels::splitQKV,
+                    context,
+                    phi3State.workspace.wrapQkv,
+                    phi3State.workspace.wrapQ,
+                    phi3State.workspace.wrapK,
+                    phi3State.workspace.wrapV,
+                    config.dim(),
+                    config.kvDim());
+        } else if (packed) {
             // Packed integer dot products over the activation quantized once to Q8 blocks.
             PackedActivationTasks.rmsApplyAndQuantize(
                     unifiedLayer,
@@ -389,7 +423,16 @@ public class Phi3Q8_0FFNLayers
         }
 
         // Output Projection with Residual
-        if (packed) {
+        if (nativeLayer(layerIndex)) {
+            projections.residualMatvec(
+                    unifiedLayer,
+                    tp + "attn_out_quantize",
+                    tp + "attn_output_proj",
+                    phi3State.workspace.wrapXb,
+                    weights.woLayered[layerIndex],
+                    config.dim(),
+                    config.dim());
+        } else if (packed) {
             // The attention output is a new activation: quantized fresh for the projection.
             PackedActivationTasks.quantize(
                     unifiedLayer,
@@ -447,7 +490,36 @@ public class Phi3Q8_0FFNLayers
                     config.rmsNormEps()); // epsilon
         }
 
-        if (packed) {
+        if (nativeLayer(layerIndex)) {
+            projections.rmsApply(
+                    unifiedLayer,
+                    tp + "ffn_rms_apply",
+                    weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                    phi3State.workspace.tempFFN);
+            // The fused [gate | up] weight in its own representation, then SwiGLU.
+            projections.matvec(
+                    unifiedLayer,
+                    tp + "ffn_gate_up",
+                    phi3State.workspace.wrapHb,
+                    weights.wUpLayered[layerIndex],
+                    config.dim(),
+                    2 * config.hiddenDim());
+            unifiedLayer.task(
+                    tp + "ffn_silu",
+                    Phi3Kernels::siluGateUp,
+                    context,
+                    phi3State.workspace.wrapHb,
+                    phi3State.workspace.wrapHbU,
+                    config.hiddenDim());
+            projections.residualMatvec(
+                    unifiedLayer,
+                    tp + "ffn_down_quantize",
+                    tp + "ffn_down_proj",
+                    phi3State.workspace.wrapHbU,
+                    weights.wDownLayered[layerIndex],
+                    config.hiddenDim(),
+                    config.dim());
+        } else if (packed) {
             PackedActivationTasks.rmsApplyAndQuantize(
                     unifiedLayer,
                     tp + "ffn_rms_apply",
@@ -529,6 +601,53 @@ public class Phi3Q8_0FFNLayers
 
     /** Lanes per output row of the packed projections: a multiple of 32. */
     private static final int PACKED_LOCAL = 64;
+
+    /** The per-weight projections of a layer that is not entirely Q8_0. */
+    private final QuantizedProjections projections;
+
+    /**
+     * Whether a layer holds any projection in a representation other than Q8_0, as a K-quant file's
+     * do. Such a layer applies each norm once and projects one fused weight at a time, each through
+     * the kernel for its own type ({@link QuantizedProjections}), then splits Q, K and V and
+     * applies SwiGLU; an all-Q8_0 layer keeps its fused kernels.
+     */
+    private boolean nativeLayer(int layerIndex) {
+        for (TornadoTensor w :
+                new TornadoTensor[] {
+                    weights.wqkvLayered[layerIndex],
+                    weights.woLayered[layerIndex],
+                    weights.wUpLayered[layerIndex],
+                    weights.wDownLayered[layerIndex]
+                }) {
+            if (w.dataType() != DataType.Q8_0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The grids of a layer that projects one weight at a time: one workgroup per output row. */
+    private void addNativeWorkerGrids(GridScheduler scheduler, String l, int opSize) {
+        WorkerGrid rmsApplyWorker = projections.rmsApplyWorker(config.dim());
+        scheduler.addWorkerGrid(l + "attn_rms_apply", rmsApplyWorker);
+        scheduler.addWorkerGrid(l + "qkv_projection", projections.worker(opSize));
+        scheduler.addWorkerGrid(
+                l + "qkv_split", WorkerGridFactory.genericWorker((opSize + 127) / 128 * 128, 128));
+        scheduler.addWorkerGrid(l + "attn_output_proj", projections.worker(config.dim()));
+        scheduler.addWorkerGrid(l + "ffn_rms_apply", rmsApplyWorker);
+        scheduler.addWorkerGrid(l + "ffn_gate_up", projections.worker(2 * config.hiddenDim()));
+        scheduler.addWorkerGrid(
+                l + "ffn_silu",
+                WorkerGridFactory.genericWorker((config.hiddenDim() + 127) / 128 * 128, 128));
+        scheduler.addWorkerGrid(l + "ffn_down_proj", projections.worker(config.dim()));
+        if (projections.packed()) {
+            scheduler.addWorkerGrid(
+                    l + "attn_out_quantize", PackedActivationTasks.quantizeWorker(config.dim()));
+            scheduler.addWorkerGrid(
+                    l + "ffn_down_quantize",
+                    PackedActivationTasks.quantizeWorker(config.hiddenDim()));
+        }
+    }
 
     /**
      * Binds the split-KV attention scratch and, where the packed projections run, the quantized
@@ -643,9 +762,7 @@ public class Phi3Q8_0FFNLayers
 
     /** Phi-3's fused QKV and gate/up tensors, which the MLX prefill multiplies as they are. */
     @Override
-    protected org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections.LayerWeights
-            mlxLayerWeights(int layerIndex) {
-        return org.beehive.jitllm.backend.tornado.layers.phi3.Phi3MlxLayerWeights.of(
-                (Phi3TornadoWeights) weights, layerIndex);
+    protected MlxPrefillProjections.LayerWeights mlxLayerWeights(int layerIndex) {
+        return Phi3MlxLayerWeights.of((Phi3TornadoWeights) weights, layerIndex);
     }
 }

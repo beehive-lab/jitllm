@@ -1,5 +1,7 @@
 package org.beehive.jitllm.backend.tornado.plan;
 
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+
 // @formatter:off
 /**
  * Selects the GPU execution topology for a TornadoVM inference plan.
@@ -14,6 +16,14 @@ package org.beehive.jitllm.backend.tornado.plan;
 public enum ExecutionMode {
     STANDARD,
     PREFILL_DECODE,
-    BATCH_PREFILL_DECODE
+    BATCH_PREFILL_DECODE;
+
+    /** The mode a session running {@code policy} executes in. */
+    public static ExecutionMode of(ExecutionPolicy policy) {
+        if (policy.phaseStrategy() != ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
+            return STANDARD;
+        }
+        return policy.prefillBatchSize() > 1 ? BATCH_PREFILL_DECODE : PREFILL_DECODE;
+    }
 }
 // @formatter:on

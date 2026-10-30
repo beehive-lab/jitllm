@@ -153,11 +153,8 @@ final class DelegatingModel implements TextGenerationModel {
         this.configuration = new ConfigurationView(delegate.configuration());
         // Before any cache or pool is sized: the model is loaded, so the weight representation
         // and family are known, and the storage and policy are the model's defaults.
-        org.beehive.jitllm.backend.tornado.PlanSupport.require(delegate, this.executionPolicy, gpu);
-        org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.require(
+        org.beehive.jitllm.backend.tornado.PlanSupport.require(
                 delegate, this.executionPolicy, storageOptions, gpu);
-        org.beehive.jitllm.backend.tornado.NativeLibrarySupport.require(
-                delegate, this.executionPolicy, gpu);
         // One weight representation is all today's Weights can report: it carries a single
         // materialized type for the whole set. Per-tensor descriptors make a genuinely
         // mixed answer possible, and ModelInfo can already express it — see weightTypes().
@@ -214,7 +211,7 @@ final class DelegatingModel implements TextGenerationModel {
         // another's cache (option 1).
         if (!gpu
                 || !attachesSharedPool(
-                        delegate,
+                        delegate.supportsSharedKvStorage(),
                         storageOptions,
                         org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.mayHandle(
                                 delegate, executionPolicy))) {
@@ -252,15 +249,15 @@ final class DelegatingModel implements TextGenerationModel {
      * Whether a GPU load of this model attaches the shared key/value pool — the one rule, so the
      * preflight predicts the reservation the load makes.
      *
+     * @param supportsSharedKvStorage whether the model's family may lease shared KV storage
      * @param lowerable whether a session of this model can take the lowered path, which requires
      *     the pool
      */
     static boolean attachesSharedPool(
-            Model model,
+            boolean supportsSharedKvStorage,
             org.beehive.jitllm.runtime.policy.StorageOptions storageOptions,
             boolean lowerable) {
-        return model.supportsSharedKvStorage()
-                && (storageOptions.sharedKeyValuePool() || lowerable);
+        return supportsSharedKvStorage && (storageOptions.sharedKeyValuePool() || lowerable);
     }
 
     /**
@@ -396,11 +393,8 @@ final class DelegatingModel implements TextGenerationModel {
             if (!policy.equals(executionPolicy)) {
                 // A session that overrides the execution mode can select layers the model's own
                 // policy did not, so the cache it would share is checked again before the lease.
-                org.beehive.jitllm.backend.tornado.PlanSupport.require(delegate, policy, gpu);
-                org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.require(
+                org.beehive.jitllm.backend.tornado.PlanSupport.require(
                         delegate, policy, storageOptions, gpu);
-                org.beehive.jitllm.backend.tornado.NativeLibrarySupport.require(
-                        delegate, policy, gpu);
             }
             KvLease lease = sessions.acquire(contextLength);
             try {

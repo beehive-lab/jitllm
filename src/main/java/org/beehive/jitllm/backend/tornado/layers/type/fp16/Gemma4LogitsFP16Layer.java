@@ -1,8 +1,10 @@
 package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 
+import org.beehive.jitllm.backend.cpu.InferenceCore;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
@@ -19,21 +21,19 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
  *
  * <p>Identical to {@link LogitsFP16Layer} except for one addition: Gemma4 applies a final logit
  * soft-cap, {@code logits = softcap * tanh(logits / softcap)}, after the vocabulary projection (see
- * {@code gemma4.final_logit_softcapping} and {@link
- * org.beehive.jitllm.backend.cpu.InferenceCore#forwardJavaGemma4}).
+ * {@code gemma4.final_logit_softcapping} and {@link InferenceCore#forwardJavaGemma4}).
  */
 public class Gemma4LogitsFP16Layer extends LogitsFP16Layer {
 
     private static final String SOFTCAP_TASK = "logit_softcap";
 
     public Gemma4LogitsFP16Layer(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config, lastTaskGraphID, schedulerType);
+        super(state, weights, config, lastTaskGraphID, schedulerType);
     }
 
     private float softcap() {
@@ -43,7 +43,7 @@ public class Gemma4LogitsFP16Layer extends LogitsFP16Layer {
     // @formatter:off
     @Override
     protected TaskGraph setupLogitsTaskGraph(TornadoWeights weights, Configuration config) {
-        var logits = new TaskGraph("logits");
+        var logits = new TaskGraph(GraphNames.LOGITS);
         // === Data Setup ===
         logits.consumeFromDevice(lastTaskGraphID, state.workspace.wrapX);
         logits.transferToDevice(DataTransferMode.EVERY_EXECUTION, state.workspace.tempLogits);

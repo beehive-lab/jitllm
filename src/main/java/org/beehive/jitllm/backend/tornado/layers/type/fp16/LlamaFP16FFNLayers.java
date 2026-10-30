@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.RmsReductionPolicy;
@@ -59,12 +60,11 @@ public class LlamaFP16FFNLayers
     private final LlamaState llamaState;
 
     public LlamaFP16FFNLayers(
-            String taskGraph,
             State state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.llamaState = (LlamaState) state;
         var partitions = state.executionPolicy().splitKvPartitions();
         // Split by default where the lane-cooperative kernel runs (CUDA, FP16 cache) and where the
@@ -558,7 +558,7 @@ public class LlamaFP16FFNLayers
      * </ul>
      */
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "activationUpdate" : layerGraphName(layerIndex - 1);
+        return (layerIndex == 0) ? GraphNames.ACTIVATION_UPDATE : layerGraphName(layerIndex - 1);
     }
 
     /** Adjacent decode layers per graph, which removes all but one host round trip per group. */

@@ -31,17 +31,6 @@ public final class FloatArrayUtils {
     }
 
     /**
-     * Divides all elements in a FloatArray by a value in-place.
-     *
-     * @param array The FloatArray to modify
-     * @param value The value to divide by
-     * @return The modified FloatArray for method chaining
-     */
-    public static FloatArray divideInPlace(FloatArray array, float value) {
-        return divideInPlace(array, 0, array.getSize(), value);
-    }
-
-    /**
      * Applies the softmax function to a range of elements in a FloatArray in-place. Mirrors the
      * functionality of FloatTensor.softmaxInPlace().
      *
@@ -90,50 +79,6 @@ public final class FloatArrayUtils {
         }
 
         return array;
-    }
-
-    /**
-     * Applies the softmax function to all elements in a FloatArray in-place.
-     *
-     * @param array The FloatArray to modify
-     * @return The modified FloatArray for method chaining
-     */
-    public static FloatArray softmaxInPlace(FloatArray array) {
-        return softmaxInPlace(array, 0, array.getSize());
-    }
-
-    /**
-     * Finds the index of the maximum value in a FloatArray. Mirrors the functionality of
-     * FloatTensor.argmax().
-     *
-     * @param array The FloatArray to search
-     * @param start The starting index (inclusive)
-     * @param end The ending index (exclusive)
-     * @return The index of the maximum value
-     */
-    public static int argmax(FloatArray array, int start, int end) {
-        float maxValue = Float.NEGATIVE_INFINITY;
-        int maxIndex = start;
-
-        for (int i = start; i < end; i++) {
-            float value = array.get(i);
-            if (value > maxValue) {
-                maxValue = value;
-                maxIndex = i;
-            }
-        }
-
-        return maxIndex;
-    }
-
-    /**
-     * Finds the index of the maximum value in a FloatArray.
-     *
-     * @param array The FloatArray to search
-     * @return The index of the maximum value
-     */
-    public static int argmax(FloatArray array) {
-        return argmax(array, 0, array.getSize());
     }
 
     /**

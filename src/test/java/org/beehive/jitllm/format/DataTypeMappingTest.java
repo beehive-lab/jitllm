@@ -11,10 +11,8 @@ import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.junit.Test;
 
 /**
- * This logic existed before as one untested switch with a GPU answer and no CPU half. The point of
- * these tests is not that a mapping exists but that the two halves differ: a K-quant is a K-quant
- * on the host and becomes Q8_0 on the device, and a test that only checked one target would pass
- * while the other was silently wrong.
+ * What a file's tensor becomes on each target. Both keep every block quantization as the file
+ * stores it; they differ only on BF16, which the device holds as F16.
  */
 public class DataTypeMappingTest {
 
@@ -28,8 +26,8 @@ public class DataTypeMappingTest {
         GGMLType.Q6_K
     };
 
-    private static final GGMLType[] DEVICE_MATERIALIZED = {
-        GGMLType.Q4_0, GGMLType.Q4_K, GGMLType.Q5_K, GGMLType.Q6_K
+    private static final GGMLType[] BLOCK_QUANTIZED = {
+        GGMLType.Q8_0, GGMLType.Q4_0, GGMLType.Q4_1, GGMLType.Q4_K, GGMLType.Q5_K, GGMLType.Q6_K
     };
 
     @Test
@@ -75,61 +73,28 @@ public class DataTypeMappingTest {
     }
 
     @Test
-    public void theDeviceMaterializesEverythingElseAsQ8_0() {
-        for (GGMLType fileType : DEVICE_MATERIALIZED) {
+    public void theDeviceKeepsEveryBlockQuantizationAsTheFileStoresIt() {
+        for (GGMLType fileType : BLOCK_QUANTIZED) {
             assertSame(
-                    fileType + " has no device kernel and must be materialized",
-                    DataType.Q8_0,
+                    fileType + " is kept on the device",
+                    DataTypeMapping.sourceType(fileType),
                     DataTypeMapping.materializedType(fileType, ExecutionTarget.GPU));
         }
     }
 
-    /**
-     * The two targets disagree exactly where the converting path converts.
-     *
-     * <p>Restored after an over-eager edit removed it alongside the test beside it. The property is
-     * still worth holding: if {@link DataTypeMapping#materializedType}'s target parameter made no
-     * difference anywhere, it would be decoration.
-     */
+    /** The targets disagree on BF16 alone: the device has no BF16 kernels and holds it as F16. */
     @Test
-    public void theTargetsDisagreeExactlyWhereTheDeviceLacksAKernel() {
-        for (GGMLType fileType : DEVICE_MATERIALIZED) {
-            assertFalse(
-                    fileType + ": CPU and the converting device path must not agree here",
-                    DataTypeMapping.materializedType(fileType, ExecutionTarget.CPU)
-                            == DataTypeMapping.materializedType(fileType, ExecutionTarget.GPU));
-        }
-        for (GGMLType fileType : new GGMLType[] {GGMLType.F32, GGMLType.F16, GGMLType.Q8_0}) {
+    public void theTargetsDisagreeOnlyOnBf16() {
+        assertSame(
+                DataType.BF16,
+                DataTypeMapping.materializedType(GGMLType.BF16, ExecutionTarget.CPU));
+        assertSame(
+                DataType.F16, DataTypeMapping.materializedType(GGMLType.BF16, ExecutionTarget.GPU));
+        for (GGMLType fileType : RECOGNIZED) {
             assertSame(
-                    fileType + ": both targets execute this one directly",
+                    fileType + ": both targets hold this one as it is",
                     DataTypeMapping.materializedType(fileType, ExecutionTarget.CPU),
                     DataTypeMapping.materializedType(fileType, ExecutionTarget.GPU));
-        }
-    }
-
-    /**
-     * The converting device path promotes every block quantization to Q8_0, and says so.
-     *
-     * <p>This replaces a test asserting that no target materializes a "format-decoded" type. That
-     * framing is gone: the quantizations are kept in the file's own layout by {@code
-     * ModelLoader.loadTornadoTensorNative}, and what {@link DataTypeMapping#materializedType} still
-     * describes is the older loading path some families remain on. Naming it is the point — the
-     * conversion is a declared decision that reaches the memory plan, not a silent one.
-     */
-    @Test
-    public void theConvertingDevicePathPromotesToQ8_0() {
-        for (GGMLType fileType :
-                new GGMLType[] {
-                    GGMLType.Q4_0, GGMLType.Q4_1, GGMLType.Q4_K, GGMLType.Q5_K, GGMLType.Q6_K
-                }) {
-            assertEquals(
-                    fileType + " on the converting device path",
-                    DataType.Q8_0,
-                    DataTypeMapping.materializedType(fileType, ExecutionTarget.GPU));
-            assertEquals(
-                    fileType + " is untouched on the host",
-                    DataTypeMapping.sourceType(fileType),
-                    DataTypeMapping.materializedType(fileType, ExecutionTarget.CPU));
         }
     }
 
@@ -150,21 +115,6 @@ public class DataTypeMappingTest {
         assertSame(DataType.Q8_0, DataTypeMapping.activationType(GGMLType.Q6_K));
     }
 
-    /**
-     * The mapping replaces {@code effectiveGpuWeightType}, so it has to return what that returned —
-     * otherwise this is a behaviour change wearing a refactor's clothes.
-     */
-    @Test
-    public void theGpuMappingAgreesWithTheLoadersOldAnswer() {
-        assertEquals(GGMLType.F16, gpuFileType(GGMLType.F16));
-        assertEquals(GGMLType.F32, gpuFileType(GGMLType.F32));
-        assertEquals(GGMLType.Q8_0, gpuFileType(GGMLType.Q8_0));
-        assertEquals(GGMLType.Q8_0, gpuFileType(GGMLType.Q4_0));
-        assertEquals(GGMLType.Q8_0, gpuFileType(GGMLType.Q4_K));
-        assertEquals(GGMLType.Q8_0, gpuFileType(GGMLType.Q5_K));
-        assertEquals(GGMLType.Q8_0, gpuFileType(GGMLType.Q6_K));
-    }
-
     @Test
     public void theActivationMappingAgreesWithTheQuantizationString() {
         assertEquals("FP16", asStateString(DataTypeMapping.activationType(GGMLType.F16)));
@@ -180,11 +130,6 @@ public class DataTypeMappingTest {
         for (DataType dataType : DataType.values()) {
             assertSame(dataType, DataTypeMapping.sourceType(DataTypeMapping.asFileType(dataType)));
         }
-    }
-
-    private static GGMLType gpuFileType(GGMLType fileType) {
-        return DataTypeMapping.asFileType(
-                DataTypeMapping.materializedType(fileType, ExecutionTarget.GPU));
     }
 
     /** How the activation representation is spelled by {@code Configuration.quantization()}. */

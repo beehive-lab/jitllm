@@ -4,6 +4,7 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import org.beehive.jitllm.runtime.tensor.LongIndexedTensor;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import org.beehive.jitllm.tensor.standard.FloatTensor;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
@@ -23,7 +24,7 @@ public final class TornadoTensorLoader {
      * rather than reads.
      */
     public static FP32TornadoTensor fromFloats(float[] values) {
-        return new FP32TornadoTensor(FloatArray.fromArray(values));
+        return new FP32TornadoTensor(FloatArray.fromArray(values), Shape.of(values.length));
     }
 
     /**
@@ -43,71 +44,12 @@ public final class TornadoTensorLoader {
     }
 
     /**
-     * Materializes a tensor the GPU has no kernel for (Q4_0, Q4_K, Q5_K, Q6_K) as Q8_0.
-     *
-     * <p>A load-time conversion, done through the CPU tensor for that format — which already knows
-     * how to decode it — so the device path needs one set of quantized kernels rather than one per
-     * file format. The cost is device memory: an 18-byte Q4_0 block becomes a 34-byte Q8_0 block,
-     * so a 4-bit file occupies roughly twice as much on the device as it does on disk. The accuracy
-     * cost is negligible in the other direction: Q4_0 carries 16 levels per block and Q8_0 stores
-     * 255, so the re-quantization error is far below the source's own step size.
-     */
-    public static Q8_0TornadoTensor dequantizeToQ8_0(FloatTensor sourceTensor) {
-        long headerBytes = TornadoNativeArray.ARRAY_HEADER;
-        int numElements = sourceTensor.size();
-        int blockSize = 32;
-        int blocksNeeded = (numElements + blockSize - 1) / blockSize;
-        int q8BlockBytes = 34; // 2 bytes scale + 32 bytes quants
-        int q8BytesNeeded = blocksNeeded * q8BlockBytes;
-
-        byte[] q8Data = new byte[q8BytesNeeded];
-
-        for (int b = 0; b < blocksNeeded; b++) {
-            int start = b * blockSize;
-            int end = Math.min(start + blockSize, numElements);
-
-            // Find max absolute value for scale
-            float maxAbs = 0;
-            for (int i = start; i < end; i++) {
-                maxAbs = Math.max(maxAbs, Math.abs(sourceTensor.getFloat(i)));
-            }
-            float scale = maxAbs / 127.0f;
-
-            // Write scale as fp16 (little-endian)
-            short scaleF16 = Float.floatToFloat16(scale);
-            int blockOff = b * q8BlockBytes;
-            q8Data[blockOff] = (byte) (scaleF16 & 0xFF);
-            q8Data[blockOff + 1] = (byte) ((scaleF16 >> 8) & 0xFF);
-
-            // Quantize values
-            float invScale = scale != 0 ? 1.0f / scale : 0;
-            for (int i = start; i < end; i++) {
-                int qi = Math.round(sourceTensor.getFloat(i) * invScale);
-                qi = Math.max(-128, Math.min(127, qi));
-                q8Data[blockOff + 2 + (i - start)] = (byte) qi;
-            }
-        }
-
-        // Allocate native memory with TornadoNativeArray header, matching GGUF.loadTensorsTornado
-        // layout
-        MemorySegment nativeSegment = Arena.ofAuto().allocate(headerBytes + q8BytesNeeded, 4);
-        // Zero out the header
-        for (int i = 0; i < headerBytes; i++) {
-            nativeSegment.set(ValueLayout.JAVA_BYTE, i, (byte) 0);
-        }
-        // Copy Q8_0 data after header
-        MemorySegment.copy(
-                MemorySegment.ofArray(q8Data), 0, nativeSegment, headerBytes, q8BytesNeeded);
-        return Q8_0TornadoTensor.fromTornadoMemorySegment(nativeSegment);
-    }
-
-    /**
      * Converts a BF16 tensor to an FP16 {@link FP16TornadoTensor} for TornadoVM/GPU execution.
      * TornadoVM has no native BF16 kernel support, so weights are widened to FP32 (a lossless,
      * simple bit-shift for BF16) and narrowed to IEEE FP16 at load time -- the same representation
-     * the existing FP16 GPU kernels already expect (see {@link #loadTornadoTensor}).
+     * the existing FP16 GPU kernels already expect.
      */
-    public static FP16TornadoTensor convertBF16ToFP16(FloatTensor source) {
+    public static FP16TornadoTensor convertBF16ToFP16(FloatTensor source, Shape shape) {
         long headerBytes = TornadoNativeArray.ARRAY_HEADER;
         int numElements = source.size();
 
@@ -123,7 +65,7 @@ public final class TornadoTensorLoader {
                     headerBytes + (long) i * Short.BYTES,
                     f16Bits);
         }
-        return FP16TornadoTensor.fromTornadoMemorySegment(nativeSegment);
+        return FP16TornadoTensor.fromTornadoMemorySegment(nativeSegment, shape);
     }
 
     /**

@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.common.LibraryTaskDescriptor;
 import uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
@@ -55,8 +56,7 @@ public final class NativePrefillSupport {
      * legacy {@code -Djitllm.prefill.native} is honoured when set. Resolved into {@link
      * ExecutionPolicy#nativeLibraries()}, which is what the plan reads.
      */
-    public static final String PROPERTY =
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY;
+    public static final String PROPERTY = ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY;
 
     /**
      * The execution-plan id the capability probe borrows.
@@ -115,8 +115,7 @@ public final class NativePrefillSupport {
      * uploaded — the silent-zeros defect the weight-handoff regression tests exist to catch. The
      * policy is fixed for a plan's life, which is what makes the two answers agree.
      */
-    public static boolean nativeProjections(
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy) {
+    public static boolean nativeProjections(ExecutionPolicy policy) {
         return policy.nativeLibraries()
                 && TensorCoreSupport.isTensorCoreCapableBackend()
                 && Probe.CUBLAS;
@@ -124,8 +123,7 @@ public final class NativePrefillSupport {
 
     /** {@link #nativeProjections(ExecutionPolicy)} for the policy the properties resolve to. */
     public static boolean nativeProjections() {
-        return nativeProjections(
-                org.beehive.jitllm.runtime.policy.ExecutionPolicy.fromSystemProperties());
+        return nativeProjections(ExecutionPolicy.fromSystemProperties());
     }
 
     /** Whether cuBLAS can be reached from this process at all. */
@@ -289,8 +287,7 @@ public final class NativePrefillSupport {
      * null plan, and a real implementation that declines this device or this tuple.
      */
     // @formatter:on
-    public static boolean nativeAttention(
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy, SdpaShape shape) {
+    public static boolean nativeAttention(ExecutionPolicy policy, SdpaShape shape) {
         if (!nativeProjections(policy) || !Probe.CUDNN) {
             return false;
         }
@@ -382,9 +379,7 @@ public final class NativePrefillSupport {
      * @param shape the attention shape this session would ask for
      */
     public static String describe(
-            org.beehive.jitllm.runtime.policy.ExecutionPolicy policy,
-            boolean fp16KeyValueCache,
-            SdpaShape shape) {
+            ExecutionPolicy policy, boolean fp16KeyValueCache, SdpaShape shape) {
         if (!policy.nativeLibraries()) {
             return "off (JIT kernels; --with-native-libraries to try cuBLAS/cuDNN)";
         }

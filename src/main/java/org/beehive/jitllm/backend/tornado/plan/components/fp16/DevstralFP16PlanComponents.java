@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.devstral.DevstralFP16FFNLayersDecode;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.DevstralFP16FFNLayers;
@@ -19,6 +20,7 @@ import org.beehive.jitllm.inference.state.DevstralState;
 import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.devstral.DevstralConfiguration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 public class DevstralFP16PlanComponents implements BatchPrefillDecodeForwardPlanComponents {
 
@@ -36,18 +38,17 @@ public class DevstralFP16PlanComponents implements BatchPrefillDecodeForwardPlan
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new DevstralFP16FFNLayers("devstralFFN", state, weights, config, schedulerType);
+        return new DevstralFP16FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsFP16Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsFP16Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── Batched prefill/decode ───────────────────────────────────────────────
@@ -63,29 +64,24 @@ public class DevstralFP16PlanComponents implements BatchPrefillDecodeForwardPlan
      */
     @Override
     public ActivationTaskGraph batchPrefillActivation(int batchSize) {
-        boolean f16Embedding =
-                weights.getTokenEmbeddingTable().dataType()
-                        == org.beehive.jitllm.runtime.tensor.DataType.F16;
+        boolean f16Embedding = weights.getTokenEmbeddingTable().dataType() == DataType.F16;
         return new BatchPrefillActivation(state, config, batchSize, !f16Embedding);
     }
 
     @Override
     public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
-        boolean f16Embedding =
-                weights.getTokenEmbeddingTable().dataType()
-                        == org.beehive.jitllm.runtime.tensor.DataType.F16;
+        boolean f16Embedding = weights.getTokenEmbeddingTable().dataType() == DataType.F16;
         return new BatchDecodeActivation(state, config, lastBatchLayerId, !f16Embedding);
     }
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new DevstralFP16FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new DevstralFP16FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
-        return new LogitsFP16LayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsFP16LayerDecode(state, weights, config, previousGraphId, schedulerType);
     }
 
     /** Devstral has no sequential prefill/decode plan; its provider refuses the mode. */

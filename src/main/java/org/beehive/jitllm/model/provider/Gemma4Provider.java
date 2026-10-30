@@ -1,9 +1,7 @@
 package org.beehive.jitllm.model.provider;
 
 import org.beehive.jitllm.format.ModelSource;
-import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.loader.Gemma4ModelLoader;
-import org.beehive.jitllm.runtime.backend.BackendId;
 
 /**
  * Gemma-4. Declares {@code gemma4} in {@code general.architecture} (verified against
@@ -17,12 +15,9 @@ public final class Gemma4Provider extends FamilyProvider {
     }
 
     @Override
-    public Model load(ModelSource source, BackendId backend, int contextLength) {
+    protected Gemma4ModelLoader loader(
+            ModelSource source, int contextLength, boolean useTornadovm) {
         return new Gemma4ModelLoader(
-                        source.gguf().getFileChannel(),
-                        source.gguf(),
-                        contextLength,
-                        !BackendId.CPU.equals(backend))
-                .loadModel();
+                source.gguf().getFileChannel(), source.gguf(), contextLength, useTornadovm);
     }
 }

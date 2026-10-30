@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.ActivationGranite;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.granite.GraniteBatchDecodeActivation;
 import org.beehive.jitllm.backend.tornado.layers.granite.GraniteQ8_0FFNLayersDecode;
@@ -38,18 +39,17 @@ public class GraniteQ8_0PlanComponents implements BatchPrefillDecodeForwardPlanC
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new ActivationGranite("activationUpdate", state, weights, config);
+        return new ActivationGranite(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new GraniteQ8_0FFNLayers("graniteFFN", state, weights, config, schedulerType);
+        return new GraniteQ8_0FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsGraniteQ8_0Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsGraniteQ8_0Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     /** Sequential prefill/decode has no Granite layers. */
@@ -66,7 +66,8 @@ public class GraniteQ8_0PlanComponents implements BatchPrefillDecodeForwardPlanC
 
     @Override
     public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
-        return new GraniteBatchDecodeActivation(state, config, lastBatchLayerId, true);
+        return new GraniteBatchDecodeActivation(
+                state, config, lastBatchLayerId, weights.getTokenEmbeddingTable().dataType());
     }
 
     @Override
@@ -76,7 +77,7 @@ public class GraniteQ8_0PlanComponents implements BatchPrefillDecodeForwardPlanC
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new GraniteQ8_0FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new GraniteQ8_0FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
@@ -90,6 +91,6 @@ public class GraniteQ8_0PlanComponents implements BatchPrefillDecodeForwardPlanC
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
         return new LogitsGraniteQ8_0LayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+                state, weights, config, previousGraphId, schedulerType);
     }
 }

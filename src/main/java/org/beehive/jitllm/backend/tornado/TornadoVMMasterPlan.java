@@ -1,7 +1,14 @@
 package org.beehive.jitllm.backend.tornado;
 
+import org.beehive.jitllm.auxiliary.RunMetrics;
+import org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection;
+import org.beehive.jitllm.backend.tornado.lowering.LoweringQualification;
+import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.DeviceSplit;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
+import org.beehive.jitllm.runtime.backend.ExecutionPath;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
@@ -10,26 +17,17 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 /**
  * Common contract for all TornadoVM GPU execution plans.
  *
- * <p>Three concrete implementations exist:
+ * <p>{@link #initializeTornadoVMPlan} selects the implementation from the session's execution
+ * policy:
  *
  * <ul>
- *   <li>{@link TornadoVMMasterPlanSingleToken} — baseline single-token forward pass (preprocessing
- *       + N layers + logits).
- *   <li>{@link TornadoVMMasterPlanPrefillDecode} — sequential prefill/decode separation; reuses the
- *       same N layer graphs for both phases, skipping logits during prefill.
- *   <li>{@link TornadoVMMasterPlanBatchPrefillDecode} — batched prefill + single-token decode;
- *       holds 2N+3 graphs in one plan to keep the KV cache on device across phases.
- * </ul>
- *
- * <p>The {@link #initializeTornadoVMPlan} factory selects the implementation based on {@code
- * jitllm.withPrefillDecode} and {@code jitllm.prefillBatchSize}:
- *
- * <ul>
- *   <li>{@code withPrefillDecode=false} → {@link TornadoVMMasterPlanSingleToken}
- *   <li>{@code withPrefillDecode=true}, {@code prefillBatchSize=1} → {@link
- *       TornadoVMMasterPlanPrefillDecode}
- *   <li>{@code withPrefillDecode=true}, {@code prefillBatchSize>1} → {@link
- *       TornadoVMMasterPlanBatchPrefillDecode}
+ *   <li>{@link TornadoVMMasterPlanSingleToken}: single-token forward pass (activation, N layers,
+ *       logits), when the policy is not prefill/decode.
+ *   <li>{@link TornadoVMMasterPlanPrefillDecode}: sequential prefill/decode; reuses the same N
+ *       layer graphs for both phases, skipping logits during prefill. Prefill batch size 1.
+ *   <li>{@link TornadoVMMasterPlanBatchPrefillDecode}: batched prefill and single-token decode in
+ *       one plan, so the KV cache stays on the device across phases. Prefill batch size above 1.
+ *   <li>{@link TornadoVMMasterPlanPipeline}: a model split across devices ({@code --devices}).
  * </ul>
  */
 public interface TornadoVMMasterPlan {
@@ -45,19 +43,6 @@ public interface TornadoVMMasterPlan {
      * with {@code --no-cuda-graphs}, never on elsewhere (see {@link CudaGraphDefault}).
      */
     boolean CUDA_GRAPHS = CudaGraphDefault.enabled();
-
-    /**
-     * @deprecated Replaced by {@code state.executionPolicy()}. This constant survives only for
-     *     {@code State} and {@code Qwen2MoEState}, which use the batch size to <b>size arrays</b> —
-     *     a capacity input, not policy — and for the bench harness. It is not read on any execution
-     *     path.
-     */
-    @Deprecated boolean WITH_PREFILL_DECODE = Boolean.getBoolean("jitllm.withPrefillDecode");
-
-    /**
-     * @deprecated see {@link #WITH_PREFILL_DECODE}. Capacity input only.
-     */
-    @Deprecated int PREFILL_BATCH_SIZE = Integer.getInteger("jitllm.prefillBatchSize", 1);
 
     /**
      * Factory: creates, JIT-compiles, and warms up the appropriate TornadoVMMasterPlan.
@@ -100,20 +85,15 @@ public interface TornadoVMMasterPlan {
     private static TornadoVMMasterPlan buildPlan(State state, Model model, MetricsSink sink) {
         TornadoVMMasterPlan plan;
 
-        // Every GPU plan passes here, the facade's and the harness's alike, so an FP16 cache the
-        // selected layers do not implement is refused before any device buffer exists. The facade
-        // has already asked at load; this covers the callers that build a state themselves.
-        // A device or split the family's plans cannot run on at all, before any cache check.
-        PlanSupport.require(model, state.executionPolicy(), true);
-        Fp16KeyValueSupport.require(model, state.executionPolicy(), state.storageOptions(), true);
-        NativeLibrarySupport.require(model, state.executionPolicy(), true);
-        // A batched prefill the family cannot build on this device, with either cache.
-        BatchPrefillSupport.require(model, state.executionPolicy(), true);
+        // Every GPU plan passes here, the facade's and the harness's alike, so a configuration the
+        // plans cannot run is refused before any device buffer exists. The facade has already
+        // asked at load; this covers the callers that build a state themselves.
+        PlanSupport.require(model, state.executionPolicy(), state.storageOptions(), true);
 
         // A model split by layers across several devices: its own plan, one per device.
-        var split = org.beehive.jitllm.runtime.backend.DeviceSplit.fromSystemProperties();
+        var split = DeviceSplit.fromSystemProperties();
         if (split.isPresent()) {
-            reportPath(org.beehive.jitllm.runtime.backend.ExecutionPath.LEGACY, model, state);
+            reportPath(ExecutionPath.LEGACY, model, state);
             return new TornadoVMMasterPlanPipeline(state, model, split.get(), sink);
         }
 
@@ -123,31 +103,21 @@ public interface TornadoVMMasterPlan {
         // ran the legacy path however the flag was set: a paired A/B taken through the script was
         // measuring legacy against legacy. `handles` answers false unless the opt-in is set and the
         // tuple is the one the slice implements, so this costs a boolean read otherwise.
-        if (org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.handles(
-                model, state)) {
-            reportPath(org.beehive.jitllm.runtime.backend.ExecutionPath.LOWERED, model, state);
-            return org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.lower(
-                    model, state, sink);
+        if (LoweredPlanSelection.handles(model, state)) {
+            reportPath(ExecutionPath.LOWERED, model, state);
+            return LoweredPlanSelection.lower(model, state, sink);
         }
-        reportPath(org.beehive.jitllm.runtime.backend.ExecutionPath.LEGACY, model, state);
+        reportPath(ExecutionPath.LEGACY, model, state);
 
         // Resolved from the session's policy, once, here — not from a class constant read at
         // initialization.
-        var policy = state.executionPolicy();
-        boolean prefillDecode =
-                policy.phaseStrategy()
-                        == org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy
-                                .PREFILL_DECODE;
-        if (prefillDecode && policy.prefillBatchSize() > 1) {
-            // GPU path with batched prefill/decode
-            plan = new TornadoVMMasterPlanBatchPrefillDecode(state, model, sink);
-        } else if (prefillDecode) {
-            // GPU path with simple prefill/decode
-            plan = new TornadoVMMasterPlanPrefillDecode(state, model, sink);
-        } else {
-            // GPU path with no prefill/decode
-            plan = new TornadoVMMasterPlanSingleToken(state, model, sink);
-        }
+        plan =
+                switch (ExecutionMode.of(state.executionPolicy())) {
+                    case BATCH_PREFILL_DECODE ->
+                            new TornadoVMMasterPlanBatchPrefillDecode(state, model, sink);
+                    case PREFILL_DECODE -> new TornadoVMMasterPlanPrefillDecode(state, model, sink);
+                    case STANDARD -> new TornadoVMMasterPlanSingleToken(state, model, sink);
+                };
         // Deliberately not stored on the model. A plan belongs to the session that built it;
         // parking it on the shared model meant the second session to start silently replaced the
         // first session's plan, and a later CPU call would then take the GPU branch against a
@@ -157,15 +127,15 @@ public interface TornadoVMMasterPlan {
 
     // @formatter:on
 
+    /** Describes an already prepared plan without executing a token. */
+    default ExecutionInfo executionInfo() {
+        throw new UnsupportedOperationException("This plan does not expose execution diagnostics");
+    }
+
     /**
      * Creates the appropriate {@link TornadoExecutionPlan} instance for the given {@link Model} and
      * {@link State}.
      */
-    /** Describes an already prepared plan without executing a token. */
-    default org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
-        throw new UnsupportedOperationException("This plan does not expose execution diagnostics");
-    }
-
     TornadoExecutionPlan createExecutionPlan();
 
     void forceCopyInReadOnlyData();
@@ -217,23 +187,16 @@ public interface TornadoVMMasterPlan {
      * and the benchmark script all silently ran the legacy path however the flag was set. A report
      * emitted anywhere else would have the same hole.
      */
-    private static void reportPath(
-            org.beehive.jitllm.runtime.backend.ExecutionPath path,
-            org.beehive.jitllm.model.Model model,
-            org.beehive.jitllm.inference.state.State state) {
-        var combination =
-                org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.combinationOf(
-                        model, state);
+    private static void reportPath(ExecutionPath path, Model model, State state) {
+        var combination = LoweredPlanSelection.combinationOf(model, state);
         boolean qualified =
-                org.beehive.jitllm.backend.tornado.lowering.LoweringQualification.isQualified(
+                LoweringQualification.isQualified(
                         combination.architecture(), combination.dtype(), combination.mode());
-        org.beehive.jitllm.auxiliary.RunMetrics.setExecutionPath(
+        RunMetrics.setExecutionPath(
                 path.reportName(),
                 combination.toString(),
                 qualified,
-                org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.mode()
-                        .name()
-                        .toLowerCase(java.util.Locale.ROOT));
+                LoweredPlanSelection.mode().name().toLowerCase(java.util.Locale.ROOT));
     }
 
     /**
@@ -250,8 +213,7 @@ public interface TornadoVMMasterPlan {
      * without calling the supplier at all — and the question the field answers ("which path did
      * this run take") is a property of the run, not of the compile.
      */
-    public static void reportLoweredPath(
-            org.beehive.jitllm.model.Model model, org.beehive.jitllm.inference.state.State state) {
-        reportPath(org.beehive.jitllm.runtime.backend.ExecutionPath.LOWERED, model, state);
+    public static void reportLoweredPath(Model model, State state) {
+        reportPath(ExecutionPath.LOWERED, model, state);
     }
 }

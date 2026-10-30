@@ -17,17 +17,10 @@ import org.beehive.jitllm.runtime.tensor.DataType;
 /**
  * The {@code qwen35} plan components — single-token decode, and a mixed model underneath.
  *
- * <p>The two declarations below answer different questions, and for this family they differ.
- *
- * <ul>
- *   <li>{@link #supportedDataTypes()} is admission: the representation the model <b>reports</b>,
- *       which for this family is the one its trunk projections share. Q4_0 is what the 27B holds,
- *       and it is what the loader insists the projections agree on.
- *   <li>{@link #nativeTensorTypes()} is what the layer, activation and logits graphs decode <b>per
- *       tensor</b>, without materializing anything. The 27B needs five of them at once, and the
- *       memory prediction has to count each tensor at its own size or it refuses a model that fits:
- *       14.944 GiB retained against roughly 27 GiB converted, on a 24 GiB device.
- * </ul>
+ * <p>{@link #supportedDataTypes()} is admission: the representation the model <b>reports</b>, which
+ * for this family is the one its trunk projections share. Q4_0 is what the 27B holds, and it is
+ * what the loader insists the projections agree on. Its layer, activation and logits graphs decode
+ * five representations <b>per tensor</b>, each kept as the file stores it.
  *
  * <p>All three modes. Sequential prefill is the same layer computation with the logits graph
  * skipped; batched prefill has its own layer graphs, because a chunk of prompt tokens is not a
@@ -49,17 +42,10 @@ public final class Qwen35PlanProvider implements TornadoPlanProvider {
         return Set.of(DataType.Q4_0, DataType.Q8_0);
     }
 
+    /** Every qwen35 path reads its Q8_0 and Q4_0 projections prepacked. */
     @Override
-    public Set<DataType> nativeTensorTypes() {
-        return Set.of(
-                DataType.F32,
-                DataType.F16,
-                DataType.Q4_0,
-                DataType.Q4_1,
-                DataType.Q4_K,
-                DataType.Q5_K,
-                DataType.Q6_K,
-                DataType.Q8_0);
+    public Set<DataType> prepackableTypes(ExecutionPolicy policy) {
+        return Set.of(DataType.Q8_0, DataType.Q4_0);
     }
 
     @Override
@@ -118,6 +104,18 @@ public final class Qwen35PlanProvider implements TornadoPlanProvider {
     @Override
     public Optional<String> fp16KeyValueUnsupported(Combination c) {
         return Optional.empty();
+    }
+
+    @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return c.weights() == DataType.Q4_0 || c.weights() == DataType.Q8_0
+                ? Optional.empty()
+                : Optional.of("the qwen35 " + c.weights() + " layers are not verified on Metal");
+    }
+
+    @Override
+    public boolean metalBatchedPrefillDefault(DataType weights) {
+        return weights == DataType.F16 || weights == DataType.Q8_0 || weights == DataType.Q4_0;
     }
 
     @Override

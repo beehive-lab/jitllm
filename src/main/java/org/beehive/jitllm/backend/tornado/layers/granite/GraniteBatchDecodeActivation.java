@@ -1,10 +1,15 @@
 package org.beehive.jitllm.backend.tornado.layers.granite;
 
+import org.beehive.jitllm.backend.tornado.kernels.GraniteBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.GraniteKernels;
+import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.granite.GraniteConfiguration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -14,7 +19,8 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 /**
- * Decode activation graph with KV-cache pass-through ("decodeActivation").
+ * {@link BatchDecodeActivation} with Granite's embedding multiplier applied as the embedding is
+ * converted: the decode activation graph with KV-cache pass-through ("decodeActivation").
  *
  * <p>Used in the 2N+3 batch-prefill/decode plan. Consumes {@code wrapKeyCache}/{@code
  * wrapValueCache} from the last batch-prefill layer, converts the single-token embedding to FP32,
@@ -33,12 +39,8 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  * plan is this graph itself from the second decode token onward — so decode layer 0 imported this
  * graph's null buffer and died in {@code executeAlloc} with {@code NullPointerException:
  * XPUDeviceBufferState.getXPUBuffer() is null}. Fixed upstream in {@code 8603a9fa2d} (PR #996),
- * released in 6.0.0, which is the pinned floor for batched prefill. Do not "simplify" these calls
- * away: they look inert in a bytecode trace and are not.
- */
-/**
- * {@link org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation} with
- * Granite's embedding multiplier applied as the embedding is converted.
+ * released in 6.0.0; jitllm now requires 7.3. Do not "simplify" these calls away: they look inert
+ * in a bytecode trace and are not.
  */
 public class GraniteBatchDecodeActivation implements ActivationTaskGraph {
 
@@ -49,32 +51,55 @@ public class GraniteBatchDecodeActivation implements ActivationTaskGraph {
 
     public GraniteBatchDecodeActivation(
             State state, GraniteConfiguration config, String lastBatchLayerId, boolean isQ8) {
+        this(state, config, lastBatchLayerId, isQ8 ? DataType.Q8_0 : DataType.F16);
+    }
+
+    /**
+     * @param embedding the token embedding tensor's own representation, which is what is staged
+     *     into {@code embeddingX} and converted on the device
+     */
+    public GraniteBatchDecodeActivation(
+            State state, GraniteConfiguration config, String lastBatchLayerId, DataType embedding) {
         this.dim = config.dim();
         this.embeddingScale = config.embeddingScale();
+        this.kept = Activation.keptEmbedding(embedding);
         KernelContext ctx = new KernelContext();
-        this.itg = buildGraph(ctx, state, lastBatchLayerId, isQ8, false).snapshot();
+        this.itg = buildGraph(ctx, state, lastBatchLayerId, embedding).snapshot();
     }
+
+    /** Whether the row is decoded by its own type, then multiplied by its own task. */
+    private final boolean kept;
 
     // @formatter:off
     private TaskGraph buildGraph(
-            KernelContext ctx,
-            State state,
-            String lastBatchLayerId,
-            boolean isQ8,
-            boolean q4Embeddings) {
+            KernelContext ctx, State state, String lastBatchLayerId, DataType embedding) {
         boolean fp16KV = state.usesFp16KeyValueCache();
         Object keyCache = fp16KV ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
         Object valueCache =
                 fp16KV ? state.workspace.wrapValueCacheFP16 : state.workspace.wrapValueCache;
         TaskGraph tg =
-                new TaskGraph("decodeActivation")
+                new TaskGraph(GraphNames.DECODE_ACTIVATION)
                         .consumeFromDevice(lastBatchLayerId, keyCache, valueCache)
                         .transferToDevice(
                                 DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX);
         // The block table travels the same chain as the caches it addresses: the batch-prefill
         // graphs allocate it, this graph passes it through, decode layer 0 consumes it.
         tg.consumeFromDevice(lastBatchLayerId, state.workspace.wrapBlockTable);
-        if (isQ8) {
+        if (kept) {
+            tg.task(
+                    "updateX",
+                    Activation.embeddingRowDecode(embedding),
+                    ctx,
+                    (ByteArray) state.workspace.embeddingX,
+                    state.workspace.wrapX);
+            tg.task(
+                    "scaleX",
+                    GraniteBatchPrefillKernels::batchedScale,
+                    ctx,
+                    state.workspace.wrapX,
+                    embeddingScale,
+                    dim);
+        } else if (embedding == DataType.Q8_0) {
             tg.task(
                     "updateX",
                     GraniteKernels::convertQ8_0toFP32withGraniteScale,
@@ -106,6 +131,10 @@ public class GraniteBatchDecodeActivation implements ActivationTaskGraph {
     public GridScheduler updateGridScheduler(GridScheduler scheduler) {
         scheduler.addWorkerGrid(
                 "decodeActivation.updateX", WorkerGridFactory.genericWorker(dim, 128));
+        if (kept) {
+            scheduler.addWorkerGrid(
+                    "decodeActivation.scaleX", WorkerGridFactory.genericWorker(dim, 128));
+        }
         return scheduler;
     }
 }

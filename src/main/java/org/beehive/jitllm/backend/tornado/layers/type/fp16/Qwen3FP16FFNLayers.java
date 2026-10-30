@@ -5,6 +5,8 @@ import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16FFNLayersDecode;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
@@ -94,12 +96,11 @@ public class Qwen3FP16FFNLayers
     private final boolean laneAttention;
 
     public Qwen3FP16FFNLayers(
-            String taskGraphName,
             Qwen3State state,
             Qwen3TornadoWeights weights,
             Qwen3Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.qwen3State = state;
 
         // Initialize GQA parameters from Qwen3Config
@@ -124,19 +125,6 @@ public class Qwen3FP16FFNLayers
 
     // @formatter:off
     /**
-     * The task name for one of the four matrix-vector kernels this family selects by reduction
-     * strategy, suffixed when the shuffle-reducing variant is the one installed.
-     *
-     * <p>The two variants used to share a task name and a worker grid, which made the selection
-     * invisible: nothing in a built plan, a profile or a grid scheduler could say which kernel a
-     * run had installed, so a build that quietly stopped selecting the shuffle went on reporting
-     * the same evidence while being a fifth slower. The suffix is what makes the selection a fact
-     * about the plan rather than a re-derivation of the policy that chose it, and it is why {@code
-     * Qwen3DecodeDispatchAccelTest} can assert on the kernels themselves.
-     */
-    // @formatter:on
-    // @formatter:off
-    /**
      * The attention task's name, suffixed when the lane-cooperative kernel is the one installed.
      *
      * <p>Same reason as {@link #reductionVariant}: two kernels that share a task name are two
@@ -148,6 +136,19 @@ public class Qwen3FP16FFNLayers
         return laneAttention ? "attention_lane" : "attention";
     }
 
+    // @formatter:off
+    /**
+     * The task name for one of the four matrix-vector kernels this family selects by reduction
+     * strategy, suffixed when the shuffle-reducing variant is the one installed.
+     *
+     * <p>The two variants used to share a task name and a worker grid, which made the selection
+     * invisible: nothing in a built plan, a profile or a grid scheduler could say which kernel a
+     * run had installed, so a build that quietly stopped selecting the shuffle went on reporting
+     * the same evidence while being a fifth slower. The suffix is what makes the selection a fact
+     * about the plan rather than a re-derivation of the policy that chose it, and it is why {@code
+     * Qwen3DecodeDispatchAccelTest} can assert on the kernels themselves.
+     */
+    // @formatter:on
     protected final String reductionVariant(String taskName) {
         return useWarpMatmul ? taskName + "_warp" : taskName;
     }
@@ -691,13 +692,11 @@ public class Qwen3FP16FFNLayers
 
     /**
      * Layers per graph, single-token and batched decode alike: the count measured for the decode
-     * graphs, {@link
-     * org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16FFNLayersDecode#LAYERS_PER_GRAPH}.
+     * graphs, {@link Qwen3FP16FFNLayersDecode#LAYERS_PER_GRAPH}.
      */
     @Override
     protected int layersPerGraph() {
-        return org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16FFNLayersDecode
-                .LAYERS_PER_GRAPH;
+        return Qwen3FP16FFNLayersDecode.LAYERS_PER_GRAPH;
     }
 
     /**
@@ -711,7 +710,7 @@ public class Qwen3FP16FFNLayers
      * (OOM) on long generations. Decode subclasses override this with their own predecessor names.
      */
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "activationUpdate" : layerGraphName(layerIndex - 1);
+        return (layerIndex == 0) ? GraphNames.ACTIVATION_UPDATE : layerGraphName(layerIndex - 1);
     }
 
     /** The key cache every graph of this family binds: FP16 when the state holds one. */

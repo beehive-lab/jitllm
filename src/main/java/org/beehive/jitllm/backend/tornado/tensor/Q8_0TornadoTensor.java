@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.tensor;
 
 import java.lang.foreign.MemorySegment;
 import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 
 /**
@@ -16,28 +17,13 @@ public class Q8_0TornadoTensor extends TornadoTensor {
     private final ByteArray
             tornadoNativeArray; // Unified Q8_0 tensor in the memorySegment of the ByteArray
 
-    public Q8_0TornadoTensor(ByteArray byteArray) {
-        this(byteArray, null);
-    }
-
-    /**
-     * The file's bytes, which the device holds in the {@code packed} tile layout once uploaded, or
-     * as they are when {@code packed} is null.
-     */
-    public Q8_0TornadoTensor(ByteArray byteArray, PackedTiles packed) {
+    public Q8_0TornadoTensor(ByteArray byteArray, Shape shape) {
+        super(shape);
         this.tornadoNativeArray = byteArray;
-        this.packedTiles = packed;
     }
 
-    private final PackedTiles packedTiles;
-
-    @Override
-    public PackedTiles packedTiles() {
-        return packedTiles;
-    }
-
-    public static Q8_0TornadoTensor fromTornadoMemorySegment(MemorySegment segment) {
-        return new Q8_0TornadoTensor(ByteArray.fromSegmentShallow(segment));
+    public static Q8_0TornadoTensor fromTornadoMemorySegment(MemorySegment segment, Shape shape) {
+        return new Q8_0TornadoTensor(ByteArray.fromSegmentShallow(segment), shape);
     }
 
     @Override

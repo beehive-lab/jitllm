@@ -4,8 +4,11 @@ import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
+import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
@@ -52,31 +55,9 @@ public interface TornadoPlanProvider {
      * representation, can this family build a plan for it", which is the question {@code
      * ForwardPlanFactory} asks. It is deliberately <b>not</b> the set of representations the
      * family's kernels can read: a heterogeneous model reports one representation and holds
-     * several, and answering both questions with one set would make one of the two answers false.
-     * See {@link #nativeTensorTypes()} for the other half.
+     * several, each kept as the file stores it.
      */
     Set<DataType> supportedDataTypes();
-
-    /**
-     * The representations this family's tasks read <b>per tensor</b>, in the file's own layout.
-     *
-     * <p>Read by the memory preflight, which predicts each tensor at the representation it will
-     * actually occupy on the device. A family listing {@code Q4_0} has tasks that decode Q4_0
-     * blocks, so a Q4_0 tensor stays 4.5 bits per weight instead of becoming 8.5.
-     *
-     * <p>Defaults to {@link #supportedDataTypes()}, which is right for every family whose model is
-     * one representation throughout: there the two questions have one answer. A family with a
-     * genuinely mixed model overrides it — {@code qwen35} admits plans for its projections'
-     * representation while its tasks also decode Q4_1 down projections, Q5_K recurrent outputs, a
-     * Q6_K vocabulary projection and F32 recurrent parameters.
-     *
-     * <p>Listing a representation here is a claim that some task decodes it natively. It is not a
-     * claim that every operation can: an operation with no kernel for a representation must fail by
-     * name at plan construction, not be repaired by conversion.
-     */
-    default Set<DataType> nativeTensorTypes() {
-        return supportedDataTypes();
-    }
 
     /** The execution modes this family has plans for. */
     Set<ExecutionMode> supportedModes();
@@ -165,12 +146,12 @@ public interface TornadoPlanProvider {
     }
 
     /**
-     * Why this family's plan cannot read projections held in the packed tile layout under {@code
-     * policy}, or empty when it can. Asked of a model whose load packed them, for a policy other
-     * than the one it was loaded with; the width every packed prefill needs is checked apart.
+     * The representations this family's kernels read prepacked under {@code policy}, or none. A
+     * plan prepacks a projection of one of them where prepacking is on and its shape fits ({@link
+     * WeightPrepacking}).
      */
-    default Optional<String> packedWeightsUnsupported(ExecutionPolicy policy) {
-        return Optional.empty();
+    default Set<DataType> prepackableTypes(ExecutionPolicy policy) {
+        return Set.of();
     }
 
     /**
@@ -178,13 +159,12 @@ public interface TornadoPlanProvider {
      * representation beyond the staging every family has, as the layer class it would build sizes
      * it — or empty when that class adds nothing the configuration does not already account.
      */
-    default Optional<org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
-            batchPrefillWorkspace(
-                    DataType weights,
-                    org.beehive.jitllm.model.Configuration config,
-                    int batchSize,
-                    ExecutionPolicy policy,
-                    boolean fp16Cache) {
+    default Optional<BatchPrefillWorkspace> batchPrefillWorkspace(
+            DataType weights,
+            Configuration config,
+            int batchSize,
+            ExecutionPolicy policy,
+            boolean fp16Cache) {
         return Optional.empty();
     }
 
@@ -211,5 +191,22 @@ public interface TornadoPlanProvider {
      */
     default Optional<String> fp16KeyValueUnsupported(Combination c) {
         return Optional.of("the " + c.architecture() + " layers keep an FP32 cache");
+    }
+
+    /**
+     * {@link #fp16KeyValueUnsupported} on Metal, once the plan is known to build. A family keeps an
+     * FP32 cache there unless it says otherwise.
+     */
+    default Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return Optional.of("the " + c.architecture() + " layers keep an FP32 cache");
+    }
+
+    /**
+     * Whether this family's batched prefill is the default on Metal for {@code weights}: its
+     * SIMD-group kernels are tuned there. A family prefills one token at a time on Metal unless it
+     * says otherwise.
+     */
+    default boolean metalBatchedPrefillDefault(DataType weights) {
+        return false;
     }
 }

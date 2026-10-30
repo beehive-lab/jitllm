@@ -4,11 +4,13 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0Packed;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LlamaQ8_0FFNLayers;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.LlamaState;
 import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
@@ -49,24 +51,40 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
 
     public LlamaQ4_0FFNLayers(
-            String taskGraphName,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     /** The layers {@code [firstLayer, endLayer)} only; see the Q8_0 constructor. */
     public LlamaQ4_0FFNLayers(
-            String taskGraphName,
             LlamaState state,
             LlamaTornadoWeights weights,
             LlamaConfiguration config,
             SchedulerType schedulerType,
             int firstLayer,
             int endLayer) {
-        super(taskGraphName, state, weights, config, schedulerType, firstLayer, endLayer);
+        super(state, weights, config, schedulerType, firstLayer, endLayer);
+    }
+
+    /**
+     * Each layer names the graph it consumes from: the prepacked projections are consumed by name
+     * from their prepacking graph, and a graph that consumes anything by name takes nothing through
+     * an unnamed consume. The first layer takes its input from the activation graph, which is also
+     * the name of a later pipeline stage's receiving graph.
+     */
+    @Override
+    protected String predecessorGraphName(int layerIndex) {
+        return layerIndex > firstLayer
+                ? layerGraphName(layerIndex - 1)
+                : GraphNames.ACTIVATION_UPDATE;
+    }
+
+    @Override
+    protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
+        return appendFFNLayer(null, layerIndex);
     }
 
     // @formatter:off
@@ -89,22 +107,6 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
      * </pre>
      */
     // @formatter:on
-    /**
-     * Each layer names the graph it consumes from: the packed projections are consumed by name from
-     * their repack graph, and a graph that consumes anything by name takes nothing through an
-     * unnamed consume. The first layer takes its input from the activation graph, which is also the
-     * name of a later pipeline stage's receiving graph.
-     */
-    @Override
-    protected String predecessorGraphName(int layerIndex) {
-        return layerIndex > firstLayer ? layerGraphName(layerIndex - 1) : "activationUpdate";
-    }
-
-    @Override
-    protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        return appendFFNLayer(null, layerIndex);
-    }
-
     @Override
     protected TaskGraph appendFFNLayer(TaskGraph existing, int layerIndex) {
         boolean firstInGraph = existing == null;
@@ -120,8 +122,8 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
                 unifiedLayer.consumeFromDevice(state.workspace.wrapX);
             }
         }
-        // The projections as tensors: a packed one reaches the device through its repack graph,
-        // which turns the uploaded blocks into tiles before any kernel reads them.
+        // The projections as tensors: a prepacked one reaches the device through its
+        // prepacking graph, which prepacks the uploaded blocks before any kernel reads them.
         Object[] layerWeights = {
             weights.rms_att_weightLayered[layerIndex].asFloatArray(),
             weights.wqLayered[layerIndex],
@@ -136,12 +138,11 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
         String weightSrc = weightSourceGraphName(layerIndex);
         Object[][] binding = weightBinding(weightSrc, layerIndex, layerWeights);
         if (binding[0].length > 0) {
-            unifiedLayer.consumeFromDevice(
-                    weightSrc,
-                    org.beehive.jitllm.backend.tornado.plan.PackedRepack.deviceArrays(binding[0]));
+            unifiedLayer.consumeFromDevice(weightSrc, WeightPrepacker.deviceArrays(binding[0]));
         }
         if (binding[1].length > 0) {
-            state.workspace.packedRepack.upload(unifiedLayer, binding[1]);
+            state.workspace.prepacker.configureGraphInputs(
+                    unifiedLayer, state.workspace.prepacking, binding[1]);
         }
         if (firstInGraph) {
             unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
@@ -204,9 +205,9 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
                     weights.wvLayered[layerIndex],
                     config.kvDim());
         } else {
-            if (weights.wqLayered[layerIndex].isPackedQ4()) {
-                // Packed weights have only the integer-dot kernels.
-                throw PackedWeights.noPackedKernel(
+            if (state.workspace.prepacking.prepackedQ4(weights.wqLayered[layerIndex])) {
+                // Prepacked weights have only the integer-dot kernels.
+                throw WeightPrepacking.noPrepackedKernel(
                         "llama decode without packed integer dot products");
             }
             // Llama's query width is dim; the kernel takes it explicitly so the same code serves a
@@ -283,7 +284,7 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
                 state.workspace.tempFFN);
 
-        if (dp4a() && weights.w1Layered[layerIndex].isPackedQ4()) {
+        if (dp4a() && state.workspace.prepacking.prepackedQ4(weights.w1Layered[layerIndex])) {
             unifiedLayer.task(
                     tp + "ffn_gate_up",
                     TransformerComputeKernelsQ4_0Packed::fusedFFNGateUpSiLUQ4_0Packed,
@@ -397,7 +398,7 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
 
     private void packedProjection(
             TaskGraph graph, String name, FloatArray out, TornadoTensor w, int rows) {
-        if (w.isPackedQ4()) {
+        if (state.workspace.prepacking.prepackedQ4(w)) {
             graph.task(
                     name,
                     TransformerComputeKernelsQ4_0Packed::matrixVectorQ4_0Packed,
@@ -442,7 +443,7 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
             TornadoTensor w,
             int n,
             int rows) {
-        if (w.isPackedQ4()) {
+        if (state.workspace.prepacking.prepackedQ4(w)) {
             graph.task(
                     name,
                     TransformerComputeKernelsQ4_0Packed::matrixVectorQ4_0Packed,
@@ -474,9 +475,9 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
         return PackedActivationTasks.projectionWorker(rows, PACKED_LOCAL);
     }
 
-    /** The grid for a projection over {@code w}: a 16-row group per workgroup when it is packed. */
-    private static WorkerGrid packedWorker(int rows, TornadoTensor w, boolean fused) {
-        if (w.isPackedQ4()) {
+    /** The grid for a projection over {@code w}: a 16-row group per workgroup when it is tiled. */
+    private WorkerGrid packedWorker(int rows, TornadoTensor w, boolean fused) {
+        if (state.workspace.prepacking.prepackedQ4(w)) {
             int local =
                     fused
                             ? TransformerComputeKernelsQ4_0Packed.FUSED_LOCAL

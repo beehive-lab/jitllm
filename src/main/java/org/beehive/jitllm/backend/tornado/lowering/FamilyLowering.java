@@ -5,6 +5,7 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.program.InferenceProgram;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 
 /**
  * One family's lowering: it validates the programs it claims and builds their compiled form.
@@ -21,7 +22,7 @@ import org.beehive.jitllm.runtime.metrics.MetricsSink;
 interface FamilyLowering {
 
     /** The architecture identity this lowering's programs carry. */
-    org.beehive.jitllm.runtime.model.ArchitectureId architecture();
+    ArchitectureId architecture();
 
     /** Whether this lowering can handle {@code program}, without throwing. */
     default boolean supports(InferenceProgram program) {

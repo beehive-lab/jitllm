@@ -2,18 +2,19 @@ package org.beehive.jitllm.model.loader;
 
 import java.io.IOException;
 import java.nio.channels.FileChannel;
+import java.util.HashMap;
 import java.util.Map;
 import org.beehive.jitllm.auxiliary.Pair;
 import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.format.DataTypeMapping;
 import org.beehive.jitllm.format.GGMLTensorEntry;
-import org.beehive.jitllm.format.GGMLType;
 import org.beehive.jitllm.format.GGUF;
 import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
-import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.tokenizer.Tokenizer;
 import org.beehive.jitllm.tokenizer.Vocabulary;
 
@@ -49,21 +50,28 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
         this.useTornadovm = useTornadovm;
     }
 
+    /** Each tensor's representation in the file, by name: what the retention rule reads. */
+    protected static Map<String, DataType> sourceTypes(Map<String, GGMLTensorEntry> tensorEntries) {
+        Map<String, DataType> types = new HashMap<>();
+        tensorEntries.forEach(
+                (name, entry) -> types.put(name, DataTypeMapping.sourceType(entry.ggmlType())));
+        return types;
+    }
+
     /**
      * The activation representation this model runs with, from GGUF's {@code general.file_type}.
      *
-     * <p>Not the same question as the weights' type: every quantization the GPU cannot execute
-     * directly is materialized as Q8_0 (see {@link #effectiveGpuWeightType}), so they all report
-     * Q8_0 activations. Static because it reads only its argument — which also makes it testable
-     * without standing up a loader.
+     * <p>Not the same question as the weights' type: every quantized file quantizes its activations
+     * to Q8_0 blocks, so they all report Q8_0 activations. Static because it reads only its
+     * argument — which also makes it testable without standing up a loader.
      */
     protected static String getModelQuantization(Map<String, Object> metadata) {
         int modelQuantizationAsInt = (int) metadata.get("general.file_type");
         return switch (modelQuantizationAsInt) {
             case 1 -> "FP16";
-            case 2 ->
-                    "Q8_0"; // Q4_0 — decoded directly on the CPU, materialized as Q8_0 for the GPU
+            case 2 -> "Q8_0"; // Q4_0 — its activations are quantized to Q8_0 blocks
             case 32 -> "FP16"; // MOSTLY_BF16 — BF16 weights use FP16 activation buffers
+            case 3 -> "Q8_0"; // Q4_1
             case 7 -> "Q8_0";
             case 14, 15 -> "Q8_0"; // Q4_K_S, Q4_K_M (K-quants use Q8_0 activations)
             case 16, 17 -> "Q8_0"; // Q5_K_S, Q5_K_M
@@ -76,33 +84,12 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
         };
     }
 
-    /**
-     * Returns the effective GPU weight type for TornadoVM execution. K-quant types (Q4_K, Q5_K,
-     * Q6_K) are dequantized to Q8_0 at load time.
-     */
-    /**
-     * @deprecated Use {@code DataTypeMapping.materializedType(fileType, ExecutionTarget.GPU)}. Kept
-     *     while the diagnostic below still speaks the file's vocabulary; it answers in file types,
-     *     which is what made the collapse invisible in the first place.
-     */
-    @Deprecated
-    protected static GGMLType effectiveGpuWeightType(GGMLType ggmlType) {
-        // Delegates to the mapping so the collapse is stated once and tested. A type this
-        // engine does not execute at all is left alone here rather than rejected: the callers
-        // already refuse anything that is not F16 or Q8_0, with a message naming the type.
-        // BF16 collapses to F16 for the GPU, which is what #120's explicit switch did here.
-        if (!DataTypeMapping.isSupported(ggmlType, ExecutionTarget.GPU)) {
-            return ggmlType;
-        }
-        return DataTypeMapping.asFileType(
-                DataTypeMapping.materializedType(ggmlType, ExecutionTarget.GPU));
-    }
-
     private static String fileTypeName(int fileType) {
         return switch (fileType) {
             case 0 -> "F32";
             case 1 -> "F16";
             case 2 -> "Q4_0";
+            case 3 -> "Q4_1";
             case 32 -> "BF16";
             case 7 -> "Q8_0";
             case 14 -> "Q4_K_S";
@@ -141,7 +128,7 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
                                 fileChannel,
                                 gguf.getTensorDataOffset(),
                                 gguf.getTensorInfos(),
-                                org.beehive.jitllm.backend.tornado.device.TornadoDevices.current());
+                                TornadoDevices.current());
             } else {
                 tensorEntries =
                         GGUF.loadTensorsStandard(
@@ -158,6 +145,17 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
             throw new ModelLoadException(
                     DiagnosticCode.MODEL_MALFORMED.prefix() + "Failed to load model", e);
         }
+    }
+
+    /**
+     * The configuration alone, from the metadata: the vocabulary it is sized by is read, and no
+     * tokenizer, tensor or weight is built. What the memory preflight needs from a file it has not
+     * loaded yet.
+     */
+    public final C loadConfiguration() {
+        Map<String, Object> metadata = gguf.getMetadata();
+        this.vocabulary = loadVocabulary(metadata);
+        return createConfiguration(metadata);
     }
 
     /**

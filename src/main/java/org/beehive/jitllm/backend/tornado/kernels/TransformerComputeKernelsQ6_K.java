@@ -39,6 +39,14 @@ public final class TransformerComputeKernelsQ6_K {
     private static final int SCALES_OFFSET = 192;
     private static final int D_OFFSET = 208;
 
+    /**
+     * Prompt rows a tiled batch workgroup covers: eight, as for Q5_K, whose decode is as costly.
+     */
+    private static final int ROW_TILE = 8;
+
+    /** Output rows a tiled batch workgroup covers, as for Q5_K. */
+    private static final int COL_TILE = 2;
+
     private TransformerComputeKernelsQ6_K() {}
 
     /**
@@ -98,34 +106,83 @@ public final class TransformerComputeKernelsQ6_K {
 
     /**
      * Decodes a Q6_K weight into FP16 at {@code destOffset} of {@code out}, for a GEMM that reads
-     * FP16 operands. One thread per element of the {@code n}; the row width a multiple of 256, so
-     * element {@code i} lies in super-block {@code i / 256}.
+     * FP16 operands. Lane {@code g} decodes elements {@code 4g} to {@code 4g + 3}: one scale run's,
+     * so {@code d}, the scale and the byte positions are decoded once for the four and their {@code
+     * ql} and {@code qh} bytes are consecutive. Any grid of at least {@code n / 4} lanes; the rest
+     * do nothing.
      */
     public static void dequantizeQ6_KToFP16(
             KernelContext context, ByteArray w, HalfFloatArray out, int destOffset, int n) {
         int gid = context.globalIdx;
-        if (gid < n) {
+        if (gid < n >>> 2) {
             // decode(...) copied in with its branches as selects: called through the helper, the
             // CUDA backend fails the FrameState dominance check on the FP16 store.
-            int block = gid / QK_K;
+            int first = gid << 2;
+            int block = first / QK_K;
             int blockByteOffset = block * BLOCK_BYTES;
-            int withinBlock = gid - block * QK_K;
+            int withinBlock = first - block * QK_K;
             float d = w.getHalfFloat(blockByteOffset + D_OFFSET).getFloat32();
             int halfIndex = withinBlock / 128;
             int posInHalf = withinBlock - halfIndex * 128;
             int groupInHalf = posInHalf / 32;
             int posInGroup = posInHalf - groupInHalf * 32;
-            int qlBase = blockByteOffset + halfIndex * 64;
-            int qhBase = blockByteOffset + QH_OFFSET + halfIndex * 32;
+            int qlBase = blockByteOffset + halfIndex * 64 + (groupInHalf & 1) * 32 + posInGroup;
+            int qhBase = blockByteOffset + QH_OFFSET + halfIndex * 32 + posInGroup;
             int scBase = blockByteOffset + SCALES_OFFSET + halfIndex * 8;
             int is = posInGroup / 16;
-            int qh = w.get(qhBase + posInGroup) & 0xFF;
-            int ql = w.get(qlBase + (groupInHalf & 1) * 32 + posInGroup) & 0xFF;
-            int lowBits = (ql >> ((groupInHalf >> 1) * 4)) & 0xF;
-            int highPair = (qh >> (groupInHalf * 2)) & 3;
-            int qValue = (lowBits | (highPair << 4)) - 32;
             int scale = w.get(scBase + is + groupInHalf * 2);
-            out.set(destOffset + gid, new HalfFloat(d * scale * qValue));
+            int lowShift = (groupInHalf >> 1) * 4;
+            int highShift = groupInHalf * 2;
+            for (int j = 0; j < 4; j++) {
+                int qh = w.get(qhBase + j) & 0xFF;
+                int ql = w.get(qlBase + j) & 0xFF;
+                int lowBits = (ql >> lowShift) & 0xF;
+                int highPair = (qh >> highShift) & 3;
+                int qValue = (lowBits | (highPair << 4)) - 32;
+                out.set(destOffset + first + j, new HalfFloat(d * scale * qValue));
+            }
+        }
+    }
+
+    /**
+     * {@link #dequantizeQ6_KToFP16} into a weight's resident FP16 copy, skipped once {@code
+     * done[flag]} is set, on {@code TransformerBatchPrefillKernels.dequantizeQ8_0ToFP16Once}'s
+     * fixed striding grid.
+     */
+    public static void dequantizeQ6_KToFP16Once(
+            KernelContext context,
+            ByteArray w,
+            HalfFloatArray out,
+            int destOffset,
+            int n,
+            IntArray done,
+            int flag) {
+        int gid = context.globalIdx;
+        if (gid < TransformerBatchPrefillKernels.DECODE_ONCE_LANES && done.get(flag) == 0) {
+            for (int i = gid; i < n; i += TransformerBatchPrefillKernels.DECODE_ONCE_LANES) {
+                // decode(...) copied in with its branches as selects: called through the helper,
+                // the
+                // CUDA backend fails the FrameState dominance check on the FP16 store.
+                int block = i / QK_K;
+                int blockByteOffset = block * BLOCK_BYTES;
+                int withinBlock = i - block * QK_K;
+                float d = w.getHalfFloat(blockByteOffset + D_OFFSET).getFloat32();
+                int halfIndex = withinBlock / 128;
+                int posInHalf = withinBlock - halfIndex * 128;
+                int groupInHalf = posInHalf / 32;
+                int posInGroup = posInHalf - groupInHalf * 32;
+                int qlBase = blockByteOffset + halfIndex * 64;
+                int qhBase = blockByteOffset + QH_OFFSET + halfIndex * 32;
+                int scBase = blockByteOffset + SCALES_OFFSET + halfIndex * 8;
+                int is = posInGroup / 16;
+                int qh = w.get(qhBase + posInGroup) & 0xFF;
+                int ql = w.get(qlBase + (groupInHalf & 1) * 32 + posInGroup) & 0xFF;
+                int lowBits = (ql >> ((groupInHalf >> 1) * 4)) & 0xF;
+                int highPair = (qh >> (groupInHalf * 2)) & 3;
+                int qValue = (lowBits | (highPair << 4)) - 32;
+                int scale = w.get(scBase + is + groupInHalf * 2);
+                out.set(destOffset + i, new HalfFloat(d * scale * qValue));
+            }
         }
     }
 
@@ -174,21 +231,100 @@ public final class TransformerComputeKernelsQ6_K {
         return d * scale * qValue;
     }
 
-    /** One row's dot product against {@code x}, reduced through shared memory. */
+    /** The byte at {@code index} as a signed scale, read as {@link #decode} reads it. */
+    private static int signedByte(ByteArray w, int index) {
+        int value = w.get(index) & 0xFF;
+        if (value > 127) {
+            value = value - 256;
+        }
+        return value;
+    }
+
+    /**
+     * One row's dot product against {@code x}, reduced through shared memory.
+     *
+     * <p>A thread takes thirty-two weights per step: eight consecutive positions of a half-block's
+     * thirty-two, in each of its four groups, the layout of llama.cpp's Metal {@code
+     * kernel_mul_mv_q6_K_f32}. The four groups at one position are built from the same {@code qh}
+     * byte and two {@code ql} bytes. Those are read four at a time, as words of two two-byte loads
+     * ({@link #matrixVectorGenericQ6_KDP4A} documents why every address is even), and the six-bit
+     * values are assembled on the whole word, four weights per operation. Each weight is still
+     * {@code d * scale * q} as {@link #decode} computes it; only the order of the summation
+     * differs. {@code n} is a multiple of 256.
+     *
+     * <p>Measured on Qwen3-0.6B Q4_K_M on an M4 Pro, the vocabulary projection per call (profiler):
+     * 11,433 µs one weight per step, 3,445 µs sixteen weights from byte loads, 2,699 µs as here.
+     */
     private static float rowDotShared(
             KernelContext context, int localSize, FloatArray x, ByteArray w, int n, int rowId) {
+        return rowDotShared(context, localSize, x, 0, w, n, rowId);
+    }
+
+    /**
+     * The same reduction against the activation that starts at {@code xOffset}: one row of a batch,
+     * or one expert slot's hidden activation.
+     */
+    static float rowDotShared(
+            KernelContext context,
+            int localSize,
+            FloatArray x,
+            int xOffset,
+            ByteArray w,
+            int n,
+            int rowId) {
         int localId = context.localIdx;
         float[] localSums = context.allocateFloatLocalArray(localSize);
 
-        int blocksPerRow = (n + QK_K - 1) / QK_K;
-        int rowBlockOffset = rowId * blocksPerRow;
+        int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
 
         float partialSum = 0.0f;
-        for (int j = localId; j < n; j += localSize) {
-            int blockIdx = j / QK_K;
-            int withinBlock = j - blockIdx * QK_K;
-            int blockByteOffset = (rowBlockOffset + blockIdx) * BLOCK_BYTES;
-            partialSum += decode(w, blockByteOffset, withinBlock) * x.get(j);
+        for (int unit = localId; unit < n / 32; unit += localSize) {
+            int half = unit / 4;
+            int posInGroup = (unit - half * 4) * 8;
+            int blockIdx = half / 2;
+            int halfIndex = half - blockIdx * 2;
+            int blockByteOffset = rowByteOffset + blockIdx * BLOCK_BYTES;
+            float d = w.getHalfFloat(blockByteOffset + D_OFFSET).getFloat32();
+
+            int scaleAt = blockByteOffset + SCALES_OFFSET + halfIndex * 8 + posInGroup / 16;
+            float dScale0 = d * signedByte(w, scaleAt);
+            float dScale1 = d * signedByte(w, scaleAt + 2);
+            float dScale2 = d * signedByte(w, scaleAt + 4);
+            float dScale3 = d * signedByte(w, scaleAt + 6);
+
+            int qlAt = blockByteOffset + halfIndex * 64 + posInGroup;
+            int qhAt = blockByteOffset + QH_OFFSET + halfIndex * 32 + posInGroup;
+            int xAt = xOffset + blockIdx * QK_K + halfIndex * 128 + posInGroup;
+            float sum0 = 0.0f;
+            float sum1 = 0.0f;
+            float sum2 = 0.0f;
+            float sum3 = 0.0f;
+            for (int k = 0; k < 8; k += 4) {
+                int ql1Word =
+                        (w.getHalfFloat(qlAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int ql2Word =
+                        (w.getHalfFloat(qlAt + 32 + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + 34 + k).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int qhWord =
+                        (w.getHalfFloat(qhAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qhAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int raw0 = (ql1Word & 0x0F0F0F0F) | ((qhWord & 0x03030303) << 4);
+                int raw1 = (ql2Word & 0x0F0F0F0F) | (((qhWord >>> 2) & 0x03030303) << 4);
+                int raw2 = ((ql1Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 4) & 0x03030303) << 4);
+                int raw3 = ((ql2Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 6) & 0x03030303) << 4);
+                for (int b = 0; b < 4; b++) {
+                    int shift = 8 * b;
+                    sum0 += (((raw0 >>> shift) & 0xFF) - 32) * x.get(xAt + k + b);
+                    sum1 += (((raw1 >>> shift) & 0xFF) - 32) * x.get(xAt + 32 + k + b);
+                    sum2 += (((raw2 >>> shift) & 0xFF) - 32) * x.get(xAt + 64 + k + b);
+                    sum3 += (((raw3 >>> shift) & 0xFF) - 32) * x.get(xAt + 96 + k + b);
+                }
+            }
+            partialSum += dScale0 * sum0 + dScale1 * sum1 + dScale2 * sum2 + dScale3 * sum3;
         }
 
         localSums[localId] = partialSum;
@@ -462,5 +598,257 @@ public final class TransformerComputeKernelsQ6_K {
         }
         float gate = hb.get(i);
         hb.set(i, (gate / (1.0f + TornadoMath.exp(-gate))) * hb2.get(i));
+    }
+
+    /** Prompt rows a tiled batch workgroup covers. */
+    public static int rowTile() {
+        return ROW_TILE;
+    }
+
+    /** Output rows a tiled batch workgroup covers. */
+    public static int colTile() {
+        return COL_TILE;
+    }
+
+    // @formatter:off
+    /**
+     * {@code out[b][row] = w[row]·x[b]} for a tile of up to {@link #ROW_TILE} prompt rows, one
+     * workgroup per (row tile, output row tile), shaped like {@code
+     * TransformerComputeKernelsQ5_K.matrixVectorTiledBatchQ5_K}: a warp takes one 32-weight
+     * sub-block, a lane one weight of it, and each weight is decoded once for every row of the
+     * tile.
+     *
+     * <p>Rows past {@code activeRows} contribute nothing and are not written, which is what makes a
+     * partially filled chunk produce the same numbers as a full one.
+     */
+    // @formatter:on
+    public static void matrixVectorTiledBatchQ6_K(
+            KernelContext context,
+            FloatArray xBatch,
+            FloatArray outBatch,
+            ByteArray w,
+            int n,
+            int d,
+            int activeRows,
+            int localWorkGroupSize) {
+        int colGroups = (d + COL_TILE - 1) / COL_TILE;
+        int groupId = context.groupIdx;
+        int tile = groupId / colGroups;
+        int colGroup = groupId - tile * colGroups;
+        int firstRow = tile * ROW_TILE;
+        int firstCol = colGroup * COL_TILE;
+        if (firstRow >= activeRows) {
+            return;
+        }
+        int localId = context.localIdx;
+
+        float[] localSums =
+                context.allocateFloatLocalArray(localWorkGroupSize * ROW_TILE * COL_TILE);
+        int blocksPerRow = (n + QK_K - 1) / QK_K;
+        int subBlocks = n / 32;
+
+        // Zeroed explicitly: a private array in generated device code is uninitialized stack.
+        float[] acc = new float[ROW_TILE * COL_TILE];
+        for (int t = 0; t < ROW_TILE * COL_TILE; t++) {
+            acc[t] = 0.0f;
+        }
+        float[] xs = new float[ROW_TILE];
+
+        int lane = localId & 31;
+        int warp = localId >> 5;
+        int warps = localWorkGroupSize >> 5;
+
+        for (int sb = warp; sb < subBlocks; sb += warps) {
+            int block = sb / 8;
+            int subInBlock = sb - block * 8;
+            int halfIndex = subInBlock >> 2;
+            int groupInHalf = subInBlock & 3;
+            int lowShift = (groupInHalf >> 1) * 4;
+            int highShift = groupInHalf * 2;
+            int j = sb * 32 + lane;
+
+            for (int r = 0; r < ROW_TILE; r++) {
+                int row = firstRow + r;
+                float value = 0.0f;
+                if (row < activeRows) {
+                    value = xBatch.get(row * n + j);
+                }
+                xs[r] = value;
+            }
+
+            for (int c = 0; c < COL_TILE; c++) {
+                int outRow = firstCol + c;
+                if (outRow < d) {
+                    int blockByteOffset = (outRow * blocksPerRow + block) * BLOCK_BYTES;
+                    float dScale = halfFromBytes(w, blockByteOffset + D_OFFSET);
+                    int ql =
+                            w.get(blockByteOffset + halfIndex * 64 + (groupInHalf & 1) * 32 + lane)
+                                    & 0xFF;
+                    int qh = w.get(blockByteOffset + QH_OFFSET + halfIndex * 32 + lane) & 0xFF;
+                    int q = (((ql >> lowShift) & 0xF) | (((qh >> highShift) & 3) << 4)) - 32;
+                    int scale =
+                            w.get(
+                                            blockByteOffset
+                                                    + SCALES_OFFSET
+                                                    + halfIndex * 8
+                                                    + (lane >> 4)
+                                                    + groupInHalf * 2)
+                                    & 0xFF;
+                    if (scale > 127) {
+                        scale = scale - 256;
+                    }
+                    float weight = dScale * scale * q;
+                    for (int r = 0; r < ROW_TILE; r++) {
+                        acc[c * ROW_TILE + r] += weight * xs[r];
+                    }
+                }
+            }
+        }
+
+        for (int t = 0; t < ROW_TILE * COL_TILE; t++) {
+            localSums[t * localWorkGroupSize + localId] = acc[t];
+        }
+        context.localBarrier();
+
+        for (int stride = localWorkGroupSize / 2; stride > 0; stride >>= 1) {
+            if (localId < stride) {
+                for (int t = 0; t < ROW_TILE * COL_TILE; t++) {
+                    localSums[t * localWorkGroupSize + localId] +=
+                            localSums[t * localWorkGroupSize + localId + stride];
+                }
+            }
+            context.localBarrier();
+        }
+
+        if (localId == 0) {
+            for (int c = 0; c < COL_TILE; c++) {
+                int outRow = firstCol + c;
+                for (int r = 0; r < ROW_TILE; r++) {
+                    int row = firstRow + r;
+                    int slot = c * ROW_TILE + r;
+                    if (outRow < d && row < activeRows) {
+                        outBatch.set(row * d + outRow, localSums[slot * localWorkGroupSize]);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * {@code out[b][row] += w[row]·x[b]} for a tile of rows. See {@link
+     * #matrixVectorTiledBatchQ6_K}.
+     */
+    public static void matrixVectorTiledBatchWithResidualQ6_K(
+            KernelContext context,
+            FloatArray xBatch,
+            FloatArray outBatch,
+            ByteArray w,
+            int n,
+            int d,
+            int activeRows,
+            int localWorkGroupSize) {
+        int colGroups = (d + COL_TILE - 1) / COL_TILE;
+        int groupId = context.groupIdx;
+        int tile = groupId / colGroups;
+        int colGroup = groupId - tile * colGroups;
+        int firstRow = tile * ROW_TILE;
+        int firstCol = colGroup * COL_TILE;
+        if (firstRow >= activeRows) {
+            return;
+        }
+        int localId = context.localIdx;
+
+        float[] localSums =
+                context.allocateFloatLocalArray(localWorkGroupSize * ROW_TILE * COL_TILE);
+        int blocksPerRow = (n + QK_K - 1) / QK_K;
+        int subBlocks = n / 32;
+
+        // Zeroed explicitly: a private array in generated device code is uninitialized stack.
+        float[] acc = new float[ROW_TILE * COL_TILE];
+        for (int t = 0; t < ROW_TILE * COL_TILE; t++) {
+            acc[t] = 0.0f;
+        }
+        float[] xs = new float[ROW_TILE];
+
+        int lane = localId & 31;
+        int warp = localId >> 5;
+        int warps = localWorkGroupSize >> 5;
+
+        for (int sb = warp; sb < subBlocks; sb += warps) {
+            int block = sb / 8;
+            int subInBlock = sb - block * 8;
+            int halfIndex = subInBlock >> 2;
+            int groupInHalf = subInBlock & 3;
+            int lowShift = (groupInHalf >> 1) * 4;
+            int highShift = groupInHalf * 2;
+            int j = sb * 32 + lane;
+
+            for (int r = 0; r < ROW_TILE; r++) {
+                int row = firstRow + r;
+                float value = 0.0f;
+                if (row < activeRows) {
+                    value = xBatch.get(row * n + j);
+                }
+                xs[r] = value;
+            }
+
+            for (int c = 0; c < COL_TILE; c++) {
+                int outRow = firstCol + c;
+                if (outRow < d) {
+                    int blockByteOffset = (outRow * blocksPerRow + block) * BLOCK_BYTES;
+                    float dScale = halfFromBytes(w, blockByteOffset + D_OFFSET);
+                    int ql =
+                            w.get(blockByteOffset + halfIndex * 64 + (groupInHalf & 1) * 32 + lane)
+                                    & 0xFF;
+                    int qh = w.get(blockByteOffset + QH_OFFSET + halfIndex * 32 + lane) & 0xFF;
+                    int q = (((ql >> lowShift) & 0xF) | (((qh >> highShift) & 3) << 4)) - 32;
+                    int scale =
+                            w.get(
+                                            blockByteOffset
+                                                    + SCALES_OFFSET
+                                                    + halfIndex * 8
+                                                    + (lane >> 4)
+                                                    + groupInHalf * 2)
+                                    & 0xFF;
+                    if (scale > 127) {
+                        scale = scale - 256;
+                    }
+                    float weight = dScale * scale * q;
+                    for (int r = 0; r < ROW_TILE; r++) {
+                        acc[c * ROW_TILE + r] += weight * xs[r];
+                    }
+                }
+            }
+        }
+
+        for (int t = 0; t < ROW_TILE * COL_TILE; t++) {
+            localSums[t * localWorkGroupSize + localId] = acc[t];
+        }
+        context.localBarrier();
+
+        for (int stride = localWorkGroupSize / 2; stride > 0; stride >>= 1) {
+            if (localId < stride) {
+                for (int t = 0; t < ROW_TILE * COL_TILE; t++) {
+                    localSums[t * localWorkGroupSize + localId] +=
+                            localSums[t * localWorkGroupSize + localId + stride];
+                }
+            }
+            context.localBarrier();
+        }
+
+        if (localId == 0) {
+            for (int c = 0; c < COL_TILE; c++) {
+                int outRow = firstCol + c;
+                for (int r = 0; r < ROW_TILE; r++) {
+                    int row = firstRow + r;
+                    int slot = c * ROW_TILE + r;
+                    if (outRow < d && row < activeRows) {
+                        int index = row * d + outRow;
+                        outBatch.set(
+                                index, outBatch.get(index) + localSums[slot * localWorkGroupSize]);
+                    }
+                }
+            }
+        }
     }
 }

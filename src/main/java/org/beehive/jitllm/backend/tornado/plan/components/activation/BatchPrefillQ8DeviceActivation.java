@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.plan.components.activation;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.State;
@@ -62,7 +63,7 @@ public class BatchPrefillQ8DeviceActivation implements ActivationTaskGraph {
         }
         KernelContext context = new KernelContext();
         this.itg =
-                new TaskGraph("prefillActivation")
+                new TaskGraph(GraphNames.PREFILL_ACTIVATION)
                         .transferToDevice(
                                 DataTransferMode.FIRST_EXECUTION,
                                 context,

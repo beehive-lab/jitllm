@@ -3,11 +3,26 @@ package org.beehive.jitllm.backend.tornado;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThrows;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Test;
 
 public class ExecutionPlanReleaseTest {
+
+    @Test
+    public void aCheckedFailureToCloseIsReportedAsIllegalState() {
+        Exception cause = new Exception("close failed");
+        IllegalStateException thrown =
+                assertThrows(
+                        IllegalStateException.class,
+                        () ->
+                                ExecutionPlanRelease.close(
+                                        () -> {
+                                            throw cause;
+                                        }));
+        assertSame(cause, thrown.getCause());
+    }
 
     @Test
     public void closesThePlanAndKeepsTheOriginalFailure() {

@@ -5,16 +5,21 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
+import org.beehive.jitllm.backend.tornado.ExecutionPlanRelease;
+import org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kv.TornadoKvStore;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
 import org.beehive.jitllm.backend.tornado.plan.BatchDecode;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepackingTaskGraphs;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.batch.BatchExecutor;
 import org.beehive.jitllm.runtime.batch.BatchSlots;
 import org.beehive.jitllm.runtime.kv.KvStorage;
@@ -42,8 +47,8 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * here would have given the codebase two admission policies to disagree with each other.
  *
  * <p>So this class owns exactly: the task graphs (activation, N decode layers, batched logits), the
- * per-step buffers, and the translation from {@link BatchSlots} to what the kernels read. The bench
- * keeps its own copy and its own numbers; nothing was deleted from it.
+ * per-step buffers, and the translation from {@link BatchSlots} to what the kernels read. The
+ * original harness now lives in the test sources.
  *
  * <p><b>Slot identity.</b> The batched kernels index the block table at {@code batchIndex *
  * blocksPerSlot + …}, so a request's batch position <b>is</b> its KV slot. The scheduler follows
@@ -63,6 +68,12 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
 
     private final TornadoExecutionPlan plan;
     private final GridScheduler gridScheduler;
+
+    /**
+     * The batch activation, the first inference graph: the prepacking graphs, if any, precede it.
+     */
+    private final int activationGraphIndex;
+
     private final int layerCount;
     private final int logitsGraphIndex;
 
@@ -79,13 +90,13 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
     /**
      * The continuous-batch plan compiles lazily on the first step, independently of master plans.
      */
-    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
+    public ExecutionInfo executionInfo() {
         var backend =
                 uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider.getTornadoRuntime()
                         .getBackend(0);
         var module = TornadoExecutionPlan.class.getModule().getDescriptor();
         String version = module == null ? "unknown" : module.rawVersion().orElse("unknown");
-        return new org.beehive.jitllm.runtime.backend.ExecutionInfo(
+        return new ExecutionInfo(
                 backend.getBackendType().name(),
                 backend.getDefaultDevice().getPhysicalDevice().getDeviceName(),
                 "TornadoVM " + version,
@@ -111,7 +122,7 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         Configuration config = model.configuration();
         TornadoWeights weights = (TornadoWeights) model.weights();
 
-        if (!org.beehive.jitllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend()) {
+        if (!TensorCoreSupport.isTensorCoreCapableBackend()) {
             throw new IllegalArgumentException(
                     "Continuous batching requires a CUDA device with tensor-core MMA support");
         }
@@ -224,7 +235,14 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
                                 vocab)
                         .transferToHost(DataTransferMode.EVERY_EXECUTION, sampledTokens);
 
+        // Initialization, when the session uses weight prepacking: built now, after the layer
+        // graphs
+        // that register its weights, but listed first and run first. Every inference index below
+        // starts after it.
+        WeightPrepackingTaskGraphs prepacking = state.workspace.prepacker.buildTaskGraphs();
+
         GridScheduler schedule = new GridScheduler();
+        prepacking.updateGridScheduler(schedule);
         activation.updateGridScheduler(schedule);
         updateLayerSchedule.accept(schedule);
         schedule.addWorkerGrid("batchLogits.rms_reduce", worker(batchSize * RMS_LOCAL, RMS_LOCAL));
@@ -234,30 +252,33 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         this.gridScheduler = schedule;
 
         List<ImmutableTaskGraph> all = new ArrayList<>();
+        all.addAll(prepacking.getImmutableTaskGraphs());
         all.add(activation.getImmutableTaskGraph());
         all.addAll(layerGraphs);
         all.add(logits.snapshot());
+        this.activationGraphIndex = prepacking.graphCount();
         this.layerCount = layerGraphs.size();
-        this.logitsGraphIndex = 1 + layerCount;
-        var packedRepack = state.workspace.packedRepack.appendGraphs(all, schedule);
+        this.logitsGraphIndex = activationGraphIndex + 1 + layerCount;
         this.plan = new TornadoExecutionPlan(all.toArray(new ImmutableTaskGraph[0]));
-        org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(plan, packedRepack);
+        prepacking.run(plan, schedule);
         var roles = new java.util.HashMap<Integer, String>();
-        roles.put(0, "batch activation");
-        org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.label(
-                roles, 1, layerCount, "layers");
+        roles.put(activationGraphIndex, "batch activation");
+        TaskGraphChainPrinter.label(roles, activationGraphIndex + 1, layerCount, "layers");
         roles.put(logitsGraphIndex, "logits and sampling");
-        org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.printIfRequested(
-                new org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.Chain(
+        var phases =
+                new java.util.ArrayList<>(
+                        TaskGraphChainPrinter.prepacking(roles, activationGraphIndex));
+        phases.add(
+                new TaskGraphChainPrinter.Phase(
+                        "engine step",
+                        "per engine step, all slots together",
+                        TaskGraphChainPrinter.span(activationGraphIndex, logitsGraphIndex)));
+        TaskGraphChainPrinter.printIfRequested(
+                new TaskGraphChainPrinter.Chain(
                         "continuous batching (" + batchSize + " slots)",
                         all,
                         schedule,
-                        List.of(
-                                new org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter.Phase(
-                                        "engine step",
-                                        "per engine step, all slots together",
-                                        org.beehive.jitllm.backend.tornado.TaskGraphChainPrinter
-                                                .span(0, logitsGraphIndex))),
+                        phases,
                         roles),
                 model);
 
@@ -312,9 +333,11 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
             }
         }
 
-        plan.withGraph(0).withGridScheduler(gridScheduler).execute();
+        plan.withGraph(activationGraphIndex).withGridScheduler(gridScheduler).execute();
         for (int layer = 0; layer < layerCount; layer++) {
-            plan.withGraph(1 + layer).withGridScheduler(gridScheduler).execute();
+            plan.withGraph(activationGraphIndex + 1 + layer)
+                    .withGridScheduler(gridScheduler)
+                    .execute();
         }
         plan.withGraph(logitsGraphIndex).withGridScheduler(gridScheduler).execute();
 
@@ -343,7 +366,7 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
     public void close() {
         if (!closed) {
             closed = true;
-            plan.freeDeviceMemory();
+            ExecutionPlanRelease.close(plan);
         }
     }
 

@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode;
 
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.Qwen3Q8_0FFNLayers;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.Qwen3State;
@@ -16,12 +17,11 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 public class Qwen3Q8_0FFNLayersPrefillDecode extends Qwen3Q8_0FFNLayers {
 
     public Qwen3Q8_0FFNLayersPrefillDecode(
-            String taskGraph,
             Qwen3State state,
             Qwen3TornadoWeights weights,
             Qwen3Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     /**
@@ -35,7 +35,7 @@ public class Qwen3Q8_0FFNLayersPrefillDecode extends Qwen3Q8_0FFNLayers {
 
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return (layerIndex == 0) ? "decodeActivation" : "layer_" + (layerIndex - 1);
+        return (layerIndex == 0) ? GraphNames.DECODE_ACTIVATION : GraphNames.layer(layerIndex - 1);
     }
 
     @Override
@@ -43,7 +43,7 @@ public class Qwen3Q8_0FFNLayersPrefillDecode extends Qwen3Q8_0FFNLayers {
         if (layerIndex == 0) {
             return super.configureLayerDataTransfers(layer, 0);
         }
-        String pred = "layer_" + (layerIndex - 1);
+        String pred = GraphNames.layer(layerIndex - 1);
         layer.consumeFromDevice(
                 pred,
                 context,
@@ -60,6 +60,9 @@ public class Qwen3Q8_0FFNLayersPrefillDecode extends Qwen3Q8_0FFNLayers {
         layer.consumeFromDevice(pred, state.workspace.wrapBlockTable);
         layer.consumeFromDevice(qwen3State.workspace.tempQcur, qwen3State.workspace.tempKcur);
         layer.consumeFromDevice(pred, state.workspace.wrapAttSplit);
+        if (splitsGateUp()) {
+            layer.consumeFromDevice(pred, qwen3State.workspace.wrapHb2);
+        }
         return layer;
     }
 }

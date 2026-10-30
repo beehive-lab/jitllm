@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.plan.SingleTokenForwardPlan;
+import org.beehive.jitllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout;
 
 // @formatter:off
 /**
@@ -17,13 +18,14 @@ import org.beehive.jitllm.backend.tornado.plan.SingleTokenForwardPlan;
  * TaskGraphs. The components of this chain are represented by the following components:
  *
  * <ul>
- *   <li>{@link #singleTokenActivation()} — embedding lookup → FP32 activation (graph 0)
- *   <li>{@link #singleTokenTransformerLayers()} — N transformer layer TaskGraphs (graphs 1.N)
- *   <li>{@link #singleTokenLogits(String)} — final RMSNorm + vocabulary projection (graph N+1)
+ *   <li>{@link #singleTokenActivation()} — embedding lookup → FP32 activation (the first inference
+ *       graph)
+ *   <li>{@link #singleTokenTransformerLayers()} — N transformer layer TaskGraphs
+ *   <li>{@link #singleTokenLogits(String)} — final RMSNorm + vocabulary projection (the last graph)
  * </ul>
  *
- * Note: Consult also the {@link
- * org.beehive.jitllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout}
+ * <p>The prepacking graphs, when the plan uses weight prepacking, come before them; {@link
+ * SingleTokenForwardTaskGraphLayout} gives every position.
  */
 // @formatter:on
 public interface SingleTokenForwardPlanComponents {

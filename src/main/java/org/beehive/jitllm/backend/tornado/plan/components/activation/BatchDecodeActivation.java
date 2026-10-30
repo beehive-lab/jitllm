@@ -1,10 +1,13 @@
 package org.beehive.jitllm.backend.tornado.plan.components.activation;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
+import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -56,38 +59,47 @@ public class BatchDecodeActivation implements ActivationTaskGraph {
             String lastBatchLayerId,
             boolean isQ8,
             boolean q4Embeddings) {
+        this(
+                state,
+                config,
+                lastBatchLayerId,
+                q4Embeddings ? DataType.Q4_0 : isQ8 ? DataType.Q8_0 : DataType.F16);
+    }
+
+    /**
+     * @param embedding the token embedding tensor's own representation, which is what is staged
+     *     into {@code embeddingX} and converted on the device
+     */
+    public BatchDecodeActivation(
+            State state, Configuration config, String lastBatchLayerId, DataType embedding) {
         this.dim = config.dim();
         KernelContext ctx = new KernelContext();
-        this.itg = buildGraph(ctx, state, lastBatchLayerId, isQ8, q4Embeddings).snapshot();
+        this.itg = buildGraph(ctx, state, lastBatchLayerId, embedding).snapshot();
     }
 
     // @formatter:off
     private TaskGraph buildGraph(
-            KernelContext ctx,
-            State state,
-            String lastBatchLayerId,
-            boolean isQ8,
-            boolean q4Embeddings) {
+            KernelContext ctx, State state, String lastBatchLayerId, DataType embedding) {
         boolean fp16KV = state.usesFp16KeyValueCache();
         Object keyCache = fp16KV ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
         Object valueCache =
                 fp16KV ? state.workspace.wrapValueCacheFP16 : state.workspace.wrapValueCache;
         TaskGraph tg =
-                new TaskGraph("decodeActivation")
+                new TaskGraph(GraphNames.DECODE_ACTIVATION)
                         .consumeFromDevice(lastBatchLayerId, keyCache, valueCache)
                         .transferToDevice(
                                 DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX);
         // The block table travels the same chain as the caches it addresses: the batch-prefill
         // graphs allocate it, this graph passes it through, decode layer 0 consumes it.
         tg.consumeFromDevice(lastBatchLayerId, state.workspace.wrapBlockTable);
-        if (q4Embeddings) {
+        if (Activation.keptEmbedding(embedding)) {
             tg.task(
                     "updateX",
-                    TransformerComputeKernels::convertQ4_0toFP32,
+                    Activation.embeddingRowDecode(embedding),
                     ctx,
                     (ByteArray) state.workspace.embeddingX,
                     state.workspace.wrapX);
-        } else if (isQ8) {
+        } else if (embedding == DataType.Q8_0) {
             tg.task(
                     "updateX",
                     TransformerComputeKernels::convertQ8_0toFP32,

@@ -51,7 +51,7 @@ public class LlamaFP16MetalKernelSelectionAccelTest {
         // Constructing this snapshots every layer's TaskGraph, sketching qkv_projection,
         // attn_output_proj, ffn_down_proj and rms_ffn_gate_up. A TornadoBailoutRuntimeException
         // here means the fix regressed - the assertion below is reached only if it did not.
-        new LlamaFP16FFNLayers("llamaFFNRegressionProbe", state, weights, config, schedulerType);
+        new LlamaFP16FFNLayers(state, weights, config, schedulerType);
 
         assertTrue(
                 "this test only means something on a device with the verified capability",

@@ -1,7 +1,9 @@
 package org.beehive.jitllm.backend.tornado.tensor;
 
 import java.lang.foreign.MemorySegment;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 
 /**
@@ -19,9 +21,9 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
  * </pre>
  *
  * <p>A weight is {@code d * scale(sub) * q - dmin * min(sub)}, decoded inside the dot product by
- * {@link org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K} — the same shape
- * the Q8_0 kernels already use, which is why this needs no new plumbing: the layers pass {@link
- * #asByteArray()} just as they do for Q8_0, and only the kernel that reads it differs.
+ * {@link TransformerComputeKernelsQ4_K} — the same shape the Q8_0 kernels already use, which is why
+ * this needs no new plumbing: the layers pass {@link #asByteArray()} just as they do for Q8_0, and
+ * only the kernel that reads it differs.
  *
  * <p><b>Why this exists</b>: the GPU used to materialize Q4_K as Q8_0 at load, which nearly doubled
  * its footprint — a 13.7 GiB Devstral needed ~24 GiB of device memory, and exhausted a 24 GiB
@@ -44,12 +46,13 @@ public class Q4_KTornadoTensor extends TornadoTensor {
 
     private final ByteArray tornadoNativeArray;
 
-    public Q4_KTornadoTensor(ByteArray byteArray) {
+    public Q4_KTornadoTensor(ByteArray byteArray, Shape shape) {
+        super(shape);
         this.tornadoNativeArray = byteArray;
     }
 
-    public static Q4_KTornadoTensor fromTornadoMemorySegment(MemorySegment segment) {
-        return new Q4_KTornadoTensor(ByteArray.fromSegmentShallow(segment));
+    public static Q4_KTornadoTensor fromTornadoMemorySegment(MemorySegment segment, Shape shape) {
+        return new Q4_KTornadoTensor(ByteArray.fromSegmentShallow(segment), shape);
     }
 
     @Override

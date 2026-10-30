@@ -4,6 +4,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.beehive.jitllm.backend.tornado.MlxPrefill;
+import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.BatchMmaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4AttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4BatchPrefillKernels;
@@ -14,7 +17,11 @@ import org.beehive.jitllm.backend.tornado.kernels.MlxPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TensorCoreAttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -350,10 +357,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             buildMlxProjections();
         }
 
-        this.gemmAttention =
-                fp16KeyValue
-                        && org.beehive.jitllm.backend.tornado.TensorCoreSupport
-                                .isTensorCoreCapableBackend();
+        this.gemmAttention = fp16KeyValue && TensorCoreSupport.isTensorCoreCapableBackend();
         if (gemmAttention) {
             paddedPositions = (config.contextLength() + 127) / 128 * 128;
             headsPerPass = headsPerPass(nHead, paddedBatch, paddedPositions);
@@ -395,10 +399,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 return false;
             }
         }
-        return !nativeProjections
-                && mlx == null
-                && org.beehive.jitllm.backend.tornado.TensorCoreSupport
-                        .isTensorCoreCapableBackend();
+        return !nativeProjections && mlx == null && TensorCoreSupport.isTensorCoreCapableBackend();
     }
 
     /** The most query heads per attention pass whose scores fit in 64 MB, a divisor of all. */
@@ -583,7 +584,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         String graph = layer.getTaskGraphName() + ".";
         layer.task(
                 task,
-                w.isPackedQ4()
+                state.workspace.prepacking.prepackedQ4(w)
                         ? Int8GemmKernels::gemmInt8Q4_0Packed
                         : w.dataType() == DataType.Q4_0
                                 ? Int8GemmKernels::gemmInt8Q4_0
@@ -626,11 +627,9 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         }
     }
 
-    /** Multiprocessors of the device, or 0 where it cannot say. */
-
     /** The streaming multiprocessors of the device this plan is built for; 0 when unknown. */
     private static int smCount() {
-        return org.beehive.jitllm.backend.tornado.device.TornadoDevices.target().computeUnits();
+        return TornadoDevices.target().computeUnits();
     }
 
     // @formatter:off
@@ -711,10 +710,11 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     /**
      * Refuses a projection this plan has no decoder for, by name.
      *
-     * <p>Three block layouts reach the trunk: 34 bytes to thirty-two weights for Q8_0, 18 for Q4_0,
-     * and 20 for Q4_1 — which this family needs for exactly four tensors, {@code ffn_down} on
-     * blocks 0-3 of the Q4_0 file. Reading one as another is a plausible-looking activation and
-     * wrong output, so an unknown representation is a missing case and not something to guess at.
+     * <p>Six block layouts reach the trunk: 34 bytes to thirty-two weights for Q8_0, 18 for Q4_0,
+     * 20 for Q4_1 ({@code ffn_down} on blocks 0-3 of the Q4_0 file), and 144, 176 and 210 bytes to
+     * 256 for Q4_K, Q5_K and Q6_K, which a K-quant file kept as it is mixes per tensor. Reading one
+     * as another is a plausible-looking activation and wrong output, so an unknown representation
+     * is a missing case and not something to guess at.
      */
     // @formatter:on
     private static void requireDecodable(TornadoTensor t, String name) {
@@ -722,13 +722,16 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         if (type != DataType.Q8_0
                 && type != DataType.Q4_0
                 && type != DataType.Q4_1
+                && type != DataType.Q4_K
+                && type != DataType.Q5_K
+                && type != DataType.Q6_K
                 && type != DataType.F16) {
             throw new UnsupportedOperationException(
                     "gemma4 batched prefill has no decoder for "
                             + type
                             + " ("
                             + name
-                            + "); the trunk must be Q8_0, Q4_0, Q4_1 or F16");
+                            + "); the trunk must be Q8_0, Q4_0, Q4_1, Q4_K, Q5_K, Q6_K or F16");
         }
     }
 
@@ -749,10 +752,10 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      */
     // @formatter:on
     private void addDequant(TaskGraph layer, String taskName, TornadoTensor w, int destOffset) {
-        if (w.isPackedQ4()) {
-            // A packed weight has only the int8 GEMM (-Djitllm.gemma4.noInt8Prefill and native
+        if (state.workspace.prepacking.prepackedQ4(w)) {
+            // A prepacked weight has only the int8 GEMM (-Djitllm.gemma4.noInt8Prefill and native
             // projections are not open to it).
-            throw org.beehive.jitllm.backend.tornado.tensor.PackedWeights.noPackedKernel(
+            throw WeightPrepacking.noPrepackedKernel(
                     "gemma4 batch-prefill task '" + taskName + "'");
         }
         switch (w.dataType()) {
@@ -780,6 +783,26 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             w.asByteArray(),
                             state.workspace.weightsF16Scratch,
                             destOffset);
+            case Q4_K, Q5_K, Q6_K ->
+                    layer.task(
+                            taskName,
+                            switch (w.dataType()) {
+                                case Q4_K -> TransformerComputeKernelsQ4_K::dequantizeQ4_KToFP16;
+                                case Q5_K -> TransformerComputeKernelsQ5_K::dequantizeQ5_KToFP16;
+                                default -> TransformerComputeKernelsQ6_K::dequantizeQ6_KToFP16;
+                            },
+                            context,
+                            w.asByteArray(),
+                            state.workspace.weightsF16Scratch,
+                            destOffset,
+                            // Elements: 256 to a super-block of 144, 176 or 210 bytes.
+                            w.asByteArray().getSize()
+                                    / switch (w.dataType()) {
+                                        case Q4_K -> 144;
+                                        case Q5_K -> 176;
+                                        default -> 210;
+                                    }
+                                    * 256);
             case F16 ->
                     layer.task(
                             taskName,
@@ -807,14 +830,12 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         }
         return fp16KeyValue
                 && config.headDim(layerIndex) % Gemma4AttentionKernels.TC_HEAD == 0
-                && org.beehive.jitllm.backend.tornado.TensorCoreSupport
-                        .isTensorCoreCapableBackend();
+                && TensorCoreSupport.isTensorCoreCapableBackend();
     }
 
     /** Whether this state's prefill projections are cuBLAS GEMMs: requested, and available. */
     static boolean nativeProjections(Gemma4State state) {
-        return org.beehive.jitllm.backend.tornado.NativePrefillSupport.nativeProjections(
-                state.executionPolicy());
+        return NativePrefillSupport.nativeProjections(state.executionPolicy());
     }
 
     // ── MLX projections ──────────────────────────────────────────────────────
@@ -920,14 +941,14 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     }
 
     /**
-     * Refuses, by name, a projection the MLX prefill was not resolved for: another type, or packed
-     * tiles. Never handed back to the Metal kernels, so the decode layers that ask the same {@link
-     * #mlxPrefill} which weights these graphs bind are always right.
+     * Refuses, by name, a projection the MLX prefill was not resolved for: another type, or a
+     * prepacked weight. Never handed back to the Metal kernels, so the decode layers that ask the
+     * same {@link #mlxPrefill} which weights these graphs bind are always right.
      */
     private TornadoTensor[] requireMlx(String name, TornadoTensor... tensors) {
         for (TornadoTensor t : tensors) {
-            if (t.isPacked()) {
-                throw org.beehive.jitllm.backend.tornado.tensor.PackedWeights.noPackedKernel(
+            if (state.workspace.prepacking.prepacked(t)) {
+                throw WeightPrepacking.noPrepackedKernel(
                         "The gemma4 MLX batched prefill (" + name + ")");
             }
             if (t.dataType() != mlx.weights()) {
@@ -987,7 +1008,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             if (firstUser == l) {
                 layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, buffer);
             } else {
-                layer.consumeFromDevice("batchPrefillLayer_" + firstUser, buffer);
+                layer.consumeFromDevice(GraphNames.batchPrefillLayer(firstUser), buffer);
             }
         }
     }
@@ -1055,14 +1076,27 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             int off) {
         simdgroupTasks.put(layer.getTaskGraphName() + "." + task, d);
         if (w instanceof TornadoTensor t) {
-            if (t.dataType() != DataType.Q8_0) {
-                throw new UnsupportedOperationException(
-                        "gemma4 batched prefill on Metal reads Q8_0 projections only, not "
-                                + t.dataType());
-            }
             layer.task(
                     task,
-                    TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ8Strided,
+                    switch (t.dataType()) {
+                        case Q8_0 ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ8Strided;
+                        case Q4_0 ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ4_0Strided;
+                        case Q4_1 ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ4_1Strided;
+                        case Q4_K ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ4_KStrided;
+                        case Q5_K ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ5_KStrided;
+                        case Q6_K ->
+                                TransformerBatchPrefillSimdgroupKernels::batchedGemmHalfQ6_KStrided;
+                        default ->
+                                throw new UnsupportedOperationException(
+                                        "gemma4 batched prefill on Metal has no SIMD-group GEMM for "
+                                                + t.dataType()
+                                                + " projections");
+                    },
                     context,
                     x,
                     out,
@@ -1132,10 +1166,11 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             }
         }
         String graphName = layer.getTaskGraphName();
-        if (graphName.equals("batchPrefillLayer_" + firstUser)) {
+        if (graphName.equals(GraphNames.batchPrefillLayer(firstUser))) {
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, freqCisReal, freqCisImag);
         } else {
-            layer.consumeFromDevice("batchPrefillLayer_" + firstUser, freqCisReal, freqCisImag);
+            layer.consumeFromDevice(
+                    GraphNames.batchPrefillLayer(firstUser), freqCisReal, freqCisImag);
         }
     }
 
@@ -1150,7 +1185,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     // @formatter:off
     private TaskGraph createBatchPrefillLayerTaskGraph(int layerIndex) {
-        String graphName = "batchPrefillLayer_" + layerIndex;
+        String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == endLayer - 1) {
             lastLayerTaskGraphID = graphName;
         }
@@ -1236,9 +1271,9 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                         pleModelProjF16,
                         weights.perLayerProjNorm.asFloatArray());
             }
-            layer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            layer.consumeFromDevice(GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
         } else {
-            String pred = "batchPrefillLayer_" + (layerIndex - 1);
+            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
             layer.consumeFromDevice(
                     pred,
                     context,
@@ -1274,7 +1309,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 // From the graph that allocated them, not the previous one: the full-attention
                 // layers never hand them to a task.
                 layer.consumeFromDevice(
-                        "batchPrefillLayer_" + firstLayer,
+                        GraphNames.batchPrefillLayer(firstLayer),
                         state.workspace.attnOutF32Batch,
                         state.workspace.attnProbStageBatch);
             }
@@ -1312,7 +1347,8 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             declareMlxBuffers(layer, layerIndex);
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, mlxWeights(layerIndex));
         } else {
-            state.workspace.packedRepack.upload(layer, projections);
+            state.workspace.prepacker.configureGraphInputs(
+                    layer, state.workspace.prepacking, projections);
         }
         if (hasOwnKv) {
             requireDecodable(weights.wkLayered[layerIndex], "blk." + layerIndex + ".attn_k");
@@ -1320,9 +1356,11 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             layer.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION, weights.attnKNorm[layerIndex].asFloatArray());
             if (mlx == null) {
-                state.workspace.packedRepack.upload(layer, weights.wkLayered[layerIndex]);
+                state.workspace.prepacker.configureGraphInputs(
+                        layer, state.workspace.prepacking, weights.wkLayered[layerIndex]);
                 if (weights.wvLayered[layerIndex] != null) {
-                    state.workspace.packedRepack.upload(layer, weights.wvLayered[layerIndex]);
+                    state.workspace.prepacker.configureGraphInputs(
+                            layer, state.workspace.prepacking, weights.wvLayered[layerIndex]);
                 }
             }
         }
@@ -2352,7 +2390,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         WorkerGrid reduceWorker = elementwise(paddedBatch * dim, 256);
 
         for (int l = firstLayer; l < endLayer; l++) {
-            String p = "batchPrefillLayer_" + l + ".";
+            String p = GraphNames.batchPrefillLayer(l) + ".";
             int headDim = config.headDim(l);
             int nHeadKv = config.keyValueHeads(l);
             int qDim = nHead * headDim;

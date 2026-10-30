@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.llama.LlamaQ4_0LayersBatchPrefill;
 import org.beehive.jitllm.backend.tornado.layers.type.q4_0.LlamaQ4_0FFNLayers;
@@ -25,6 +26,7 @@ import org.beehive.jitllm.inference.state.LlamaState;
 import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 
 // @formatter:off
 /**
@@ -32,9 +34,8 @@ import org.beehive.jitllm.model.llama.LlamaConfiguration;
  *
  * <p>Mixed by construction, because the file is. {@code llama-quantize ... Q4_0} writes every
  * {@code blk.*} weight as Q4_0 (and some {@code ffn_down} as Q4_1), with {@code token_embd} as Q4_0
- * or Q6_K, which is materialized as Q8_0 for the host-side embedding lookup. So the transformer
- * layers read Q4_0, the embedding is Q8_0, and the logits layer reads the output projection in its
- * own representation.
+ * or Q6_K, which is kept as it is. So the transformer layers read Q4_0, and the embedding and the
+ * logits layer read their tensors in their own representation.
  *
  * <p>Single-token decode, and batched prefill with its projections run by cuBLAS ({@code
  * --with-native-libraries}). There is no sequential prefill/decode plan: asking for one fails here,
@@ -58,46 +59,48 @@ public class LlamaQ4_0PlanComponents
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new LlamaQ4_0FFNLayers("layers", state, weights, config, schedulerType);
+        return new LlamaQ4_0FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsQ8_0Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsQ8_0Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── Batched prefill + decode ──────────────────────────────────────────────
 
     @Override
     public ActivationTaskGraph batchPrefillActivation(int batchSize) {
-        // Metal: the host decodes the Q4_0 embeddings into the FP32 batch carrier for the
-        // SIMD-group layers. CUDA: the embedding is Q8_0 (materialized from Q4_0 or Q6_K),
-        // decoded on the device for the cuBLAS and tensor-core layers.
-        return BatchPrefillGemmPolicy.simdgroup()
-                ? new BatchPrefillActivation(state, config, batchSize, true)
-                : new BatchPrefillQ8DeviceActivation(state, config, batchSize);
+        // Metal: the host decodes the embeddings into the FP32 batch carrier for the SIMD-group
+        // layers. CUDA: a Q8_0 or Q4_0 embedding is decoded on the device for the cuBLAS and
+        // tensor-core layers; any other kept embedding (Q6_K) the host decodes, as on Metal.
+        DataType embedding = weights.getTokenEmbeddingTable().dataType();
+        if (!BatchPrefillGemmPolicy.simdgroup()
+                && (embedding == DataType.Q8_0 || embedding == DataType.Q4_0)) {
+            return new BatchPrefillQ8DeviceActivation(state, config, batchSize, embedding);
+        }
+        return new BatchPrefillActivation(state, config, batchSize, true);
     }
 
     @Override
     public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
-        return BatchPrefillGemmPolicy.simdgroup()
-                ? new BatchDecodeActivation(state, config, lastBatchLayerId, true, true)
-                : new BatchDecodeActivation(state, config, lastBatchLayerId, true);
+        // The embedding tensor's own representation, which is what the passes stage.
+        return new BatchDecodeActivation(
+                state, config, lastBatchLayerId, weights.getTokenEmbeddingTable().dataType());
     }
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
         if (BatchPrefillGemmPolicy.simdgroup()) {
             return new org.beehive.jitllm.backend.tornado.layers.llama.LlamaQ4_0FFNLayersDecode(
-                    "decode", state, weights, config, schedulerType);
+                    state, weights, config, schedulerType);
         }
-        return new LlamaQ4_0FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new LlamaQ4_0FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
@@ -109,16 +112,14 @@ public class LlamaQ4_0PlanComponents
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
-        return new LogitsQ8_0LayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsQ8_0LayerDecode(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── Pipeline stages ───────────────────────────────────────────────────────
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers(int firstLayer, int endLayer) {
-        return new LlamaQ4_0FFNLayers(
-                "layers", state, weights, config, schedulerType, firstLayer, endLayer);
+        return new LlamaQ4_0FFNLayers(state, weights, config, schedulerType, firstLayer, endLayer);
     }
 
     @Override
@@ -142,7 +143,7 @@ public class LlamaQ4_0PlanComponents
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers(int firstLayer, int endLayer) {
         return new LlamaQ4_0FFNLayersDecode(
-                "decode", state, weights, config, schedulerType, firstLayer, endLayer);
+                state, weights, config, schedulerType, firstLayer, endLayer);
     }
 
     // ── Sequential prefill/decode: not implemented for Q4_0 ──────────────────

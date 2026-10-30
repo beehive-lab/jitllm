@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado;
 
 import java.lang.foreign.MemorySegment;
+import org.beehive.jitllm.backend.tornado.lowering.InvocationBoundary;
 import org.beehive.jitllm.inference.Logits;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
@@ -46,9 +47,7 @@ public final class TornadoForwardPass {
             TornadoVMMasterPlan tornadoVMMasterPlan) {
         // Per-token host staging the family owns, before anything reads its device buffers.
         model.stagePerTokenDeviceInputs(state, token);
-        if (tornadoVMMasterPlan
-                instanceof
-                org.beehive.jitllm.backend.tornado.lowering.InvocationBoundary boundary) {
+        if (tornadoVMMasterPlan instanceof InvocationBoundary boundary) {
             return boundary.invoke(token, position).logits();
         }
 
@@ -97,6 +96,25 @@ public final class TornadoForwardPass {
                 int blocksPerToken = (configuration.dim() + blockSize - 1) / blockSize;
                 long bytesPerToken = (long) blocksPerToken * Q4_0_BLOCK_BYTES;
 
+                MemorySegment.copy(
+                        tokenEmbeddings,
+                        (long) token * bytesPerToken,
+                        state.workspace.embeddingX.getSegment(),
+                        0,
+                        bytesPerToken);
+            }
+            case Q4_1, Q4_K, Q5_K, Q6_K -> {
+                // Kept as the file stores it, decoded on the device: 20 bytes per 32 weights
+                // (Q4_1), or 144, 176 or 210 per 256 (Q4_K, Q5_K, Q6_K).
+                MemorySegment tokenEmbeddings =
+                        weights.getTokenEmbeddingTable().asByteArray().getSegment();
+                long bytesPerToken =
+                        switch (weights.getTokenEmbeddingTable().dataType()) {
+                            case Q4_1 -> (long) (configuration.dim() / 32) * 20;
+                            case Q4_K -> (long) (configuration.dim() / 256) * 144;
+                            case Q5_K -> (long) (configuration.dim() / 256) * 176;
+                            default -> (long) (configuration.dim() / 256) * 210;
+                        };
                 MemorySegment.copy(
                         tokenEmbeddings,
                         (long) token * bytesPerToken,

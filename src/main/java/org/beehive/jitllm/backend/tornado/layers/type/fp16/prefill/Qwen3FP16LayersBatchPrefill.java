@@ -12,6 +12,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefill
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupFP16Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillAttention;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
@@ -129,7 +130,7 @@ public class Qwen3FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
 
     // @formatter:off
     private TaskGraph createBatchPrefillLayerTaskGraph(int layerIndex) {
-        String graphName = "batchPrefillLayer_" + layerIndex;
+        String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
 
         TaskGraph layer = new TaskGraph(graphName);
@@ -158,9 +159,9 @@ public class Qwen3FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
             // the kernels reading a mapping that no longer exists, silently.
             layer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
-            layer.consumeFromDevice("prefillActivation", state.workspace.wrapXBatch);
+            layer.consumeFromDevice(GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
         } else {
-            String pred = "batchPrefillLayer_" + (layerIndex - 1);
+            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
             layer.consumeFromDevice(
                     pred,
                     context,
@@ -180,10 +181,10 @@ public class Qwen3FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
         }
 
         if (mlxAttention != null) {
-            mlxAttention.declare(layer, layerIndex, "batchPrefillLayer_" + (layerIndex - 1));
+            mlxAttention.declare(layer, layerIndex, GraphNames.batchPrefillLayer(layerIndex - 1));
         }
         if (mlxProjections != null) {
-            mlxProjections.declare(layer, layerIndex, "batchPrefillLayer_" + (layerIndex - 1));
+            mlxProjections.declare(layer, layerIndex, GraphNames.batchPrefillLayer(layerIndex - 1));
         }
 
         // Per-layer weights: upload once
@@ -469,7 +470,7 @@ public class Qwen3FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
         int optLocal =
                 laneAttention()
                         ? 32 * LaneAttentionPolicy.PREFILL_WARPS_PER_GROUP
-                        : findOptimalLocalSize(nEmbdHead);
+                        : WorkerGridFactory.findOptimalLocalSize(nEmbdHead);
         int attnTiles =
                 (batchSize + TransformerPagedKvBatchPrefillSimdgroupKernels.QUERY_TILE - 1)
                         / TransformerPagedKvBatchPrefillSimdgroupKernels.QUERY_TILE;
@@ -504,7 +505,7 @@ public class Qwen3FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
                         batchSize * hidDim * LOCAL_WORK_GROUP_SIZE, LOCAL_WORK_GROUP_SIZE);
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String p = "batchPrefillLayer_" + i + ".";
+            String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             if (mlxProjections != null) {
                 mlxProjections.addGrids(scheduler, p);
@@ -527,19 +528,6 @@ public class Qwen3FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
             }
             scheduler.addWorkerGrid(p + "batch_ffn_rms", rmsWorker);
         }
-    }
-
-    private static int findOptimalLocalSize(int size) {
-        int optimal = Math.min(size, 64);
-        if (size % optimal != 0) {
-            for (int s = 64; s >= 1; s--) {
-                if (size % s == 0) {
-                    optimal = s;
-                    break;
-                }
-            }
-        }
-        return optimal;
     }
 
     public List<ImmutableTaskGraph> getLayerImmutableTaskGraphs() {

@@ -10,8 +10,11 @@ import java.util.ServiceLoader;
 import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.PrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 
@@ -80,24 +83,6 @@ public final class TornadoPlanRegistry {
                         .collect(java.util.stream.Collectors.joining(", "));
     }
 
-    /**
-     * The representations this architecture's plans read <b>as they are</b>, without
-     * materialization.
-     *
-     * <p>The provider's own {@code nativeTensorTypes}, which is the declaration that answers this
-     * per tensor. It is separate from {@code supportedDataTypes} because that one admits a plan for
-     * a model-wide representation, and a mixed model holds several: reading admission as retention
-     * under-predicts every tensor whose representation is not the model's.
-     *
-     * <p>Read by the memory preflight, which would otherwise predict every quantized weight at its
-     * Q8_0 size and refuse a configuration that fits. An architecture with no provider retains
-     * nothing, which is the right answer for it: nothing will build it a plan either.
-     */
-    public static java.util.Set<DataType> nativeDeviceTypes(ArchitectureId architecture) {
-        TornadoPlanProvider provider = Index.BY_ID.get(architecture);
-        return provider == null ? java.util.Set.of() : provider.nativeTensorTypes();
-    }
-
     /** The provider registered for {@code architecture}, if any. */
     public static Optional<TornadoPlanProvider> provider(ArchitectureId architecture) {
         return Optional.ofNullable(Index.BY_ID.get(architecture));
@@ -127,18 +112,21 @@ public final class TornadoPlanRegistry {
                 .map(
                         components ->
                                 switch (mode) {
-                                    case STANDARD -> new SingleTokenForwardPlan(model, components);
+                                    case STANDARD ->
+                                            new SingleTokenForwardPlan(
+                                                    model, components, state.workspace.prepacker);
                                     case PREFILL_DECODE ->
                                             new PrefillDecodeForwardPlan(
                                                     model,
-                                                    (PrefillDecodeForwardPlanComponents)
-                                                            components);
+                                                    (PrefillDecodeForwardPlanComponents) components,
+                                                    state.workspace.prepacker);
                                     case BATCH_PREFILL_DECODE ->
                                             new BatchPrefillDecodeForwardPlan(
                                                     model,
                                                     (BatchPrefillDecodeForwardPlanComponents)
                                                             components,
-                                                    state.executionPolicy().prefillBatchSize());
+                                                    state.executionPolicy().prefillBatchSize(),
+                                                    state.workspace.prepacker);
                                 });
     }
 
@@ -146,7 +134,7 @@ public final class TornadoPlanRegistry {
      * Where a native-library path exists on {@code backend}, for a message that must say so: "llama
      * Q4_0, ...".
      */
-    public static String nativeLibraryPaths(org.beehive.jitllm.runtime.backend.BackendId backend) {
+    public static String nativeLibraryPaths(BackendId backend) {
         return Index.BY_ID.values().stream()
                 .filter(provider -> !provider.nativeLibraryWeights(backend).isEmpty())
                 .map(
@@ -172,6 +160,25 @@ public final class TornadoPlanRegistry {
     }
 
     /**
+     * Why {@code model}'s provider declines {@code weights} or {@code mode}, or empty when it
+     * supports both or no provider is registered. Needs no state, so admission asks it at load.
+     */
+    public static Optional<String> unsupported(Model model, DataType weights, ExecutionMode mode) {
+        TornadoPlanProvider provider = Index.BY_ID.get(model.architectureId());
+        if (provider == null) {
+            return Optional.empty();
+        }
+        if (!provider.supportedDataTypes().contains(weights)) {
+            return Optional.of(weights + " not supported for model: " + model.getModelType());
+        }
+        if (!provider.supportedModes().contains(mode)) {
+            return Optional.of(
+                    mode + " not yet supported for " + model.getModelType() + " + " + weights);
+        }
+        return Optional.empty();
+    }
+
+    /**
      * The components for a migrated architecture in {@code mode}, admitted as {@link #create}
      * admits them: an unsupported representation or mode is refused by name.
      */
@@ -181,15 +188,17 @@ public final class TornadoPlanRegistry {
         if (provider == null) {
             return Optional.empty();
         }
-        if (!provider.supportedDataTypes().contains(quantization)) {
-            throw new UnsupportedOperationException(
-                    quantization + " not supported for model: " + model.getModelType());
-        }
-        if (!provider.supportedModes().contains(mode)) {
-            throw new UnsupportedOperationException(
-                    mode + " not yet supported for " + model.getModelType() + " + " + quantization);
-        }
+        unsupported(model, quantization, mode)
+                .ifPresent(
+                        reason -> {
+                            throw new UnsupportedOperationException(reason);
+                        });
 
+        // Decided before the components build their layer graphs, which read it.
+        state.workspace.prepacking =
+                model.weights() instanceof TornadoWeights weights
+                        ? WeightPrepacking.forPlan(provider, weights, state.executionPolicy())
+                        : WeightPrepacking.NONE;
         SingleTokenForwardPlanComponents components =
                 provider.components(quantization, state, model);
         // A provider may support a mode for one representation and not for another — Llama has

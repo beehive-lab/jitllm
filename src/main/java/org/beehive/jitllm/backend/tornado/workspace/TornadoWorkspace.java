@@ -1,5 +1,7 @@
 package org.beehive.jitllm.backend.tornado.workspace;
 
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.inference.Logits;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
@@ -26,11 +28,13 @@ import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
 public final class TornadoWorkspace {
 
     /**
-     * The repack of this session's packed projections, collected from the layer graphs as they are
-     * built and appended to the plan as graphs of its own.
+     * The prepacking of this session's projections on the device, collected from the layer graphs
+     * as they are built and appended to the plan as graphs of its own.
      */
-    public final org.beehive.jitllm.backend.tornado.plan.PackedRepack packedRepack =
-            new org.beehive.jitllm.backend.tornado.plan.PackedRepack();
+    public final WeightPrepacker prepacker = new WeightPrepacker();
+
+    /** Which weights this session's plan prepacks, set when the plan is built. */
+    public WeightPrepacking prepacking = WeightPrepacking.NONE;
 
     public FloatArray wrapAttSplit;
     public FloatArray
@@ -305,6 +309,15 @@ public final class TornadoWorkspace {
     public FloatArray wrapSharedOutput;
 
     /**
+     * A {@code qwen2moe} layer that projects each weight by its own type: the routed slots' up
+     * projections, their down projections one per slot, and the shared expert's up projection.
+     */
+    public FloatArray wrapExpertUp;
+
+    public FloatArray wrapExpertDown;
+    public FloatArray wrapSharedUp;
+
+    /**
      * A {@code qwen35moe} token's expert activations: every selected expert's hidden rows, then the
      * shared expert's.
      */
@@ -344,6 +357,11 @@ public final class TornadoWorkspace {
     public FloatArray wrapGroupedExpertDown;
     public FloatArray wrapSharedHiddenBatch;
     public FloatArray wrapSharedWeightBatch;
+
+    /** The batched counterparts of {@link #wrapExpertUp} and {@link #wrapSharedUp}. */
+    public FloatArray wrapGroupedExpertUp;
+
+    public FloatArray wrapSharedUpBatch;
     public FloatArray tempQcur;
     public FloatArray tempKcur;
 

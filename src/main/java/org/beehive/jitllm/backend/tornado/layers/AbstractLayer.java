@@ -20,8 +20,7 @@ public abstract class AbstractLayer {
     protected final State state;
     protected final KernelContext context = new KernelContext();
 
-    protected AbstractLayer(
-            String taskGraphName, State state, Weights weights, Configuration config) {
+    protected AbstractLayer(State state, Weights weights, Configuration config) {
         this.state = state;
         this.weights = weights;
         this.config = config;

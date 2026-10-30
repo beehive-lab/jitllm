@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.plan.components.activation;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
@@ -39,7 +40,7 @@ public class BatchPrefillActivation implements ActivationTaskGraph {
 
     private TaskGraph buildGraph(KernelContext ctx, State state) {
         if (isQ8) {
-            return new TaskGraph("prefillActivation")
+            return new TaskGraph(GraphNames.PREFILL_ACTIVATION)
                     .transferToDevice(DataTransferMode.EVERY_EXECUTION, state.workspace.wrapXBatch)
                     .task(
                             "batchPassthrough",
@@ -48,7 +49,7 @@ public class BatchPrefillActivation implements ActivationTaskGraph {
                             state.workspace.wrapXBatch)
                     .persistOnDevice(state.workspace.wrapXBatch);
         }
-        return new TaskGraph("prefillActivation")
+        return new TaskGraph(GraphNames.PREFILL_ACTIVATION)
                 .transferToDevice(DataTransferMode.FIRST_EXECUTION, ctx, state.workspace.wrapXBatch)
                 .transferToDevice(DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingXBatch)
                 .task(
