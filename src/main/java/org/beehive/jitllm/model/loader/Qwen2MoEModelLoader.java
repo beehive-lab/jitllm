@@ -36,9 +36,8 @@ public class Qwen2MoEModelLoader extends AbstractModelLoader<Qwen2MoE, Qwen2MoEC
 
     @Override
     protected Tokenizer createTokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
-        boolean isDeepSeekR1DistillQwen =
-                "DeepSeek-R1-Distill-Qwen".equals(metadata.get("general.basename"));
-        return new Qwen3Tokenizer(metadata, vocabulary, isDeepSeekR1DistillQwen);
+        return new Qwen3Tokenizer(
+                metadata, vocabulary, Qwen2ModelLoader.isDeepSeekR1DistillQwen(metadata));
     }
 
     @Override

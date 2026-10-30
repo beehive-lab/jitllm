@@ -3,6 +3,7 @@ package org.beehive.jitllm.model.loader;
 import static org.beehive.jitllm.model.loader.ModelLoader.*;
 
 import java.nio.channels.FileChannel;
+import java.util.Locale;
 import java.util.Map;
 import org.beehive.jitllm.auxiliary.Pair;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -38,9 +39,28 @@ public class Qwen2ModelLoader extends AbstractModelLoader<Qwen2, Qwen2Configurat
 
     @Override
     protected Tokenizer createTokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
-        boolean isDeepSeekR1DistillQwen =
-                "DeepSeek-R1-Distill-Qwen".equals(metadata.get("general.basename"));
-        return new Qwen3Tokenizer(metadata, vocabulary, isDeepSeekR1DistillQwen);
+        return new Qwen3Tokenizer(metadata, vocabulary, isDeepSeekR1DistillQwen(metadata));
+    }
+
+    /**
+     * Whether a qwen2 file is a DeepSeek-R1-Distill-Qwen build: its pre-tokenizer is {@code
+     * deepseek-r1-qwen}, or its name or base name says so in any spelling, for example {@code
+     * DeepSeek R1 Distill Qwen 1.5B} or {@code Deepseek-R1-Distill-Qwen-1.5B}.
+     */
+    public static boolean isDeepSeekR1DistillQwen(Map<String, Object> metadata) {
+        if ("deepseek-r1-qwen".equals(metadata.get("tokenizer.ggml.pre"))) {
+            return true;
+        }
+        for (String key : new String[] {"general.name", "general.basename"}) {
+            if (metadata.get(key) instanceof String name
+                    && name.toLowerCase(Locale.ROOT)
+                            .replace('-', ' ')
+                            .replace('_', ' ')
+                            .contains("deepseek r1 distill")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // @formatter:off
@@ -94,8 +114,7 @@ public class Qwen2ModelLoader extends AbstractModelLoader<Qwen2, Qwen2Configurat
     @Override
     protected Qwen2 createModel(Qwen2Configuration config, Tokenizer tokenizer, Weights weights) {
         Map<String, Object> metadata = gguf.getMetadata();
-        boolean isDeepSeekR1DistillQwen =
-                "DeepSeek-R1-Distill-Qwen".equals(metadata.get("general.basename"));
+        boolean isDeepSeekR1DistillQwen = isDeepSeekR1DistillQwen(metadata);
         // Qwen2.5-Coder uses <|endoftext|> as stop-token.
         ChatTokens chatTokens =
                 isDeepSeekR1DistillQwen
