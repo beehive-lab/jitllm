@@ -844,7 +844,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // Qwen3: per-head RMS norm on Q and K before RoPE
         batchPrefillLayer.task(
                 tp + "batch_qk_rmsnorm",
-                Qwen3Kernels::batchedFusedQKRmsNormPacked,
+                Qwen3Kernels::batchedFusedQKRmsNormPackedSimdgroup,
                 context,
                 state.workspace.qkvResultBatch,
                 weights.rms_att_QNormLayered[layerIndex].asFloatArray(),
@@ -1174,10 +1174,11 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         WorkerGrid rmsApplyWorker = WorkerGridFactory.genericWorker(batchSize * dim, 256);
         WorkerGrid ffnRmsApplyWorker = WorkerGridFactory.genericWorker(batchSize * dim, 256);
 
-        // Q/K per-head RMS norm: one nEmbdHead-thread workgroup per (token, head)
+        // Q/K per-head RMS norm: one warp per (token, head), four per workgroup when they divide
         WorkerGrid qkRmsNormWorker =
                 WorkerGridFactory.genericWorker(
-                        batchSize * (nHeads + nHeadKv) * nEmbdHead, nEmbdHead);
+                        batchSize * (nHeads + nHeadKv) * 32,
+                        (nHeads + nHeadKv) % 4 == 0 ? 128 : 32);
 
         // Split-half RoPE: B*(qDim/2) threads
         int ropeGlobal = batchSize * (qDim / 2);
