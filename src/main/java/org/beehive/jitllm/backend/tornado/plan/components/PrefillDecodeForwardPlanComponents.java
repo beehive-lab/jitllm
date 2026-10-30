@@ -18,13 +18,13 @@ import org.beehive.jitllm.backend.tornado.plan.layout.PrefillDecodeForwardTaskGr
  * TaskGraphs. The components of this chain are represented by the following components:
  *
  * <ul>
- *   <li>{@link #prefillDecodeActivation()} — KV-cache-aware activation (graph 0)
+ *   <li>{@link #prefillDecodeActivation()} — KV-cache-aware activation (the first inference graph)
  *   <li>{@link #prefillDecodeTransformerLayers()} — N KV-cache-aware transformer layer TaskGraphs
- *       (graphs 1.N)
- *   <li>{@link #decodeLogits(String)} — final RMSNorm + vocabulary projection (graph N+1)
+ *   <li>{@link #decodeLogits(String)} — final RMSNorm + vocabulary projection (the last graph)
  * </ul>
  *
- * Note: Consult also the {@link PrefillDecodeForwardTaskGraphLayout}
+ * <p>The prepacking graphs, when the plan uses weight prepacking, come before them; {@link
+ * PrefillDecodeForwardTaskGraphLayout} gives every position.
  */
 // @formatter:on
 public interface PrefillDecodeForwardPlanComponents extends SingleTokenForwardPlanComponents {

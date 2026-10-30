@@ -13,12 +13,16 @@ import java.util.List;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections.LayerWeights;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor;
-import org.beehive.jitllm.backend.tornado.tensor.PackedTiles;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
@@ -40,6 +44,10 @@ public class MlxPrefillProjectionsTest {
 
     private static final int GROUP = MlxPrefill.GROUP;
 
+    /** The smallest Llama a session state can be built for. */
+    private static final LlamaConfiguration TINY_LLAMA =
+            new LlamaConfiguration("Q8_0", 32, 32, 1, 1, 1, 32, 16, 1e-5f, 10000f);
+
     // ── fixtures: GGUF blocks written by hand ────────────────────────────────
 
     /** Q8_0 blocks: an FP16 scale and 32 signed bytes each. */
@@ -55,7 +63,7 @@ public class MlxPrefillProjectionsTest {
                 bytes.set(b * 34 + 2 + j, values[b][j]);
             }
         }
-        return new Q8_0TornadoTensor(bytes);
+        return new Q8_0TornadoTensor(bytes, Shape.of(scales.length * GROUP));
     }
 
     /**
@@ -74,7 +82,7 @@ public class MlxPrefillProjectionsTest {
                 bytes.set(b * 18 + 2 + j, (byte) (nibbles[b][j] | (nibbles[b][j + 16] << 4)));
             }
         }
-        return new Q4_0TornadoTensor(bytes);
+        return new Q4_0TornadoTensor(bytes, Shape.of(scales.length * GROUP));
     }
 
     /** Every signed byte at least once across the blocks, extremes first. */
@@ -306,11 +314,12 @@ public class MlxPrefillProjectionsTest {
 
     @Test
     public void packedProjectionsAreRefusedByName() {
-        Q4_0TornadoTensor packed =
-                new Q4_0TornadoTensor(new ByteArray(18 * 4), new PackedTiles(4, 32));
+        Q4_0TornadoTensor packed = new Q4_0TornadoTensor(new ByteArray(18 * 4), Shape.of(32, 4));
         LayerWeights layer =
                 new LayerWeights(
                         new TornadoTensor[] {packed}, packed, new TornadoTensor[] {packed}, packed);
+        State state = new LlamaState(TINY_LLAMA, -1);
+        state.workspace.prepacking = WeightPrepacking.of(List.of(packed));
         UnsupportedOperationException e =
                 assertThrows(
                         UnsupportedOperationException.class,
@@ -318,7 +327,7 @@ public class MlxPrefillProjectionsTest {
                                 MlxPrefillProjections.of(
                                         new MlxPrefill(
                                                 DataType.Q4_0, MlxPrefill.Projections.AFFINE),
-                                        null,
+                                        state,
                                         null,
                                         null,
                                         16,
@@ -345,7 +354,7 @@ public class MlxPrefillProjectionsTest {
                 () ->
                         MlxPrefillProjections.of(
                                 new MlxPrefill(DataType.Q8_0, MlxPrefill.Projections.AFFINE),
-                                null,
+                                new LlamaState(TINY_LLAMA, -1),
                                 null,
                                 null,
                                 16,
@@ -374,7 +383,7 @@ public class MlxPrefillProjectionsTest {
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private static FP16TornadoTensor fp16(int elements) {
-        return new FP16TornadoTensor(new HalfFloatArray(elements));
+        return new FP16TornadoTensor(new HalfFloatArray(elements), Shape.of(elements));
     }
 
     private static LayerWeights llamaStyle(DataType type) {

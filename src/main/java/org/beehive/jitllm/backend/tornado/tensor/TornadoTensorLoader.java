@@ -4,6 +4,7 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import org.beehive.jitllm.runtime.tensor.LongIndexedTensor;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import org.beehive.jitllm.tensor.standard.FloatTensor;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
@@ -23,7 +24,7 @@ public final class TornadoTensorLoader {
      * rather than reads.
      */
     public static FP32TornadoTensor fromFloats(float[] values) {
-        return new FP32TornadoTensor(FloatArray.fromArray(values));
+        return new FP32TornadoTensor(FloatArray.fromArray(values), Shape.of(values.length));
     }
 
     /**
@@ -52,7 +53,7 @@ public final class TornadoTensorLoader {
      * cost is negligible in the other direction: Q4_0 carries 16 levels per block and Q8_0 stores
      * 255, so the re-quantization error is far below the source's own step size.
      */
-    public static Q8_0TornadoTensor dequantizeToQ8_0(FloatTensor sourceTensor) {
+    public static Q8_0TornadoTensor dequantizeToQ8_0(FloatTensor sourceTensor, Shape shape) {
         long headerBytes = TornadoNativeArray.ARRAY_HEADER;
         int numElements = sourceTensor.size();
         int blockSize = 32;
@@ -98,7 +99,7 @@ public final class TornadoTensorLoader {
         // Copy Q8_0 data after header
         MemorySegment.copy(
                 MemorySegment.ofArray(q8Data), 0, nativeSegment, headerBytes, q8BytesNeeded);
-        return Q8_0TornadoTensor.fromTornadoMemorySegment(nativeSegment);
+        return Q8_0TornadoTensor.fromTornadoMemorySegment(nativeSegment, shape);
     }
 
     /**
@@ -107,7 +108,7 @@ public final class TornadoTensorLoader {
      * simple bit-shift for BF16) and narrowed to IEEE FP16 at load time -- the same representation
      * the existing FP16 GPU kernels already expect (see {@link #loadTornadoTensor}).
      */
-    public static FP16TornadoTensor convertBF16ToFP16(FloatTensor source) {
+    public static FP16TornadoTensor convertBF16ToFP16(FloatTensor source, Shape shape) {
         long headerBytes = TornadoNativeArray.ARRAY_HEADER;
         int numElements = source.size();
 
@@ -123,7 +124,7 @@ public final class TornadoTensorLoader {
                     headerBytes + (long) i * Short.BYTES,
                     f16Bits);
         }
-        return FP16TornadoTensor.fromTornadoMemorySegment(nativeSegment);
+        return FP16TornadoTensor.fromTornadoMemorySegment(nativeSegment, shape);
     }
 
     /**

@@ -5,7 +5,6 @@ import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers;
 import org.beehive.jitllm.backend.tornado.plan.BatchPrefillDecodeForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
-import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
 import org.beehive.jitllm.backend.tornado.plan.layout.BatchPrefillDecodeForwardTaskGraphLayout;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
@@ -114,7 +113,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
             executionPlan.withPreCompilation();
             long warmupTime = System.nanoTime();
 
-            PackedRepack.run(executionPlan, packedRepack);
+            batchPrefillDecodeForwardPlan.runWeightPrepacking(executionPlan);
             forceCopyInReadOnlyData();
             long copyTime = System.nanoTime();
 
@@ -169,11 +168,13 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
                                 layout.decodeLayerGraphIdx(layout.decodeLayerGraphs() - 1)),
                         java.util.List.of(layout.logitsIdx()));
         var phases = new java.util.ArrayList<TaskGraphChainPrinter.Phase>();
+        phases.addAll(TaskGraphChainPrinter.prepacking(roles, layout.prepackingGraphs()));
         phases.add(
                 new TaskGraphChainPrinter.Phase(
                         "warm-up",
                         "once, at plan build",
-                        TaskGraphChainPrinter.span(0, layout.logitsIdx())));
+                        TaskGraphChainPrinter.span(
+                                layout.firstInferenceIdx(), layout.logitsIdx())));
         String chunk = "per chunk of up to " + batch + " prompt tokens";
         if (layout.fallbackLayerGraphs() > 0) {
             phases.add(
@@ -207,16 +208,11 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
         this.batchPrefillDecodeForwardPlan =
                 ForwardPlanFactory.createBatchPrefillDecode(weightType, state, model);
         this.taskGraphLayout = batchPrefillDecodeForwardPlan.getTaskGraphLayout();
-        var taskGraphs =
-                new java.util.ArrayList<>(batchPrefillDecodeForwardPlan.getImmutableTaskGraphs());
-        packedRepack =
-                state.workspace.packedRepack.appendGraphs(
-                        taskGraphs, batchPrefillDecodeForwardPlan.getGridScheduler());
-        return new TornadoExecutionPlan(taskGraphs.toArray(new ImmutableTaskGraph[0]));
+        return new TornadoExecutionPlan(
+                batchPrefillDecodeForwardPlan
+                        .getImmutableTaskGraphs()
+                        .toArray(new ImmutableTaskGraph[0]));
     }
-
-    /** The graphs that repack the packed weights on the GPU before the warm-up, or null. */
-    private PackedRepack.Graphs packedRepack;
 
     // ── Initialisation ────────────────────────────────────────────────────────
 
@@ -237,7 +233,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
             state.workspace.batchStartPosHolder.set(2, state.kvSlot);
         }
 
-        for (int i = 0; i <= taskGraphLayout.logitsIdx(); i++) {
+        for (int i = taskGraphLayout.firstInferenceIdx(); i <= taskGraphLayout.logitsIdx(); i++) {
             var g =
                     executionPlan
                             .withGraph(i)

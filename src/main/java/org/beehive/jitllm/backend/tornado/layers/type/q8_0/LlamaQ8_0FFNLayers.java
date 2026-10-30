@@ -6,7 +6,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0D
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
-import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.RmsReductionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
@@ -179,10 +179,11 @@ public class LlamaQ8_0FFNLayers
         String weightSrc = weightSourceGraphName(layerIndex);
         Object[][] binding = weightBinding(weightSrc, layerIndex, layerWeights);
         if (binding[0].length > 0) {
-            unifiedLayer.consumeFromDevice(weightSrc, PackedRepack.deviceArrays(binding[0]));
+            unifiedLayer.consumeFromDevice(weightSrc, WeightPrepacker.deviceArrays(binding[0]));
         }
         if (binding[1].length > 0) {
-            state.workspace.packedRepack.upload(unifiedLayer, binding[1]);
+            state.workspace.prepacker.configureGraphInputs(
+                    unifiedLayer, state.workspace.prepacking, binding[1]);
         }
         boolean packed = PackedActivationTasks.enabled();
         if (firstInGraph) {

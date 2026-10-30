@@ -58,6 +58,20 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
                 DataType.Q8_0);
     }
 
+    /**
+     * Q4_0 trunk projections, read prepacked by the packed-integer kernels. Not when those are
+     * switched off, and not under native libraries, whose cuBLAS projections read none prepacked.
+     */
+    @Override
+    public Set<DataType> prepackableTypes(ExecutionPolicy policy) {
+        return policy.nativeLibraries()
+                        || "false"
+                                .equalsIgnoreCase(
+                                        System.getProperty("jitllm.gemma4.packedIntegerDot"))
+                ? Set.of()
+                : Set.of(DataType.Q4_0);
+    }
+
     // @formatter:off
     /**
      * Single-token everywhere, and the batched prefill/decode plan as well.
@@ -187,15 +201,5 @@ public final class Gemma4PlanProvider implements TornadoPlanProvider {
         }
         return Gemma4BatchPrefillLayers.mlxPrefill(policy, weights, gemma4)
                 .map(m -> Gemma4BatchPrefillLayers.mlxWorkspace(weights, gemma4, batchSize));
-    }
-
-    /** The native-library prefill decodes each projection for cuBLAS, from blocks, not tiles. */
-    @Override
-    public Optional<String> packedWeightsUnsupported(ExecutionPolicy policy) {
-        return policy.nativeLibraries()
-                ? Optional.of(
-                        "its native-library prefill decodes the weights for cuBLAS and reads no"
-                                + " packed projections")
-                : Optional.empty();
     }
 }

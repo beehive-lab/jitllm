@@ -156,6 +156,28 @@ public final class TornadoMemoryModel {
             long configuredBudgetBytes,
             KeyValueReservation keyValue,
             java.util.Optional<BatchPrefillWorkspace> prefill) {
+        return predict(
+                weights, config, policy, device, configuredBudgetBytes, keyValue, prefill, 0);
+    }
+
+    /**
+     * {@link #predict(WeightFootprint, Configuration, ExecutionPolicy, Device, long,
+     * KeyValueReservation, java.util.Optional)} for a model whose plans prepack projections: each
+     * session's plan prepacks them on the device through one scratch buffer as large as the largest
+     * ({@code WeightPrepacker}), and keeps it for the plan's lifetime.
+     *
+     * @param prepackScratchBytes the largest prepacked projection's bytes, or 0 when the plan
+     *     prepacks none
+     */
+    public static MemoryPlan predict(
+            WeightFootprint weights,
+            Configuration config,
+            ExecutionPolicy policy,
+            Device device,
+            long configuredBudgetBytes,
+            KeyValueReservation keyValue,
+            java.util.Optional<BatchPrefillWorkspace> prefill,
+            long prepackScratchBytes) {
         long header = device.nativeArrayHeaderBytes();
         int layoutFamilies = layerGraphFamilies(policy, config.numberOfLayers());
         // How many of those families upload the weights, which is what costs memory. A family
@@ -225,6 +247,20 @@ public final class TornadoMemoryModel {
                             config.recurrentStateBytes(),
                             1,
                             2 * header));
+        }
+
+        // ── the prepack scratch, for a plan that prepacks its projections ────
+        // One per session, because each session's plan appends its own prepacking graphs; the
+        // scratch
+        // and the flag that makes a second prepack a no-op stay on the device with the plan.
+        if (prepackScratchBytes > 0) {
+            components.add(
+                    new MemoryComponent(
+                            "weight prepack scratch",
+                            BufferClass.ACTIVATION_WORKSPACE,
+                            prepackScratchBytes + Integer.BYTES,
+                            keyValue.sessions(),
+                            2L * keyValue.sessions() * header));
         }
 
         // ── batch staging, only when a batched capacity is configured ────────

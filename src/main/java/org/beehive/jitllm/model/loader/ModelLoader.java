@@ -3,14 +3,16 @@ package org.beehive.jitllm.model.loader;
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Function;
 import java.util.function.IntFunction;
 import org.beehive.jitllm.Options;
 import org.beehive.jitllm.auxiliary.RunMetrics;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
-import org.beehive.jitllm.backend.tornado.tensor.PackedTiles;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_1TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_KTornadoTensor;
@@ -24,6 +26,7 @@ import org.beehive.jitllm.format.DataTypeMapping;
 import org.beehive.jitllm.format.GGMLType;
 import org.beehive.jitllm.format.GGUF;
 import org.beehive.jitllm.format.TensorDescriptors;
+import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.provider.ModelProvider;
 import org.beehive.jitllm.model.provider.ModelProviders;
@@ -31,8 +34,10 @@ import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.memory.WeightFootprint;
+import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import org.beehive.jitllm.runtime.tensor.TensorDescriptor;
 import org.beehive.jitllm.tensor.standard.*;
 
@@ -65,6 +70,23 @@ public final class ModelLoader {
         Model model = loadThroughProvider(source, contextLength, useTornadovm);
         RunMetrics.setLoadDuration(System.nanoTime() - start);
         return model;
+    }
+
+    /** A model file's architecture identity and configuration. */
+    public record Description(ArchitectureId architecture, Configuration configuration) {}
+
+    /**
+     * What a load of this file would be, from its metadata alone: the identity its provider gives
+     * it and the configuration it would load with. No tokenizer, tensor or weight is built, which
+     * is what lets the memory preflight run before the load it is checking.
+     *
+     * @param contextLength as for {@link #loadModel(Path, int, boolean, boolean)}
+     */
+    public static Description describe(Path ggufPath, int contextLength) throws IOException {
+        ModelSource source = ModelSource.ofFile(ggufPath);
+        ModelProvider provider = ModelProviders.select(source);
+        return new Description(
+                provider.architecture(source), provider.configuration(source, contextLength));
     }
 
     /**
@@ -143,32 +165,43 @@ public final class ModelLoader {
         return weightFootprint(ggufPath, DeviceRetention.retaining(nativeDeviceTypes));
     }
 
-    // @formatter:off
     /**
      * The device footprint of a file's weights, given the representations the target family reads
      * without materializing.
      *
      * <p>Descriptors only — no tensor data is touched, which is what makes this usable before a
-     * load rather than after one.
-     *
-     * <p><b>It can under-estimate a mixed file.</b> The decision is taken per tensor here, where a
-     * loader may take it for the whole model: Llama retains Q4_0 only when every per-layer
-     * projection is Q4_0, and materializes all of them otherwise, because a fused kernel reading
-     * two block layouts would read 18-byte blocks as 34-byte ones. A file mixing Q4_0 with another
-     * quantization in its layers would therefore be predicted smaller than it loads.
-     *
-     * <p>That is the tolerable direction. This prediction is used to <b>refuse</b> a load, and a
-     * refusal cannot be overruled by the caller — so an over-estimate blocks a configuration that
-     * would have run, where an under-estimate lets it proceed to the backend's own allocation
-     * error. No quantizer produces such a file today; a real one would be a reason to move the
-     * whole-model rule here rather than to reverse this.
+     * load rather than after one. The decision is taken per tensor; for a family whose loader
+     * decides for the whole model, see {@link #weightFootprint(Path, Function)}.
      *
      * @param retention what representation each tensor will occupy on the device
      */
-    // @formatter:on
     public static WeightFootprint weightFootprint(Path ggufPath, DeviceRetention retention)
             throws IOException {
+        return weightFootprint(GGUF.loadGGUFMetadata(ggufPath), retention);
+    }
+
+    /**
+     * {@link #weightFootprint(Path, DeviceRetention)} with the retention decided from the file
+     * itself: {@code retention} is given every tensor's representation, by name, and answers what
+     * each will occupy. That is what a loader that decides for the whole model reads — Llama keeps
+     * Q4_0 only when every per-layer projection is Q4_0, and materializes all of them otherwise —
+     * so the prediction follows the same rule as the load.
+     *
+     * @param retention the device representation of each tensor, given every tensor's
+     *     representation in the file
+     */
+    public static WeightFootprint weightFootprint(
+            Path ggufPath, Function<Map<String, DataType>, DeviceRetention> retention)
+            throws IOException {
         GGUF gguf = GGUF.loadGGUFMetadata(ggufPath);
+        Map<String, DataType> sourceTypes = new HashMap<>();
+        for (GGUF.GGUFTensorInfo info : gguf.getTensorInfos().values()) {
+            sourceTypes.put(info.name(), DataTypeMapping.sourceType(info.ggmlType()));
+        }
+        return weightFootprint(gguf, retention.apply(sourceTypes));
+    }
+
+    private static WeightFootprint weightFootprint(GGUF gguf, DeviceRetention retention) {
         long perLayer = 0;
         long global = 0;
         int perLayerTensors = 0;
@@ -195,6 +228,36 @@ public final class ModelLoader {
             }
         }
         return new WeightFootprint(perLayer, perLayerTensors, global, globalTensors);
+    }
+
+    /**
+     * The bytes of the largest per-layer projection a plan would prepack, given the representations
+     * it prepacks: a two-dimensional {@code blk.*} tensor of one of {@code prepacked} whose shape
+     * fits ({@link WeightPrepacking#fits}). Zero when there is none.
+     *
+     * <p>Descriptors only, like {@link #weightFootprint}. It is the size of the scratch buffer the
+     * prepacked weights are prepacked through on the device, which is as large as the largest of
+     * them.
+     */
+    public static long prepackedProjectionBytes(Path ggufPath, java.util.Set<DataType> prepacked)
+            throws IOException {
+        if (prepacked.isEmpty()) {
+            return 0;
+        }
+        GGUF gguf = GGUF.loadGGUFMetadata(ggufPath);
+        long largest = 0;
+        for (GGUF.GGUFTensorInfo info : gguf.getTensorInfos().values()) {
+            DataType source = DataTypeMapping.sourceType(info.ggmlType());
+            int[] shape = info.dimensions();
+            if (!info.name().startsWith("blk.")
+                    || !prepacked.contains(source)
+                    || !WeightPrepacking.fits(Shape.of(shape))) {
+                continue;
+            }
+            long bytes = TensorDescriptors.layoutOf(source).byteSize((long) shape[0] * shape[1]);
+            largest = Math.max(largest, bytes);
+        }
+        return largest;
     }
 
     public static FloatTensor loadTensor(GGMLTensorEntry entry) {
@@ -230,10 +293,12 @@ public final class ModelLoader {
     /** Loads a tensor for the device <b>retaining Q4_K</b> rather than materializing it as Q8_0. */
     public static TornadoTensor loadTornadoTensorRetainingQ4_K(GGMLTensorEntry entry) {
         if (entry.ggmlType() == GGMLType.Q4_K) {
-            return Q4_KTornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
+            return Q4_KTornadoTensor.fromTornadoMemorySegment(
+                    entry.memorySegment(), shapeOf(entry));
         }
         if (entry.ggmlType() == GGMLType.Q6_K) {
-            return Q6_KTornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
+            return Q6_KTornadoTensor.fromTornadoMemorySegment(
+                    entry.memorySegment(), shapeOf(entry));
         }
         return loadTornadoTensor(entry);
     }
@@ -249,7 +314,8 @@ public final class ModelLoader {
      */
     public static TornadoTensor loadTornadoTensorRetainingQ4_0(GGMLTensorEntry entry) {
         if (entry.ggmlType() == GGMLType.Q4_0) {
-            return Q4_0TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
+            return Q4_0TornadoTensor.fromTornadoMemorySegment(
+                    entry.memorySegment(), shapeOf(entry));
         }
         return loadTornadoTensor(entry);
     }
@@ -267,15 +333,32 @@ public final class ModelLoader {
      */
     public static TornadoTensor loadTornadoTensorNative(GGMLTensorEntry entry) {
         return switch (entry.ggmlType()) {
-            case F32 -> FP32TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case F16 -> FP16TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case Q8_0 -> Q8_0TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case Q4_0 -> Q4_0TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case Q4_1 -> Q4_1TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case Q4_K -> Q4_KTornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case Q5_K -> Q5_KTornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case Q6_K -> Q6_KTornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case BF16 -> TornadoTensorLoader.convertBF16ToFP16(rawTensorData(entry));
+            case F32 ->
+                    FP32TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case F16 ->
+                    FP16TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q8_0 ->
+                    Q8_0TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q4_0 ->
+                    Q4_0TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q4_1 ->
+                    Q4_1TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q4_K ->
+                    Q4_KTornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q5_K ->
+                    Q5_KTornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case Q6_K ->
+                    Q6_KTornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case BF16 ->
+                    TornadoTensorLoader.convertBF16ToFP16(rawTensorData(entry), shapeOf(entry));
             default ->
                     throw new ModelLoadException(
                             DiagnosticCode.MODEL_MALFORMED.prefix()
@@ -315,19 +398,31 @@ public final class ModelLoader {
         TensorDescriptor descriptor = TensorDescriptors.describe(entry, ExecutionTarget.GPU);
         descriptor.shape().elementCountAsInt(descriptor.name());
         return switch (entry.ggmlType()) {
-            case F32 -> FP32TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case F16 -> FP16TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
-            case BF16 -> TornadoTensorLoader.convertBF16ToFP16(rawTensorData(entry));
-            case Q8_0 -> Q8_0TornadoTensor.fromTornadoMemorySegment(entry.memorySegment());
+            case F32 ->
+                    FP32TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case F16 ->
+                    FP16TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case BF16 ->
+                    TornadoTensorLoader.convertBF16ToFP16(rawTensorData(entry), shapeOf(entry));
+            case Q8_0 ->
+                    Q8_0TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
                 // A representation the device has no kernel for is materialized as Q8_0 at load
                 // The conversion reads through the CPU tensor for that format, which
                 // already knows how to decode it.
             case Q4_0, Q4_1, Q4_K, Q5_K, Q6_K ->
-                    TornadoTensorLoader.dequantizeToQ8_0(rawTensorData(entry));
+                    TornadoTensorLoader.dequantizeToQ8_0(rawTensorData(entry), shapeOf(entry));
             default ->
                     throw new UnsupportedOperationException(
                             "Quantization format " + entry.ggmlType());
         };
+    }
+
+    /** The dimensions the file gives {@code entry}, recorded on the device tensor built from it. */
+    private static Shape shapeOf(GGMLTensorEntry entry) {
+        return Shape.of(entry.shape());
     }
 
     /**
@@ -368,37 +463,5 @@ public final class ModelLoader {
             array[i] = loadTornadoTensor(getTensorEntry.apply(i));
         }
         return array;
-    }
-
-    /**
-     * Q4_0 projection packing, when {@code pack} ({@link PackedWeights#packQ4}), for the loaders
-     * whose layer graphs read packed Q4_0 tiles: each retained Q4_0 projection whose shape packs is
-     * recorded as packed, and repacked on the GPU once uploaded (see {@link PackedTiles}). A
-     * projection of another type — the Q4_1 {@code ffn_down} of some layers, a materialized trunk —
-     * is left as it is.
-     */
-    public static TornadoTensor[] packQ4(
-            TornadoTensor[] tensors, IntFunction<GGMLTensorEntry> entries, boolean pack) {
-        if (!pack) {
-            return tensors;
-        }
-        for (int i = 0; i < tensors.length; i++) {
-            GGMLTensorEntry entry = entries.apply(i);
-            TornadoTensor tensor = tensors[i];
-            if (entry == null
-                    || tensor == null
-                    || entry.ggmlType() != GGMLType.Q4_0
-                    || tensor.dataType() != DataType.Q4_0
-                    || entry.shape().length != 2) {
-                continue;
-            }
-            int cols = entry.shape()[0];
-            int rows = entry.shape()[1];
-            if (PackedTiles.fits(rows, cols)) {
-                tensors[i] =
-                        new Q4_0TornadoTensor(tensor.asByteArray(), new PackedTiles(rows, cols));
-            }
-        }
-        return tensors;
     }
 }

@@ -113,12 +113,6 @@ public class Llama extends AbstractModel {
                 tornadoVMPlan);
     }
 
-    /** Its layer graphs chain the KV buffers by predecessor name, so a shared table stays fresh. */
-    @Override
-    public boolean supportsSharedKvStorage() {
-        return true;
-    }
-
     /** Its own identity, stated rather than derived. */
     @Override
     public org.beehive.jitllm.runtime.model.ArchitectureId architectureId() {

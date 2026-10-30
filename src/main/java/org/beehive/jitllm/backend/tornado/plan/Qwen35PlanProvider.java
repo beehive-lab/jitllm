@@ -62,6 +62,12 @@ public final class Qwen35PlanProvider implements TornadoPlanProvider {
                 DataType.Q8_0);
     }
 
+    /** Every qwen35 path reads its Q8_0 and Q4_0 projections prepacked. */
+    @Override
+    public Set<DataType> prepackableTypes(ExecutionPolicy policy) {
+        return Set.of(DataType.Q8_0, DataType.Q4_0);
+    }
+
     @Override
     public Set<ExecutionMode> supportedModes() {
         return Set.of(ExecutionMode.values());

@@ -211,7 +211,7 @@ final class DelegatingModel implements TextGenerationModel {
         // another's cache (option 1).
         if (!gpu
                 || !attachesSharedPool(
-                        delegate,
+                        delegate.supportsSharedKvStorage(),
                         storageOptions,
                         org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection.mayHandle(
                                 delegate, executionPolicy))) {
@@ -249,15 +249,15 @@ final class DelegatingModel implements TextGenerationModel {
      * Whether a GPU load of this model attaches the shared key/value pool — the one rule, so the
      * preflight predicts the reservation the load makes.
      *
+     * @param supportsSharedKvStorage whether the model's family may lease shared KV storage
      * @param lowerable whether a session of this model can take the lowered path, which requires
      *     the pool
      */
     static boolean attachesSharedPool(
-            Model model,
+            boolean supportsSharedKvStorage,
             org.beehive.jitllm.runtime.policy.StorageOptions storageOptions,
             boolean lowerable) {
-        return model.supportsSharedKvStorage()
-                && (storageOptions.sharedKeyValuePool() || lowerable);
+        return supportsSharedKvStorage && (storageOptions.sharedKeyValuePool() || lowerable);
     }
 
     /**

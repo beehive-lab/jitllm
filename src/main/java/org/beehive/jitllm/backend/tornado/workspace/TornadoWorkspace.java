@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado.workspace;
 
-import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.inference.Logits;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
@@ -27,10 +28,13 @@ import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
 public final class TornadoWorkspace {
 
     /**
-     * The repack of this session's packed projections, collected from the layer graphs as they are
-     * built and appended to the plan as graphs of its own.
+     * The prepacking of this session's projections on the device, collected from the layer graphs
+     * as they are built and appended to the plan as graphs of its own.
      */
-    public final PackedRepack packedRepack = new PackedRepack();
+    public final WeightPrepacker prepacker = new WeightPrepacker();
+
+    /** Which weights this session's plan prepacks, set when the plan is built. */
+    public WeightPrepacking prepacking = WeightPrepacking.NONE;
 
     public FloatArray wrapAttSplit;
     public FloatArray

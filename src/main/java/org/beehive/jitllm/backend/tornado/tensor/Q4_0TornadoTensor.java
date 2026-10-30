@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.tensor;
 import java.lang.foreign.MemorySegment;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 
 /**
@@ -39,28 +40,13 @@ public class Q4_0TornadoTensor extends TornadoTensor {
 
     private final ByteArray tornadoNativeArray;
 
-    public Q4_0TornadoTensor(ByteArray byteArray) {
-        this(byteArray, null);
-    }
-
-    /**
-     * The file's bytes, which the device holds in the {@code packed} tile layout once uploaded, or
-     * as they are when {@code packed} is null.
-     */
-    public Q4_0TornadoTensor(ByteArray byteArray, PackedTiles packed) {
+    public Q4_0TornadoTensor(ByteArray byteArray, Shape shape) {
+        super(shape);
         this.tornadoNativeArray = byteArray;
-        this.packedTiles = packed;
     }
 
-    private final PackedTiles packedTiles;
-
-    @Override
-    public PackedTiles packedTiles() {
-        return packedTiles;
-    }
-
-    public static Q4_0TornadoTensor fromTornadoMemorySegment(MemorySegment segment) {
-        return new Q4_0TornadoTensor(ByteArray.fromSegmentShallow(segment));
+    public static Q4_0TornadoTensor fromTornadoMemorySegment(MemorySegment segment, Shape shape) {
+        return new Q4_0TornadoTensor(ByteArray.fromSegmentShallow(segment), shape);
     }
 
     @Override

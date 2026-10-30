@@ -18,9 +18,9 @@ import org.beehive.jitllm.backend.tornado.kernels.TensorCoreAttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.Gemma4State;
@@ -581,7 +581,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         String graph = layer.getTaskGraphName() + ".";
         layer.task(
                 task,
-                w.isPackedQ4()
+                state.workspace.prepacking.prepackedQ4(w)
                         ? Int8GemmKernels::gemmInt8Q4_0Packed
                         : w.dataType() == DataType.Q4_0
                                 ? Int8GemmKernels::gemmInt8Q4_0
@@ -745,10 +745,11 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      */
     // @formatter:on
     private void addDequant(TaskGraph layer, String taskName, TornadoTensor w, int destOffset) {
-        if (w.isPackedQ4()) {
-            // A packed weight has only the int8 GEMM (-Djitllm.gemma4.noInt8Prefill and native
+        if (state.workspace.prepacking.prepackedQ4(w)) {
+            // A prepacked weight has only the int8 GEMM (-Djitllm.gemma4.noInt8Prefill and native
             // projections are not open to it).
-            throw PackedWeights.noPackedKernel("gemma4 batch-prefill task '" + taskName + "'");
+            throw WeightPrepacking.noPrepackedKernel(
+                    "gemma4 batch-prefill task '" + taskName + "'");
         }
         switch (w.dataType()) {
             case Q8_0 ->
@@ -913,14 +914,15 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     }
 
     /**
-     * Refuses, by name, a projection the MLX prefill was not resolved for: another type, or packed
-     * tiles. Never handed back to the Metal kernels, so the decode layers that ask the same {@link
-     * #mlxPrefill} which weights these graphs bind are always right.
+     * Refuses, by name, a projection the MLX prefill was not resolved for: another type, or a
+     * prepacked weight. Never handed back to the Metal kernels, so the decode layers that ask the
+     * same {@link #mlxPrefill} which weights these graphs bind are always right.
      */
     private TornadoTensor[] requireMlx(String name, TornadoTensor... tensors) {
         for (TornadoTensor t : tensors) {
-            if (t.isPacked()) {
-                throw PackedWeights.noPackedKernel("The gemma4 MLX batched prefill (" + name + ")");
+            if (state.workspace.prepacking.prepacked(t)) {
+                throw WeightPrepacking.noPrepackedKernel(
+                        "The gemma4 MLX batched prefill (" + name + ")");
             }
             if (t.dataType() != mlx.weights()) {
                 throw new IllegalStateException(
@@ -1305,7 +1307,8 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             declareMlxBuffers(layer, layerIndex);
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, mlxWeights(layerIndex));
         } else {
-            state.workspace.packedRepack.upload(layer, projections);
+            state.workspace.prepacker.configureGraphInputs(
+                    layer, state.workspace.prepacking, projections);
         }
         if (hasOwnKv) {
             requireDecodable(weights.wkLayered[layerIndex], "blk." + layerIndex + ".attn_k");
@@ -1313,9 +1316,11 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             layer.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION, weights.attnKNorm[layerIndex].asFloatArray());
             if (mlx == null) {
-                state.workspace.packedRepack.upload(layer, weights.wkLayered[layerIndex]);
+                state.workspace.prepacker.configureGraphInputs(
+                        layer, state.workspace.prepacking, weights.wkLayered[layerIndex]);
                 if (weights.wvLayered[layerIndex] != null) {
-                    state.workspace.packedRepack.upload(layer, weights.wvLayered[layerIndex]);
+                    state.workspace.prepacker.configureGraphInputs(
+                            layer, state.workspace.prepacking, weights.wvLayered[layerIndex]);
                 }
             }
         }

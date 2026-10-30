@@ -20,15 +20,15 @@ public class LlamaQ4_0LayersBatchPrefillMMA extends DequantizingFP16LayersBatchP
     }
 
     /**
-     * Uploads the weights through the session's repack, as the decode layers that bind them expect:
-     * on a device that runs the packed int8 kernels the Q4_0 projections are repacked into tiles on
-     * upload.
+     * Declares the layer's weights through the session's prepacker, as the decode layers that bind
+     * them expect: the Q4_0 projections the plan prepacks are consumed from their prepacking graph.
      */
     @Override
     protected void uploadLayerWeights(TaskGraph batchPrefillLayer, int layerIndex) {
         LlamaTornadoWeights w = (LlamaTornadoWeights) weights;
-        state.workspace.packedRepack.upload(
+        state.workspace.prepacker.configureGraphInputs(
                 batchPrefillLayer,
+                state.workspace.prepacking,
                 w.rms_att_weightLayered[layerIndex].asFloatArray(),
                 w.wqLayered[layerIndex],
                 w.wkLayered[layerIndex],
@@ -43,12 +43,12 @@ public class LlamaQ4_0LayersBatchPrefillMMA extends DequantizingFP16LayersBatchP
     }
 
     /**
-     * Decodes {@code w}: Q4_0, from the file's blocks or the packed tiles, or Q4_1 where the file
-     * kept a tensor in it (some {@code ffn_down}).
+     * Decodes {@code w}: Q4_0, from the file's blocks or prepacked, or Q4_1 where the file kept a
+     * tensor in it (some {@code ffn_down}).
      */
     @Override
     protected void decode(TaskGraph layer, String task, TornadoTensor w, int destOffset, int n) {
-        if (w.isPacked()) {
+        if (state.workspace.prepacking.prepacked(w)) {
             layer.task(
                     task,
                     TransformerComputeKernelsQ4_0::dequantizeQ4_0PackedToFP16,
@@ -57,7 +57,7 @@ public class LlamaQ4_0LayersBatchPrefillMMA extends DequantizingFP16LayersBatchP
                     scratch(),
                     destOffset,
                     n,
-                    w.packedTiles().cols());
+                    Math.toIntExact(w.shape().dimension(0)));
             return;
         }
         switch (w.dataType()) {

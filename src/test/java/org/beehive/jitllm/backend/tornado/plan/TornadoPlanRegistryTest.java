@@ -3,7 +3,10 @@ package org.beehive.jitllm.backend.tornado.plan;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.util.Map;
 import java.util.Set;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.memory.DeviceRetention;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
@@ -118,10 +121,19 @@ public class TornadoPlanRegistryTest {
     @Test
     public void perTensorNativeSupportIsDeclaredApartFromAdmission() {
         for (TornadoPlanProvider provider : TornadoPlanRegistry.discover()) {
-            assertEquals(
-                    provider.architecture() + " retains what it declares per tensor",
-                    provider.nativeTensorTypes(),
-                    TornadoPlanRegistry.nativeDeviceTypes(provider.architecture()));
+            if (decidesForTheWholeModel(provider)) {
+                continue; // its own rule, tested with the family
+            }
+            DeviceRetention declared = DeviceRetention.retaining(provider.nativeTensorTypes());
+            DeviceRetention asked =
+                    TornadoPlanRegistry.deviceRetention(
+                            provider.architecture(), Map.of(), 1, BackendId.CUDA);
+            for (DataType type : FILE_TYPES) {
+                assertEquals(
+                        provider.architecture() + " retains what it declares per tensor: " + type,
+                        declared.deviceType("blk.0.ffn_up.weight", type),
+                        asked.deviceType("blk.0.ffn_up.weight", type));
+            }
         }
 
         TornadoPlanProvider uniform =
@@ -231,5 +243,28 @@ public class TornadoPlanRegistryTest {
                 .filter(p -> p.architecture().equals(id))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("no plan provider for " + id));
+    }
+
+    private static final DataType[] FILE_TYPES = {
+        DataType.F32,
+        DataType.F16,
+        DataType.Q8_0,
+        DataType.Q4_0,
+        DataType.Q4_1,
+        DataType.Q4_K,
+        DataType.Q5_K,
+        DataType.Q6_K
+    };
+
+    /** Whether the provider replaces the per-tensor default with a rule of its own. */
+    private static boolean decidesForTheWholeModel(TornadoPlanProvider provider) {
+        try {
+            return provider.getClass()
+                            .getMethod("deviceRetention", Map.class, int.class, BackendId.class)
+                            .getDeclaringClass()
+                    != TornadoPlanProvider.class;
+        } catch (NoSuchMethodException e) {
+            throw new AssertionError(e);
+        }
     }
 }

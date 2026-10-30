@@ -16,9 +16,9 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.plan.FusedOperandSupport;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.Qwen35State;
@@ -169,8 +169,9 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     /**
      * The residual passes built after a projection that stores rather than adds, by qualified task
-     * name. Not every tensor-core projection fuses its residual: a packed int8 GEMM below the FP16
-     * pair's output width stores, so the grid follows the tasks built, not the path taken.
+     * name. Not every tensor-core projection fuses its residual: an int8 GEMM over prepacked
+     * weights below the FP16 pair's output width stores, so the grid follows the tasks built, not
+     * the path taken.
      */
     private final java.util.Set<String> residualPasses = new java.util.LinkedHashSet<>();
 
@@ -295,21 +296,23 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     }
 
     /**
-     * Whether a packed Q4_0 projection of {@code n} outputs over {@code k} inputs runs as the
-     * packed int8 GEMM: the activation of this K is quantized, and the outputs fill whole tiles. A
-     * packed weight has no other prefill kernel, so every packed projection must answer yes here.
+     * Whether a prepacked Q4_0 projection of {@code n} outputs over {@code k} inputs runs as the
+     * int8 GEMM over prepacked weights: the activation of this K is quantized, and the outputs fill
+     * whole GEMM tiles. A prepacked weight has no other prefill kernel, so every prepacked
+     * projection must answer yes here.
      */
-    private boolean packedQ4Eligible(String task, int n, int k) {
+    private boolean prepackedQ4Eligible(String task, int n, int k) {
         return int8TaskFilterForTests.test(task) && int8Quantizes(k) && n % GEMM_TILE == 0;
     }
 
     /**
      * Whether the Q4_0 projection {@code w} of {@code n} outputs over {@code k} inputs runs as an
-     * int8 GEMM, so its input must be quantized rather than converted to FP16. A packed weight
+     * int8 GEMM, so its input must be quantized rather than converted to FP16. A prepacked weight
      * takes it below the FP16 pair's output threshold too, since it has no other kernel.
      */
     private boolean q40Int8(String task, TornadoTensor w, int n, int k) {
-        return int8Eligible(task, n, k) || (w.isPackedQ4() && packedQ4Eligible(task, n, k));
+        return int8Eligible(task, n, k)
+                || (state.workspace.prepacking.prepackedQ4(w) && prepackedQ4Eligible(task, n, k));
     }
 
     /** {@code x += out}: the residual of a projection whose kernel stored rather than added. */
@@ -386,7 +389,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             int k,
             Epilogue epilogue,
             boolean q8) {
-        // The GEMM reads the Q8_0 or Q4_0 blocks itself, or their packed tiles: no decode task,
+        // The GEMM reads the Q8_0 or Q4_0 blocks itself, prepacked or not: no decode task,
         // no weight scratch.
         q8DirectGemms.add(qualified);
         gemmTasks.put(qualified, n);
@@ -403,7 +406,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         if (splits > 1) {
             gemmSplitCounts.put(qualified, splits);
         }
-        boolean packed = q8 ? w.isPackedQ8() : w.isPackedQ4();
+        boolean packed =
+                q8
+                        ? state.workspace.prepacking.prepackedQ8(w)
+                        : state.workspace.prepacking.prepackedQ4(w);
         graph.task(
                 task,
                 packed
@@ -485,9 +491,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             int n,
             int k,
             Epilogue epilogue) {
-        if (w.isPackedQ4()) {
-            if (!packedQ4Eligible(task, n, k) || epilogue == Epilogue.SWIGLU) {
-                throw PackedWeights.noPackedKernel("qwen35 batch-prefill task '" + qualified + "'");
+        if (state.workspace.prepacking.prepackedQ4(w)) {
+            if (!prepackedQ4Eligible(task, n, k) || epilogue == Epilogue.SWIGLU) {
+                throw WeightPrepacking.noPrepackedKernel(
+                        "qwen35 batch-prefill task '" + qualified + "'");
             }
             int8Projection(graph, qualified, task, w, out, null, null, n, k, epilogue);
             return;
@@ -698,8 +705,9 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             tensors[layer].dataType() == DataType.Q8_0
                                     ? q8Int8Eligible("", outputs, inputs)
                                     : int8Eligible(outputs, inputs)
-                                            || (tensors[layer].isPackedQ4()
-                                                    && packedQ4Eligible("", outputs, inputs));
+                                            || (state.workspace.prepacking.prepackedQ4(
+                                                            tensors[layer])
+                                                    && prepackedQ4Eligible("", outputs, inputs));
                     if (eligible) {
                         int splits = gemmSplits(outputs, inputs);
                         if (splits > 1) {
@@ -887,11 +895,11 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 }
             }
             case Q4_0 -> {
-                if (w.isPackedQ4()) {
-                    // A packed weight has only the packed int8 GEMM: the activation quantized here.
+                if (state.workspace.prepacking.prepackedQ4(w)) {
+                    // A prepacked weight has only the int8 GEMM: the activation quantized here.
                     String qualified = GraphNames.batchLayer(layer) + "." + task;
-                    if (!packedQ4Eligible(task, d, n)) {
-                        throw PackedWeights.noPackedKernel(
+                    if (!prepackedQ4Eligible(task, d, n)) {
+                        throw WeightPrepacking.noPrepackedKernel(
                                 "qwen35 batch-prefill task '" + qualified + "'");
                     }
                     quantizeInput(graph, layer, task, xBatch, n);
@@ -1112,8 +1120,8 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     true);
             return;
         }
-        if (w.isPackedQ8()) {
-            throw PackedWeights.noPackedKernel(
+        if (state.workspace.prepacking.prepackedQ8(w)) {
+            throw WeightPrepacking.noPrepackedKernel(
                     "qwen35 batch-prefill layer "
                             + layer
                             + " task '"
@@ -1398,8 +1406,9 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             }
             return;
         }
-        if (gate.isPackedQ4() || up.isPackedQ4()) {
-            throw PackedWeights.noPackedKernel(
+        if (state.workspace.prepacking.prepackedQ4(gate)
+                || state.workspace.prepacking.prepackedQ4(up)) {
+            throw WeightPrepacking.noPrepackedKernel(
                     "qwen35 batch-prefill layer " + layer + " fused gate/up");
         }
         if (simdgroupGemm(config.dim())) {
@@ -2352,7 +2361,8 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             tensors.add(require(weights.attnQNorm, layerIndex, "attn_q_norm").asFloatArray());
             tensors.add(require(weights.attnKNorm, layerIndex, "attn_k_norm").asFloatArray());
         }
-        state.workspace.packedRepack.upload(layer, tensors.toArray());
+        state.workspace.prepacker.configureGraphInputs(
+                layer, state.workspace.prepacking, tensors.toArray());
     }
 
     private static Object deviceArray(TornadoTensor tensor) {

@@ -1,7 +1,6 @@
 package org.beehive.jitllm.model.provider;
 
 import org.beehive.jitllm.format.ModelSource;
-import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.loader.DevstralModelLoader;
 import org.beehive.jitllm.model.loader.GraniteLoader;
 import org.beehive.jitllm.model.loader.LlamaModelLoader;
@@ -10,7 +9,6 @@ import org.beehive.jitllm.model.loader.Phi3ModelLoader;
 import org.beehive.jitllm.model.loader.Qwen2MoEModelLoader;
 import org.beehive.jitllm.model.loader.Qwen2ModelLoader;
 import org.beehive.jitllm.model.loader.Qwen3ModelLoader;
-import org.beehive.jitllm.runtime.backend.BackendId;
 
 /**
  * The providers for the architectures this build knows, one per family.
@@ -34,13 +32,10 @@ public final class FamilyProviders {
         }
 
         @Override
-        public Model load(ModelSource source, BackendId backend, int contextLength) {
+        protected LlamaModelLoader loader(
+                ModelSource source, int contextLength, boolean useTornadovm) {
             return new LlamaModelLoader(
-                            source.gguf().getFileChannel(),
-                            source.gguf(),
-                            contextLength,
-                            !BackendId.CPU.equals(backend))
-                    .loadModel();
+                    source.gguf().getFileChannel(), source.gguf(), contextLength, useTornadovm);
         }
     }
 
@@ -50,13 +45,10 @@ public final class FamilyProviders {
         }
 
         @Override
-        public Model load(ModelSource source, BackendId backend, int contextLength) {
+        protected MistralModelLoader loader(
+                ModelSource source, int contextLength, boolean useTornadovm) {
             return new MistralModelLoader(
-                            source.gguf().getFileChannel(),
-                            source.gguf(),
-                            contextLength,
-                            !BackendId.CPU.equals(backend))
-                    .loadModel();
+                    source.gguf().getFileChannel(), source.gguf(), contextLength, useTornadovm);
         }
     }
 
@@ -66,13 +58,10 @@ public final class FamilyProviders {
         }
 
         @Override
-        public Model load(ModelSource source, BackendId backend, int contextLength) {
+        protected DevstralModelLoader loader(
+                ModelSource source, int contextLength, boolean useTornadovm) {
             return new DevstralModelLoader(
-                            source.gguf().getFileChannel(),
-                            source.gguf(),
-                            contextLength,
-                            !BackendId.CPU.equals(backend))
-                    .loadModel();
+                    source.gguf().getFileChannel(), source.gguf(), contextLength, useTornadovm);
         }
     }
 
@@ -82,13 +71,10 @@ public final class FamilyProviders {
         }
 
         @Override
-        public Model load(ModelSource source, BackendId backend, int contextLength) {
+        protected Qwen2ModelLoader loader(
+                ModelSource source, int contextLength, boolean useTornadovm) {
             return new Qwen2ModelLoader(
-                            source.gguf().getFileChannel(),
-                            source.gguf(),
-                            contextLength,
-                            !BackendId.CPU.equals(backend))
-                    .loadModel();
+                    source.gguf().getFileChannel(), source.gguf(), contextLength, useTornadovm);
         }
     }
 
@@ -103,13 +89,10 @@ public final class FamilyProviders {
         }
 
         @Override
-        public Model load(ModelSource source, BackendId backend, int contextLength) {
+        protected Qwen2MoEModelLoader loader(
+                ModelSource source, int contextLength, boolean useTornadovm) {
             return new Qwen2MoEModelLoader(
-                            source.gguf().getFileChannel(),
-                            source.gguf(),
-                            contextLength,
-                            !BackendId.CPU.equals(backend))
-                    .loadModel();
+                    source.gguf().getFileChannel(), source.gguf(), contextLength, useTornadovm);
         }
     }
 
@@ -119,13 +102,10 @@ public final class FamilyProviders {
         }
 
         @Override
-        public Model load(ModelSource source, BackendId backend, int contextLength) {
+        protected Qwen3ModelLoader loader(
+                ModelSource source, int contextLength, boolean useTornadovm) {
             return new Qwen3ModelLoader(
-                            source.gguf().getFileChannel(),
-                            source.gguf(),
-                            contextLength,
-                            !BackendId.CPU.equals(backend))
-                    .loadModel();
+                    source.gguf().getFileChannel(), source.gguf(), contextLength, useTornadovm);
         }
     }
 
@@ -140,13 +120,10 @@ public final class FamilyProviders {
         }
 
         @Override
-        public Model load(ModelSource source, BackendId backend, int contextLength) {
+        protected Qwen2ModelLoader loader(
+                ModelSource source, int contextLength, boolean useTornadovm) {
             return new Qwen2ModelLoader(
-                            source.gguf().getFileChannel(),
-                            source.gguf(),
-                            contextLength,
-                            !BackendId.CPU.equals(backend))
-                    .loadModel();
+                    source.gguf().getFileChannel(), source.gguf(), contextLength, useTornadovm);
         }
     }
 
@@ -156,13 +133,10 @@ public final class FamilyProviders {
         }
 
         @Override
-        public Model load(ModelSource source, BackendId backend, int contextLength) {
+        protected Phi3ModelLoader loader(
+                ModelSource source, int contextLength, boolean useTornadovm) {
             return new Phi3ModelLoader(
-                            source.gguf().getFileChannel(),
-                            source.gguf(),
-                            contextLength,
-                            !BackendId.CPU.equals(backend))
-                    .loadModel();
+                    source.gguf().getFileChannel(), source.gguf(), contextLength, useTornadovm);
         }
     }
 
@@ -177,13 +151,10 @@ public final class FamilyProviders {
         }
 
         @Override
-        public Model load(ModelSource source, BackendId backend, int contextLength) {
+        protected GraniteLoader loader(
+                ModelSource source, int contextLength, boolean useTornadovm) {
             return new GraniteLoader(
-                            source.gguf().getFileChannel(),
-                            source.gguf(),
-                            contextLength,
-                            !BackendId.CPU.equals(backend))
-                    .loadModel();
+                    source.gguf().getFileChannel(), source.gguf(), contextLength, useTornadovm);
         }
     }
 }

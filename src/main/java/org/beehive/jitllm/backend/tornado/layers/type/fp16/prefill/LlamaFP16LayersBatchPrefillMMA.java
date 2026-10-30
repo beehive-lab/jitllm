@@ -194,6 +194,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 splitK.nativeGemm()
                         ? new FP16Projections(
                                 context,
+                                state.workspace.prepacking,
                                 widestStacked(config),
                                 paddedBatch,
                                 config.dim(),

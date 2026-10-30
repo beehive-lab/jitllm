@@ -18,11 +18,11 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0D
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0Packed;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.plan.FusedOperandSupport;
-import org.beehive.jitllm.backend.tornado.plan.PackedRepack;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Qwen35State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
@@ -340,8 +340,8 @@ public class Qwen35FFNLayers
                 }
             }
             case Q8_0 -> {
-                if (w.isPackedQ8() && !packedQ8_0) {
-                    packedTasks().add(layer + "." + task);
+                if (state.workspace.prepacking.prepackedQ8(w) && !packedQ8_0) {
+                    prepackedQ8Tasks().add(layer + "." + task);
                     graph.task(
                             tn(task),
                             TransformerComputeKernelsQ8_0Packed::matrixVectorQ8_0PackedF32,
@@ -352,8 +352,8 @@ public class Qwen35FFNLayers
                             n,
                             d,
                             residual ? 1 : 0);
-                } else if (w.isPackedQ8()) {
-                    packedTasks().add(layer + "." + task);
+                } else if (state.workspace.prepacking.prepackedQ8(w)) {
+                    prepackedQ8Tasks().add(layer + "." + task);
                     graph.task(
                             tn(task),
                             TransformerComputeKernelsQ8_0Packed::matrixVectorQ8_0Packed,
@@ -407,15 +407,16 @@ public class Qwen35FFNLayers
                 }
             }
             case Q4_0 -> {
-                if (w.isPackedQ4()) {
-                    // A packed weight: the quantized activation where the branch made one (the two
+                if (state.workspace.prepacking.prepackedQ4(w)) {
+                    // A prepacked weight: the quantized activation where the branch made one (the
+                    // two
                     // DP4A conditions below), otherwise the FP32 one.
                     boolean quantized =
                             (residual && x == state.workspace.wrapHb && hiddenActivationQuantized)
                                     || (!residual
                                             && x == state.workspace.wrapXb
                                             && normedActivationQuantized);
-                    packedQ4Tasks().add(layer + "." + task);
+                    prepackedQ4Tasks().add(layer + "." + task);
                     if (quantized) {
                         graph.task(
                                 tn(task),
@@ -715,11 +716,15 @@ public class Qwen35FFNLayers
                         "ffn_gate|ffn_up",
                         gate.dataType(),
                         packed || packedQ8_0));
-        if (gate.isPackedQ8() || up.isPackedQ8()) {
-            if (!packedQ8_0 || !gate.isPackedQ8() || !up.isPackedQ8()) {
-                throw PackedWeights.noPackedKernel("qwen35 layer " + layer + " fused gate/up");
+        if (state.workspace.prepacking.prepackedQ8(gate)
+                || state.workspace.prepacking.prepackedQ8(up)) {
+            if (!packedQ8_0
+                    || !state.workspace.prepacking.prepackedQ8(gate)
+                    || !state.workspace.prepacking.prepackedQ8(up)) {
+                throw WeightPrepacking.noPrepackedKernel(
+                        "qwen35 layer " + layer + " fused gate/up");
             }
-            packedTasks().add(layer + ".ffn_gate_up");
+            prepackedQ8Tasks().add(layer + ".ffn_gate_up");
             graph.task(
                     tn("ffn_gate_up"),
                     TransformerComputeKernelsQ8_0Packed::fusedFFNGateUpSiLUQ8_0Packed,
@@ -748,11 +753,15 @@ public class Qwen35FFNLayers
                     MATVEC_LOCAL);
             return;
         }
-        if (gate.isPackedQ4() || up.isPackedQ4()) {
-            if (!packed || !gate.isPackedQ4() || !up.isPackedQ4()) {
-                throw PackedWeights.noPackedKernel("qwen35 layer " + layer + " fused gate/up");
+        if (state.workspace.prepacking.prepackedQ4(gate)
+                || state.workspace.prepacking.prepackedQ4(up)) {
+            if (!packed
+                    || !state.workspace.prepacking.prepackedQ4(gate)
+                    || !state.workspace.prepacking.prepackedQ4(up)) {
+                throw WeightPrepacking.noPrepackedKernel(
+                        "qwen35 layer " + layer + " fused gate/up");
             }
-            packedQ4Tasks().add(layer + ".ffn_gate_up");
+            prepackedQ4Tasks().add(layer + ".ffn_gate_up");
             graph.task(
                     tn("ffn_gate_up"),
                     TransformerComputeKernelsQ4_0Packed::fusedFFNGateUpSiLUQ4_0Packed,
@@ -1923,9 +1932,10 @@ public class Qwen35FFNLayers
         }
         String source = weightSourceGraphName(layerIndex);
         if (source != null) {
-            layer.consumeFromDevice(source, PackedRepack.deviceArrays(tensors.toArray()));
+            layer.consumeFromDevice(source, WeightPrepacker.deviceArrays(tensors.toArray()));
         } else {
-            state.workspace.packedRepack.upload(layer, tensors.toArray());
+            state.workspace.prepacker.configureGraphInputs(
+                    layer, state.workspace.prepacking, tensors.toArray());
         }
     }
 
@@ -2193,40 +2203,42 @@ public class Qwen35FFNLayers
     }
 
     /**
-     * The decode tasks whose weight is packed ({@code "layer.task"}), with their
+     * The decode tasks whose weight is prepacked Q8_0 ({@code "layer.task"}), with their
      * workgroup-per-8-rows grid.
      */
     // Not initialised at its declaration: the task graphs may be built from a superclass
     // constructor, before this class's field initialisers have run.
-    private java.util.Set<String> packedTasks;
+    private java.util.Set<String> prepackedQ8Tasks;
 
-    private java.util.Set<String> packedTasks() {
-        if (packedTasks == null) {
-            packedTasks = new java.util.HashSet<>();
+    private java.util.Set<String> prepackedQ8Tasks() {
+        if (prepackedQ8Tasks == null) {
+            prepackedQ8Tasks = new java.util.HashSet<>();
         }
-        return packedTasks;
+        return prepackedQ8Tasks;
     }
 
-    /** The decode tasks whose weight is packed Q4_0, with their workgroup-per-16-rows grid. */
-    private java.util.Set<String> packedQ4Tasks;
+    /** The decode tasks whose weight is prepacked Q4_0, with their workgroup-per-16-rows grid. */
+    private java.util.Set<String> prepackedQ4Tasks;
 
-    private java.util.Set<String> packedQ4Tasks() {
-        if (packedQ4Tasks == null) {
-            packedQ4Tasks = new java.util.HashSet<>();
+    private java.util.Set<String> prepackedQ4Tasks() {
+        if (prepackedQ4Tasks == null) {
+            prepackedQ4Tasks = new java.util.HashSet<>();
         }
-        return packedQ4Tasks;
+        return prepackedQ4Tasks;
     }
 
-    /** {@link #matVecWorker}, or a workgroup per eight rows where the task's weight is packed. */
+    /**
+     * {@link #matVecWorker}, or the prepacked kernels' grid where the task's weight is prepacked.
+     */
     private WorkerGrid projWorker(int layer, String task, int rows) {
-        if (packedQ4Tasks().contains(layer + "." + task)) {
+        if (prepackedQ4Tasks().contains(layer + "." + task)) {
             int local =
                     task.equals("ffn_gate_up")
                             ? TransformerComputeKernelsQ4_0Packed.FUSED_LOCAL
                             : TransformerComputeKernelsQ4_0Packed.LOCAL;
             return WorkerGridFactory.genericWorker(rows / 16 * local, local);
         }
-        if (packedTasks().contains(layer + "." + task)) {
+        if (prepackedQ8Tasks().contains(layer + "." + task)) {
             int local =
                     task.equals("ffn_gate_up")
                             ? TransformerComputeKernelsQ8_0Packed.FUSED_LOCAL

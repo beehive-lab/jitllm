@@ -25,6 +25,7 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
 import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.WorkerGrid;
@@ -111,7 +112,7 @@ public class Qwen35GraphTopologyAccelTest {
     // ---- synthetic tensors --------------------------------------------------
 
     private static TornadoTensor f32(int elements) {
-        return new FP32TornadoTensor(new FloatArray(elements));
+        return new FP32TornadoTensor(new FloatArray(elements), Shape.of(elements));
     }
 
     private static TornadoTensor blocked(DataType type, int elements) {
@@ -134,10 +135,10 @@ public class Qwen35GraphTopologyAccelTest {
         }
         ByteArray bytes = new ByteArray(elements / blockSize * blockBytes);
         return switch (type) {
-            case Q4_0 -> new Q4_0TornadoTensor(bytes);
-            case Q4_1 -> new Q4_1TornadoTensor(bytes);
-            case Q5_K -> new Q5_KTornadoTensor(bytes);
-            case Q6_K -> new Q6_KTornadoTensor(bytes);
+            case Q4_0 -> new Q4_0TornadoTensor(bytes, Shape.of(elements));
+            case Q4_1 -> new Q4_1TornadoTensor(bytes, Shape.of(elements));
+            case Q5_K -> new Q5_KTornadoTensor(bytes, Shape.of(elements));
+            case Q6_K -> new Q6_KTornadoTensor(bytes, Shape.of(elements));
             default -> throw new IllegalArgumentException(type.toString());
         };
     }

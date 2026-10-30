@@ -4,8 +4,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -80,6 +80,7 @@ public final class FP16Projections {
     }
 
     private final KernelContext context;
+    private final WeightPrepacking prepacking;
     private final HalfFloatArray scratch;
     private final SplitKGemm gemm;
     private final Map<String, Integer> decodeTasks = new LinkedHashMap<>();
@@ -90,12 +91,14 @@ public final class FP16Projections {
     private int nextFlag;
 
     /**
+     * @param prepacking the plan's weight prepacking: a prepacked weight has no FP16 decode here
      * @param widest the most weights one projection call multiplies, all its tensors together
      * @param rows the padded batch, the GEMMs' row count
      * @param widestSplit the widest output a split projection writes
      */
     public FP16Projections(
             KernelContext context,
+            WeightPrepacking prepacking,
             long widest,
             int rows,
             int widestSplit,
@@ -103,6 +106,7 @@ public final class FP16Projections {
             int projectionCalls,
             boolean nativeGemm) {
         this.context = context;
+        this.prepacking = prepacking;
         this.resident = resident;
         // One flag per resident projection, and a last one never set for the per-chunk decodes.
         this.decoded = new IntArray(projectionCalls + 1);
@@ -146,8 +150,8 @@ public final class FP16Projections {
         long total = 0;
         boolean wholeRowBlocks = k % 32 == 0;
         for (TornadoTensor w : ws) {
-            if (w.isPacked()) {
-                throw PackedWeights.noPackedKernel("Q8_0 batch-prefill task '" + task + "'");
+            if (prepacking.prepacked(w)) {
+                throw WeightPrepacking.noPrepackedKernel("Q8_0 batch-prefill task '" + task + "'");
             }
             long elements = elements(w);
             total += elements;
@@ -168,8 +172,8 @@ public final class FP16Projections {
         }
         int offset = 0;
         for (int i = 0; i < ws.length; i++) {
-            if (ws[i].isPacked()) {
-                throw PackedWeights.noPackedKernel("Q8_0 batch-prefill task '" + task + "'");
+            if (prepacking.prepacked(ws[i])) {
+                throw WeightPrepacking.noPrepackedKernel("Q8_0 batch-prefill task '" + task + "'");
             }
             int n = (int) elements(ws[i]);
             String decode = task + "Decode" + i;
