@@ -150,36 +150,39 @@ public class Qwen35GraphTopologyAccelTest {
         int queryGate = config.queryGateDim();
         int kvDim = config.kvDim();
         int attnDim = config.attentionOutputInputDim();
+        // Deep enough for a fixture whose trunk spans more than one decode graph.
+        int trunk = Math.max(TRUNK_LAYERS, config.numberOfLayers());
+        int blocks = trunk + NEXTN_LAYERS;
 
-        TornadoTensor[] attnNorm = new TornadoTensor[BLOCKS];
-        TornadoTensor[] ffnNorm = new TornadoTensor[BLOCKS];
-        TornadoTensor[] ffnGate = new TornadoTensor[BLOCKS];
-        TornadoTensor[] ffnDown = new TornadoTensor[BLOCKS];
-        TornadoTensor[] ffnUp = new TornadoTensor[BLOCKS];
-        TornadoTensor[] wq = new TornadoTensor[BLOCKS];
-        TornadoTensor[] wk = new TornadoTensor[BLOCKS];
-        TornadoTensor[] wv = new TornadoTensor[BLOCKS];
-        TornadoTensor[] wo = new TornadoTensor[BLOCKS];
-        TornadoTensor[] qNorm = new TornadoTensor[BLOCKS];
-        TornadoTensor[] kNorm = new TornadoTensor[BLOCKS];
-        TornadoTensor[] ssmQkv = new TornadoTensor[TRUNK_LAYERS];
-        TornadoTensor[] ssmGate = new TornadoTensor[TRUNK_LAYERS];
-        TornadoTensor[] ssmConv = new TornadoTensor[TRUNK_LAYERS];
-        TornadoTensor[] ssmAlpha = new TornadoTensor[TRUNK_LAYERS];
-        TornadoTensor[] ssmBeta = new TornadoTensor[TRUNK_LAYERS];
-        TornadoTensor[] ssmDtBias = new TornadoTensor[TRUNK_LAYERS];
-        TornadoTensor[] ssmA = new TornadoTensor[TRUNK_LAYERS];
-        TornadoTensor[] ssmNorm = new TornadoTensor[TRUNK_LAYERS];
-        TornadoTensor[] ssmOut = new TornadoTensor[TRUNK_LAYERS];
+        TornadoTensor[] attnNorm = new TornadoTensor[blocks];
+        TornadoTensor[] ffnNorm = new TornadoTensor[blocks];
+        TornadoTensor[] ffnGate = new TornadoTensor[blocks];
+        TornadoTensor[] ffnDown = new TornadoTensor[blocks];
+        TornadoTensor[] ffnUp = new TornadoTensor[blocks];
+        TornadoTensor[] wq = new TornadoTensor[blocks];
+        TornadoTensor[] wk = new TornadoTensor[blocks];
+        TornadoTensor[] wv = new TornadoTensor[blocks];
+        TornadoTensor[] wo = new TornadoTensor[blocks];
+        TornadoTensor[] qNorm = new TornadoTensor[blocks];
+        TornadoTensor[] kNorm = new TornadoTensor[blocks];
+        TornadoTensor[] ssmQkv = new TornadoTensor[trunk];
+        TornadoTensor[] ssmGate = new TornadoTensor[trunk];
+        TornadoTensor[] ssmConv = new TornadoTensor[trunk];
+        TornadoTensor[] ssmAlpha = new TornadoTensor[trunk];
+        TornadoTensor[] ssmBeta = new TornadoTensor[trunk];
+        TornadoTensor[] ssmDtBias = new TornadoTensor[trunk];
+        TornadoTensor[] ssmA = new TornadoTensor[trunk];
+        TornadoTensor[] ssmNorm = new TornadoTensor[trunk];
+        TornadoTensor[] ssmOut = new TornadoTensor[trunk];
 
-        for (int l = 0; l < BLOCKS; l++) {
+        for (int l = 0; l < blocks; l++) {
             attnNorm[l] = f32(DIM);
             ffnNorm[l] = f32(DIM);
             ffnGate[l] = blocked(DataType.Q4_0, DIM * HIDDEN);
             ffnUp[l] = blocked(DataType.Q4_0, DIM * HIDDEN);
             // The 27B holds Q4_1 down projections on its first eight blocks only.
             ffnDown[l] = blocked(l < 2 ? DataType.Q4_1 : DataType.Q4_0, HIDDEN * DIM);
-            if (l < TRUNK_LAYERS && config.isRecurrentLayer(l)) {
+            if (l < trunk && config.isRecurrentLayer(l)) {
                 ssmQkv[l] = blocked(DataType.Q4_0, DIM * config.deltaNetConvDim());
                 ssmGate[l] = blocked(DataType.Q4_0, DIM * config.deltaNetValueDim());
                 ssmConv[l] = f32(config.deltaNetConvDim() * CONV_KERNEL);
@@ -200,7 +203,7 @@ public class Qwen35GraphTopologyAccelTest {
         }
 
         return new Qwen35TornadoWeights(
-                BLOCKS,
+                blocks,
                 blocked(DataType.Q4_0, config.vocabularySize() * DIM),
                 attnNorm,
                 ffnNorm,
@@ -433,7 +436,8 @@ public class Qwen35GraphTopologyAccelTest {
     // @formatter:on
     @Test
     public void aPairedLayerConsumesFromTheGraphHoldingItsPredecessor() {
-        Qwen35Configuration config = config();
+        // A stage is one graph up to LAYERS_PER_GRAPH layers, so the fixture is deeper than that.
+        Qwen35Configuration config = config(Qwen35FFNLayersGrouped.LAYERS_PER_GRAPH + TRUNK_LAYERS);
         Qwen35FFNLayersBatchDecode decode = buildBatchDecode(config);
         int layers = config.numberOfLayers();
         int group = decode.layersPerGraph();
@@ -495,39 +499,43 @@ public class Qwen35GraphTopologyAccelTest {
     /**
      * A trunk depth that does not divide by the group size leaves a smaller final graph.
      *
-     * <p>The production depth of 64 divides by four exactly, so the remainder path would otherwise
-     * never be built. Six layers at four to a graph gives one full graph and one holding two, and
-     * the second graph must still own its own inputs and outputs.
+     * <p>A stage of up to {@link Qwen35FFNLayersGrouped#LAYERS_PER_GRAPH} layers is one graph, so
+     * the remainder path is only built for a deeper stage. Two layers past a full graph gives one
+     * full graph and one holding two, and the second graph must still own its own inputs and
+     * outputs.
      */
     // @formatter:on
     @Test
     public void aRemainderGroupTakesASmallerGraph() {
-        Qwen35Configuration config = config(6);
+        int full = Qwen35FFNLayersGrouped.LAYERS_PER_GRAPH;
+        int layers = full + 2;
+        Qwen35Configuration config = config(layers);
         Qwen35FFNLayersBatchDecode decode = buildBatchDecode(config);
         int group = decode.layersPerGraph();
-        assumeTrue("this case needs a remainder", 6 % group != 0);
+        assertEquals("a full graph is a whole group", full, group);
+        String remainder = "layer_" + full;
 
         assertEquals(
                 "a full graph and a remainder graph",
                 2,
                 decode.getFFNLayerImmutableTaskGraphs().size());
         assertEquals("layer_0", decode.layerGraphName(0));
-        assertEquals("layer_4", decode.layerGraphName(4));
-        assertEquals("layer_4", decode.layerGraphName(5));
+        assertEquals(remainder, decode.layerGraphName(full));
+        assertEquals(remainder, decode.layerGraphName(full + 1));
         assertEquals(
                 "the logits graph chains from the remainder graph",
-                "layer_4",
+                remainder,
                 decode.getLastFFNLayerTaskGraphID());
 
         // The remainder graph owns its edges: first layer consumes, last layer persists.
-        assertTrue(decode.firstLayerOfGraph(4));
-        assertFalse(decode.firstLayerOfGraph(5));
-        assertFalse(decode.lastLayerOfGraph(4));
-        assertTrue("the trunk's final layer ends its graph", decode.lastLayerOfGraph(5));
+        assertTrue(decode.firstLayerOfGraph(full));
+        assertFalse(decode.firstLayerOfGraph(full + 1));
+        assertFalse(decode.lastLayerOfGraph(full));
+        assertTrue("the trunk's final layer ends its graph", decode.lastLayerOfGraph(full + 1));
         assertEquals(
                 "the remainder graph consumes from the full graph before it",
                 "layer_0",
-                decode.layerGraphName(3));
+                decode.layerGraphName(full - 1));
 
         GridScheduler scheduler = new GridScheduler();
         decode.updateGridScheduler(scheduler);
@@ -535,7 +543,7 @@ public class Qwen35GraphTopologyAccelTest {
         for (String key : scheduler.keySet()) {
             names.add(key.substring(0, key.indexOf('.')));
         }
-        assertEquals(Set.of("layer_0", "layer_4"), names);
+        assertEquals(Set.of("layer_0", remainder), names);
     }
 
     private static Qwen35FFNLayersBatchDecode buildBatchDecode(Qwen35Configuration config) {
@@ -1032,7 +1040,9 @@ public class Qwen35GraphTopologyAccelTest {
      * projections gain a {@code _dequant} task and the GEMM's two-dimensional grid, the 256-wide
      * down projection stays on the direct kernel, and the scratch exists; at width 64 nothing
      * changes and no scratch is allocated. The direct kernel's grid is what a projection left off
-     * the pair would carry, so the grid is asserted, not just the task name.
+     * the pair would carry, so the grid is asserted, not just the task name. On a device with int8
+     * tensor cores the projections the pair takes are the int8 GEMM over the Q4_0 blocks instead,
+     * which has no decode task.
      */
     // @formatter:on
     @Test
@@ -1044,11 +1054,39 @@ public class Qwen35GraphTopologyAccelTest {
         assertTrue(Qwen35Configuration.dequantGemmWidth(128));
         assertFalse(Qwen35Configuration.dequantGemmWidth(64));
 
+        // Where the device has int8 tensor cores the Q4_0 projections the pair takes run as the
+        // int8 GEMM over the blocks where they lie instead: no decode task, its own worker, and
+        // the column tiles repeated once per K split.
+        boolean int8 = org.beehive.jitllm.backend.tornado.TensorCoreSupport.isInt8MmaCapable();
         GridScheduler paired = new GridScheduler();
         buildBatched(wide, 128).updateGridScheduler(paired);
         for (int layer = 0; layer < TRUNK_LAYERS; layer++) {
             List<String> tasks = batchTaskNames(paired, layer);
             for (String task : new String[] {"ffn_gate_proj", "ffn_up_proj"}) {
+                WorkerGrid gemm = paired.get("batchLayer_" + layer + "." + task);
+                if (int8) {
+                    assertFalse(
+                            "width 128 layer "
+                                    + layer
+                                    + " "
+                                    + task
+                                    + " decodes a weight the int8 GEMM reads in place: "
+                                    + tasks,
+                            tasks.contains(task + "_dequant"));
+                    long threads =
+                            org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels
+                                    .Q8_GEMM_THREADS;
+                    assertEquals(
+                            "width 128 " + task + " int8 GEMM rows of work",
+                            (128 / 128) * threads,
+                            gemm.getGlobalWork()[0]);
+                    assertEquals(
+                            "width 128 " + task + " int8 GEMM column tiles, once per split",
+                            0,
+                            gemm.getGlobalWork()[1] % (5120L / 128));
+                    assertEquals("width 128 " + task + " local", threads, gemm.getLocalWork()[0]);
+                    continue;
+                }
                 assertTrue(
                         "width 128 layer "
                                 + layer
@@ -1057,7 +1095,6 @@ public class Qwen35GraphTopologyAccelTest {
                                 + " has no dequantization: "
                                 + tasks,
                         tasks.contains(task + "_dequant"));
-                WorkerGrid gemm = paired.get("batchLayer_" + layer + "." + task);
                 assertEquals(
                         "width 128 " + task + " GEMM rows of work",
                         (128 / 128) * 256L,
@@ -1066,11 +1103,10 @@ public class Qwen35GraphTopologyAccelTest {
                         "width 128 " + task + " GEMM column tiles",
                         5120L / 128,
                         gemm.getGlobalWork()[1]);
-                // The int8 decoder takes a lane per word of four weights; the FP16 decoder a
-                // lane per packed byte of two. On a tensor-core device the Q4_0 pairs are int8.
+                // The FP16 decoder takes a lane per packed byte of two weights.
                 assertEquals(
                         "width 128 " + task + " dequantization lanes",
-                        5120L * wide.dim() / 4,
+                        5120L * wide.dim() / 2,
                         paired.get("batchLayer_" + layer + "." + task + "_dequant")
                                 .getGlobalWork()[0]);
             }

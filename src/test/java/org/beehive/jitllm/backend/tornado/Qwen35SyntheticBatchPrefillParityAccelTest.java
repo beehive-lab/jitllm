@@ -47,6 +47,10 @@ public class Qwen35SyntheticBatchPrefillParityAccelTest {
         // for the host comparison below. The tensor-core default rounds Q and P to FP16 in the
         // attention and is covered by its own numerics tests at its own bounds.
         System.setProperty("jitllm.qwen35.tensorCores", "false");
+        // And the FP32 key/value cache: with the FP16 default, a width of whole 16-query tiles
+        // takes the tensor-core attention whatever the property above says (it covers the
+        // projections), and its FP16 rounding is not what the cross-width comparison allows.
+        System.setProperty("jitllm.kvcache.fp32", "true");
     }
 
     private static final int DECODE_ROWS = 3;
