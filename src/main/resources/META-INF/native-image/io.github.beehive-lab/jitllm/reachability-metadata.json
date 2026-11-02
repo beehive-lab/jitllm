@@ -1,0 +1,8 @@
+{
+  "comment": "jitllm's own native-image metadata. Kernel and lambda registration is done by JitllmNativeImageFeature; TornadoVM and JDK entries are in tornadovm/reachability-metadata.json. The class files are resources because TornadoVM's kernel compiler reads the bytecode of the kernels and of every jitllm method they call.",
+  "resources": [
+    {
+      "glob": "org/beehive/jitllm/**/*.class"
+    }
+  ]
+}
