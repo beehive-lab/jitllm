@@ -70,6 +70,7 @@
         <!-- The tornado.jdk.floor a matching SDK records in etc/tornado.jdk; set by the JDK profiles. -->
         <tornadovm.sdk.jdk.floor>22</tornadovm.sdk.jdk.floor>
         <!-- The published TornadoVM release that -P release builds against (see prepare-release.yml). -->
+        <graalvm.sdk.version>25.0.2</graalvm.sdk.version>
         <tornadovm.release.version>8.1.0</tornadovm.release.version>
         <archunit.version>1.4.2</archunit.version>
         <jdk.version.suffix>-jdk21</jdk.version.suffix>
@@ -100,6 +101,14 @@
             <artifactId>archunit-junit4</artifactId>
             <version>${archunit.version}</version>
             <scope>test</scope>
+        </dependency>
+        <!-- GraalVM's hosted API for JitllmNativeImageFeature, which only runs inside the
+             native-image builder (which provides this jar). Provided scope: never on a JVM class path. -->
+        <dependency>
+            <groupId>org.graalvm.sdk</groupId>
+            <artifactId>nativeimage</artifactId>
+            <version>${graalvm.sdk.version}</version>
+            <scope>provided</scope>
         </dependency>
         <!-- No TornadoVM dependency here: development builds compile against the SDK's modules
              (tornadovm.module.path above). The release and ide profiles declare TornadoVM as

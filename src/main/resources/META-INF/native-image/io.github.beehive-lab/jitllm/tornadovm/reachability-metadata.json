@@ -1,0 +1,806 @@
+{
+  "comment": "TornadoVM 8 and JDK entries for jitllm native images, recorded by scripts/native-image.sh trace. Belongs in TornadoVM's own jars once it ships native-image metadata.",
+  "reflection": [
+    {
+      "type": "com.sun.management.VMOption$Origin",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "ATTACH_ON_DEMAND"
+        },
+        {
+          "name": "CONFIG_FILE"
+        },
+        {
+          "name": "DEFAULT"
+        },
+        {
+          "name": "ENVIRON_VAR"
+        },
+        {
+          "name": "ERGONOMIC"
+        },
+        {
+          "name": "MANAGEMENT"
+        },
+        {
+          "name": "OTHER"
+        },
+        {
+          "name": "VM_CREATION"
+        }
+      ]
+    },
+    {
+      "type": "com.sun.management.internal.Flag",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.String",
+            "java.lang.Object",
+            "boolean",
+            "boolean",
+            "com.sun.management.VMOption$Origin"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "float[]"
+    },
+    {
+      "type": "java.lang.Boolean",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "boolean"
+          ]
+        },
+        {
+          "name": "getBoolean",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.lang.Integer"
+    },
+    {
+      "type": "java.lang.Math"
+    },
+    {
+      "type": "java.lang.Number"
+    },
+    {
+      "type": "java.lang.Object"
+    },
+    {
+      "type": "sun.management.VMManagementImpl",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "compTimeMonitoringSupport"
+        },
+        {
+          "name": "currentThreadCpuTimeSupport"
+        },
+        {
+          "name": "objectMonitorUsageSupport"
+        },
+        {
+          "name": "otherThreadCpuTimeSupport"
+        },
+        {
+          "name": "remoteDiagnosticCommandsSupport"
+        },
+        {
+          "name": "synchronizerUsageSupport"
+        },
+        {
+          "name": "threadAllocatedMemorySupport"
+        },
+        {
+          "name": "threadContentionMonitoringSupport"
+        }
+      ]
+    },
+    {
+      "type": "sun.misc.Unsafe",
+      "fields": [
+        {
+          "name": "theUnsafe"
+        }
+      ]
+    },
+    {
+      "type": "sun.net.www.protocol.jar.Handler",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.SHA2$SHA256",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.text.resources.cldr.FormatData"
+    },
+    {
+      "type": "sun.text.resources.cldr.FormatData_en"
+    },
+    {
+      "type": "sun.text.resources.cldr.FormatData_en_US"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.api.KernelContext",
+      "fields": [
+        {
+          "name": "globalGroupSizeX"
+        },
+        {
+          "name": "globalGroupSizeY"
+        },
+        {
+          "name": "globalGroupSizeZ"
+        },
+        {
+          "name": "globalIdx"
+        },
+        {
+          "name": "globalIdy"
+        },
+        {
+          "name": "globalIdz"
+        },
+        {
+          "name": "groupIdx"
+        },
+        {
+          "name": "groupIdy"
+        },
+        {
+          "name": "groupIdz"
+        },
+        {
+          "name": "localGroupSizeX"
+        },
+        {
+          "name": "localGroupSizeY"
+        },
+        {
+          "name": "localGroupSizeZ"
+        },
+        {
+          "name": "localIdx"
+        },
+        {
+          "name": "localIdy"
+        },
+        {
+          "name": "localIdz"
+        }
+      ]
+    },
+    {
+      "type": "uk.ac.manchester.tornado.api.enums.MMAShape"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.api.math.TornadoMath"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.api.types.HalfFloat"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.api.types.arrays.ByteArray"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.api.types.arrays.FloatArray"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.api.types.arrays.IntArray"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.api.types.vectors.Half2"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.api.utils.QuantizationUtils"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.clblast.provider.CLBlastLibraryProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.cublas.provider.CuBlasLibraryProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.cublas.provider.CuBlasLtLibraryProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.cudf.provider.CudfLibraryProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.cudnn.provider.CuDnnLibraryProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.cufft.provider.CuFftLibraryProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.curand.provider.CuRandLibraryProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.cusparse.provider.CusparseLibraryProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.cutlass.provider.CutlassLibraryProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.cuvs.provider.CuVSLibraryProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.drivers.cuda.CUDATornadoDriverProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.mlx.provider.MlxLibraryProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.nccl.provider.NcclLibraryProvider"
+    },
+    {
+      "type": "uk.ac.manchester.tornado.runtime.TornadoCoreRuntime",
+      "methods": [
+        {
+          "name": "getTornadoRuntime",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "uk.ac.manchester.tornado.runtime.common.Tornado",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "uk.ac.manchester.tornado.runtime.tasks.TornadoTaskGraph",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "glob": "META-INF/services/uk.ac.manchester.tornado.runtime.TornadoBackendProvider"
+    },
+    {
+      "glob": "META-INF/services/uk.ac.manchester.tornado.runtime.library.spi.TornadoLibraryProvider"
+    },
+    {
+      "glob": "META-INF/services/uk.ac.manchester.tornado.tc.frontend.ModelFrontend"
+    },
+    {
+      "glob": "uk/ac/manchester/tornado/api/types/vectors/Half2.class"
+    },
+    {
+      "module": "jdk.jfr",
+      "glob": "jdk/jfr/internal/types/metadata.bin"
+    },
+    {
+      "module": "tornado.api",
+      "glob": "uk/ac/manchester/tornado/api/types/vectors/Half2.class"
+    }
+  ],
+  "foreign": {
+    "downcalls": [
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "void*",
+          "jlong",
+          "jint",
+          "jlong",
+          "jlong",
+          "jint",
+          "jlong",
+          "void*",
+          "jlong",
+          "jint",
+          "jlong",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jbyte",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jint",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "jlong",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "void*",
+          "void*",
+          "jint",
+          "void*",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "jint",
+          "jint",
+          "void*",
+          "jlong",
+          "jint",
+          "jlong",
+          "jint",
+          "void*",
+          "jlong",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "jint",
+          "void*",
+          "jlong",
+          "jlong",
+          "void*",
+          "jlong",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "void*",
+          "jlong",
+          "jint",
+          "jlong",
+          "jint",
+          "void*",
+          "jlong",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jlong",
+          "void*",
+          "jlong",
+          "jlong",
+          "void*",
+          "jlong",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "void*",
+          "jlong",
+          "jint",
+          "jint",
+          "jlong",
+          "jint",
+          "jint",
+          "void*",
+          "jlong",
+          "jint",
+          "jint",
+          "jint",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "jint",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jlong",
+          "jlong",
+          "jlong",
+          "jlong",
+          "jint",
+          "void*",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "jint",
+          "jdouble"
+        ]
+      },
+      {
+        "returnType": "void*",
+        "parameterTypes": [
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jlong",
+          "jlong",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "void",
+        "parameterTypes": [
+          "jlong",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "void*",
+          "jlong",
+          "jlong",
+          "jlong",
+          "jlong",
+          "jlong",
+          "jint",
+          "jlong",
+          "jlong",
+          "void*",
+          "jlong",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jint",
+          "void*",
+          "void*",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "void*",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "void*",
+          "jint",
+          "void*",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "jlong",
+          "jint",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "jlong",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jlong",
+          "jlong",
+          "jlong",
+          "jlong",
+          "jint",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jlong",
+        "parameterTypes": []
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "void*",
+          "jint",
+          "void*",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "void*",
+          "jlong",
+          "jlong",
+          "jlong",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jlong",
+          "void*",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jlong",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "jlong",
+          "jint",
+          "jlong",
+          "jint",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jlong",
+          "jlong",
+          "void*",
+          "void*",
+          "void*",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": []
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jlong",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jint",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jint",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jlong",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jlong",
+          "jint",
+          "void*",
+          "jlong",
+          "void*",
+          "jint",
+          "void*",
+          "void*"
+        ]
+      }
+    ]
+  }
+}
