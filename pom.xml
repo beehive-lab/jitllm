@@ -309,6 +309,41 @@
     <!-- Profiles for optional/conditional builds -->
     <profiles>
 
+        <!-- GraalVM native image of the CLI: `./mvnw -Pnative -DskipTests package` builds
+             target/jitllm next to the jar. JDK 22+ (the image needs a jdk22plus TornadoVM SDK).
+             It runs scripts/native-image.sh build, which reads the TornadoVM modules from
+             TORNADOVM_HOME and needs GRAALVM_HOME (GraalVM for JDK 25 with native-image); the jar
+             carries its own native-image metadata in META-INF/native-image. -->
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>native-image</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>${project.basedir}/scripts/native-image.sh</executable>
+                                    <arguments>
+                                        <argument>build</argument>
+                                        <argument>-o</argument>
+                                        <argument>${project.build.directory}/jitllm</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <!-- Multi-GPU pipeline split with NCCL: `mvn install -Pnccl`. Needs a TornadoVM SDK that
              ships tornado-nccl, whose module joins the others. Without it the split still runs
              through host memory (the host split transport). -->
