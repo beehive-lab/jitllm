@@ -20,6 +20,12 @@ public final class Qwen35MoePlanProvider implements TornadoPlanProvider {
 
     private static final ArchitectureId ID = ArchitectureId.of("qwen35moe");
 
+    /** Off: no Qwen3.5-MoE file has been run with weights read in place. */
+    @Override
+    public boolean unifiedMemoryWeights() {
+        return false;
+    }
+
     @Override
     public ArchitectureId architecture() {
         return ID;

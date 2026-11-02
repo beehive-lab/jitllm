@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.LibraryProbe;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
@@ -115,10 +116,16 @@ public record MlxPrefill(DataType weights, Projections projections) {
      * {@link #resolve(ExecutionPolicy, DataType, Configuration)} for {@code weights}, and empty as
      * well when their projections are not all of {@code weights.dataType()}: MLX holds one form per
      * model, and a UD-Q8_K_XL file keeps some layers' projections in F16 beside Q8_0 ones. Those
-     * run the JIT kernels, which read each tensor by its type.
+     * run the JIT kernels, which read each tensor by its type. Empty too when the plan reads its
+     * weights in place from unified memory ({@code UnifiedMemoryWeights}).
      */
     public static Optional<MlxPrefill> resolve(
-            ExecutionPolicy policy, TornadoWeights weights, Configuration config) {
+            State state, TornadoWeights weights, Configuration config) {
+        if (state.workspace.unifiedMemory) {
+            // MLX would read host-made copies of every projection, and those are not read in
+            // place: twice the weights again. The JIT kernels read the weights themselves.
+            return Optional.empty();
+        }
         for (TornadoTensor[] layers : weights.projections()) {
             if (layers == null) {
                 continue; // a family that fuses some projections (Phi-3) has no split ones
@@ -129,7 +136,7 @@ public record MlxPrefill(DataType weights, Projections projections) {
                 }
             }
         }
-        return resolve(policy, weights.dataType(), config);
+        return resolve(state.executionPolicy(), weights.dataType(), config);
     }
 
     /** Whether MLX's kernel library can be reached from this process at all. */

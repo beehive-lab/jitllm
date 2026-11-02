@@ -9,6 +9,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.QuantizedProjections;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -159,8 +160,9 @@ public class Qwen2MoEQ8_0FFNLayers
 
     /** Uploads this layer's read-only weights on its first execution. */
     protected TaskGraph configureLayerWeights(TaskGraph layer, int layerIndex) {
-        return layer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
+        UnifiedMemoryWeights.upload(
+                layer,
+                state.workspace,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 weights.wqLayered[layerIndex].deviceArray(),
                 weights.wkLayered[layerIndex].deviceArray(),
@@ -178,6 +180,7 @@ public class Qwen2MoEQ8_0FFNLayers
                 weights.sharedUpLayered[layerIndex].deviceArray(),
                 weights.sharedDownLayered[layerIndex].deviceArray(),
                 weights.sharedGateInputLayered[layerIndex].asFloatArray());
+        return layer;
     }
 
     /** Adds the normal Qwen2 attention tasks to this layer's TaskGraph. */

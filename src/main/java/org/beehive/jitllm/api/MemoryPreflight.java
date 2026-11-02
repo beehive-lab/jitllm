@@ -6,6 +6,7 @@ import java.util.Set;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.memory.TornadoMemoryModel;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.loader.ModelLoader;
@@ -50,7 +51,13 @@ final class MemoryPreflight {
         // Descriptors only. The loader owns the format types (Rule 4 permits it there and forbids
         // them here), and what comes back is a neutral footprint: every tensor at the size the
         // loader keeps it, which is the file's own.
-        var weights = ModelLoader.weightFootprint(modelFile);
+        // Weights read in place from the mapped file take system memory, not device buffers.
+        var weights =
+                TornadoPlanRegistry.provider(model.architecture())
+                                .filter(UnifiedMemoryWeights::applies)
+                                .isPresent()
+                        ? new org.beehive.jitllm.runtime.memory.WeightFootprint(0, 0, 0, 0)
+                        : ModelLoader.weightFootprint(modelFile);
         return TornadoMemoryModel.predict(
                 weights,
                 config,
@@ -104,6 +111,12 @@ final class MemoryPreflight {
                     ExecutionPolicy policy) {
         var weightType = loadedWeightType(modelFile);
         if (weightType == null || policy.prefillBatchSize() <= 1) {
+            return java.util.Optional.empty();
+        }
+        if (TornadoPlanRegistry.provider(model.architecture())
+                .filter(UnifiedMemoryWeights::applies)
+                .isPresent()) {
+            // Weights read in place: no MLX copies, and no tensor cores on unified memory.
             return java.util.Optional.empty();
         }
         return TornadoPlanRegistry.provider(model.architecture())

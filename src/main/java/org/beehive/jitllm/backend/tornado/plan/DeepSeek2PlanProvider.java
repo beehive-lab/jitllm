@@ -22,6 +22,12 @@ public final class DeepSeek2PlanProvider implements TornadoPlanProvider {
 
     private static final ArchitectureId ID = ArchitectureId.of("deepseek2");
 
+    /** Off: no DeepSeek2 file has been run with weights read in place. */
+    @Override
+    public boolean unifiedMemoryWeights() {
+        return false;
+    }
+
     @Override
     public ArchitectureId architecture() {
         return ID;
