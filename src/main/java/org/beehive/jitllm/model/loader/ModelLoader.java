@@ -10,6 +10,7 @@ import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.IQ4_XSTornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_1TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_KTornadoTensor;
@@ -213,6 +214,7 @@ public final class ModelLoader {
             case Q4_K -> new Q4_KFloatTensor(size, data);
             case Q5_K -> new Q5_KFloatTensor(size, data);
             case Q6_K -> new Q6_KFloatTensor(size, data);
+            case IQ4_XS -> new IQ4_XSFloatTensor(size, data);
             case F16 -> new FP16FloatTensor(size, data);
             case BF16 -> new BF16FloatTensor(size, data);
             default ->
@@ -269,6 +271,9 @@ public final class ModelLoader {
                             entry.memorySegment(), shapeOf(entry));
             case Q6_K ->
                     Q6_KTornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case IQ4_XS ->
+                    IQ4_XSTornadoTensor.fromTornadoMemorySegment(
                             entry.memorySegment(), shapeOf(entry));
             case BF16 ->
                     TornadoTensorLoader.convertBF16ToFP16(rawTensorData(entry), shapeOf(entry));

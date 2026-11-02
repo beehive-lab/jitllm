@@ -20,7 +20,8 @@ public class Qwen3NativeRetentionTest {
                         DataType.Q5_0,
                         DataType.Q4_K,
                         DataType.Q5_K,
-                        DataType.Q6_K),
+                        DataType.Q6_K,
+                        DataType.IQ4_XS),
                 new Qwen3PlanProvider().supportedDataTypes());
     }
 }

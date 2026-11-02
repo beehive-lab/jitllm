@@ -11,6 +11,7 @@ import java.util.Random;
 import java.util.function.BiFunction;
 import org.beehive.jitllm.format.GGMLType;
 import org.beehive.jitllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.tensor.standard.IQ4_XSFloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_0FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_1FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_KFloatTensor;
@@ -246,6 +247,65 @@ public class QuantizedDeviceDecodeParityTest {
                         TransformerComputeKernelsQ5_0.decode(device, 0, j),
                         0f);
             }
+        }
+    }
+
+    @Test
+    public void iq4_XSDecodesIdenticallyOnBothSides() {
+        assertDecodersAgree(
+                "IQ4_XS",
+                GGMLType.IQ4_XS,
+                new int[] {0},
+                (n, seg) -> new IQ4_XSFloatTensor(n, seg),
+                TransformerComputeKernelsIQ4_XS::decode);
+    }
+
+    /**
+     * Both IQ4_XS decoders read ggml's layout ({@code dequantize_row_iq4_xs}): with {@code d = 1},
+     * group {@code g}'s 6-bit scale {@code 33 + g} (low four bits in {@code scales_l}, high two in
+     * {@code scales_h}) and byte {@code i} of each group {@code i | (15 - i) << 4}, weight {@code j
+     * < 16} of group {@code g} is {@code (1 + g) * kvalues_iq4nl[j]} and weight {@code 16 + i} is
+     * {@code (1 + g) * kvalues_iq4nl[15 - i]}.
+     */
+    @Test
+    public void iq4_XSReadsGgmlsLayout() {
+        int[] kvalues = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
+        byte[] raw = new byte[136];
+        raw[0] = 0x00; // d = 1.0, fp16 0x3C00, little-endian
+        raw[1] = 0x3C;
+        int scalesH = 0;
+        for (int g = 0; g < 8; g++) {
+            int ls = 33 + g;
+            raw[4 + g / 2] |= (byte) ((ls & 0xF) << (4 * (g % 2)));
+            scalesH |= (ls >> 4) << (2 * g);
+        }
+        raw[2] = (byte) scalesH;
+        raw[3] = (byte) (scalesH >> 8);
+        for (int g = 0; g < 8; g++) {
+            for (int i = 0; i < 16; i++) {
+                raw[8 + g * 16 + i] = (byte) (i | ((15 - i) << 4));
+            }
+        }
+        ByteArray device = toDevice(raw);
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment segment = arena.allocate(raw.length);
+            MemorySegment.copy(raw, 0, segment, ValueLayout.JAVA_BYTE, 0, raw.length);
+            FloatTensor host = new IQ4_XSFloatTensor(256, segment);
+            for (int j = 0; j < 256; j++) {
+                int g = j / 32;
+                int within = j % 32;
+                int q = within < 16 ? within : 15 - (within - 16);
+                float expected = (1 + g) * kvalues[q];
+                assertEquals("host weight " + j, expected, host.getFloat(j), 0f);
+                assertEquals(
+                        "device weight " + j,
+                        expected,
+                        TransformerComputeKernelsIQ4_XS.decode(device, 0, j),
+                        0f);
+            }
+        }
+        for (int q = 0; q < 16; q++) {
+            assertEquals("kvalue " + q, kvalues[q], TransformerComputeKernelsIQ4_XS.kvalue(q));
         }
     }
 

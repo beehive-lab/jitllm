@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers;
 
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsIQ4_XS;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
@@ -125,6 +126,8 @@ public final class QuantizedProjections {
                         case Q4_K -> TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_KDP4A;
                         case Q5_K -> TransformerComputeKernelsQ5_K::matrixVectorGenericQ5_KDP4A;
                         case Q6_K -> TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_KDP4A;
+                        case IQ4_XS ->
+                                TransformerComputeKernelsIQ4_XS::matrixVectorGenericIQ4_XSDP4A;
                         default -> throw unsupported(w);
                     },
                     context,
@@ -163,6 +166,7 @@ public final class QuantizedProjections {
                     case Q4_K -> TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_K;
                     case Q5_K -> TransformerComputeKernelsQ5_K::matrixVectorGenericQ5_K;
                     case Q6_K -> TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_K;
+                    case IQ4_XS -> TransformerComputeKernelsIQ4_XS::matrixVectorGenericIQ4_XS;
                     default -> throw unsupported(w);
                 },
                 context,
@@ -224,6 +228,9 @@ public final class QuantizedProjections {
                         case Q6_K ->
                                 TransformerComputeKernelsQ6_K
                                         ::matrixVectorGenericWithResidualQ6_KDP4A;
+                        case IQ4_XS ->
+                                TransformerComputeKernelsIQ4_XS
+                                        ::matrixVectorGenericWithResidualIQ4_XSDP4A;
                         default -> throw unsupported(w);
                     },
                     context,
@@ -254,6 +261,9 @@ public final class QuantizedProjections {
                                 TransformerComputeKernelsQ5_K::matrixVectorGenericWithResidualQ5_K;
                         case Q6_K ->
                                 TransformerComputeKernelsQ6_K::matrixVectorGenericWithResidualQ6_K;
+                        case IQ4_XS ->
+                                TransformerComputeKernelsIQ4_XS
+                                        ::matrixVectorGenericWithResidualIQ4_XS;
                         default -> throw unsupported(w);
                     },
                     context,

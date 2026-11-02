@@ -30,7 +30,8 @@ public class TornadoPlanRegistryTest {
                         DataType.Q5_0,
                         DataType.Q4_K,
                         DataType.Q5_K,
-                        DataType.Q6_K),
+                        DataType.Q6_K,
+                        DataType.IQ4_XS),
                 llama.supportedDataTypes());
         // Declared for the family, not per representation: Q4_0 has single-token kernels only, and
         // the registry refuses the other two modes for it by name rather than on a cast.
@@ -48,7 +49,8 @@ public class TornadoPlanRegistryTest {
                         DataType.Q5_0,
                         DataType.Q4_K,
                         DataType.Q5_K,
-                        DataType.Q6_K),
+                        DataType.Q6_K,
+                        DataType.IQ4_XS),
                 mistral.supportedDataTypes());
         assertEquals(
                 "single-token and batched prefill/decode (Llama's layer graphs)",

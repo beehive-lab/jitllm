@@ -96,7 +96,8 @@ public final class OperationSupport {
                             DataType.Q5_0,
                             DataType.Q4_K,
                             DataType.Q5_K,
-                            DataType.Q6_K);
+                            DataType.Q6_K,
+                            DataType.IQ4_XS);
 
                 // Activation-only: the host computes in float.
             case RMS_NORM,
@@ -137,7 +138,8 @@ public final class OperationSupport {
                             DataType.Q5_0,
                             DataType.Q4_K,
                             DataType.Q5_K,
-                            DataType.Q6_K);
+                            DataType.Q6_K,
+                            DataType.IQ4_XS);
 
                 // No matrix-matrix implementation: batched prefill repeats single rows.
             case MAT_MUL -> Set.of();
@@ -173,7 +175,8 @@ public final class OperationSupport {
                             DataType.Q5_0,
                             DataType.Q4_K,
                             DataType.Q5_K,
-                            DataType.Q6_K);
+                            DataType.Q6_K,
+                            DataType.IQ4_XS);
 
                 // Matrix-matrix has tensor-core kernels for two representations only; a quantized
                 // batch prefill is a separate piece of work.

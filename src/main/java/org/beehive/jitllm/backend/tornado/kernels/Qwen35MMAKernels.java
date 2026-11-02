@@ -915,6 +915,38 @@ public final class Qwen35MMAKernels {
     }
 
     /**
+     * {@link #dequantizeQ8_0ToFP16Tiled} for an {@code IQ4_XS} matrix: the same tile order, each
+     * half decoded from its 136-byte block as {@code
+     * TransformerComputeKernelsIQ4_XS.dequantizeIQ4_XSToFP16Once} decodes it. Requires {@code n / k
+     * % 128 == 0} and {@code k % 256 == 0}. Worker: {@code min(n, TILED_DECODE_LANES)} lanes,
+     * striding.
+     */
+    public static void dequantizeIQ4_XSToFP16Tiled(
+            KernelContext ctx,
+            ByteArray w,
+            HalfFloatArray out,
+            int destOffset,
+            int n,
+            int k,
+            IntArray done,
+            int flag) {
+        int lane = ctx.globalIdx;
+        if (lane < TILED_DECODE_LANES && done.get(flag) == 0) {
+            int kSteps = k / GEMM_BK;
+            for (int h = lane; h < n; h += TILED_DECODE_LANES) {
+                int tile = h >>> 11;
+                int idx = (h >>> 1) & 1023;
+                int rowBlock = tile / kSteps;
+                int row = rowBlock * GEMM_BN + ((idx >>> 6) << 3) + ((idx & 3) << 1) + (h & 1);
+                int kk = (tile - rowBlock * kSteps) * GEMM_BK + ((idx & 63) >>> 2);
+                int blockByteOffset = (row * (k >>> 8) + (kk >>> 8)) * 136;
+                float value = TransformerComputeKernelsIQ4_XS.decode(w, blockByteOffset, kk & 255);
+                out.set(destOffset + h, new HalfFloat(value));
+            }
+        }
+    }
+
+    /**
      * {@link #dequantizeQ8_0ToFP16Tiled} for a {@code Q5_K} matrix: the same tile order, each half
      * decoded from its 176-byte super-block as {@code
      * TransformerComputeKernelsQ5_K.dequantizeQ5_KToFP16Once} decodes it. Requires {@code n / k %

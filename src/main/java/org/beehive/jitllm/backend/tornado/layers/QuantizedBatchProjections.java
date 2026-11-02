@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.layers;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsIQ4_XS;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
@@ -143,6 +144,9 @@ public final class QuantizedBatchProjections {
                                 case Q5_0 ->
                                         TransformerBatchPrefillSimdgroupKernels
                                                 ::batchedGemmQ5_0WithResidualHalfTiles;
+                                case IQ4_XS ->
+                                        TransformerBatchPrefillSimdgroupKernels
+                                                ::batchedGemmIQ4_XSWithResidualHalfTiles;
                                 case Q4_K ->
                                         TransformerBatchPrefillSimdgroupKernels
                                                 ::batchedGemmQ4_KWithResidualHalfTiles;
@@ -164,6 +168,9 @@ public final class QuantizedBatchProjections {
                                         case Q5_0 ->
                                                 TransformerBatchPrefillSimdgroupKernels
                                                         ::batchedGemmQ5_0HalfTiles;
+                                        case IQ4_XS ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmIQ4_XSHalfTiles;
                                         case Q4_K ->
                                                 TransformerBatchPrefillSimdgroupKernels
                                                         ::batchedGemmQ4_KHalfTiles;
@@ -230,6 +237,9 @@ public final class QuantizedBatchProjections {
                                 case Q5_0 ->
                                         TransformerComputeKernelsQ5_0
                                                 ::matrixVectorTiledBatchWithResidualQ5_0;
+                                case IQ4_XS ->
+                                        TransformerComputeKernelsIQ4_XS
+                                                ::matrixVectorTiledBatchWithResidualIQ4_XS;
                                 case Q4_K ->
                                         TransformerComputeKernelsQ4_K
                                                 ::matrixVectorTiledBatchWithResidualQ4_K;
@@ -247,6 +257,9 @@ public final class QuantizedBatchProjections {
                                         TransformerComputeKernelsQ4_1::matrixVectorTiledBatchQ4_1;
                                 case Q5_0 ->
                                         TransformerComputeKernelsQ5_0::matrixVectorTiledBatchQ5_0;
+                                case IQ4_XS ->
+                                        TransformerComputeKernelsIQ4_XS
+                                                ::matrixVectorTiledBatchIQ4_XS;
                                 case Q4_K ->
                                         TransformerComputeKernelsQ4_K::matrixVectorTiledBatchQ4_K;
                                 case Q5_K ->
@@ -318,6 +331,9 @@ public final class QuantizedBatchProjections {
                                         case Q5_0 ->
                                                 TransformerBatchPrefillSimdgroupKernels
                                                         ::batchedGemmRmsNormFFNGateUpQ5_0HalfTiles;
+                                        case IQ4_XS ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpIQ4_XSHalfTiles;
                                         case Q4_K ->
                                                 TransformerBatchPrefillSimdgroupKernels
                                                         ::batchedGemmRmsNormFFNGateUpQ4_KHalfTiles;
@@ -431,6 +447,7 @@ public final class QuantizedBatchProjections {
                     case Q4_0 -> TransformerComputeKernelsQ4_0.rowTile();
                     case Q4_1 -> TransformerComputeKernelsQ4_1.rowTile();
                     case Q5_0 -> TransformerComputeKernelsQ5_0.rowTile();
+                    case IQ4_XS -> TransformerComputeKernelsIQ4_XS.rowTile();
                     case Q4_K -> TransformerComputeKernelsQ4_K.rowTile();
                     case Q5_K -> TransformerComputeKernelsQ5_K.rowTile();
                     default -> TransformerComputeKernelsQ6_K.rowTile();
@@ -440,6 +457,7 @@ public final class QuantizedBatchProjections {
                     case Q4_0 -> TransformerComputeKernelsQ4_0.colTile();
                     case Q4_1 -> TransformerComputeKernelsQ4_1.colTile();
                     case Q5_0 -> TransformerComputeKernelsQ5_0.colTile();
+                    case IQ4_XS -> TransformerComputeKernelsIQ4_XS.colTile();
                     case Q4_K -> TransformerComputeKernelsQ4_K.colTile();
                     case Q5_K -> TransformerComputeKernelsQ5_K.colTile();
                     default -> TransformerComputeKernelsQ6_K.colTile();
@@ -455,8 +473,8 @@ public final class QuantizedBatchProjections {
      * TransformerBatchPrefillSimdgroupKernels#halfTiles}.
      */
     private boolean halfTiles(DataType type, int outputs, int rowsPerTile) {
-        // Q5_0 has no FP32-tile form, so it takes the FP16-tile kernel at every size.
-        return type == DataType.Q5_0 || halfTiles(outputs, rowsPerTile);
+        // Q5_0 and IQ4_XS have no FP32-tile form, so they take the FP16-tile kernel at every size.
+        return type == DataType.Q5_0 || type == DataType.IQ4_XS || halfTiles(outputs, rowsPerTile);
     }
 
     private boolean halfTiles(int outputs, int rowsPerTile) {

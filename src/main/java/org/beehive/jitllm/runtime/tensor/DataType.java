@@ -88,7 +88,17 @@ public enum DataType {
     Q5_K(true),
 
     /** 6-bit K-quantization, decoded during compute on the CPU and kept as it is on the GPU. */
-    Q6_K(true);
+    Q6_K(true),
+
+    /**
+     * 4-bit non-linear quantization, 256 values to a block in groups of 32 with 6-bit scales:
+     * {@code d * (ls - 32) * kvalues_iq4nl[q]}. Decoded during compute on the CPU and kept as it is
+     * on the GPU.
+     *
+     * <p>Here because quantizers mix it into K-quant files: {@code Qwen3-0.6B-UD-Q4_K_XL.gguf}
+     * holds five layers' q, k, gate and up projections as IQ4_XS.
+     */
+    IQ4_XS(true);
 
     private final boolean quantized;
 

@@ -4,6 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsIQ4_XS;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
@@ -195,15 +196,16 @@ public final class FP16Projections {
                         decoded,
                         resident ? flag : neverDecoded);
             } else if (decodesOnceOnly(ws[i])) {
-                // Q4_0, Q4_1, Q5_0 and Q5_K have the decode-once form only; a per-chunk decode
-                // passes it
-                // the flag that is never set.
+                // Q4_0, Q4_1, Q5_0, Q5_K and IQ4_XS have the decode-once form only; a per-chunk
+                // decode passes it the flag that is never set.
                 layer.task(
                         decode,
                         switch (ws[i].dataType()) {
                             case Q4_0 -> TransformerComputeKernelsQ4_0::dequantizeQ4_0ToFP16Once;
                             case Q4_1 -> TransformerComputeKernelsQ4_1::dequantizeQ4_1ToFP16Once;
                             case Q5_0 -> TransformerComputeKernelsQ5_0::dequantizeQ5_0ToFP16Once;
+                            case IQ4_XS ->
+                                    TransformerComputeKernelsIQ4_XS::dequantizeIQ4_XSToFP16Once;
                             default -> TransformerComputeKernelsQ5_K::dequantizeQ5_KToFP16Once;
                         },
                         context,
@@ -286,12 +288,13 @@ public final class FP16Projections {
         return type == DataType.Q4_0
                 || type == DataType.Q4_1
                 || type == DataType.Q5_0
-                || type == DataType.Q5_K;
+                || type == DataType.Q5_K
+                || type == DataType.IQ4_XS;
     }
 
     /**
      * Weights in {@code w}: FP16; Q8_0, Q4_0, Q4_1 and Q5_0 at 34, 18, 20 and 22 bytes to 32
-     * weights; Q4_K, Q5_K and Q6_K at 144, 176 and 210 bytes to 256.
+     * weights; Q4_K, Q5_K, Q6_K and IQ4_XS at 144, 176, 210 and 136 bytes to 256.
      */
     private static long elements(TornadoTensor w) {
         return switch (w.dataType()) {
@@ -302,6 +305,7 @@ public final class FP16Projections {
             case Q4_K -> (long) w.asByteArray().getSize() / 144 * 256;
             case Q5_K -> (long) w.asByteArray().getSize() / 176 * 256;
             case Q6_K -> (long) w.asByteArray().getSize() / 210 * 256;
+            case IQ4_XS -> (long) w.asByteArray().getSize() / 136 * 256;
             default -> (long) w.asByteArray().getSize() / 34 * 32;
         };
     }
@@ -333,6 +337,7 @@ public final class FP16Projections {
                         case Q4_K -> Qwen35MMAKernels::dequantizeQ4_KToFP16Tiled;
                         case Q5_K -> Qwen35MMAKernels::dequantizeQ5_KToFP16Tiled;
                         case Q6_K -> Qwen35MMAKernels::dequantizeQ6_KToFP16Tiled;
+                        case IQ4_XS -> Qwen35MMAKernels::dequantizeIQ4_XSToFP16Tiled;
                         default -> Qwen35MMAKernels::dequantizeQ8_0ToFP16Tiled;
                     },
                     context,

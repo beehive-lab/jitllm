@@ -77,6 +77,7 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
             case 14, 15 -> "Q8_0"; // Q4_K_S, Q4_K_M (K-quants use Q8_0 activations)
             case 16, 17 -> "Q8_0"; // Q5_K_S, Q5_K_M
             case 18 -> "Q8_0"; // Q6_K
+            case 30 -> "Q8_0"; // IQ4_XS
             default ->
                     throw new UnsupportedOperationException(
                             "Unsupported quantization format: "
@@ -99,6 +100,7 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
             case 16 -> "Q5_K_S";
             case 17 -> "Q5_K_M";
             case 18 -> "Q6_K";
+            case 30 -> "IQ4_XS";
             default -> "type_" + fileType;
         };
     }

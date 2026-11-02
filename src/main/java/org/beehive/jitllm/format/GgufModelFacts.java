@@ -48,6 +48,7 @@ public record GgufModelFacts(String arch, String quant, double paramsB) {
             case 16 -> "Q5_K_S";
             case 17 -> "Q5_K_M";
             case 18 -> "Q6_K";
+            case 30 -> "IQ4_XS";
             case 32 -> "BF16";
             default -> "type_" + fileType;
         };
