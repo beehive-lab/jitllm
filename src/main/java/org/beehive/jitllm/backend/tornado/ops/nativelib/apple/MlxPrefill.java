@@ -6,6 +6,8 @@ import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
@@ -104,6 +106,27 @@ public record MlxPrefill(DataType weights, Projections projections) {
                             : Projections.AFFINE;
         }
         return Optional.of(new MlxPrefill(weights, projections));
+    }
+
+    /**
+     * {@link #resolve(ExecutionPolicy, DataType, Configuration)} for {@code weights}, and empty as
+     * well when their projections are not all of {@code weights.dataType()}: MLX holds one form per
+     * model, and a UD-Q8_K_XL file keeps some layers' projections in F16 beside Q8_0 ones. Those
+     * run the JIT kernels, which read each tensor by its type.
+     */
+    public static Optional<MlxPrefill> resolve(
+            ExecutionPolicy policy, TornadoWeights weights, Configuration config) {
+        for (TornadoTensor[] layers : weights.projections()) {
+            if (layers == null) {
+                continue; // a family that fuses some projections (Phi-3) has no split ones
+            }
+            for (TornadoTensor w : layers) {
+                if (w != null && w.dataType() != weights.dataType()) {
+                    return Optional.empty();
+                }
+            }
+        }
+        return resolve(policy, weights.dataType(), config);
     }
 
     /** Whether MLX's kernel library can be reached from this process at all. */

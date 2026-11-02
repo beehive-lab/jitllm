@@ -277,6 +277,18 @@ public class TransformerComputeKernels {
     }
 
     /**
+     * The embedding row, FP16 values staged as bytes (a Q8_0 model's staging buffer), into FP32.
+     */
+    public static void convertFP16BytesToFP32(
+            KernelContext context, ByteArray x, FloatArray wrapX) {
+        int globalId = context.globalIdx;
+        if (globalId >= wrapX.getSize()) {
+            return;
+        }
+        wrapX.set(globalId, x.getHalfFloat(globalId * 2).getFloat32());
+    }
+
+    /**
      * The embedding row, decoded from Q5_0 blocks into FP32: 22-byte blocks of 32 weights, each
      * {@code d * (q - 16)}.
      */

@@ -97,8 +97,7 @@ public class Qwen3FP16LayersBatchPrefill implements BatchPrefillTransformerLayer
         this.qDim = nEmbdHeadK * config.numberOfHeads();
         this.kvDim = nEmbdHeadV * nHeadKv;
         this.gqa = config.numberOfHeads() / nHeadKv;
-        Optional<MlxPrefill> mlx =
-                MlxPrefill.resolve(state.executionPolicy(), weights.dataType(), config);
+        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state.executionPolicy(), weights, config);
         this.mlxAttention =
                 MlxPrefillAttention.ifPresent(
                         mlx,

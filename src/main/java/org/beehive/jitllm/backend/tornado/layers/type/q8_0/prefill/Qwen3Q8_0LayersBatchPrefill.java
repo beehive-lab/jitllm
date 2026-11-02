@@ -125,8 +125,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         this.qDim = nEmbdHeadK * config.numberOfHeads();
         this.kvDim = nEmbdHeadV * nHeadKv;
         this.gqa = config.numberOfHeads() / nHeadKv;
-        Optional<MlxPrefill> mlx =
-                MlxPrefill.resolve(state.executionPolicy(), weights.dataType(), config);
+        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state.executionPolicy(), weights, config);
         this.mlxAttention =
                 MlxPrefillAttention.ifPresent(
                         mlx,
@@ -263,16 +262,16 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         // Per-layer weights (Q8_0 format)
         Object[] layerWeights = {
             weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-            weights.wqLayered[layerIndex].asByteArray(),
-            weights.wkLayered[layerIndex].asByteArray(),
-            weights.wvLayered[layerIndex].asByteArray(),
-            weights.woLayered[layerIndex].asByteArray(),
+            weights.wqLayered[layerIndex].deviceArray(),
+            weights.wkLayered[layerIndex].deviceArray(),
+            weights.wvLayered[layerIndex].deviceArray(),
+            weights.woLayered[layerIndex].deviceArray(),
             weights.rms_att_QNormLayered[layerIndex].asFloatArray(),
             weights.rms_att_KNormLayered[layerIndex].asFloatArray(),
             weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-            weights.w1Layered[layerIndex].asByteArray(),
-            weights.w2Layered[layerIndex].asByteArray(),
-            weights.w3Layered[layerIndex].asByteArray()
+            weights.w1Layered[layerIndex].deviceArray(),
+            weights.w2Layered[layerIndex].deviceArray(),
+            weights.w3Layered[layerIndex].deviceArray()
         };
         layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
         // The q and k norms are read by this graph's own task, so decode reuses them. The plan's
@@ -548,9 +547,9 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         for (Object w :
                                 new Object[] {
                                     weights.rms_att_weightLayered[i].asFloatArray(),
-                                    weights.wqLayered[i].asByteArray(),
-                                    weights.wkLayered[i].asByteArray(),
-                                    weights.wvLayered[i].asByteArray()
+                                    weights.wqLayered[i].deviceArray(),
+                                    weights.wkLayered[i].deviceArray(),
+                                    weights.wvLayered[i].deviceArray()
                                 }) {
                             bindings.record(w, name);
                         }
@@ -559,8 +558,8 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         for (Object w :
                                 new Object[] {
                                     weights.rms_ffn_weightLayered[i].asFloatArray(),
-                                    weights.w1Layered[i].asByteArray(),
-                                    weights.w3Layered[i].asByteArray()
+                                    weights.w1Layered[i].deviceArray(),
+                                    weights.w3Layered[i].deviceArray()
                                 }) {
                             bindings.record(w, name);
                         }
@@ -568,10 +567,10 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         MatMul m = step.first(MatMul.class);
                         if (m.weight().role() == TensorRole.ATTENTION_OUTPUT) {
                             attentionOutput(graph, i);
-                            bindings.record(weights.woLayered[i].asByteArray(), name);
+                            bindings.record(weights.woLayered[i].deviceArray(), name);
                         } else {
                             feedForwardDown(graph, i);
-                            bindings.record(weights.w2Layered[i].asByteArray(), name);
+                            bindings.record(weights.w2Layered[i].deviceArray(), name);
                         }
                     } else {
                         throw new IllegalArgumentException(

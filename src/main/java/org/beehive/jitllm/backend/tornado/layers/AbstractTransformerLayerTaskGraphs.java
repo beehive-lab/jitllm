@@ -66,7 +66,10 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
         this.weights = weights;
         this.config = config;
         this.schedulerType = schedulerType;
-        this.mlxPrefill = MlxPrefill.resolve(state.executionPolicy(), weights.dataType(), config);
+        this.mlxPrefill =
+                weights instanceof TornadoWeights tornado
+                        ? MlxPrefill.resolve(state.executionPolicy(), tornado, config)
+                        : MlxPrefill.resolve(state.executionPolicy(), weights.dataType(), config);
         // the ffnLayerITGs is initialized on subclasses
         // due to some model-specific values (i.e. in Qwen3)
     }

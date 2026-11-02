@@ -74,8 +74,7 @@ public class Phi3FP16LayersBatchPrefill implements BatchPrefillTransformerLayerT
         this.weights = weights;
         this.config = config;
         this.batchSize = batchSize;
-        Optional<MlxPrefill> mlx =
-                MlxPrefill.resolve(state.executionPolicy(), weights.dataType(), config);
+        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state.executionPolicy(), weights, config);
         this.mlxAttention =
                 MlxPrefillAttention.ifPresent(
                         mlx,

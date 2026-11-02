@@ -129,6 +129,26 @@ public final class QuantizedBatchProjections {
                     n,
                     d,
                     simdgroup || tiledQ8 ? batchSize : matVecLocal);
+        } else if (type == DataType.F16) {
+            if (!simdgroup) {
+                throw new IllegalStateException(
+                        "no tiled batched projection for an F16 weight beside quantized ones, for"
+                                + " task "
+                                + name);
+            }
+            layer.task(
+                    name,
+                    residual
+                            ? TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmF16WithResidualHalfTiles
+                            : TransformerBatchPrefillSimdgroupKernels::batchedGemmF16HalfTiles,
+                    context,
+                    x,
+                    out,
+                    w.asHalfFloatArray(),
+                    n,
+                    d,
+                    batchSize);
         } else if (simdgroup) {
             boolean half = halfTiles(type, d, 64);
             layer.task(
@@ -305,6 +325,23 @@ public final class QuantizedBatchProjections {
             int hidDim) {
         DataType type = w1.dataType();
         boolean fused = fusedGateUp(w1, w3);
+        if (fused && simdgroup && type == DataType.F16) {
+            layer.task(
+                    "batch_ffn_gate_up",
+                    TransformerBatchPrefillSimdgroupKernels
+                            ::batchedGemmRmsNormFFNGateUpF16HalfTiles,
+                    context,
+                    ws.wrapXBatch,
+                    ws.wrapHbBatch,
+                    rmsWeights,
+                    ws.ffnScaleBatch,
+                    w1.asHalfFloatArray(),
+                    w3.asHalfFloatArray(),
+                    dim,
+                    hidDim,
+                    batchSize);
+            return;
+        }
         if (fused && (simdgroup || type == DataType.Q8_0)) {
             layer.task(
                     "batch_ffn_gate_up",
@@ -473,8 +510,12 @@ public final class QuantizedBatchProjections {
      * TransformerBatchPrefillSimdgroupKernels#halfTiles}.
      */
     private boolean halfTiles(DataType type, int outputs, int rowsPerTile) {
-        // Q5_0 and IQ4_XS have no FP32-tile form, so they take the FP16-tile kernel at every size.
-        return type == DataType.Q5_0 || type == DataType.IQ4_XS || halfTiles(outputs, rowsPerTile);
+        // Q5_0, IQ4_XS and F16 have no FP32-tile form, so they take the FP16-tile kernel at every
+        // size.
+        return type == DataType.Q5_0
+                || type == DataType.IQ4_XS
+                || type == DataType.F16
+                || halfTiles(outputs, rowsPerTile);
     }
 
     private boolean halfTiles(int outputs, int rowsPerTile) {

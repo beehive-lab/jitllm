@@ -300,20 +300,26 @@ public final class ModelLoader {
     }
 
     /**
-     * What a model loaded with {@link #loadTornadoTensorNative} reports for these projections: the
-     * first type other than Q8_0, or Q8_0 when they all are. A Q4_K_M file reports Q4_K; a file
-     * that mixes Q8_0 with other types reports the first other type, so nothing that serves only
-     * uniform Q8_0 files (MLX) takes it.
+     * What a model loaded with {@link #loadTornadoTensorNative} reports for these projections: F16
+     * when they all are, otherwise the first type other than Q8_0 and F16, or Q8_0 when there is
+     * none. A Q4_K_M file reports Q4_K; a file that mixes Q8_0 with other types reports the first
+     * other type, so nothing that serves only uniform Q8_0 files (MLX) takes it. F16 counts only
+     * when uniform, since F16 plans read nothing else: a UD-Q8_K_XL file, F16 in some layers and
+     * Q8_0 in the rest, reports Q8_0 and runs the Q8_0 plans, which read each tensor by its type.
      */
     public static DataType keptType(TornadoTensor[]... projections) {
+        boolean allF16 = true;
+        DataType kept = DataType.Q8_0;
         for (TornadoTensor[] layers : projections) {
             for (TornadoTensor w : layers) {
-                if (w.dataType() != DataType.Q8_0) {
-                    return w.dataType();
+                DataType type = w.dataType();
+                allF16 &= type == DataType.F16;
+                if (kept == DataType.Q8_0 && type != DataType.Q8_0 && type != DataType.F16) {
+                    kept = type;
                 }
             }
         }
-        return DataType.Q8_0;
+        return allF16 ? DataType.F16 : kept;
     }
 
     /** The dimensions the file gives {@code entry}, recorded on the device tensor built from it. */

@@ -14,6 +14,7 @@ import org.beehive.jitllm.tensor.standard.Q4_KFloatTensor;
 import org.beehive.jitllm.tensor.standard.Q5_0FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q5_KFloatTensor;
 import org.beehive.jitllm.tensor.standard.Q6_KFloatTensor;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 /** The accelerated <b>batched prefill</b> pass and its decode step. */
 public final class TornadoBatchPrefillPass {
@@ -157,6 +158,23 @@ public final class TornadoBatchPrefillPass {
         // wrong output.
         switch (weights.getTokenEmbeddingTable().dataType()) {
             case F16 -> {
+                if (!"FP16".equals(config.quantization())) {
+                    // F16 embeddings beside Q8_0 layers (a UD-Q8_K_XL file): the Q8_0 activation
+                    // reads the FP32 carrier the host fills, as for the kept types below.
+                    HalfFloatArray table = weights.getTokenEmbeddingTable().asHalfFloatArray();
+                    int dim = config.dim();
+                    IntStream.range(0, chunkSize)
+                            .parallel()
+                            .forEach(
+                                    b -> {
+                                        int row = tokens[b] * dim;
+                                        for (int j = 0; j < dim; j++) {
+                                            state.workspace.wrapXBatch.set(
+                                                    b * dim + j, table.get(row + j).getFloat32());
+                                        }
+                                    });
+                    break;
+                }
                 MemorySegment embTable =
                         weights.getTokenEmbeddingTable().asHalfFloatArray().getSegment();
                 long dimBytes = (long) config.dim() * Short.BYTES;

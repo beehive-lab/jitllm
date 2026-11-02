@@ -104,7 +104,20 @@ public final class QuantizedProjections {
     public void matvec(
             TaskGraph graph, String name, FloatArray out, TornadoTensor w, int n, int d) {
         DataType type = w.dataType();
-        if (packed() && type == DataType.Q8_0) {
+        if (type == DataType.F16) {
+            // F16 has no packed kernel; the packed RMS apply writes wrapXb as well. The lanes per
+            // row are the grid's (worker).
+            graph.task(
+                    name,
+                    TransformerComputeKernelsLayered::matrixVectorGeneric,
+                    context,
+                    ws.wrapXb,
+                    out,
+                    w.asHalfFloatArray(),
+                    n,
+                    d,
+                    packed() ? packedLocal : floatLocal);
+        } else if (packed() && type == DataType.Q8_0) {
             graph.task(
                     name,
                     TransformerComputeKernelsQ8_0DP4A::matrixVectorGenericQ8_0DP4A,
@@ -156,6 +169,19 @@ public final class QuantizedProjections {
             TornadoTensor w,
             int n,
             int d) {
+        if (w.dataType() == DataType.F16) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsLayered::matrixVectorGeneric,
+                    context,
+                    x,
+                    out,
+                    w.asHalfFloatArray(),
+                    n,
+                    d,
+                    floatLocal);
+            return;
+        }
         graph.task(
                 name,
                 switch (w.dataType()) {
@@ -191,6 +217,20 @@ public final class QuantizedProjections {
             int n,
             int d) {
         DataType type = w.dataType();
+        if (type == DataType.F16) {
+            // F16 has no packed kernel, so x is read as it is and not quantized.
+            graph.task(
+                    name,
+                    TransformerComputeKernelsLayered::matrixVectorGenericWithResidual,
+                    context,
+                    x,
+                    ws.wrapX,
+                    w.asHalfFloatArray(),
+                    n,
+                    d,
+                    packed() ? packedLocal : floatLocal);
+            return;
+        }
         if (packed()) {
             PackedActivationTasks.quantize(graph, quantizeName, context, ws, x);
         }

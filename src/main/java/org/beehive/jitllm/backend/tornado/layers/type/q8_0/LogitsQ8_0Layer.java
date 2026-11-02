@@ -57,7 +57,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
                 DataTransferMode.FIRST_EXECUTION,
                 context,
                 state.workspace.wrapLogits,
-                weights.wclsByteArray.asByteArray(),
+                weights.wclsByteArray.deviceArray(),
                 weights.rms_final_weight_as_floatArray);
         // === Final RMS Normalization ===
         logits.task(
@@ -241,6 +241,19 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
                             state.workspace.wrapX,
                             state.workspace.wrapLogits,
                             w.asByteArray(),
+                            config.dim(),
+                            config.vocabularySize(),
+                            localSize);
+            case F16 ->
+                    // A UD-Q8_K_XL file: Q8_0 layers, the output projection (tied to the
+                    // embeddings) F16.
+                    logits.task(
+                            "vocab_proj",
+                            TransformerComputeKernelsLayered::matrixVectorGeneric,
+                            context,
+                            state.workspace.wrapX,
+                            state.workspace.wrapLogits,
+                            w.asHalfFloatArray(),
                             config.dim(),
                             config.vocabularySize(),
                             localSize);

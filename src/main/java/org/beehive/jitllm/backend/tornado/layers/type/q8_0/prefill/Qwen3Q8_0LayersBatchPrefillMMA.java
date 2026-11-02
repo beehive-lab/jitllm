@@ -297,16 +297,16 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         batchPrefillLayer.transferToDevice(
                 DataTransferMode.FIRST_EXECUTION,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqLayered[layerIndex].asByteArray(),
-                weights.wkLayered[layerIndex].asByteArray(),
-                weights.wvLayered[layerIndex].asByteArray(),
-                weights.woLayered[layerIndex].asByteArray(),
+                weights.wqLayered[layerIndex].deviceArray(),
+                weights.wkLayered[layerIndex].deviceArray(),
+                weights.wvLayered[layerIndex].deviceArray(),
+                weights.woLayered[layerIndex].deviceArray(),
                 weights.rms_att_QNormLayered[layerIndex].asFloatArray(),
                 weights.rms_att_KNormLayered[layerIndex].asFloatArray(),
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.w1Layered[layerIndex].asByteArray(),
-                weights.w2Layered[layerIndex].asByteArray(),
-                weights.w3Layered[layerIndex].asByteArray());
+                weights.w1Layered[layerIndex].deviceArray(),
+                weights.w2Layered[layerIndex].deviceArray(),
+                weights.w3Layered[layerIndex].deviceArray());
         // The q and k norms are read by this graph's own task, so decode reuses them. The plan's
         // steps record the weights their tasks read.
         state.workspace.weightBindings.record(
