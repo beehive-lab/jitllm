@@ -41,6 +41,15 @@ public interface TornadoPlanProvider {
     }
 
     /**
+     * Whether every graph of this family's plans binds its weights through {@link
+     * UnifiedMemoryWeights}, so that they can be read in place from unified memory when asked for.
+     * Every family does, except one that has not been run that way.
+     */
+    default boolean unifiedMemoryWeights() {
+        return true;
+    }
+
+    /**
      * Whether this family's logits can sample greedily on the device, and its decode loop read the
      * token from there, for weights in {@code weights}.
      */

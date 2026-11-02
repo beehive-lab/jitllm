@@ -7,6 +7,7 @@ import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -68,7 +69,7 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
         this.schedulerType = schedulerType;
         this.mlxPrefill =
                 weights instanceof TornadoWeights tornado
-                        ? MlxPrefill.resolve(state.executionPolicy(), tornado, config)
+                        ? MlxPrefill.resolve(state, tornado, config)
                         : MlxPrefill.resolve(state.executionPolicy(), weights.dataType(), config);
         // the ffnLayerITGs is initialized on subclasses
         // due to some model-specific values (i.e. in Qwen3)
@@ -368,6 +369,7 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
      */
     protected final void bindLayerWeights(
             TaskGraph graph, String source, int layerIndex, Object[] layerWeights) {
+        layerWeights = UnifiedMemoryWeights.consume(graph, state.workspace, layerWeights);
         Object[][] binding = weightBinding(source, layerIndex, layerWeights);
         if (binding[0].length > 0) {
             graph.consumeFromDevice(source, binding[0]);
@@ -389,6 +391,7 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
      * copies, so decode uploads those itself.
      */
     protected final void bindLayerWeights(TaskGraph graph, Object[] layerWeights) {
+        layerWeights = UnifiedMemoryWeights.consume(graph, state.workspace, layerWeights);
         var bindings = state.workspace.weightBindings;
         java.util.Map<String, List<Object>> consumed = new java.util.LinkedHashMap<>();
         List<Object> uploaded = new ArrayList<>();
