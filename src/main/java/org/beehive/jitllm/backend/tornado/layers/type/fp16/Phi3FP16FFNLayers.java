@@ -99,6 +99,7 @@ public class Phi3FP16FFNLayers
             gridScheduler.addWorkerGrid(GraphNames.layer(i) + ".attn_output_proj", matmul1Worker);
             // === FFN Block ===
             gridScheduler.addWorkerGrid(GraphNames.layer(i) + ".ffn_rms_reduce", rmsReduceWorker);
+            addRmsFinalizeWorkers(gridScheduler, GraphNames.layer(i) + ".");
             gridScheduler.addWorkerGrid(GraphNames.layer(i) + ".rms_ffn_silu", fusedFFNWorker);
             gridScheduler.addWorkerGrid(GraphNames.layer(i) + ".ffn_down_proj", ffnDownWorker);
         }

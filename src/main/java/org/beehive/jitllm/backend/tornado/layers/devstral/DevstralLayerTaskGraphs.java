@@ -323,6 +323,7 @@ public abstract class DevstralLayerTaskGraphs
             String prefix = GraphNames.layer(i) + ".";
             scheduler.addWorkerGrid(prefix + "attn_rms_reduce", rmsReduceWorker);
             scheduler.addWorkerGrid(prefix + "ffn_rms_reduce", rmsReduceWorker);
+            addRmsFinalizeWorkers(scheduler, prefix);
             scheduler.addWorkerGrid(prefix + "rope_and_kv_cache", ropeWithCacheWorker);
             addAttentionWorkerGrids(scheduler, i);
         }

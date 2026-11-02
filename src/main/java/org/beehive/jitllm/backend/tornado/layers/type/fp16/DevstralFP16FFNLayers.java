@@ -71,6 +71,7 @@ public class DevstralFP16FFNLayers
                     GraphNames.layer(i) + ".attn_output_proj", configDimRowMajorGlobalWorker);
             tornadoForwardScheduler.addWorkerGrid(
                     GraphNames.layer(i) + ".ffn_rms_reduce", rmsReduceWorker);
+            addRmsFinalizeWorkers(tornadoForwardScheduler, GraphNames.layer(i) + ".");
             tornadoForwardScheduler.addWorkerGrid(
                     GraphNames.layer(i) + ".rms_ffn_gate_up", configHiddenDimRowMajorWorker);
             tornadoForwardScheduler.addWorkerGrid(

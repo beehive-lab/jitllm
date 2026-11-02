@@ -330,6 +330,10 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
         WorkerGrid vocabWorker = WorkerGridFactory.genericWorker(vocabSizeRowMajor, vocabThreads);
         tornadoForwardScheduler.addWorkerGrid("logits.vocab_proj", vocabWorker);
         tornadoForwardScheduler.addWorkerGrid("logits.rms_reduce", rmsReduceWorker(logitsRMS));
+        if (schedulerType == SchedulerType.NON_NVIDIA) {
+            tornadoForwardScheduler.addWorkerGrid(
+                    "logits.rms_finalize", WorkerGridFactory.createSingleWorker());
+        }
         tornadoForwardScheduler.addWorkerGrid("logits.mapContextLogits", logitsRMS);
         if (deviceSample()) {
             WorkerGrid argmaxWorker = WorkerGridFactory.genericWorker(SAMPLE_LOCAL, SAMPLE_LOCAL);

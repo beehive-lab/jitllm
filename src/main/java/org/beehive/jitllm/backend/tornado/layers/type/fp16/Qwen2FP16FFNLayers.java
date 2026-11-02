@@ -141,6 +141,7 @@ public class Qwen2FP16FFNLayers
                     l + "fused_ffn_w1_w3", configHiddenDimRowMajorWorker);
             tornadoForwardScheduler.addWorkerGrid(l + "attn_rms_reduce", rmsReduceWorker);
             tornadoForwardScheduler.addWorkerGrid(l + "ffn_rms_reduce", rmsReduceWorker);
+            addRmsFinalizeWorkers(tornadoForwardScheduler, l);
             tornadoForwardScheduler.addWorkerGrid(l + "mapContextFFN", rmsNormWorker);
             if (lane) {
                 tornadoForwardScheduler.addWorkerGrid(

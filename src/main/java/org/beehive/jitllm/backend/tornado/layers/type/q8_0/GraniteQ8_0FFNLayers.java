@@ -660,6 +660,7 @@ public class GraniteQ8_0FFNLayers
                 tornadoForwardScheduler.addWorkerGrid(l + "attention", parallelAttentionWorker);
             }
             tornadoForwardScheduler.addWorkerGrid(l + "ffn_rms_reduce", rmsReduceWorker);
+            addRmsFinalizeWorkers(tornadoForwardScheduler, l);
         }
 
         return tornadoForwardScheduler;

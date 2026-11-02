@@ -366,6 +366,7 @@ public class MistralQ8_0FFNLayers
                     GraphNames.layer(i) + ".attention", parallelAttentionWorker);
             tornadoForwardScheduler.addWorkerGrid(
                     GraphNames.layer(i) + ".ffn_rms_reduce", rmsReduceWorker);
+            addRmsFinalizeWorkers(tornadoForwardScheduler, GraphNames.layer(i) + ".");
             if (nativeLayer(i)) {
                 addNativeWorkerGrids(tornadoForwardScheduler, GraphNames.layer(i) + ".", i);
                 continue;

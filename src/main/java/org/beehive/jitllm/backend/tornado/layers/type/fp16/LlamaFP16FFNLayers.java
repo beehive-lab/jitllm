@@ -179,6 +179,7 @@ public class LlamaFP16FFNLayers
                     l + "attn_output_proj", configDimRowMajorGlobalWorker);
             // === FFN Block ===
             tornadoForwardScheduler.addWorkerGrid(l + "ffn_rms_reduce", rmsReduceWorker);
+            addRmsFinalizeWorkers(tornadoForwardScheduler, l);
             tornadoForwardScheduler.addWorkerGrid(
                     l + "rms_ffn_gate_up", configHiddenDimRowMajorWorker);
             tornadoForwardScheduler.addWorkerGrid(

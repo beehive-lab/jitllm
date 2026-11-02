@@ -15,6 +15,7 @@ import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -225,6 +226,19 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
      */
     protected boolean shouldUseFinalNormalization() {
         return schedulerType == SchedulerType.NON_NVIDIA;
+    }
+
+    /**
+     * Gives the {@code attn_rms_finalize} and {@code ffn_rms_finalize} tasks of one layer, named
+     * {@code prefix + "attn_rms_finalize"}, their one thread, when the layer has them. The kernel
+     * works on thread 0 only.
+     */
+    protected void addRmsFinalizeWorkers(GridScheduler scheduler, String prefix) {
+        if (shouldUseFinalNormalization()) {
+            WorkerGrid single = WorkerGridFactory.createSingleWorker();
+            scheduler.addWorkerGrid(prefix + "attn_rms_finalize", single);
+            scheduler.addWorkerGrid(prefix + "ffn_rms_finalize", single);
+        }
     }
 
     /**

@@ -213,9 +213,7 @@ public class Qwen3Q8_0FFNLayers
                 gridScheduler.addWorkerGrid(l + "attention_combine", attentionCombineWorker);
             }
             gridScheduler.addWorkerGrid(l + "ffn_rms_reduce", rmsReduceWorker);
-            if (shouldUseFinalNormalization()) {
-                gridScheduler.addWorkerGrid(l + "ffn_rms_finalize", rmsNormWorker);
-            }
+            addRmsFinalizeWorkers(gridScheduler, l);
         }
         return gridScheduler;
     }
