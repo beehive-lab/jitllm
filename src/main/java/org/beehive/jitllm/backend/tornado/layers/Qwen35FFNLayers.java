@@ -75,8 +75,13 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 public class Qwen35FFNLayers
         extends AbstractTransformerLayerTaskGraphs<Qwen35TornadoWeights, Qwen35Configuration> {
 
-    /** Lanes per workgroup for a matrix-vector task: one workgroup reduces one output row. */
-    private static final int MATVEC_LOCAL = 128;
+    /**
+     * Lanes per workgroup for a matrix-vector task: one workgroup reduces one output row. 32 on
+     * Metal, one SIMD group: Qwen3.5-0.8B Q8_0 tg128 136 -> 165 tok/s on an M4 Pro against 128.
+     */
+    private static int matVecLocal() {
+        return metalBackend() ? 32 : 128;
+    }
 
     /** Lanes per workgroup for an elementwise task. */
     private static final int ELEMENTWISE_LOCAL = 128;
@@ -313,7 +318,7 @@ public class Qwen35FFNLayers
                         w.asFloatArray(),
                         n,
                         d,
-                        MATVEC_LOCAL);
+                        matVecLocal());
             }
             case F16 -> {
                 if (residual) {
@@ -326,7 +331,7 @@ public class Qwen35FFNLayers
                             w.asHalfFloatArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 } else {
                     graph.task(
                             tn(task),
@@ -337,7 +342,7 @@ public class Qwen35FFNLayers
                             w.asHalfFloatArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 }
             }
             case Q8_0 -> {
@@ -381,7 +386,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 } else if (residual) {
                     graph.task(
                             tn(task),
@@ -393,7 +398,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 } else {
                     graph.task(
                             tn(task),
@@ -404,7 +409,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 }
             }
             case Q4_0 -> {
@@ -454,7 +459,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 } else if (!residual && x == state.workspace.wrapXb && normedActivationQuantized) {
                     // The packed-integer path, for a projection whose input the branch already
                     // quantized. Weights stay Q4_0; the activation is what changed representation.
@@ -469,7 +474,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 } else if (residual) {
                     graph.task(
                             tn(task),
@@ -480,7 +485,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 } else {
                     graph.task(
                             tn(task),
@@ -491,7 +496,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 }
             }
             case Q4_1 -> {
@@ -511,7 +516,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 } else if (residual) {
                     graph.task(
                             tn(task),
@@ -522,7 +527,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 } else {
                     graph.task(
                             tn(task),
@@ -533,7 +538,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 }
             }
             case Q4_K -> {
@@ -562,7 +567,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 } else {
                     graph.task(
                             tn(task),
@@ -573,7 +578,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 }
             }
             case Q5_K -> {
@@ -592,7 +597,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 } else if (residual) {
                     graph.task(
                             tn(task),
@@ -603,7 +608,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 } else {
                     graph.task(
                             tn(task),
@@ -614,7 +619,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 }
             }
             case Q6_K -> {
@@ -628,7 +633,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 } else {
                     graph.task(
                             tn(task),
@@ -639,7 +644,7 @@ public class Qwen35FFNLayers
                             w.asByteArray(),
                             n,
                             d,
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 }
             }
             default -> throw unsupported(layer, task, role, w.dataType(), "a");
@@ -766,7 +771,7 @@ public class Qwen35FFNLayers
                     up.asByteArray(),
                     config.dim(),
                     config.hiddenDim(),
-                    MATVEC_LOCAL);
+                    matVecLocal());
             return;
         }
         if (state.workspace.prepacking.prepackedQ4(gate)
@@ -804,7 +809,7 @@ public class Qwen35FFNLayers
                     up.asByteArray(),
                     config.dim(),
                     config.hiddenDim(),
-                    MATVEC_LOCAL);
+                    matVecLocal());
             return;
         }
         switch (gate.dataType()) {
@@ -819,7 +824,7 @@ public class Qwen35FFNLayers
                             up.asByteArray(),
                             config.dim(),
                             config.hiddenDim(),
-                            MATVEC_LOCAL);
+                            matVecLocal());
             case Q4_K -> {
                 if (simdgroupQ4_K(gate)) {
                     simdgroupQ4_KTasks().add(layer + ".ffn_gate_up");
@@ -844,7 +849,7 @@ public class Qwen35FFNLayers
                             up.asByteArray(),
                             config.dim(),
                             config.hiddenDim(),
-                            MATVEC_LOCAL);
+                            matVecLocal());
                 }
             }
             case Q8_0 ->
@@ -859,7 +864,7 @@ public class Qwen35FFNLayers
                             up.asByteArray(),
                             config.dim(),
                             config.hiddenDim(),
-                            MATVEC_LOCAL);
+                            matVecLocal());
             case F16 ->
                     graph.task(
                             tn("ffn_gate_up"),
@@ -872,7 +877,7 @@ public class Qwen35FFNLayers
                             up.asHalfFloatArray(),
                             config.dim(),
                             config.hiddenDim(),
-                            MATVEC_LOCAL);
+                            matVecLocal());
             default ->
                     throw unsupported(
                             layer, "ffn_gate_up", "ffn_gate|ffn_up", gate.dataType(), "a");
@@ -2307,7 +2312,7 @@ public class Qwen35FFNLayers
 
     /** One workgroup per output row, which is how every matrix-vector kernel here is written. */
     private static WorkerGrid matVecWorker(int rows) {
-        return WorkerGridFactory.genericWorker(rows * MATVEC_LOCAL, MATVEC_LOCAL);
+        return WorkerGridFactory.genericWorker(rows * matVecLocal(), matVecLocal());
     }
 
     /** The delta-rule worker grid for a geometry: one workgroup per value head. */
