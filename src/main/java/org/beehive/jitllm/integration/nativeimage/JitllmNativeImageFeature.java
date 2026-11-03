@@ -31,8 +31,8 @@ import org.graalvm.nativeimage.hosted.RuntimeSerialization;
  *       lambda keeps {@code writeReplace} — exactly the classes javac gave a {@code
  *       $deserializeLambda$} method;
  *   <li>the kernel classes loadable by name — every jitllm class is registered, since a kernel can
- *       call helpers in any package — and their declared methods, which TornadoVM after 8.0.0
- *       looks up by reflection; classes that use the Vector API (disabled in the image, see the
+ *       call helpers in any package — and their declared methods, which TornadoVM after 8.0.0 looks
+ *       up by reflection; classes that use the Vector API (disabled in the image, see the
  *       properties file) hold no kernels and keep only the class registration;
  *   <li>their class files as resources — the {@code org/beehive/jitllm/**}{@code /*.class} glob in
  *       the {@code reachability-metadata.json} next to the properties file.
@@ -47,12 +47,13 @@ public final class JitllmNativeImageFeature implements Feature {
     private static final String PACKAGE_PATH = "org/beehive/jitllm/";
     private static final byte[] DESERIALIZE_LAMBDA =
             "$deserializeLambda$".getBytes(StandardCharsets.UTF_8);
-    private static final byte[] VECTOR_API = "jdk/incubator/vector/".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] VECTOR_API =
+            "jdk/incubator/vector/".getBytes(StandardCharsets.UTF_8);
 
     @Override
     public String getDescription() {
         return "Registers jitllm's TornadoVM kernels and task lambdas for reflection and"
-                   + " serialization";
+                + " serialization";
     }
 
     @Override
