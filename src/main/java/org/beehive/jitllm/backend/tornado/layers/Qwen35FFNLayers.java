@@ -21,6 +21,7 @@ import org.beehive.jitllm.backend.tornado.plan.FusedOperandSupport;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -536,7 +537,22 @@ public class Qwen35FFNLayers
                 }
             }
             case Q4_K -> {
-                if (residual) {
+                if (simdgroupQ4_K(w)) {
+                    // Metal: four rows per SIMD group, as QuantizedProjections runs Q4_K.
+                    simdgroupQ4_KTasks().add(layer + "." + task);
+                    graph.task(
+                            tn(task),
+                            residual
+                                    ? TransformerComputeKernelsQ4_K
+                                            ::matrixVectorWithResidualQ4_KSimdgroup
+                                    : TransformerComputeKernelsQ4_K::matrixVectorQ4_KSimdgroup,
+                            context,
+                            x,
+                            out,
+                            w.asByteArray(),
+                            n,
+                            d);
+                } else if (residual) {
                     graph.task(
                             tn(task),
                             TransformerComputeKernelsQ4_K::matrixVectorGenericWithResidualQ4_K,
@@ -804,7 +820,20 @@ public class Qwen35FFNLayers
                             config.dim(),
                             config.hiddenDim(),
                             MATVEC_LOCAL);
-            case Q4_K ->
+            case Q4_K -> {
+                if (simdgroupQ4_K(gate)) {
+                    simdgroupQ4_KTasks().add(layer + ".ffn_gate_up");
+                    graph.task(
+                            tn("ffn_gate_up"),
+                            TransformerComputeKernelsQ4_K::fusedFFNGateUpSiLUQ4_KSimdgroup,
+                            context,
+                            x,
+                            qwen35State.workspace.wrapHb,
+                            gate.asByteArray(),
+                            up.asByteArray(),
+                            config.dim(),
+                            config.hiddenDim());
+                } else {
                     graph.task(
                             tn("ffn_gate_up"),
                             TransformerComputeKernelsQ4_K::fusedFFNGateUpSiLUQ4_K,
@@ -816,6 +845,8 @@ public class Qwen35FFNLayers
                             config.dim(),
                             config.hiddenDim(),
                             MATVEC_LOCAL);
+                }
+            }
             case Q8_0 ->
                     graph.task(
                             tn("ffn_gate_up"),
@@ -2228,9 +2259,35 @@ public class Qwen35FFNLayers
     }
 
     /**
+     * The decode tasks on the SIMD-group Q4_K kernels, with their four-rows-per-SIMD-group grid.
+     */
+    private java.util.Set<String> simdgroupQ4_KTasks;
+
+    private java.util.Set<String> simdgroupQ4_KTasks() {
+        if (simdgroupQ4_KTasks == null) {
+            simdgroupQ4_KTasks = new java.util.HashSet<>();
+        }
+        return simdgroupQ4_KTasks;
+    }
+
+    /**
+     * Whether {@code w} runs the SIMD-group Q4_K kernels: Q4_K where a 32-lane shuffle is verified.
+     */
+    private static boolean simdgroupQ4_K(TornadoTensor w) {
+        return w.dataType() == DataType.Q4_K
+                && SchedulerDetectionService.isSubgroupShuffle32Supported();
+    }
+
+    /**
      * {@link #matVecWorker}, or the prepacked kernels' grid where the task's weight is prepacked.
      */
     private WorkerGrid projWorker(int layer, String task, int rows) {
+        if (simdgroupQ4_KTasks().contains(layer + "." + task)) {
+            int rowsPerGroup = TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS;
+            int threads = 32 * TransformerComputeKernelsQ4_K.SIMDGROUPS;
+            return WorkerGridFactory.genericWorker(
+                    (rows + rowsPerGroup - 1) / rowsPerGroup * threads, threads);
+        }
         if (prepackedQ4Tasks().contains(layer + "." + task)) {
             int local =
                     task.equals("ffn_gate_up")
