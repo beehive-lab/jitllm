@@ -131,6 +131,12 @@ public class Qwen2MoEQ8_0LayersBatchPrefillMMA extends Qwen2Q8_0LayersBatchPrefi
     }
 
     /** Attention's weights and the experts', in place of a dense gate, up and down. */
+    /** The experts replace the dense feed-forward ({@link #feedForward}). */
+    @Override
+    protected boolean denseFeedForward() {
+        return false;
+    }
+
     @Override
     protected Object[] layerWeights(int layerIndex) {
         Qwen2MoETornadoWeights w = moeWeights();
