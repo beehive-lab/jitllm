@@ -325,10 +325,10 @@
                         <executions>
                             <execution>
                                 <id>native-image</id>
-                                <phase>package</phase>
                                 <goals>
                                     <goal>exec</goal>
                                 </goals>
+                                <phase>package</phase>
                                 <configuration>
                                     <executable>${project.basedir}/scripts/native-image.sh</executable>
                                     <arguments>
