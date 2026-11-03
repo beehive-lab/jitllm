@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.IntStream;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
@@ -39,6 +40,7 @@ import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
 import org.beehive.jitllm.program.op.MatMul;
 import org.beehive.jitllm.program.op.OperationKind;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.runtime.tensor.TensorRole;
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -291,7 +293,9 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
         layer.task(
                 "batch_qk_rmsnorm",
-                Qwen3Kernels::batchedFusedQKRmsNormSimdgroup,
+                simdgroupQkNorm()
+                        ? Qwen3Kernels::batchedFusedQKRmsNormSimdgroup
+                        : Qwen3Kernels::batchedFusedQKRmsNorm,
                 context,
                 state.workspace.wrapQBatch,
                 state.workspace.wrapKBatch,
@@ -427,8 +431,12 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
     public void updateGridScheduler(GridScheduler scheduler) {
         WorkerGrid qkRmsNormWorker =
-                WorkerGridFactory.genericWorker(
-                        batchSize * (config.numberOfHeads() + nHeadKv) * 32, 128);
+                simdgroupQkNorm()
+                        ? WorkerGridFactory.genericWorker(
+                                batchSize * (config.numberOfHeads() + nHeadKv) * 32, 128)
+                        : WorkerGridFactory.genericWorker(
+                                batchSize * (config.numberOfHeads() + nHeadKv) * nEmbdHead,
+                                nEmbdHead);
 
         int ropeGlobal = batchSize * (qDim / 2);
         int ropeLocal = Math.min(512, ropeGlobal);
@@ -960,6 +968,14 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         return useFp16KVCache()
                 ? state.workspace.wrapValueCacheFP16
                 : state.workspace.wrapValueCache;
+    }
+
+    /**
+     * The q/k RMS norm with one SIMD group per token and head. Metal only: OpenCL cannot compile
+     * SIMD-group reductions. Other backends run the tree kernel.
+     */
+    private static boolean simdgroupQkNorm() {
+        return TornadoDevices.current().backend().equals(BackendId.METAL);
     }
 
     /** The tiled projection kernels; see {@link BatchPrefillGemmPolicy}. */
