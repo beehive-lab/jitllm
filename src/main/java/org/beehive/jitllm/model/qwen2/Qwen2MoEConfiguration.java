@@ -22,6 +22,17 @@ public record Qwen2MoEConfiguration(
         float rmsNormEps,
         float ropeTheta)
         implements Configuration {
+
+    /**
+     * One: the decode graphs of a batched plan consume the weights the prefill graphs uploaded, so
+     * the plan holds them once. Measured: Qwen1.5-MoE-A2.7B Q8_0 (14.2 GiB file) peaks at 14.5 GiB
+     * of GPU memory batched on CUDA, where counting the weights twice predicted 33.8 GiB.
+     */
+    @Override
+    public int weightBindingFamilies(int layerGraphFamilies) {
+        return 1;
+    }
+
     @Override
     public String quantization() {
         return quantization;

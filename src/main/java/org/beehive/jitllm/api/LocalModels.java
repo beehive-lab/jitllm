@@ -74,7 +74,10 @@ public final class LocalModels {
             }
             throw exhaustion;
         }
-        ExecutionPolicy policy = gpu ? deviceDefault(model, options) : options.executionPolicy();
+        ExecutionPolicy policy =
+                gpu
+                        ? deviceDefault(model, modelFile, contextLength, options)
+                        : options.executionPolicy();
         if (gpu) {
             policy = ExecutionPolicy.from(policy).decodedProjections(decodedProjections).build();
         }
@@ -89,14 +92,19 @@ public final class LocalModels {
                 options.maxConcurrentSessions());
     }
 
-    /** A policy nobody chose takes the device's default, which needs the loaded model. */
-    private static ExecutionPolicy deviceDefault(Model model, ModelOptions options) {
+    /**
+     * A policy nobody chose takes the device's default, which needs the loaded model, and which
+     * must be predicted to fit as the chosen one was before the load.
+     */
+    private static ExecutionPolicy deviceDefault(
+            Model model, Path modelFile, int contextLength, ModelOptions options) {
         return DeviceDefaultPolicy.resolve(
                 model,
                 options.executionPolicy(),
                 options.usesDefaultExecutionPolicy(),
                 options.usesDefaultNativeLibraries(),
-                options.storageOptions());
+                options.storageOptions(),
+                candidate -> MemoryPreflight.fits(modelFile, contextLength, options, candidate));
     }
 
     /**

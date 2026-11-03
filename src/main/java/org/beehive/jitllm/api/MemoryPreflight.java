@@ -224,12 +224,31 @@ final class MemoryPreflight {
             // load's own error is the better diagnostic in that case.
             return;
         }
+        if (refuses(plan)) {
+            throw new InsufficientDeviceMemoryException(plan);
+        }
+    }
+
+    /**
+     * Whether a load under {@code policy} rather than the options' own passes {@link
+     * #refuseIfOverCapacity}'s rule. Asked of the device's default policy, which is resolved only
+     * once the model is loaded: batched prefill with the native libraries can need more than the
+     * policy checked before the load (Qwen3-8B F16 with cuBLAS keeps stacked copies of its
+     * projections, 9 GB). A prediction that cannot be computed does not count against it.
+     */
+    static boolean fits(
+            Path modelFile, int contextLength, ModelOptions options, ExecutionPolicy policy) {
+        try {
+            return !refuses(plan(modelFile, contextLength, options, policy, true));
+        } catch (IOException | RuntimeException e) {
+            return true;
+        }
+    }
+
+    private static boolean refuses(MemoryPlan plan) {
         boolean exactOver =
                 plan.confidence() == MemoryPlan.Confidence.EXACT && !plan.fitsConfiguredBudget();
-        if (!exactOver && !plan.exceedsConfiguredBudgetAtLowerBound()) {
-            return;
-        }
-        throw new InsufficientDeviceMemoryException(plan);
+        return exactOver || plan.exceedsConfiguredBudgetAtLowerBound();
     }
 
     /**
