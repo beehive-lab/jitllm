@@ -116,16 +116,10 @@ public record MlxPrefill(DataType weights, Projections projections) {
      * {@link #resolve(ExecutionPolicy, DataType, Configuration)} for {@code weights}, and empty as
      * well when their projections are not all of {@code weights.dataType()}: MLX holds one form per
      * model, and a UD-Q8_K_XL file keeps some layers' projections in F16 beside Q8_0 ones. Those
-     * run the JIT kernels, which read each tensor by its type. Empty too when the plan reads its
-     * weights in place from unified memory ({@code UnifiedMemoryWeights}).
+     * run the JIT kernels, which read each tensor by its type.
      */
     public static Optional<MlxPrefill> resolve(
             State state, TornadoWeights weights, Configuration config) {
-        if (state.workspace.unifiedMemory) {
-            // MLX would read host-made copies of every projection, and those are not read in
-            // place: twice the weights again. The JIT kernels read the weights themselves.
-            return Optional.empty();
-        }
         for (TornadoTensor[] layers : weights.projections()) {
             if (layers == null) {
                 continue; // a family that fuses some projections (Phi-3) has no split ones

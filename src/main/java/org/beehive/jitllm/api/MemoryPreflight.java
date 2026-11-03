@@ -53,9 +53,7 @@ final class MemoryPreflight {
         // loader keeps it, which is the file's own.
         // Weights read in place from the mapped file take system memory, not device buffers.
         var weights =
-                TornadoPlanRegistry.provider(model.architecture())
-                                .filter(UnifiedMemoryWeights::applies)
-                                .isPresent()
+                readsInPlace(model, modelFile, policy)
                         ? new org.beehive.jitllm.runtime.memory.WeightFootprint(0, 0, 0, 0)
                         : ModelLoader.weightFootprint(modelFile);
         return TornadoMemoryModel.predict(
@@ -101,6 +99,20 @@ final class MemoryPreflight {
                 options.storageOptions().usesFp16KeyValueCache());
     }
 
+    /** Whether the plan for {@code policy} reads the weights in place, as the plan decides it. */
+    private static boolean readsInPlace(
+            ModelLoader.Description model, Path modelFile, ExecutionPolicy policy) {
+        return TornadoPlanRegistry.provider(model.architecture())
+                .filter(
+                        provider ->
+                                UnifiedMemoryWeights.applies(
+                                        provider,
+                                        policy,
+                                        loadedWeightType(modelFile),
+                                        model.configuration()))
+                .isPresent();
+    }
+
     /** What the family's batched prefill layers would allocate per session, if anything. */
     private static java.util.Optional<
                     org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace>
@@ -113,9 +125,7 @@ final class MemoryPreflight {
         if (weightType == null || policy.prefillBatchSize() <= 1) {
             return java.util.Optional.empty();
         }
-        if (TornadoPlanRegistry.provider(model.architecture())
-                .filter(UnifiedMemoryWeights::applies)
-                .isPresent()) {
+        if (readsInPlace(model, modelFile, policy)) {
             // Weights read in place: no MLX copies, and no tensor cores on unified memory.
             return java.util.Optional.empty();
         }

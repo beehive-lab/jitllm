@@ -4,10 +4,14 @@ import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
-import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspace;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.common.TornadoDevice;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
@@ -22,9 +26,9 @@ import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
  * rather than once in the mapping and once more in Metal buffers.
  *
  * <p>On where the device shares memory with the host, unless declined with {@code
- * -Djitllm.weights.unifiedMemory=false} or MLX is asked for ({@code -Djitllm.nativeLibraries=true}:
- * MLX reads host-made copies), and only for a family whose graphs all bind their weights through
- * here ({@link
+ * -Djitllm.weights.unifiedMemory=false} or the batched prefill runs on MLX, which multiplies
+ * host-made FP16 copies of the projections (native libraries are on by default). Only for a family
+ * whose graphs all bind their weights through here ({@link
  * TornadoPlanProvider#unifiedMemoryWeights}): TornadoVM refuses a plan in which one graph reads an
  * array in place and another uploads it. Only the GGUF file's mapped tensors are read in place; a
  * prepacked projection keeps its upload, since the prepacking graph writes its packed copy on the
@@ -37,18 +41,35 @@ public final class UnifiedMemoryWeights {
 
     private UnifiedMemoryWeights() {}
 
-    /** Whether a plan of {@code family} reads its weights in place. */
-    public static boolean applies(TornadoPlanProvider family) {
-        return !"false".equals(System.getProperty(PROPERTY))
-                && !mlxAskedFor()
-                && family.unifiedMemoryWeights()
-                && deviceSupports();
+    /**
+     * Whether a plan of {@code family} under {@code policy}, over a model of {@code weights}
+     * weights, reads them in place. The plan and the memory check both ask this, so the check
+     * charges what the plan does.
+     *
+     * <p>Example on an M4 Pro: Qwen3-0.6B Q8_0 runs its batched prefill on MLX and copies its
+     * weights; Devstral, which has no MLX path, and Mistral-7B Q8_0, whose MLX copies would not
+     * fit, read them in place.
+     */
+    public static boolean applies(
+            TornadoPlanProvider family,
+            ExecutionPolicy policy,
+            DataType weights,
+            Configuration config) {
+        return family.unifiedMemoryWeights()
+                && !"false".equals(System.getProperty(PROPERTY))
+                && deviceSupports()
+                && !runsOnMlx(family, policy, weights, config);
     }
 
-    /** Whether {@code -Djitllm.nativeLibraries=true} asks for MLX, which reads its own copies. */
-    private static boolean mlxAskedFor() {
-        return ExecutionPolicy.nativeLibrariesSpecified()
-                && ExecutionPolicy.fromSystemProperties().nativeLibraries();
+    /** Whether such a plan's batched prefill runs on MLX ({@link MlxPrefill#resolve}). */
+    private static boolean runsOnMlx(
+            TornadoPlanProvider family,
+            ExecutionPolicy policy,
+            DataType weights,
+            Configuration config) {
+        return weights != null
+                && family.nativeLibraryWeights(BackendId.METAL).contains(weights)
+                && MlxPrefill.resolve(policy, weights, config).isPresent();
     }
 
     /** Whether the device plans run on shares memory with the host, as TornadoVM sees it. */
