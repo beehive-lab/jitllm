@@ -888,6 +888,12 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             q8Projection(graph, layer, task, w, xBatch, outBatch, n, d, residual);
             return;
         }
+        if (simdgroupGemm(n) && sharedOnMetal(w)) {
+            // Metal: the shared SIMD-group GEMMs, FP16 weight tiles. Example: Qwen3.5-4B's Q5_K
+            // ssm_out took 40% of a prefill chunk on the scalar tiled kernel below.
+            sharedProjection(graph, layer, task, w, xBatch, outBatch, n, d, residual);
+            return;
+        }
         switch (w.dataType()) {
             case F32 -> {
                 if (residual) {
@@ -1106,6 +1112,18 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         QuantizedBatchProjections projections = batchProjections();
         projections.projection(graph, task, xBatch, outBatch, w, n, d, residual);
         sharedTasks.put(GraphNames.batchLayer(layer) + "." + task, projections.worker(w, d));
+    }
+
+    /**
+     * Whether {@code w} runs the shared SIMD-group GEMMs on Metal: Q4_0 (not prepacked), Q4_1,
+     * Q5_K.
+     */
+    private boolean sharedOnMetal(TornadoTensor w) {
+        return switch (w.dataType()) {
+            case Q4_0 -> !state.workspace.prepacking.prepackedQ4(w);
+            case Q4_1, Q5_K -> true;
+            default -> false;
+        };
     }
 
     /** The per-weight batched projections the other families share. */
@@ -2826,6 +2844,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             }
             if (onTensorCores(prefix + "ffn_gate_proj")
                     || simdgroupTasks.containsKey(prefix + "ffn_gate_proj")
+                    || sharedTasks.containsKey(prefix + "ffn_gate_proj")
                     || splitGateUpLayers.contains(prefix)) {
                 scheduler.addWorkerGrid(
                         prefix + "ffn_gate_proj",
