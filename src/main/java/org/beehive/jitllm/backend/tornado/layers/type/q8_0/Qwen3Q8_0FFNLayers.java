@@ -215,6 +215,7 @@ public class Qwen3Q8_0FFNLayers
             gridScheduler.addWorkerGrid(l + "ffn_rms_reduce", rmsReduceWorker);
             addRmsFinalizeWorkers(gridScheduler, l);
         }
+        projections.addGrids(gridScheduler);
         return gridScheduler;
     }
 

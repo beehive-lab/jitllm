@@ -134,6 +134,7 @@ public class Phi3Q8_0FFNLayers
             addRmsFinalizeWorkers(tornadoForwardScheduler, l);
         }
 
+        projections.addGrids(tornadoForwardScheduler);
         return tornadoForwardScheduler;
     }
 

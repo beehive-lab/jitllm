@@ -1,5 +1,7 @@
 package org.beehive.jitllm.backend.tornado.layers;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsIQ4_XS;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
@@ -10,6 +12,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspace;
@@ -50,6 +53,9 @@ public final class QuantizedProjections {
     private final int floatLocal;
     private final int packedLocal;
 
+    /** The grids of the SIMD-group tasks, by {@code graph.task} name; see {@link #addGrids}. */
+    private final Map<String, WorkerGrid> grids = new LinkedHashMap<>();
+
     /**
      * @param floatLocal the lanes per output row of the floating-point kernels
      * @param packedLocal the lanes per output row of the packed kernels, a multiple of 32
@@ -68,6 +74,36 @@ public final class QuantizedProjections {
      */
     public QuantizedProjections(KernelContext context, TornadoWorkspace ws, int floatLocal) {
         this(context, ws, floatLocal, 0);
+    }
+
+    /**
+     * Whether {@code w} runs the SIMD-group Q4_K kernels, four output rows per SIMD group: a Q4_K
+     * weight on the floating-point path, on a device with a verified 32-lane shuffle (Metal).
+     */
+    private boolean simdgroup(TornadoTensor w) {
+        return !packed()
+                && w.dataType() == DataType.Q4_K
+                && SchedulerDetectionService.isSubgroupShuffle32Supported();
+    }
+
+    /** Records the grid of the SIMD-group task {@code name} of {@code graph}, over {@code rows}. */
+    private void simdgroupGrid(TaskGraph graph, String name, int rows) {
+        int groups =
+                (rows + TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS - 1)
+                        / TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS;
+        int threads = 32 * TransformerComputeKernelsQ4_K.SIMDGROUPS;
+        grids.put(
+                graph.getTaskGraphName() + "." + name,
+                WorkerGridFactory.genericWorker(groups * threads, threads));
+    }
+
+    /**
+     * Sets the grids of the SIMD-group tasks, over the one {@link #worker} gave each: call it last
+     * when filling a grid scheduler. Example: {@code layer_3.ffn_gate_up} over 14336 rows runs 1792
+     * workgroups of 64 threads, not 14336 of 32.
+     */
+    public void addGrids(GridScheduler scheduler) {
+        grids.forEach(scheduler::addWorkerGrid);
     }
 
     /** Whether the projections read the activation quantized to eight bits. */
@@ -182,6 +218,19 @@ public final class QuantizedProjections {
                     floatLocal);
             return;
         }
+        if (simdgroup(w)) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsQ4_K::matrixVectorQ4_KSimdgroup,
+                    context,
+                    x,
+                    out,
+                    bytes(w),
+                    n,
+                    d);
+            simdgroupGrid(graph, name, d);
+            return;
+        }
         graph.task(
                 name,
                 switch (w.dataType()) {
@@ -229,6 +278,19 @@ public final class QuantizedProjections {
                     n,
                     d,
                     packed() ? packedLocal : floatLocal);
+            return;
+        }
+        if (simdgroup(w)) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsQ4_K::matrixVectorWithResidualQ4_KSimdgroup,
+                    context,
+                    x,
+                    ws.wrapX,
+                    bytes(w),
+                    n,
+                    d);
+            simdgroupGrid(graph, name, d);
             return;
         }
         if (packed()) {
@@ -347,6 +409,20 @@ public final class QuantizedProjections {
                     ws.wrapHb,
                     ws.wrapHb2,
                     d);
+            return;
+        }
+        if (simdgroup(w1)) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsQ4_K::fusedFFNGateUpSiLUQ4_KSimdgroup,
+                    context,
+                    ws.wrapXb,
+                    ws.wrapHb,
+                    bytes(w1),
+                    bytes(w3),
+                    n,
+                    d);
+            simdgroupGrid(graph, name, d);
             return;
         }
         DataType type = w1.dataType();

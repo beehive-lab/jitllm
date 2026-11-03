@@ -742,6 +742,7 @@ public class LlamaQ8_0FFNLayers
             addRmsFinalizeWorkers(tornadoForwardScheduler, l);
         }
 
+        projections.addGrids(tornadoForwardScheduler);
         return tornadoForwardScheduler;
     }
 

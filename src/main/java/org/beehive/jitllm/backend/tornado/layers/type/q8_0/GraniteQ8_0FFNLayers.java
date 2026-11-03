@@ -663,6 +663,7 @@ public class GraniteQ8_0FFNLayers
             addRmsFinalizeWorkers(tornadoForwardScheduler, l);
         }
 
+        projections.addGrids(tornadoForwardScheduler);
         return tornadoForwardScheduler;
     }
 

@@ -167,6 +167,7 @@ public class Qwen2Q8_0FFNLayers
             tornadoForwardScheduler.addWorkerGrid(l + "ffn_rms_reduce", rmsReduceWorker);
             addRmsFinalizeWorkers(tornadoForwardScheduler, l);
         }
+        projections.addGrids(tornadoForwardScheduler);
         return tornadoForwardScheduler;
     }
 

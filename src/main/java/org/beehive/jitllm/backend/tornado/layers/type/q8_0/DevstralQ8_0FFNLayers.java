@@ -421,6 +421,7 @@ public class DevstralQ8_0FFNLayers extends DevstralLayerTaskGraphs {
                         l + "ffn_down_proj",
                         PackedActivationTasks.projectionWorker(config.dim(), PACKED_LOCAL));
             }
+            projections.addGrids(tornadoForwardScheduler);
             return tornadoForwardScheduler;
         }
 
@@ -456,6 +457,7 @@ public class DevstralQ8_0FFNLayers extends DevstralLayerTaskGraphs {
                     l + "ffn_down_proj", configDimRowMajorGlobalWorker);
         }
 
+        projections.addGrids(tornadoForwardScheduler);
         return tornadoForwardScheduler;
     }
 

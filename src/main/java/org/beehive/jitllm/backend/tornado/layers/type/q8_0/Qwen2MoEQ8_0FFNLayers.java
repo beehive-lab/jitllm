@@ -112,6 +112,7 @@ public class Qwen2MoEQ8_0FFNLayers
             scheduler.addWorkerGrid(prefix + "shared_expert_down", dimWorker);
             scheduler.addWorkerGrid(prefix + "shared_expert_gate_and_accumulate", topKWorker);
         }
+        projections.addGrids(scheduler);
         return scheduler;
     }
 

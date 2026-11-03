@@ -383,6 +383,7 @@ public class MistralQ8_0FFNLayers
                     GraphNames.layer(i) + ".ffn_down_proj", configDimRowMajorGlobalWorker);
         }
 
+        projections.addGrids(tornadoForwardScheduler);
         return tornadoForwardScheduler;
     }
 
