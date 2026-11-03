@@ -65,7 +65,7 @@ public class DevstralQ8_0FFNLayers extends DevstralLayerTaskGraphs {
         };
         String weightSrc = weightSourceGraphName(layerIndex);
         if (weightSrc != null) {
-            unifiedLayer.consumeFromDevice(weightSrc, layerWeights);
+            bindLayerWeights(unifiedLayer, weightSrc, layerIndex, layerWeights);
         } else {
             unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
         }

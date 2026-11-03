@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.backend.tornado.scheduling.SplitKvAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
@@ -30,10 +31,10 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
  *   <li>the projections read the activation quantized to Q8 blocks with packed integer dot products
  *       where {@link PackedActivationTasks#enabled()} holds (CUDA), and the floating-point kernels
  *       elsewhere;
- *   <li>attention over the FP16 cache on the NVIDIA path is split across several workgroups per
- *       head (flash-decoding) and merged by a combine pass, taking the lane-cooperative kernel
- *       where {@link LaneAttentionPolicy} has one for the head width. One workgroup per head
- *       otherwise, as before.
+ *   <li>attention over the FP16 cache on the NVIDIA path and on Metal is split across several
+ *       workgroups per head (flash-decoding) and merged by a combine pass, taking the
+ *       lane-cooperative kernel where {@link LaneAttentionPolicy} has one for the head width. One
+ *       workgroup per head otherwise, as before.
  * </ul>
  */
 // @formatter:on
@@ -159,16 +160,19 @@ public abstract class DevstralLayerTaskGraphs
 
     /**
      * Split-KV partitions per head, or 0 for one workgroup per head. Only over the FP16 cache on
-     * the NVIDIA path, as Llama: by default where the lane-cooperative kernel runs, or as asked
-     * with {@code -Djitllm.attention.splitKv=true} (and {@code .count}).
+     * the NVIDIA path and on Metal, as Qwen3: by default where the lane-cooperative kernel runs
+     * (fewer splits on Metal, {@link SplitKvAttentionPolicy}), or as asked with {@code
+     * -Djitllm.attention.splitKv=true} (and {@code .count}).
      */
     protected int attentionSplits() {
-        if (!useFp16KVCache() || schedulerType != SchedulerType.NVIDIA) {
+        if (!useFp16KVCache() || (schedulerType != SchedulerType.NVIDIA && !metalBackend())) {
             return 0;
         }
         var partitions = state.executionPolicy().splitKvPartitions();
         if (partitions.isEmpty()) {
-            return laneAttention(config.headSize()) ? State.SPLIT_KV : 0;
+            return laneAttention(config.headSize())
+                    ? SplitKvAttentionPolicy.splits(State.SPLIT_KV)
+                    : 0;
         }
         int splits = partitions.getAsInt();
         if (splits > State.SPLIT_KV) {
@@ -226,27 +230,27 @@ public abstract class DevstralLayerTaskGraphs
                     splits);
             return;
         }
+        if (useFp16KVCache()) {
+            layer.task(
+                    "attention",
+                    TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
+                    context,
+                    state.workspace.wrapQ,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    state.workspace.wrapXb,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    config.kvDim(),
+                    config.kvMul(),
+                    state.workspace.positionHolder,
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+            return;
+        }
         if (schedulerType == SchedulerType.NVIDIA) {
-            if (useFp16KVCache()) {
-                layer.task(
-                        "attention",
-                        TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
-                        context,
-                        state.workspace.wrapQ,
-                        state.workspace.wrapKeyCacheFP16,
-                        state.workspace.wrapValueCacheFP16,
-                        state.workspace.wrapXb,
-                        config.numberOfHeads(),
-                        config.headSize(),
-                        config.kvDim(),
-                        config.kvMul(),
-                        state.workspace.positionHolder,
-                        layerIndex,
-                        state.workspace.wrapBlockTable,
-                        state.kvBlockCfg,
-                        state.kvBlockStride);
-                return;
-            }
             layer.task(
                     "attention",
                     TransformerPagedKvKernels::processHeadsFlashAttentionPaged,

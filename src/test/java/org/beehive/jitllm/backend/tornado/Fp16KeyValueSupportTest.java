@@ -240,15 +240,15 @@ public class Fp16KeyValueSupportTest {
         assertTrue(
                 check("gemma4", DataType.F16, ExecutionMode.STANDARD, BackendId.METAL, false, false)
                         .isPresent());
-        assertTrue(
-                check(
-                                "devstral",
-                                DataType.Q8_0,
-                                ExecutionMode.STANDARD,
-                                BackendId.METAL,
-                                false,
-                                false)
-                        .isPresent());
+        for (ExecutionMode mode :
+                new ExecutionMode[] {ExecutionMode.STANDARD, ExecutionMode.BATCH_PREFILL_DECODE}) {
+            for (DataType weights : new DataType[] {DataType.F16, DataType.Q4_K, DataType.Q8_0}) {
+                assertEquals(
+                        "devstral " + weights + " " + mode,
+                        Optional.empty(),
+                        check("devstral", weights, mode, BackendId.METAL, false, false));
+            }
+        }
     }
 
     @Test

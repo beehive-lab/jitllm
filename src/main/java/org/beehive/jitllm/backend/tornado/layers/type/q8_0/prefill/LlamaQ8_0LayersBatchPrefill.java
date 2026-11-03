@@ -18,9 +18,9 @@ import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
-import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
-import org.beehive.jitllm.model.llama.LlamaConfiguration;
+import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -68,9 +68,16 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
     static final int LOCAL_WORK_GROUP_SIZE = 32;
 
-    private final LlamaState state;
+    private final State state;
     private final LlamaTornadoWeights weights;
-    private final LlamaConfiguration config;
+    private final Configuration config;
+
+    /**
+     * The width of Q and of the attention output: {@code dim} for Llama, wider or narrower for
+     * Devstral ({@code heads * headDim}).
+     */
+    private final int qDim;
+
     private final KernelContext context = new KernelContext();
     private final int batchSize;
     private final MlxPrefillAttention mlxAttention;
@@ -79,13 +86,11 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
     private String lastLayerTaskGraphID;
 
     public LlamaQ8_0LayersBatchPrefill(
-            LlamaState state,
-            LlamaTornadoWeights weights,
-            LlamaConfiguration config,
-            int batchSize) {
+            State state, LlamaTornadoWeights weights, Configuration config, int batchSize) {
         this.state = state;
         this.weights = weights;
         this.config = config;
+        this.qDim = config.numberOfHeads() * config.headSize();
         this.batchSize = batchSize;
         Optional<MlxPrefill> mlx = MlxPrefill.resolve(state.executionPolicy(), weights, config);
         this.mlxAttention =
@@ -107,7 +112,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         batchSize,
                         config.numberOfLayers(),
                         config.dim(),
-                        config.numberOfHeads() * config.headSize(),
+                        qDim,
                         config.kvDim(),
                         config.hiddenDim());
         this.layerITGs =
@@ -241,7 +246,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                             state.workspace.wrapQBatch,
                             weights.wqLayered[layerIndex],
                             dim,
-                            dim,
+                            qDim,
                             false);
             batchProjections()
                     .projection(
@@ -279,9 +284,27 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     weights.wkLayered[layerIndex].asByteArray(),
                     weights.wvLayered[layerIndex].asByteArray(),
                     dim,
-                    dim,
+                    qDim,
                     kvDim,
                     batchSize);
+
+        } else if (mlxProjections == null && qDim != dim) {
+
+            layer.task(
+                    "batch_qkv",
+                    TransformerBatchPrefillKernels::batchedFusedQKVMatmulQ8NonSquare,
+                    context,
+                    state.workspace.wrapXbBatch,
+                    state.workspace.wrapQBatch,
+                    state.workspace.wrapKBatch,
+                    state.workspace.wrapVBatch,
+                    weights.wqLayered[layerIndex].asByteArray(),
+                    weights.wkLayered[layerIndex].asByteArray(),
+                    weights.wvLayered[layerIndex].asByteArray(),
+                    dim,
+                    qDim,
+                    kvDim,
+                    LOCAL_WORK_GROUP_SIZE);
 
         } else if (mlxProjections == null) {
 
@@ -320,7 +343,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.workspace.wrapBlockTable,
                     state.kvBlockCfg,
                     state.kvBlockStride,
-                    dim);
+                    qDim);
         } else {
             layer.task(
                     "batch_rope_kv",
@@ -340,7 +363,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.workspace.wrapBlockTable,
                     state.kvBlockCfg,
                     state.kvBlockStride,
-                    dim);
+                    qDim);
         }
 
         // Overwrites wrapXbBatch with attention output
@@ -367,7 +390,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                             state.workspace.wrapBlockTable,
                             state.kvBlockCfg,
                             state.kvBlockStride,
-                            dim);
+                            qDim);
                 } else if (headSize() == 96) {
                     layer.task(
                             "batch_attention",
@@ -387,7 +410,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                             state.workspace.wrapBlockTable,
                             state.kvBlockCfg,
                             state.kvBlockStride,
-                            dim);
+                            qDim);
                 } else {
                     layer.task(
                             "batch_attention",
@@ -407,7 +430,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                             state.workspace.wrapBlockTable,
                             state.kvBlockCfg,
                             state.kvBlockStride,
-                            dim);
+                            qDim);
                 }
             } else {
                 layer.task(
@@ -427,7 +450,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         state.workspace.wrapBlockTable,
                         state.kvBlockCfg,
                         state.kvBlockStride,
-                        dim);
+                        qDim);
             }
         } else {
             if (simdgroupAttention()) {
@@ -450,7 +473,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                             state.workspace.wrapBlockTable,
                             state.kvBlockCfg,
                             state.kvBlockStride,
-                            dim);
+                            qDim);
                 } else if (headSize() == 96) {
                     layer.task(
                             "batch_attention",
@@ -470,7 +493,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                             state.workspace.wrapBlockTable,
                             state.kvBlockCfg,
                             state.kvBlockStride,
-                            dim);
+                            qDim);
                 } else {
                     layer.task(
                             "batch_attention",
@@ -490,7 +513,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                             state.workspace.wrapBlockTable,
                             state.kvBlockCfg,
                             state.kvBlockStride,
-                            dim);
+                            qDim);
                 }
             } else {
                 layer.task(
@@ -510,7 +533,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         state.workspace.wrapBlockTable,
                         state.kvBlockCfg,
                         state.kvBlockStride,
-                        dim);
+                        qDim);
             }
         }
 
@@ -524,7 +547,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                             state.workspace.wrapXbBatch,
                             state.workspace.wrapXBatch,
                             weights.woLayered[layerIndex],
-                            dim,
+                            qDim,
                             dim,
                             true);
         } else if (simdgroupGemm()) {
@@ -539,7 +562,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.workspace.wrapXbBatch,
                     state.workspace.wrapXBatch,
                     weights.woLayered[layerIndex].asByteArray(),
-                    dim,
+                    qDim,
                     dim,
                     batchSize);
 
@@ -552,7 +575,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.workspace.wrapXbBatch,
                     state.workspace.wrapXBatch,
                     weights.woLayered[layerIndex].asByteArray(),
-                    dim,
+                    qDim,
                     dim,
                     LOCAL_WORK_GROUP_SIZE);
         }
@@ -678,11 +701,11 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
         WorkerGrid rmsWorker = WorkerGridFactory.genericWorker(batchSize, 1);
         WorkerGrid rmsApplyWorker = WorkerGridFactory.genericWorker(batchSize * dim, 256);
-        int qkvRows = dim + 2 * kvDim;
+        int qkvRows = qDim + 2 * kvDim;
         WorkerGrid qkvWorker =
                 WorkerGridFactory.genericWorker(
                         batchSize * qkvRows * LOCAL_WORK_GROUP_SIZE, LOCAL_WORK_GROUP_SIZE);
-        int ropeGlobal = batchSize * (dim / 2);
+        int ropeGlobal = batchSize * (qDim / 2);
         int ropeLocal = Math.min(512, ropeGlobal);
         while (ropeLocal > 1 && ropeGlobal % ropeLocal != 0) {
             ropeLocal--;
@@ -730,7 +753,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
             int dimLocal = TransformerBatchPrefillSimdgroupKernels.threads(halfTilesDim());
             int hidLocal = TransformerBatchPrefillSimdgroupKernels.threads(halfTilesHid());
             int tokenTiles = (batchSize + 63) / 64;
-            int sgQkvRows = dim + 2 * kvDim;
+            int sgQkvRows = qDim + 2 * kvDim;
             WorkerGrid sgQkv =
                     WorkerGridFactory.genericWorker(
                             (sgQkvRows / 64) * tokenTiles * qkvLocal, qkvLocal);
@@ -776,7 +799,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                 QuantizedBatchProjections projections = batchProjections();
                 if (!q8_0Qkv(i)) {
                     scheduler.addWorkerGrid(
-                            p + "batch_q", projections.worker(weights.wqLayered[i], dim));
+                            p + "batch_q", projections.worker(weights.wqLayered[i], qDim));
                     scheduler.addWorkerGrid(
                             p + "batch_k", projections.worker(weights.wkLayered[i], kvDim));
                     scheduler.addWorkerGrid(
@@ -894,7 +917,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
      */
     private boolean simdgroupGemm() {
         return BatchPrefillGemmPolicy.simdgroup(
-                config.dim(), config.dim(), config.kvDim(), config.hiddenDim());
+                config.dim(), qDim, config.kvDim(), config.hiddenDim());
     }
 
     /**
@@ -927,7 +950,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
      */
     private boolean halfTilesQkv() {
         return TransformerBatchPrefillSimdgroupKernels.halfTiles(
-                (config.dim() + 2 * config.kvDim()) / 64, batchSize);
+                (qDim + 2 * config.kvDim()) / 64, batchSize);
     }
 
     /** Whether the Q8_0 projections into the model width run the {@code ...HalfTiles} kernels. */
