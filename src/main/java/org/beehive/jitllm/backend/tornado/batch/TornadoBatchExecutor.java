@@ -32,7 +32,6 @@ import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
-import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
@@ -145,7 +144,6 @@ public final class TornadoBatchExecutor implements BatchExecutor, AutoCloseable 
         this.sampledTokens = new IntArray(paddedB);
         FloatArray finalScaleBatch = new FloatArray(batchSize);
         HalfFloatArray normedFinalFP16 = new HalfFloatArray(paddedB * dim);
-        normedFinalFP16.init(new HalfFloat(0.0f));
         FloatArray logitsBatch = new FloatArray(paddedB * vocab);
 
         BatchPrefillActivation activation =
