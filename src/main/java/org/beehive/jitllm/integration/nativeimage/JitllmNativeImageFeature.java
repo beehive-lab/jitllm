@@ -31,7 +31,9 @@ import org.graalvm.nativeimage.hosted.RuntimeSerialization;
  *       lambda keeps {@code writeReplace} — exactly the classes javac gave a {@code
  *       $deserializeLambda$} method;
  *   <li>the kernel classes loadable by name — every jitllm class is registered, since a kernel can
- *       call helpers in any package;
+ *       call helpers in any package — and their declared methods, which TornadoVM after 8.0.0
+ *       looks up by reflection; classes that use the Vector API (disabled in the image, see the
+ *       properties file) hold no kernels and keep only the class registration;
  *   <li>their class files as resources — the {@code org/beehive/jitllm/**}{@code /*.class} glob in
  *       the {@code reachability-metadata.json} next to the properties file.
  * </ul>
@@ -45,6 +47,7 @@ public final class JitllmNativeImageFeature implements Feature {
     private static final String PACKAGE_PATH = "org/beehive/jitllm/";
     private static final byte[] DESERIALIZE_LAMBDA =
             "$deserializeLambda$".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] VECTOR_API = "jdk/incubator/vector/".getBytes(StandardCharsets.UTF_8);
 
     @Override
     public String getDescription() {
@@ -63,9 +66,14 @@ public final class JitllmNativeImageFeature implements Feature {
                 }
                 RuntimeReflection.register(type);
                 classes++;
-                // This class holds the marker as a string constant, not as a method.
-                if (type != JitllmNativeImageFeature.class
-                        && indexOf(file.bytes(), DESERIALIZE_LAMBDA) >= 0) {
+                // This class holds both markers as string constants, not as references.
+                if (type == JitllmNativeImageFeature.class) {
+                    continue;
+                }
+                if (indexOf(file.bytes(), VECTOR_API) < 0) {
+                    RuntimeReflection.register(type.getDeclaredMethods());
+                }
+                if (indexOf(file.bytes(), DESERIALIZE_LAMBDA) >= 0) {
                     RuntimeSerialization.registerLambdaCapturingClass(type);
                 }
             }
