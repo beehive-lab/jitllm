@@ -191,6 +191,15 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     private final java.util.Map<String, Integer> simdgroupTasks = new java.util.LinkedHashMap<>();
 
     /**
+     * The projections run by {@link QuantizedBatchProjections}, with their grids: every type this
+     * family has no batched kernel of its own for. Example: a Q4_K_M file's Q4_K and Q6_K weights.
+     */
+    private final java.util.Map<String, WorkerGrid> sharedTasks = new java.util.LinkedHashMap<>();
+
+    /** Layers whose gate and up run as two projections and a SwiGLU, for their grids. */
+    private final java.util.Set<String> splitGateUpLayers = new java.util.HashSet<>();
+
+    /**
      * The smallest output width measured to gain from dequantize-then-GEMM. At 1,024 outputs the
      * GEMM launches too few tiles and the pair lost at both eligible widths; at 5,120 and above it
      * won. Everything below stays on the direct quantized kernel.
@@ -1076,7 +1085,90 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             MATVEC_LOCAL);
                 }
             }
-            default -> throw unsupported(layer, task, role, w.dataType(), "a batched");
+            default -> sharedProjection(graph, layer, task, w, xBatch, outBatch, n, d, residual);
+        }
+    }
+
+    /**
+     * {@code out (+)= w · x} by the projections the other families run, for a type this family has
+     * no batched kernel for: SIMD-group GEMMs on Metal, tiled batch projections elsewhere.
+     */
+    private void sharedProjection(
+            TaskGraph graph,
+            int layer,
+            String task,
+            TornadoTensor w,
+            FloatArray xBatch,
+            FloatArray outBatch,
+            int n,
+            int d,
+            boolean residual) {
+        QuantizedBatchProjections projections = batchProjections();
+        projections.projection(graph, task, xBatch, outBatch, w, n, d, residual);
+        sharedTasks.put(GraphNames.batchLayer(layer) + "." + task, projections.worker(w, d));
+    }
+
+    /** The per-weight batched projections the other families share. */
+    private QuantizedBatchProjections batchProjections() {
+        return new QuantizedBatchProjections(
+                context,
+                state.workspace,
+                batchSize,
+                BatchPrefillGemmPolicy.simdgroup(),
+                false,
+                MATVEC_LOCAL);
+    }
+
+    /**
+     * Gate and up as two projections, each by its own type, then the SwiGLU: for weights with no
+     * fused family kernel. Example: Q4_K gate and up in a Q4_K_M file.
+     */
+    private void splitGateUpBatch(
+            TaskGraph graph,
+            int layer,
+            TornadoTensor gate,
+            TornadoTensor up,
+            FloatArray xBatch,
+            boolean hbFP16) {
+        matVecBatch(
+                graph,
+                layer,
+                "ffn_gate_proj",
+                "ffn_gate",
+                gate,
+                xBatch,
+                state.workspace.wrapGateBatch,
+                config.dim(),
+                config.hiddenDim(),
+                false);
+        matVecBatch(
+                graph,
+                layer,
+                "ffn_up_proj",
+                "ffn_up",
+                up,
+                xBatch,
+                state.workspace.wrapUpBatch,
+                config.dim(),
+                config.hiddenDim(),
+                false);
+        splitGateUpLayers.add(GraphNames.batchLayer(layer) + ".");
+        if (hbFP16) {
+            graph.task(
+                    "ffn_swiglu",
+                    Qwen35MMAKernels::swiGLUBatchFP16,
+                    context,
+                    state.workspace.wrapGateBatch,
+                    state.workspace.wrapUpBatch,
+                    state.workspace.wrapHbFP16BatchMMA);
+        } else {
+            graph.task(
+                    "ffn_swiglu",
+                    Qwen35MMAKernels::swiGLUBatch,
+                    context,
+                    state.workspace.wrapGateBatch,
+                    state.workspace.wrapUpBatch,
+                    state.workspace.wrapHbBatch);
         }
     }
 
@@ -1280,6 +1372,11 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             TornadoTensor up,
             FloatArray xBatch,
             boolean hbFP16) {
+        DataType type = gate.dataType();
+        if (type != up.dataType() || (type != DataType.Q8_0 && type != DataType.Q4_0)) {
+            splitGateUpBatch(graph, layer, gate, up, xBatch, hbFP16);
+            return;
+        }
         FusedOperandSupport.requireUniform(
                 "qwen35 batch-prefill layer " + layer + " fused gate/up feed-forward",
                 List.of("ffn_gate", "ffn_up"),
@@ -2728,7 +2825,8 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 scheduler.addWorkerGrid(prefix + "ffn_rms_apply_fp16", fp16Convert);
             }
             if (onTensorCores(prefix + "ffn_gate_proj")
-                    || simdgroupTasks.containsKey(prefix + "ffn_gate_proj")) {
+                    || simdgroupTasks.containsKey(prefix + "ffn_gate_proj")
+                    || splitGateUpLayers.contains(prefix)) {
                 scheduler.addWorkerGrid(
                         prefix + "ffn_gate_proj",
                         matVecWorker(prefix + "ffn_gate_proj", config.hiddenDim()));
@@ -2899,6 +2997,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     /** One workgroup per (row, output row), or per (row tile, output row) where tiled. */
     private WorkerGrid matVecWorker(String qualifiedTask, int rows) {
+        WorkerGrid shared = sharedTasks.get(qualifiedTask);
+        if (shared != null) {
+            return shared;
+        }
         Integer simdgroupOutputs = simdgroupTasks.get(qualifiedTask);
         if (simdgroupOutputs != null) {
             int local = TransformerBatchPrefillSimdgroupKernels.THREADS;

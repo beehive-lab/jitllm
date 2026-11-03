@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Set;
+import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
@@ -147,8 +148,8 @@ public class TornadoPlanRegistryTest {
                 Set.of(ExecutionMode.values()),
                 qwen35.supportedModes());
         assertEquals(
-                "admitted on the representation its trunk projections share",
-                Set.of(DataType.Q4_0, DataType.Q8_0),
+                "admitted on every type its layers read per tensor, as Qwen3",
+                TornadoSupportSets.F16_AND_NATIVE_QUANTIZED,
                 qwen35.supportedDataTypes());
     }
 
