@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspace;
@@ -20,8 +21,10 @@ import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
  * <p>Example: on an Apple M4 Pro, Qwen3-8B Q8_0 keeps its 8.7 GB of weights once, as file pages,
  * rather than once in the mapping and once more in Metal buffers.
  *
- * <p>Off unless asked for with {@code -Djitllm.weights.unifiedMemory=true}, and only for a family
- * whose graphs all bind their weights through here ({@link
+ * <p>On where the device shares memory with the host, unless declined with {@code
+ * -Djitllm.weights.unifiedMemory=false} or MLX is asked for ({@code -Djitllm.nativeLibraries=true}:
+ * MLX reads host-made copies), and only for a family whose graphs all bind their weights through
+ * here ({@link
  * TornadoPlanProvider#unifiedMemoryWeights}): TornadoVM refuses a plan in which one graph reads an
  * array in place and another uploads it. Only the GGUF file's mapped tensors are read in place; a
  * prepacked projection keeps its upload, since the prepacking graph writes its packed copy on the
@@ -29,14 +32,23 @@ import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
  */
 public final class UnifiedMemoryWeights {
 
-    /** The opt-in property. */
+    /** The property that declines it: {@code -Djitllm.weights.unifiedMemory=false}. */
     public static final String PROPERTY = "jitllm.weights.unifiedMemory";
 
     private UnifiedMemoryWeights() {}
 
     /** Whether a plan of {@code family} reads its weights in place. */
     public static boolean applies(TornadoPlanProvider family) {
-        return Boolean.getBoolean(PROPERTY) && family.unifiedMemoryWeights() && deviceSupports();
+        return !"false".equals(System.getProperty(PROPERTY))
+                && !mlxAskedFor()
+                && family.unifiedMemoryWeights()
+                && deviceSupports();
+    }
+
+    /** Whether {@code -Djitllm.nativeLibraries=true} asks for MLX, which reads its own copies. */
+    private static boolean mlxAskedFor() {
+        return ExecutionPolicy.nativeLibrariesSpecified()
+                && ExecutionPolicy.fromSystemProperties().nativeLibraries();
     }
 
     /** Whether the device plans run on shares memory with the host, as TornadoVM sees it. */
