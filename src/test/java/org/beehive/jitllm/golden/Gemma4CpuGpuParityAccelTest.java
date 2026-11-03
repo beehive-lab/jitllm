@@ -1,5 +1,6 @@
 package org.beehive.jitllm.golden;
 
+import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
 
@@ -12,6 +13,14 @@ import org.junit.Test;
  * moves the whole GPU, so the CPU is the only reference that can.
  */
 public class Gemma4CpuGpuParityAccelTest extends CpuGpuParity {
+
+    // The packed-integer projections off, as in Gemma4KQuantParityAccelTest: the device then
+    // computes in floating point what the host reference computes, and the bounds hold on CUDA,
+    // where the packed path is the default.
+    static {
+        System.setProperty("jitllm.gemma4.packedIntegerDot", "false");
+        System.setProperty(PackedActivationTasks.DISABLE_PROPERTY, "false");
+    }
 
     /** Compared against references captured with an FP32 key/value cache. */
     @org.junit.ClassRule
