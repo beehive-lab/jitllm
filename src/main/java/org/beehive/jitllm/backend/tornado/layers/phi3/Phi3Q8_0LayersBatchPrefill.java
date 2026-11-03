@@ -173,11 +173,11 @@ public class Phi3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayerT
         layer.transferToDevice(
                 DataTransferMode.FIRST_EXECUTION,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqkvLayered[layerIndex].asByteArray(),
-                weights.woLayered[layerIndex].asByteArray(),
+                weights.wqkvLayered[layerIndex].deviceArray(),
+                weights.woLayered[layerIndex].deviceArray(),
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.wUpLayered[layerIndex].asByteArray(),
-                weights.wDownLayered[layerIndex].asByteArray());
+                weights.wUpLayered[layerIndex].deviceArray(),
+                weights.wDownLayered[layerIndex].deviceArray());
 
         int dim = config.dim();
         int kvDim = config.kvDim();

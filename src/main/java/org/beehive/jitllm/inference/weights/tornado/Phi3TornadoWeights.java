@@ -50,5 +50,16 @@ public class Phi3TornadoWeights extends TornadoWeights {
         this.wDownLayered = wDownLayered;
         this.wUpLayered = wUpLayered;
     }
+
+    /** The fused q|k|v and gate|up projections, the output and the down projection. */
+    @Override
+    public java.util.List<TornadoTensor[]> projections() {
+        java.util.List<TornadoTensor[]> projections =
+                new java.util.ArrayList<>(super.projections());
+        projections.add(wqkvLayered);
+        projections.add(wUpLayered);
+        projections.add(wDownLayered);
+        return projections;
+    }
     // @formatter:on
 }

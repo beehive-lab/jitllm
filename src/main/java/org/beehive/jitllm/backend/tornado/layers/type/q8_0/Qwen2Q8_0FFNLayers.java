@@ -196,19 +196,19 @@ public class Qwen2Q8_0FFNLayers
         Object[] layerWeights = {
             // Attention weights
             weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-            weights.wqLayered[layerIndex].asByteArray(),
-            weights.wkLayered[layerIndex].asByteArray(),
-            weights.wvLayered[layerIndex].asByteArray(),
-            weights.woLayered[layerIndex].asByteArray(),
+            weights.wqLayered[layerIndex].deviceArray(),
+            weights.wkLayered[layerIndex].deviceArray(),
+            weights.wvLayered[layerIndex].deviceArray(),
+            weights.woLayered[layerIndex].deviceArray(),
             // Qwen2-specific bias terms
             weights.q_biasLayered[layerIndex].asFloatArray(),
             weights.k_biasLayered[layerIndex].asFloatArray(),
             weights.v_biasLayered[layerIndex].asFloatArray(),
             // FFN weights
             weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-            weights.w1Layered[layerIndex].asByteArray(),
-            weights.w2Layered[layerIndex].asByteArray(),
-            weights.w3Layered[layerIndex].asByteArray()
+            weights.w1Layered[layerIndex].deviceArray(),
+            weights.w2Layered[layerIndex].deviceArray(),
+            weights.w3Layered[layerIndex].deviceArray()
         };
         bindLayerWeights(unifiedLayer, weightSourceGraphName(layerIndex), layerIndex, layerWeights);
         if (firstInGraph) {

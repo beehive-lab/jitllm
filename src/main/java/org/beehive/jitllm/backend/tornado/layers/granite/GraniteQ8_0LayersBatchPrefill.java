@@ -191,14 +191,14 @@ public class GraniteQ8_0LayersBatchPrefill implements BatchPrefillTransformerLay
         layer.transferToDevice(
                 DataTransferMode.FIRST_EXECUTION,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqLayered[layerIndex].asByteArray(),
-                weights.wkLayered[layerIndex].asByteArray(),
-                weights.wvLayered[layerIndex].asByteArray(),
-                weights.woLayered[layerIndex].asByteArray(),
+                weights.wqLayered[layerIndex].deviceArray(),
+                weights.wkLayered[layerIndex].deviceArray(),
+                weights.wvLayered[layerIndex].deviceArray(),
+                weights.woLayered[layerIndex].deviceArray(),
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.w1Layered[layerIndex].asByteArray(),
-                weights.w2Layered[layerIndex].asByteArray(),
-                weights.w3Layered[layerIndex].asByteArray());
+                weights.w1Layered[layerIndex].deviceArray(),
+                weights.w2Layered[layerIndex].deviceArray(),
+                weights.w3Layered[layerIndex].deviceArray());
 
         layer.task(
                 "batch_attn_rms",

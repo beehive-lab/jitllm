@@ -213,11 +213,11 @@ public class Phi3Q8_0FFNLayers
         Object[] layerWeights = {
             // Copy-in quantized weights per layer (Q8_0 format: ByteArray)
             weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-            weights.wqkvLayered[layerIndex].asByteArray(),
-            weights.woLayered[layerIndex].asByteArray(),
+            weights.wqkvLayered[layerIndex].deviceArray(),
+            weights.woLayered[layerIndex].deviceArray(),
             weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-            weights.wUpLayered[layerIndex].asByteArray(),
-            weights.wDownLayered[layerIndex].asByteArray()
+            weights.wUpLayered[layerIndex].deviceArray(),
+            weights.wDownLayered[layerIndex].deviceArray()
         };
         bindLayerWeights(unifiedLayer, weightSourceGraphName(layerIndex), layerIndex, layerWeights);
         if (firstInGraph) {
