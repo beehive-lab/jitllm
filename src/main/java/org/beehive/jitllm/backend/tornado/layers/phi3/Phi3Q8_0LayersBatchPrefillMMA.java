@@ -30,11 +30,11 @@ public class Phi3Q8_0LayersBatchPrefillMMA extends LlamaQ8_0LayersBatchPrefillMM
     protected Object[] layerWeights(int layerIndex) {
         return new Object[] {
             weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-            phi3Weights().wqkvLayered[layerIndex].asByteArray(),
-            weights.woLayered[layerIndex].asByteArray(),
+            phi3Weights().wqkvLayered[layerIndex].deviceArray(),
+            weights.woLayered[layerIndex].deviceArray(),
             weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-            phi3Weights().wUpLayered[layerIndex].asByteArray(),
-            phi3Weights().wDownLayered[layerIndex].asByteArray()
+            phi3Weights().wUpLayered[layerIndex].deviceArray(),
+            phi3Weights().wDownLayered[layerIndex].deviceArray()
         };
     }
 

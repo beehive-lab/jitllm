@@ -136,19 +136,19 @@ public class Qwen2MoEQ8_0LayersBatchPrefillMMA extends Qwen2Q8_0LayersBatchPrefi
         Qwen2MoETornadoWeights w = moeWeights();
         return new Object[] {
             w.rms_att_weightLayered[layerIndex].asFloatArray(),
-            w.wqLayered[layerIndex].asByteArray(),
-            w.wkLayered[layerIndex].asByteArray(),
-            w.wvLayered[layerIndex].asByteArray(),
-            w.woLayered[layerIndex].asByteArray(),
+            w.wqLayered[layerIndex].deviceArray(),
+            w.wkLayered[layerIndex].deviceArray(),
+            w.wvLayered[layerIndex].deviceArray(),
+            w.woLayered[layerIndex].deviceArray(),
             w.rms_ffn_weightLayered[layerIndex].asFloatArray(),
             w.routerGateLayered[layerIndex].asFloatArray(),
             w.sharedGateInputLayered[layerIndex].asFloatArray(),
-            w.gateExpertsLayered[layerIndex].asByteArray(),
-            w.upExpertsLayered[layerIndex].asByteArray(),
-            w.downExpertsLayered[layerIndex].asByteArray(),
-            w.sharedGateLayered[layerIndex].asByteArray(),
-            w.sharedUpLayered[layerIndex].asByteArray(),
-            w.sharedDownLayered[layerIndex].asByteArray()
+            w.gateExpertsLayered[layerIndex].deviceArray(),
+            w.upExpertsLayered[layerIndex].deviceArray(),
+            w.downExpertsLayered[layerIndex].deviceArray(),
+            w.sharedGateLayered[layerIndex].deviceArray(),
+            w.sharedUpLayered[layerIndex].deviceArray(),
+            w.sharedDownLayered[layerIndex].deviceArray()
         };
     }
 
