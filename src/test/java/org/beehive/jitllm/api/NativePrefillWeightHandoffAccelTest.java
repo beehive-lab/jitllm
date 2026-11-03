@@ -61,7 +61,7 @@ import org.junit.Test;
 public class NativePrefillWeightHandoffAccelTest {
 
     private static final String GPU_PROPERTY = "use.tornadovm";
-    private static final String NATIVE_PROPERTY = NativePrefillSupport.PROPERTY;
+    private static final String NATIVE_PROPERTY = ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY;
     private static final int BATCH = 128;
 
     /**
@@ -91,12 +91,12 @@ public class NativePrefillWeightHandoffAccelTest {
                                             .fromSystemProperties(),
                                     true,
                                     PROBE_SHAPE),
-                    NativePrefillSupport.nativeProjections());
+                    NativePrefillSupport.nativeProjections(ExecutionPolicy.fromSystemProperties()));
             System.setProperty(NATIVE_PROPERTY, "false");
             assertFalse(
                     "the off-switch did not switch anything off, so both halves of this"
                             + " comparison would run the same path and prove nothing",
-                    NativePrefillSupport.nativeProjections());
+                    NativePrefillSupport.nativeProjections(ExecutionPolicy.fromSystemProperties()));
 
             String jit = generate(model, false);
             String nativePrefill = generate(model, true);

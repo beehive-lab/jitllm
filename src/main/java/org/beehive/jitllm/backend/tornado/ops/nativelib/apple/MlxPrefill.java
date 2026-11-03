@@ -1,10 +1,10 @@
 package org.beehive.jitllm.backend.tornado.ops.nativelib.apple;
 
 import java.util.Optional;
-import java.util.function.BooleanSupplier;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.LibraryProbe;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
@@ -101,7 +101,7 @@ public record MlxPrefill(DataType weights, Projections projections) {
             projections = Projections.FP16;
         } else {
             projections =
-                    FP16Projections.resident(policy, projectionWeights(config))
+                    FP16Projections.resident(policy, config.projectionWeights())
                             ? Projections.FP16_DECODED
                             : Projections.AFFINE;
         }
@@ -132,14 +132,6 @@ public record MlxPrefill(DataType weights, Projections projections) {
     /** Whether MLX's kernel library can be reached from this process at all. */
     public static boolean available() {
         return Probe.MLX;
-    }
-
-    /**
-     * The projection weights of every layer: QKV, output, gate/up and down. What a resident FP16
-     * copy holds, and what the affine repack is a form of.
-     */
-    public static long projectionWeights(Configuration config) {
-        return config.projectionWeights();
     }
 
     // @formatter:off
@@ -189,7 +181,7 @@ public record MlxPrefill(DataType weights, Projections projections) {
             return BatchPrefillWorkspace.fixed(
                     fixed + Short.BYTES * stacked * config.numberOfLayers());
         }
-        long projections = projectionWeights(config);
+        long projections = config.projectionWeights();
         return new BatchPrefillWorkspace(
                 projections,
                 fixed + FP16Projections.residentBytes(projections),
@@ -209,14 +201,6 @@ public record MlxPrefill(DataType weights, Projections projections) {
     /** The library probe, in its own holder so that asking about the backend loads nothing. */
     private static final class Probe {
 
-        private static final boolean MLX = probe(MlxLibraryProvider::isAvailable);
-
-        private static boolean probe(BooleanSupplier available) {
-            try {
-                return available.getAsBoolean();
-            } catch (RuntimeException | LinkageError e) {
-                return false;
-            }
-        }
+        private static final boolean MLX = LibraryProbe.loads(MlxLibraryProvider::isAvailable);
     }
 }

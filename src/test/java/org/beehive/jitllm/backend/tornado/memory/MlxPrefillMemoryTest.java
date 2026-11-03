@@ -107,7 +107,7 @@ public class MlxPrefillMemoryTest {
     @Test
     public void projectionWeightsAreEveryLayersFourProjections() {
         // 28 x (1024 x (2048 + 2 x 1024) + 2048 x 1024 + 3 x 1024 x 3072)
-        assertEquals(440_401_920L, MlxPrefill.projectionWeights(QWEN3_0_6B));
+        assertEquals(440_401_920L, QWEN3_0_6B.projectionWeights());
     }
 
     @Test
@@ -123,7 +123,7 @@ public class MlxPrefillMemoryTest {
         BatchPrefillWorkspace ws =
                 MlxPrefill.workspace(DataType.Q8_0, QWEN3_0_6B, 128, false, false);
         assertTrue(ws.decodesProjections());
-        assertEquals(MlxPrefill.projectionWeights(QWEN3_0_6B), ws.decodedWeights());
+        assertEquals(QWEN3_0_6B.projectionWeights(), ws.decodedWeights());
         assertPredicts("Qwen3-0.6B Q8_0 resident FP16", 860.3, ws.bytes(true));
         assertPredicts("Qwen3-0.6B Q8_0 affine", 492.8, ws.bytes(false));
     }
@@ -154,7 +154,7 @@ public class MlxPrefillMemoryTest {
     /** Mistral-7B-v0.3 Q8_0: per-layer projections and norms, and the two vocabulary tables. */
     private static final WeightFootprint MISTRAL_7B_Q8_0 =
             new WeightFootprint(
-                    MlxPrefill.projectionWeights(MISTRAL_7B) * 34 / 32 + 32L * 2 * 4096 * 4,
+                    MISTRAL_7B.projectionWeights() * 34 / 32 + 32L * 2 * 4096 * 4,
                     32 * 9,
                     2L * 32768 * 4096 * 34 / 32,
                     3);

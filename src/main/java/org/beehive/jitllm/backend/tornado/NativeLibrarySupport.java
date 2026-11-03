@@ -4,6 +4,7 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.LibraryProbe;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
@@ -57,9 +58,9 @@ public final class NativeLibrarySupport {
         boolean metal = BackendId.METAL.equals(combination.backend());
         boolean available =
                 metal
-                        ? loads(MlxPrefill::available)
+                        ? LibraryProbe.loads(MlxPrefill::available)
                         : NativePrefillSupport.cublasLtResolvable()
-                                && loads(NativePrefillSupport::cublasAvailable);
+                                && LibraryProbe.loads(NativePrefillSupport::cublasAvailable);
         if (!available) {
             noteInstall(
                     metal ? "MLX (brew install mlx)" : "cuBLAS 12 and cuDNN 9",
@@ -74,7 +75,7 @@ public final class NativeLibrarySupport {
                 return policy;
             }
         }
-        if (!metal && !loads(NativePrefillSupport::cudnnAvailable)) {
+        if (!metal && !LibraryProbe.loads(NativePrefillSupport::cudnnAvailable)) {
             noteInstall("cuDNN 9", "prefill attention falls back to the JIT kernels");
         }
         return ExecutionPolicy.from(policy).nativeLibraries(true).build();
@@ -97,15 +98,6 @@ public final class NativeLibrarySupport {
                                                         provider, nativeLibraries)
                                                 .contains(c.weights()))
                 .orElse(false);
-    }
-
-    /** Whether a library probe answers yes; a library whose classes cannot be linked does not. */
-    private static boolean loads(java.util.function.BooleanSupplier probe) {
-        try {
-            return probe.getAsBoolean();
-        } catch (RuntimeException | LinkageError e) {
-            return false;
-        }
     }
 
     private static void noteInstall(String libraries, String fallback) {

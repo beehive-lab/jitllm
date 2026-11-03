@@ -77,16 +77,16 @@ public class NativePrefillMemoryPlanAccelTest {
                 "environment absent: " + GoldenFixture.absentMessage(Fixture.QWEN3_0_6B_F16),
                 model != null);
 
-        String previous = System.getProperty(NativePrefillSupport.PROPERTY);
+        String previous = System.getProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY);
         try {
-            System.setProperty(NativePrefillSupport.PROPERTY, "true");
+            System.setProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, "true");
             assumeTrue(
                     "this host does not select the native prefill projections, so there is no"
                             + " native memory plan to check",
-                    NativePrefillSupport.nativeProjections());
+                    NativePrefillSupport.nativeProjections(ExecutionPolicy.fromSystemProperties()));
             MemoryPlan on = predict(model, BATCH);
 
-            System.setProperty(NativePrefillSupport.PROPERTY, "false");
+            System.setProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, "false");
             MemoryPlan off = predict(model, BATCH);
 
             // ── the two components exist exactly where the path does ─────────
@@ -159,12 +159,12 @@ public class NativePrefillMemoryPlanAccelTest {
                 "environment absent: " + GoldenFixture.absentMessage(Fixture.QWEN3_0_6B_F16),
                 model != null);
 
-        String previous = System.getProperty(NativePrefillSupport.PROPERTY);
+        String previous = System.getProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY);
         try {
-            System.setProperty(NativePrefillSupport.PROPERTY, "true");
+            System.setProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, "true");
             assumeTrue(
                     "this host does not select the native prefill projections",
-                    NativePrefillSupport.nativeProjections());
+                    NativePrefillSupport.nativeProjections(ExecutionPolicy.fromSystemProperties()));
 
             MemoryPlan generous = predict(model, BATCH, 64L * 1024 * MIB);
             assertTrue("a 64 GiB budget has to fit", generous.fitsConfiguredBudget());
@@ -205,7 +205,8 @@ public class NativePrefillMemoryPlanAccelTest {
                         .prefillBatchSize(batch)
                         // The plan follows the policy, not the property; the tests toggle the
                         // property, so carry it across.
-                        .nativeLibraries(Boolean.getBoolean(NativePrefillSupport.PROPERTY))
+                        .nativeLibraries(
+                                Boolean.getBoolean(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY))
                         .build();
         return TornadoMemoryModel.predict(
                 weights, loaded.configuration(), policy, TornadoDevices.current(), budgetBytes);
@@ -213,9 +214,9 @@ public class NativePrefillMemoryPlanAccelTest {
 
     private static void restore(String previous) {
         if (previous == null) {
-            System.clearProperty(NativePrefillSupport.PROPERTY);
+            System.clearProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY);
         } else {
-            System.setProperty(NativePrefillSupport.PROPERTY, previous);
+            System.setProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, previous);
         }
     }
 
