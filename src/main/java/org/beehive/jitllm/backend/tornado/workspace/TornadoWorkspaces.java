@@ -76,8 +76,6 @@ public final class TornadoWorkspaces {
     public static void privateKeyValueFP32(TornadoWorkspace workspace, int elements) {
         workspace.wrapKeyCache = new FloatArray(elements);
         workspace.wrapValueCache = new FloatArray(elements);
-        workspace.wrapKeyCache.init(0.f);
-        workspace.wrapValueCache.init(0.f);
     }
 
     /**
@@ -92,16 +90,16 @@ public final class TornadoWorkspaces {
     }
 
     /**
-     * A zeroed float array.
+     * A zeroed float array. A new TornadoVM array is already zeroed, since its memory comes from
+     * {@code Arena.allocate}; writing the zeros again costs a {@code MemorySegment} store per
+     * element, which some native-image builds run through a method handle.
      *
      * <p>Here rather than {@code floats(n).init(0)} at the call site for the reason every allocator
      * in this class is here: naming a TornadoVM type outside the backend is Rule 1, and its
      * allowlist is empty. A family says how large; the backend says what with.
      */
     public static FloatArray zeroedFloats(int size) {
-        FloatArray array = new FloatArray(size);
-        array.init(0.f);
-        return array;
+        return new FloatArray(size);
     }
 
     /**
@@ -120,24 +118,16 @@ public final class TornadoWorkspaces {
         }
     }
 
-    /** Zeroes an already-allocated key/value pair — the families that re-zero after binding. */
-    public static void zeroKeyValue(TornadoWorkspace workspace) {
-        workspace.wrapKeyCache.init(0.f);
-        workspace.wrapValueCache.init(0.f);
-    }
-
     /** Sets the active batch size an MoE plan reads. */
     public static void activeBatchSize(TornadoWorkspace workspace, int size) {
         workspace.activeBatchSizeHolder.init(size);
     }
 
     /**
-     * A zeroed half-precision array. The zero is a {@code HalfFloat}, which is backend vocabulary.
+     * A zeroed half-precision array; already zeroed when new, as {@link #zeroedFloats} explains.
      */
     public static HalfFloatArray zeroedHalfFloats(int size) {
-        HalfFloatArray array = new HalfFloatArray(size);
-        array.init(new uk.ac.manchester.tornado.api.types.HalfFloat(0.f));
-        return array;
+        return new HalfFloatArray(size);
     }
 
     /** The staging activation for an FP16 model. */

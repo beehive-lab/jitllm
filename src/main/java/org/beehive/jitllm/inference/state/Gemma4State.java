@@ -348,9 +348,8 @@ public final class Gemma4State extends State {
             workspace.wrapKeyCacheFP16 = TornadoWorkspaces.zeroedHalfFloats(totalCacheElements);
             workspace.wrapValueCacheFP16 = TornadoWorkspaces.zeroedHalfFloats(totalCacheElements);
         } else {
-            workspace.wrapKeyCache = TornadoWorkspaces.floats(totalCacheElements);
-            workspace.wrapValueCache = TornadoWorkspaces.floats(totalCacheElements);
-            TornadoWorkspaces.zeroKeyValue(workspace);
+            workspace.wrapKeyCache = TornadoWorkspaces.zeroedFloats(totalCacheElements);
+            workspace.wrapValueCache = TornadoWorkspaces.zeroedFloats(totalCacheElements);
         }
         // An activation in Q8 blocks, for the packed-integer projections: four quants per int, one
         // scale and one sum of quants per block of 32. Sized for the widest activation any of them

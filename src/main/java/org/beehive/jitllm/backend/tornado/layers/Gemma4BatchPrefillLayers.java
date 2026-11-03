@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers;
 
+import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -683,12 +684,15 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     private static HalfFloatArray narrowToF16(TornadoTensor t, int elements, String name) {
         HalfFloatArray out = new HalfFloatArray(elements);
         switch (t.dataType()) {
-            case F16 -> {
-                var src = t.asHalfFloatArray();
-                for (int i = 0; i < elements; i++) {
-                    out.set(i, src.get(i));
-                }
-            }
+            case F16 ->
+                    // One bulk copy: an element loop costs a MemorySegment access per weight, which
+                    // some native-image builds run through a method handle.
+                    MemorySegment.copy(
+                            t.asHalfFloatArray().getSegment(),
+                            0,
+                            out.getSegment(),
+                            0,
+                            (long) elements * Short.BYTES);
             case F32 -> {
                 var src = t.asFloatArray();
                 for (int i = 0; i < elements; i++) {
