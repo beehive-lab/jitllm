@@ -200,7 +200,9 @@ public final class TornadoPlanRegistry {
                         ? WeightPrepacking.forPlan(provider, weights, state.executionPolicy())
                         : WeightPrepacking.NONE;
         state.workspace.weightBindings = new WeightBindings();
-        state.workspace.unifiedMemory = UnifiedMemoryWeights.applies(provider);
+        state.workspace.unifiedMemory =
+                UnifiedMemoryWeights.applies(
+                        provider, state.executionPolicy(), quantization, model.configuration());
         state.workspace.prepacker.unifiedMemory = state.workspace.unifiedMemory;
         SingleTokenForwardPlanComponents components =
                 provider.components(quantization, state, model);
