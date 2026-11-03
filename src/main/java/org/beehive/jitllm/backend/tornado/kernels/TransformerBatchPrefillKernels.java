@@ -3056,25 +3056,27 @@ public final class TransformerBatchPrefillKernels {
         int output = (context.groupIdx << 2) + (context.localIdx >> 5);
         int batchIdx = output / d;
         int rowIdx = output - batchIdx * d;
-        if (batchIdx < activeRows) {
-            int inputOff = batchIdx * n + lane;
-            int blocks = n >> 5;
-            int rowOff = rowIdx * blocks * 34;
-            float partial = 0.0f;
-            for (int b = 0; b < blocks; b++) {
-                int blockOff = rowOff + b * 34;
-                float scale = w.getHalfFloat(blockOff).getFloat32();
-                partial += scale * w.get(blockOff + 2 + lane) * inputBatch.get(inputOff + (b << 5));
-            }
-            partial += context.simdShuffleDown(partial, 16);
-            partial += context.simdShuffleDown(partial, 8);
-            partial += context.simdShuffleDown(partial, 4);
-            partial += context.simdShuffleDown(partial, 2);
-            partial += context.simdShuffleDown(partial, 1);
-            if (lane == 0) {
-                int out = batchIdx * d + rowIdx;
-                outputBatch.set(out, accumulate != 0 ? outputBatch.get(out) + partial : partial);
-            }
+        // The shuffles stay outside any branch: TornadoVM 8.0.1 (Metal) computes wrong sums for
+        // shuffles inside one, even one every lane of the SIMD group takes. A row past
+        // activeRows runs no blocks and stores nothing.
+        boolean active = batchIdx < activeRows;
+        int inputOff = batchIdx * n + lane;
+        int blocks = active ? n >> 5 : 0;
+        int rowOff = rowIdx * (n >> 5) * 34;
+        float partial = 0.0f;
+        for (int b = 0; b < blocks; b++) {
+            int blockOff = rowOff + b * 34;
+            float scale = w.getHalfFloat(blockOff).getFloat32();
+            partial += scale * w.get(blockOff + 2 + lane) * inputBatch.get(inputOff + (b << 5));
+        }
+        partial += context.simdShuffleDown(partial, 16);
+        partial += context.simdShuffleDown(partial, 8);
+        partial += context.simdShuffleDown(partial, 4);
+        partial += context.simdShuffleDown(partial, 2);
+        partial += context.simdShuffleDown(partial, 1);
+        if (active && lane == 0) {
+            int out = batchIdx * d + rowIdx;
+            outputBatch.set(out, accumulate != 0 ? outputBatch.get(out) + partial : partial);
         }
     }
 
