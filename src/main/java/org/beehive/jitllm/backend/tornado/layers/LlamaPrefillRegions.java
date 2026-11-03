@@ -12,6 +12,7 @@ import org.beehive.jitllm.program.op.OperandRef;
 import org.beehive.jitllm.program.op.Operation;
 import org.beehive.jitllm.program.op.ResidualAdd;
 import org.beehive.jitllm.program.op.RmsNorm;
+import org.beehive.jitllm.program.op.SwiGLU;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.runtime.tensor.TensorRole;
 
@@ -217,6 +218,48 @@ public final class LlamaPrefillRegions {
                             new Region(i, "residual", tokens, residual)));
         }
         return layers;
+    }
+
+    /**
+     * One layer's operations before and after attention, with SwiGLU among them: the shape MLX and
+     * the Metal JIT kernels merge into a few steps (RMS norm + q|k|v; the output projection with
+     * its residual add; the feed-forward block).
+     */
+    public record Whole(Region beforeAttention, Region afterAttention) {}
+
+    /** Every layer's operations as {@link Whole} layers; the arguments as {@link #of}. */
+    public static List<Whole> whole(
+            Configuration config,
+            int tokens,
+            int rows,
+            boolean fused,
+            BiFunction<TensorRole, Integer, DataType> type) {
+        List<Whole> layers = new ArrayList<>(config.numberOfLayers());
+        for (Layer layer : of(config, tokens, rows, fused, true, type)) {
+            List<Operation> after = new ArrayList<>(layer.attentionOutput().ops());
+            after.addAll(layer.feedForwardInput().ops());
+            after.add(
+                    fused
+                            ? new SwiGLU(a("gateUp"), a("gateUp"), a("hidden"), DataType.F32)
+                            : new SwiGLU(a("gate"), a("up"), a("hidden"), DataType.F32));
+            after.addAll(layer.down().ops());
+            after.addAll(layer.residual().ops());
+            Region before = layer.beforeAttention();
+            layers.add(
+                    new Whole(
+                            before, new Region(before.layer(), "after attention", tokens, after)));
+        }
+        return layers;
+    }
+
+    /** All regions of {@code layers}, in the order the layer graphs run them. */
+    public static List<Region> allWhole(List<Whole> layers) {
+        List<Region> regions = new ArrayList<>(2 * layers.size());
+        for (Whole layer : layers) {
+            regions.add(layer.beforeAttention());
+            regions.add(layer.afterAttention());
+        }
+        return regions;
     }
 
     /** All regions of {@code layers}, in the order the layer graphs run them. */
