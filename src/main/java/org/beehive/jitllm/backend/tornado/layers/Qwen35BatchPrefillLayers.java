@@ -531,7 +531,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 k);
     }
 
-    /** The pair's GEMM over the shared scratch, with the chosen epilogue. */
+    /**
+     * The pair's GEMM over the shared scratch, with the chosen epilogue, on the two-stage {@code
+     * cp.async} main loop ({@code gemmMMATiledBStaged}).
+     */
     private void pairGemm(
             TaskGraph graph,
             String task,
@@ -542,25 +545,44 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             int n,
             int k,
             Epilogue epilogue) {
+        HalfFloatArray b = state.workspace.wrapDequantScratchFP16;
+        boolean staged = k % 32 == 0;
         switch (epilogue) {
-            case STORE ->
+            case STORE -> {
+                if (staged) {
+                    graph.task(
+                            task,
+                            Qwen35MMAKernels::gemmMMATiledBStaged,
+                            context,
+                            aFP16,
+                            b,
+                            out,
+                            batchSize,
+                            n,
+                            k,
+                            1);
+                } else {
                     graph.task(
                             task,
                             Qwen35MMAKernels::gemmMMATiledB,
                             context,
                             aFP16,
-                            state.workspace.wrapDequantScratchFP16,
+                            b,
                             out,
                             batchSize,
                             n,
                             k);
+                }
+            }
             case RESIDUAL ->
                     graph.task(
                             task,
-                            Qwen35MMAKernels::gemmMMATiledBResidual,
+                            staged
+                                    ? Qwen35MMAKernels::gemmMMATiledBStagedResidual
+                                    : Qwen35MMAKernels::gemmMMATiledBResidual,
                             context,
                             aFP16,
-                            state.workspace.wrapDequantScratchFP16,
+                            b,
                             out,
                             batchSize,
                             n,
@@ -568,10 +590,12 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             case SWIGLU ->
                     graph.task(
                             task,
-                            Qwen35MMAKernels::gemmMMATiledBSwiGLU,
+                            staged
+                                    ? Qwen35MMAKernels::gemmMMATiledBStagedSwiGLU
+                                    : Qwen35MMAKernels::gemmMMATiledBSwiGLU,
                             context,
                             aFP16,
-                            state.workspace.wrapDequantScratchFP16,
+                            b,
                             gate,
                             hb16,
                             batchSize,
