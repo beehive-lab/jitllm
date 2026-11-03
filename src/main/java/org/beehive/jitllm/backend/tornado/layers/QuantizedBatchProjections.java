@@ -131,10 +131,20 @@ public final class QuantizedBatchProjections {
                     simdgroup || tiledQ8 ? batchSize : matVecLocal);
         } else if (type == DataType.F16) {
             if (!simdgroup) {
-                throw new IllegalStateException(
-                        "no tiled batched projection for an F16 weight beside quantized ones, for"
-                                + " task "
-                                + name);
+                // The tiled FP16 GEMMs: 64 x 64 tiles, 256 threads, as the Q8_0 ones.
+                layer.task(
+                        name,
+                        residual
+                                ? TransformerBatchPrefillKernels::batchedGemmFP16WithResidual
+                                : TransformerBatchPrefillKernels::batchedGemmFP16,
+                        context,
+                        x,
+                        out,
+                        w.asHalfFloatArray(),
+                        n,
+                        d,
+                        batchSize);
+                return;
             }
             layer.task(
                     name,
@@ -478,6 +488,9 @@ public final class QuantizedBatchProjections {
                     TransformerBatchPrefillSimdgroupKernels.threads(halfTiles(type, rows, 64));
             return WorkerGridFactory.genericWorker(
                     ((rows + 63) / 64) * batchTiles * threads, threads);
+        }
+        if (type == DataType.F16) {
+            return WorkerGridFactory.genericWorker(((rows + 63) / 64) * batchTiles * 256, 256);
         }
         int rowTile =
                 switch (type) {

@@ -3453,6 +3453,143 @@ public final class TransformerBatchPrefillKernels {
         }
     }
 
+    /**
+     * {@code out[b, r] = sum_k x[b, k] * w[r, k]}: {@link #batchedGemmFP16WithResidual} storing its
+     * sums instead of adding them. Same tiles and grid. Example: Qwen3.5's F16 ssm_qkv projection
+     * off Metal.
+     */
+    public static void batchedGemmFP16(
+            KernelContext context,
+            FloatArray inputBatch,
+            FloatArray outputBatch,
+            HalfFloatArray w,
+            int n,
+            int d,
+            int batch) {
+        float[] ws = context.allocateFloatLocalArray(64 * 33);
+        float[] xs = context.allocateFloatLocalArray(64 * 33);
+        int tid = context.localIdx;
+        int tx = tid & 15;
+        int ty = tid >> 4;
+        int rowTiles = (d + 63) >> 6;
+        int g = context.groupIdx;
+        int r0 = (g % rowTiles) << 6;
+        int b0 = (g / rowTiles) << 6;
+        float a00 = 0.0f;
+        float a01 = 0.0f;
+        float a02 = 0.0f;
+        float a03 = 0.0f;
+        float a10 = 0.0f;
+        float a11 = 0.0f;
+        float a12 = 0.0f;
+        float a13 = 0.0f;
+        float a20 = 0.0f;
+        float a21 = 0.0f;
+        float a22 = 0.0f;
+        float a23 = 0.0f;
+        float a30 = 0.0f;
+        float a31 = 0.0f;
+        float a32 = 0.0f;
+        float a33 = 0.0f;
+        for (int k0 = 0; k0 < n; k0 += 32) {
+            for (int e = tid; e < 2048; e += 256) {
+                int rr = e >> 5;
+                int kk = e & 31;
+                int k = k0 + kk;
+                float wv = 0.0f;
+                if (r0 + rr < d && k < n) {
+                    wv = w.get((r0 + rr) * n + k).getFloat32();
+                }
+                ws[rr * 33 + kk] = wv;
+                float xv = 0.0f;
+                if (b0 + rr < batch && k < n) {
+                    xv = inputBatch.get((b0 + rr) * n + k);
+                }
+                xs[rr * 33 + kk] = xv;
+            }
+            context.localBarrier();
+            int wr = (ty << 2) * 33;
+            int xr = (tx << 2) * 33;
+            for (int kk = 0; kk < 32; kk++) {
+                float w0 = ws[wr + 0 + kk];
+                float w1 = ws[wr + 33 + kk];
+                float w2 = ws[wr + 66 + kk];
+                float w3 = ws[wr + 99 + kk];
+                float x0 = xs[xr + 0 + kk];
+                float x1 = xs[xr + 33 + kk];
+                float x2 = xs[xr + 66 + kk];
+                float x3 = xs[xr + 99 + kk];
+                a00 += w0 * x0;
+                a01 += w0 * x1;
+                a02 += w0 * x2;
+                a03 += w0 * x3;
+                a10 += w1 * x0;
+                a11 += w1 * x1;
+                a12 += w1 * x2;
+                a13 += w1 * x3;
+                a20 += w2 * x0;
+                a21 += w2 * x1;
+                a22 += w2 * x2;
+                a23 += w2 * x3;
+                a30 += w3 * x0;
+                a31 += w3 * x1;
+                a32 += w3 * x2;
+                a33 += w3 * x3;
+            }
+            context.localBarrier();
+        }
+        int r = r0 + (ty << 2);
+        int b = b0 + (tx << 2);
+        if (r + 0 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 0, a00);
+        }
+        if (r + 0 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 0, a01);
+        }
+        if (r + 0 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 0, a02);
+        }
+        if (r + 0 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 0, a03);
+        }
+        if (r + 1 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 1, a10);
+        }
+        if (r + 1 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 1, a11);
+        }
+        if (r + 1 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 1, a12);
+        }
+        if (r + 1 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 1, a13);
+        }
+        if (r + 2 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 2, a20);
+        }
+        if (r + 2 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 2, a21);
+        }
+        if (r + 2 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 2, a22);
+        }
+        if (r + 2 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 2, a23);
+        }
+        if (r + 3 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 3, a30);
+        }
+        if (r + 3 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 3, a31);
+        }
+        if (r + 3 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 3, a32);
+        }
+        if (r + 3 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 3, a33);
+        }
+    }
+
     // @formatter:off
     /**
      * {@link #batchedFusedRmsNormFFNGateUp} as a tiled matrix multiplication: the RMS scaling is
