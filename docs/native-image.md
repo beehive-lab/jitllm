@@ -31,6 +31,19 @@ application, for one) picks it up:
 | `…/jitllm/reachability-metadata.json` | jitllm's class files as resources: TornadoVM compiles kernels from their bytecode |
 | `…/jitllm/tornadovm/reachability-metadata.json` | what TornadoVM 8 and the JDK need (reflection, resources, FFM downcalls). TornadoVM ships no metadata yet; regenerate with `scripts/native-image.sh trace` after a TornadoVM upgrade |
 
+The image is built without the Vector API: GraalVM rejects `-H:+VectorAPISupport` together with shared
+arena support ("Support for Arena.ofShared is not available with Vector API support"), and TornadoVM
+opens shared arenas (`CUDAContext`, `OCLContext`, `CuBlasLtNativeLib`). Only jitllm's CPU path uses the
+Vector API; the GPU path is unaffected.
+
+Profile-guided optimization (Oracle GraalVM) builds only with sampling: `--pgo-instrument` fails in
+the shared-arena phase (`After inserting all session checks call Unsafe.convEndian was not inlined and
+could access a session`, at a different `MemorySegment` access in each build, TornadoVM's included).
+`--pgo-sampling` works: add it to the `native-image` command, run the image on each model you serve
+with `-XX:ProfilesDumpFile=<model>.iprof`, then rebuild with `--pgo=<the .iprof files, comma-separated>`.
+On the 19 models below it gains nothing over the plain Oracle image (startup +3%, prefill +2%, decode
++1.5%, all within run-to-run noise), so it is not part of the default build.
+
 ## AOT cache (JDK 25+)
 
 ```bash
@@ -40,9 +53,16 @@ scripts/aot-cache.sh run   target/qwen3.aot -m Qwen3-0.6B-f16.gguf -p "Write a h
 
 Train with the workload you run; training and production need the same JDK, jar and JVM options
 (`JVM_OPTS` adds options to both). On JDK 25 the cache holds loaded and linked classes and method
-profiles but no compiled code, so TornadoVM's kernel compilation still starts cold. The JDK also
-disables the cache's full module graph for jitllm ("archivedBootLayer not available"); the cause is
-still open.
+profiles but no compiled code, so TornadoVM's kernel compilation still starts cold.
+
+The cache does not store the resolved module graph for jitllm (the JVM logs "archivedBootLayer not
+available, disabling full module graph"). JDK 25 archives the boot layer only when it contains no
+incubator module, and jitllm's contains `jdk.incubator.vector` twice over: jitllm adds it for its CPU
+Vector API code, and the TornadoVM SDK keeps `tornado-unittests.jar` in `share/java/tornado`, which
+provides a `TornadoLibraryProvider` service that `tornado.runtime` uses, so service binding pulls
+`tornado.unittests` (which requires `jdk.incubator.vector`) into the boot layer. Without both, the
+graph is stored and saves about 50 ms per start (the same module set on a trivial main: 20 ms against
+68 ms); against jitllm's 2-3 s startup that is about 2%.
 
 ## Measured (RTX 5080 Laptop, 2026-11-03)
 
