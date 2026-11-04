@@ -32,10 +32,10 @@ import org.junit.Test;
  * allocations, MLX on ({@code --with-native-libraries}) against the JIT kernels:
  *
  * <pre>
- *   weights  representation       JIT        MLX     delta   of which in the decode family
- *   F16      joined QKV/gate-up   1591.2   2171.2   +580.0   560.1 (wq wk wv w1 w3, 28 layers)
- *   Q8_0     resident FP16        1057.8   1918.1   +860.3   446.4 (every projection)
- *   Q8_0     affine               1057.8   1550.6   +492.8   446.4 (every projection)
+ *   weights  representation           JIT        MLX     delta   of which in the decode family
+ *   F16      contiguous QKV/gate-up   1591.2   2171.2   +580.0   560.1 (wq wk wv w1 w3, 28 layers)
+ *   Q8_0     resident FP16            1057.8   1918.1   +860.3   446.4 (every projection)
+ *   Q8_0     affine                   1057.8   1550.6   +492.8   446.4 (every projection)
  * </pre>
  *
  * <p>The decode family's growth is the model weights the prefill graphs stopped binding, and it is
@@ -123,7 +123,7 @@ public class MlxPrefillMemoryTest {
         BatchPrefillWorkspace ws =
                 MlxPrefill.workspace(DataType.Q8_0, QWEN3_0_6B, 128, false, false);
         assertTrue(ws.hasResidencyChoice());
-        assertEquals(QWEN3_0_6B.projectionWeights(), ws.residentCopiesSize());
+        assertEquals(QWEN3_0_6B.projectionWeights(), ws.residentContiguousSize());
         assertPredicts("Qwen3-0.6B Q8_0 resident FP16", 860.3, ws.bytes(true));
         assertPredicts("Qwen3-0.6B Q8_0 affine", 492.8, ws.bytes(false));
     }
@@ -141,7 +141,7 @@ public class MlxPrefillMemoryTest {
         long fused =
                 MlxPrefill.workspace(DataType.F16, QWEN3_0_6B, 128, true, true).residentBytes();
         assertEquals(
-                "the joined copies, 560 MiB, are all the difference",
+                "the contiguous copies, 560 MiB, are all the difference",
                 560.0,
                 mib(split - fused),
                 0.01);

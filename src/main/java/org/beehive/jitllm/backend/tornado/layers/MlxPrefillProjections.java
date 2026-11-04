@@ -32,13 +32,13 @@ import uk.ac.manchester.tornado.mlx.Mlx;
  * wrapVBatch}, attends into {@code wrapXbBatch} and adds the output and down projections back into
  * {@code wrapXBatch}.
  *
- * <p>Q, K and V, and gate and up, are joined so each pair or triple is one GEMM. Which form of the
- * weights the GEMMs read is {@link MlxPrefill#projections()}: F16 weights through {@link
- * Mlx#matmulTransposed}; Q8_0 and Q4_0 weights either decoded once into FP16 copies, or repacked
- * once, on the host, into MLX's affine format with groups of 32 for {@link Mlx#quantizedMatmul}.
- * The repack is exact: Q8_0's {@code s * q} is {@code s * (q + 128) - 128 * s}, and Q4_0's {@code s
- * * (q - 8)} is {@code s * q - 8 * s}, with the bias {@code -128 * s} or {@code -8 * s} exact in
- * FP16.
+ * <p>Q, K and V, and gate and up, are made contiguous so each pair or triple is one GEMM. Which
+ * form of the weights the GEMMs read is {@link MlxPrefill#projections()}: F16 weights through
+ * {@link Mlx#matmulTransposed}; Q8_0 and Q4_0 weights either decoded once into FP16 copies, or
+ * repacked once, on the host, into MLX's affine format with groups of 32 for {@link
+ * Mlx#quantizedMatmul}. The repack is exact: Q8_0's {@code s * q} is {@code s * (q + 128) - 128 *
+ * s}, and Q4_0's {@code s * (q - 8)} is {@code s * q - 8 * s}, with the bias {@code -128 * s} or
+ * {@code -8 * s} exact in FP16.
  *
  * <p>Built from an {@link MlxPrefill} the caller resolved, and only from it: a tensor that does not
  * match it — another type, or a prepacked weight — is refused, never handed back to the JIT
@@ -95,8 +95,9 @@ public final class MlxPrefillProjections {
     private final FloatArray downRowScale; // B
 
     /**
-     * One layer's projection weights: Q, K and V (one fused tensor, or three joined in that order),
-     * the output projection, gate and up (fused, or joined in that order) and the down projection.
+     * One layer's projection weights: Q, K and V (one fused tensor, or three made contiguous in
+     * that order), the output projection, gate and up (fused, or made contiguous in that order) and
+     * the down projection.
      */
     public record LayerWeights(
             TornadoTensor[] qkv, TornadoTensor wo, TornadoTensor[] gateUp, TornadoTensor w2) {
@@ -130,9 +131,9 @@ public final class MlxPrefillProjections {
      * <ul>
      *   <li>Q8_0 and Q4_0: every projection, since the GEMMs read the FP16 copies or the affine
      *       repack;
-     *   <li>F16: the tensors joined into one copy — split Q/K/V and gate/up. A fused tensor and the
-     *       output and down projections are multiplied as they are, so the prefill graph binds
-     *       them.
+     *   <li>F16: the tensors copied into one contiguous buffer — split Q/K/V and gate/up. A fused
+     *       tensor and the output and down projections are multiplied as they are, so the prefill
+     *       graph binds them.
      * </ul>
      */
     // @formatter:on
@@ -342,7 +343,7 @@ public final class MlxPrefillProjections {
         this.downRowScale = new FloatArray(batchSize);
     }
 
-    /** The tensors, rows joined in order, as one matrix in {@code form}. */
+    /** The tensors, rows contiguous in order, as one matrix in {@code form}. */
     static Matrix matrix(MlxPrefill.Projections form, TornadoTensor... tensors) {
         return switch (form) {
             case FP16 -> {
@@ -363,9 +364,9 @@ public final class MlxPrefillProjections {
     }
 
     /**
-     * Q8_0 or Q4_0 tensors, rows joined in order, repacked into MLX's affine format: {@code bits}
-     * -bit unsigned values packed little-end first into 32-bit words, and per group of 32 an FP16
-     * scale and bias with {@code w = scale * q + bias}.
+     * Q8_0 or Q4_0 tensors, rows contiguous in order, repacked into MLX's affine format: {@code
+     * bits} -bit unsigned values packed little-end first into 32-bit words, and per group of 32 an
+     * FP16 scale and bias with {@code w = scale * q + bias}.
      */
     static Matrix affine(TornadoTensor... tensors) {
         boolean q8 = tensors[0].dataType() == DataType.Q8_0;
@@ -414,7 +415,7 @@ public final class MlxPrefillProjections {
         return new Matrix(null, q, scales, biases, bits);
     }
 
-    /** Q8_0 or Q4_0 tensors, rows joined in order, decoded to FP16. */
+    /** Q8_0 or Q4_0 tensors, rows contiguous in order, decoded to FP16. */
     static HalfFloatArray decode(TornadoTensor... tensors) {
         boolean q8 = tensors[0].dataType() == DataType.Q8_0;
         int blockBytes = q8 ? 34 : 18;
@@ -473,7 +474,7 @@ public final class MlxPrefillProjections {
 
     /**
      * The attention input: RMS apply (after the family's {@code batch_attn_rms}) into FP16, the
-     * joined QKV GEMM, and its split into {@code wrapQBatch}, {@code wrapKBatch}, {@code
+     * GEMM over contiguous QKV, and its split into {@code wrapQBatch}, {@code wrapKBatch}, {@code
      * wrapVBatch}.
      */
     public void qkv(TaskGraph layer, int layerIndex) {
@@ -539,9 +540,9 @@ public final class MlxPrefillProjections {
 
     /**
      * The feed-forward block after the family's {@code batch_ffn_rms}: RMS apply into FP16, the
-     * joined gate/up GEMM, SwiGLU, and the down GEMM added into {@code wrapXBatch}. A row whose
-     * SwiGLU output would overflow FP16 in the down GEMM is scaled into range first, and the scale
-     * is undone in the FP32 residual add.
+     * GEMM over contiguous gate/up, SwiGLU, and the down GEMM added into {@code wrapXBatch}. A row
+     * whose SwiGLU output would overflow FP16 in the down GEMM is scaled into range first, and the
+     * scale is undone in the FP32 residual add.
      */
     public void ffn(TaskGraph layer, int layerIndex) {
         layer.task(

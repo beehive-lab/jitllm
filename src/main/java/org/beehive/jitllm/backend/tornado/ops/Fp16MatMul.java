@@ -21,11 +21,11 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  * The batched prefill on a tensor-core GPU over F16 weights, which need no decode. The JIT GEMMs
  * read them where they are: q, k and v in one launch ({@code gemmMMAQKV}), gate and up likewise
  * ({@code gemmMMAGateUp}), every other projection through {@link SplitKGemm}. cuBLAS multiplies one
- * matrix per call, so under it q|k|v and gate|up are copied side by side first ({@link
- * FP16Projections}), and the rest go to cuBLAS as they are. The subclass picks the GEMM.
+ * matrix per call, so under it q|k|v and gate|up are first copied into one contiguous buffer each
+ * ({@link FP16Projections}), and the rest go to cuBLAS as they are. The subclass picks the GEMM.
  *
  * <p>Example: Llama-3.2-1B F16 on the JIT GEMMs uploads its weights once and copies none; on cuBLAS
- * it keeps a joined copy of q|k|v and of gate|up.
+ * it keeps a contiguous copy of q|k|v and of gate|up.
  */
 public abstract class Fp16MatMul implements Implementation {
 
@@ -67,18 +67,18 @@ public abstract class Fp16MatMul implements Implementation {
                         + FP16Projections.residentBytes(s.weights)
                         + FP16Projections.workspaceBytes(
                                 true,
-                                s.nativeLibScratchBufferSize,
+                                s.nativeLibScratchContiguousSize,
                                 s.rows,
                                 s.widestSplit,
-                                s.nativeLibProjectionCalls,
+                                s.nativeLibContiguousProjectionCalls,
                                 true),
                 splitKBytes
                         + FP16Projections.workspaceBytes(
                                 false,
-                                s.nativeLibScratchBufferSize,
+                                s.nativeLibScratchContiguousSize,
                                 s.rows,
                                 s.widestSplit,
-                                s.nativeLibProjectionCalls,
+                                s.nativeLibContiguousProjectionCalls,
                                 true));
     }
 
@@ -87,42 +87,45 @@ public abstract class Fp16MatMul implements Implementation {
             List<Step> steps, Target target, KernelContext context, WeightPrepacking prepacking) {
         Sizes s = Sizes.of(steps);
         SplitKGemm splitK = new SplitKGemm(context, s.rows, s.widestSplit, nativeGemm());
-        FP16Projections nativeLibProjections =
+        FP16Projections nativeLibContiguousProjections =
                 nativeGemm()
                         ? new FP16Projections(
                                 context,
                                 prepacking,
-                                s.nativeLibScratchBufferSize,
+                                s.nativeLibScratchContiguousSize,
                                 s.rows,
                                 s.widestSplit,
                                 FP16Projections.resident(target.policy(), s.weights),
-                                s.nativeLibProjectionCalls,
+                                s.nativeLibContiguousProjectionCalls,
                                 true)
                         : null;
-        return new Tasks(context, splitK, nativeLibProjections);
+        return new Tasks(context, splitK, nativeLibContiguousProjections);
     }
 
-    /** The projections: in place on the JIT GEMMs, q|k|v and gate|up joined for cuBLAS. */
+    /** The projections: in place on the JIT GEMMs, q|k|v and gate|up contiguous for cuBLAS. */
     private static final class Tasks extends TensorCoreSteps {
 
         private final SplitKGemm splitK;
-        private final FP16Projections nativeLibProjections;
+        private final FP16Projections nativeLibContiguousProjections;
 
-        Tasks(KernelContext context, SplitKGemm splitK, FP16Projections nativeLibProjections) {
+        Tasks(
+                KernelContext context,
+                SplitKGemm splitK,
+                FP16Projections nativeLibContiguousProjections) {
             super(context);
             this.splitK = splitK;
-            this.nativeLibProjections = nativeLibProjections;
+            this.nativeLibContiguousProjections = nativeLibContiguousProjections;
         }
 
         @Override
         public Object[] buffers() {
-            if (nativeLibProjections == null) {
+            if (nativeLibContiguousProjections == null) {
                 return new Object[] {splitK.partial()};
             }
-            Object[] copies = nativeLibProjections.buffers();
-            Object[] all = new Object[copies.length + 1];
+            Object[] projectionBuffers = nativeLibContiguousProjections.buffers();
+            Object[] all = new Object[projectionBuffers.length + 1];
             all[0] = splitK.partial();
-            System.arraycopy(copies, 0, all, 1, copies.length);
+            System.arraycopy(projectionBuffers, 0, all, 1, projectionBuffers.length);
             return all;
         }
 
@@ -148,8 +151,8 @@ public abstract class Fp16MatMul implements Implementation {
                         first.batchSize(),
                         first.rows(),
                         first.columns());
-            } else if (nativeLibProjections != null) {
-                nativeLibProjections.project(
+            } else if (nativeLibContiguousProjections != null) {
+                nativeLibContiguousProjections.project(
                         graph, task, a, c, first.batchSize(), first.columns(), w);
             } else if (matMuls.size() == 3) {
                 graph.task(
@@ -184,8 +187,8 @@ public abstract class Fp16MatMul implements Implementation {
         @Override
         protected void addProjectionGrids(GridScheduler scheduler) {
             splitK.addGrids(scheduler);
-            if (nativeLibProjections != null) {
-                nativeLibProjections.addGrids(scheduler);
+            if (nativeLibContiguousProjections != null) {
+                nativeLibContiguousProjections.addGrids(scheduler);
             }
         }
     }
@@ -193,21 +196,21 @@ public abstract class Fp16MatMul implements Implementation {
     /**
      * The sizes the GEMMs need: every projection's weights, the rows, the widest output a
      * one-matrix GEMM writes (sizing the split GEMM's partial products), and of the q|k|v and
-     * gate|up projections, which cuBLAS reads joined, the largest and how many there are.
+     * gate|up projections, which cuBLAS reads contiguous, the largest and how many there are.
      */
     private record Sizes(
             long weights,
             int rows,
             int widestSplit,
-            long nativeLibScratchBufferSize,
-            int nativeLibProjectionCalls) {
+            long nativeLibScratchContiguousSize,
+            int nativeLibContiguousProjectionCalls) {
 
         static Sizes of(List<Step> steps) {
             long weights = 0;
             int rows = 0;
             int widestSplit = 0;
-            long nativeLibScratchBufferSize = 0;
-            int nativeLibProjectionCalls = 0;
+            long nativeLibScratchContiguousSize = 0;
+            int nativeLibContiguousProjectionCalls = 0;
             for (Step step : steps) {
                 List<MatMul> matMuls = step.matMuls();
                 if (matMuls.isEmpty()) {
@@ -215,10 +218,10 @@ public abstract class Fp16MatMul implements Implementation {
                 }
                 weights += step.weights();
                 rows = matMuls.get(0).batchSize();
-                if (TensorCoreSteps.startsNativeLibCopy(matMuls.get(0))) {
-                    nativeLibScratchBufferSize =
-                            Math.max(nativeLibScratchBufferSize, step.weights());
-                    nativeLibProjectionCalls++;
+                if (TensorCoreSteps.startsNativeLibContiguousProjection(matMuls.get(0))) {
+                    nativeLibScratchContiguousSize =
+                            Math.max(nativeLibScratchContiguousSize, step.weights());
+                    nativeLibContiguousProjectionCalls++;
                 } else {
                     widestSplit = Math.max(widestSplit, step.outputWidth());
                 }
@@ -227,8 +230,8 @@ public abstract class Fp16MatMul implements Implementation {
                     weights,
                     rows,
                     widestSplit,
-                    nativeLibScratchBufferSize,
-                    nativeLibProjectionCalls);
+                    nativeLibScratchContiguousSize,
+                    nativeLibContiguousProjectionCalls);
         }
     }
 }

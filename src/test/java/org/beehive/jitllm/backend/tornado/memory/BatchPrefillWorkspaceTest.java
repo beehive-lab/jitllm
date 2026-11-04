@@ -101,7 +101,7 @@ public class BatchPrefillWorkspaceTest {
     @Test
     public void theLayerClassSizesBothRepresentations() {
         BatchPrefillWorkspace workspace = llamaQ8(batched(DecodedProjections.BACKEND));
-        assertEquals(LLAMA_1B_PROJECTIONS, workspace.residentCopiesSize());
+        assertEquals(LLAMA_1B_PROJECTIONS, workspace.residentContiguousSize());
         // Resident: every projection decoded; per chunk: one scratch the widest call wide (the
         // fused gate/up, 2 x 8192 x 2048). Both carry the same split-K partials and flags.
         long widest = 2L * 8192 * 2048;

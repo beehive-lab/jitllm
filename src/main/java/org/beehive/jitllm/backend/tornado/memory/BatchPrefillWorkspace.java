@@ -9,16 +9,16 @@ package org.beehive.jitllm.backend.tornado.memory;
  * <p>Sized by the layer class that allocates it, from the same arithmetic its constructor uses, so
  * the prediction and the plan cannot drift apart.
  *
- * @param residentCopiesSize how many weights a resident copy would hold, 0 for a family with no
- *     choice between kept and refilled copies
+ * @param residentContiguousSize how many weights the resident contiguous copies would hold, 0 for a
+ *     family with no choice between kept and refilled copies
  * @param residentBytes the total with every projection kept decoded
  * @param perChunkBytes the total with one per-chunk scratch instead
  */
 public record BatchPrefillWorkspace(
-        long residentCopiesSize, long residentBytes, long perChunkBytes) {
+        long residentContiguousSize, long residentBytes, long perChunkBytes) {
 
     public BatchPrefillWorkspace {
-        if (residentCopiesSize < 0 || residentBytes < 0 || perChunkBytes < 0) {
+        if (residentContiguousSize < 0 || residentBytes < 0 || perChunkBytes < 0) {
             throw new IllegalArgumentException("workspace sizes cannot be negative");
         }
     }
@@ -31,7 +31,7 @@ public record BatchPrefillWorkspace(
     /** The sum of this workspace and {@code other}. */
     public BatchPrefillWorkspace plus(BatchPrefillWorkspace other) {
         return new BatchPrefillWorkspace(
-                residentCopiesSize + other.residentCopiesSize,
+                residentContiguousSize + other.residentContiguousSize,
                 residentBytes + other.residentBytes,
                 perChunkBytes + other.perChunkBytes);
     }
@@ -43,7 +43,7 @@ public record BatchPrefillWorkspace(
 
     /** Whether the family can either keep its projection copies or refill them per chunk. */
     public boolean hasResidencyChoice() {
-        return residentCopiesSize > 0;
+        return residentContiguousSize > 0;
     }
 
     /** The bytes for the given residency. */

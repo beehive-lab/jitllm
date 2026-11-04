@@ -98,7 +98,7 @@ abstract class TensorCoreSteps implements Instance {
     }
 
     /** Whether {@code projection} is q (of q|k|v) or gate (of gate|up), split or fused. */
-    static boolean startsNativeLibCopy(MatMul projection) {
+    static boolean startsNativeLibContiguousProjection(MatMul projection) {
         return switch (projection.weight().role()) {
             case ATTENTION_QUERY, ATTENTION_QKV, FFN_GATE, FFN_GATE_UP -> true;
             default -> false;

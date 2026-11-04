@@ -295,7 +295,7 @@ Metal have no CUDA graphs, so the setting does not apply there. The chunk size c
 | `--no-batch-prefill` | Read the prompt one token at a time |
 | `--no-cuda-graphs` | Launch kernels directly instead of replaying CUDA graphs (CUDA only) |
 | `--with-native-libraries` | Require cuBLAS/cuDNN or MLX, and refuse a configuration without a native path |
-| `--no-native-libraries` | Keep jitllm's kernels; saves the device memory of the FP16 weight copies the native path joins |
+| `--no-native-libraries` | Keep jitllm's kernels; saves the device memory of the contiguous FP16 weight copies the native path makes |
 
 Batched Q8_0 projections accumulate through FP16 tensor-core GEMMs rather than the FP32
 single-token path, so their logits differ slightly from single-token prefill; use

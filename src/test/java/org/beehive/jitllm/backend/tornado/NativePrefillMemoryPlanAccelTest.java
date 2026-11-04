@@ -65,8 +65,10 @@ public class NativePrefillMemoryPlanAccelTest {
     private static final int CONTEXT = 600;
     private static final int BATCH = 128;
 
-    /** Joined {@code [q|k|v]} and {@code [gate|up]} for 28 layers, from the trace above. */
-    private static final long MEASURED_COPIES_MIB = 560;
+    /**
+     * Contiguous {@code [q|k|v]} and {@code [gate|up]} copies for 28 layers, from the trace above.
+     */
+    private static final long MEASURED_CONTIGUOUS_MIB = 560;
 
     /** Four half-precision {@code [head][token][headDim]} tensors at width 128. */
     private static final long MEASURED_STAGING_MIB = 2;
@@ -122,15 +124,15 @@ public class NativePrefillMemoryPlanAccelTest {
                     component(off, STAGING).isPresent());
 
             // ── and they are the size the trace measured ─────────────────────
-            long copiesMib =
+            long contiguousMib =
                     (component(on, RESIDENT).orElseThrow().logicalBytes()
                                     - component(off, JIT).orElseThrow().logicalBytes())
                             / MIB;
             long stagingMib = component(on, STAGING).orElseThrow().logicalBytes() / MIB;
             assertEquals(
                     "projection copies, against the measured allocation",
-                    MEASURED_COPIES_MIB,
-                    copiesMib);
+                    MEASURED_CONTIGUOUS_MIB,
+                    contiguousMib);
             assertEquals(
                     "fused attention staging, against the measured allocation",
                     MEASURED_STAGING_MIB,
@@ -140,7 +142,7 @@ public class NativePrefillMemoryPlanAccelTest {
             assertEquals(
                     "native on and off must differ by exactly what the native path adds, and by"
                             + " nothing the fallback family contributes",
-                    MEASURED_COPIES_MIB + MEASURED_STAGING_MIB,
+                    MEASURED_CONTIGUOUS_MIB + MEASURED_STAGING_MIB,
                     deltaMib);
             assertNotEquals(
                     "the two configurations predicted the same budget, so the plan cannot be"
@@ -206,7 +208,7 @@ public class NativePrefillMemoryPlanAccelTest {
      * instead, the size of the widest copy (gate|up, 12 MiB for Qwen3-0.6B), and fits.
      */
     @Test
-    public void copiesThatDoNotFitAreRefilledPerChunk() throws Exception {
+    public void contiguousBuffersThatDoNotFitAreRefilledPerChunk() throws Exception {
         Path model = GoldenFixture.locate(Fixture.QWEN3_0_6B_F16);
         assumeTrue(
                 "environment absent: " + GoldenFixture.absentMessage(Fixture.QWEN3_0_6B_F16),
@@ -239,7 +241,7 @@ public class NativePrefillMemoryPlanAccelTest {
                     "the scratch must cost far less than the copies it replaces: saved "
                             + savedMib
                             + " MiB",
-                    savedMib > MEASURED_COPIES_MIB - 20);
+                    savedMib > MEASURED_CONTIGUOUS_MIB - 20);
         } finally {
             restore(previous);
         }

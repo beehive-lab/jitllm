@@ -502,7 +502,7 @@ public final class TornadoMemoryModel {
         if (!workspace.hasResidencyChoice()) {
             return false;
         }
-        boolean allowed = FP16Projections.resident(policy, workspace.residentCopiesSize());
+        boolean allowed = FP16Projections.resident(policy, workspace.residentContiguousSize());
         if (!allowed || policy.decodedProjections() != ExecutionPolicy.DecodedProjections.BACKEND) {
             return allowed;
         }

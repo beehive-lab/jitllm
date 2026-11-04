@@ -58,7 +58,7 @@ public class Gemma4MlxPrefillTest {
         BatchPrefillWorkspace ws =
                 Gemma4BatchPrefillLayers.mlxWorkspace(DataType.Q8_0, config, 512);
         assertTrue(ws.hasResidencyChoice());
-        assertEquals(projections, ws.residentCopiesSize());
+        assertEquals(projections, ws.residentContiguousSize());
         assertEquals(
                 FP16Projections.residentBytes(projections)
                         - MlxPrefill.affineBytes(DataType.Q8_0, projections),
