@@ -24,6 +24,7 @@ import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -150,27 +151,23 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
     }
 
     /**
-     * Llama Q4_0's batched prefill runs its projections in cuBLAS, through the JIT tensor-core GEMM
-     * on FP16-decoded weights, or on the Metal SIMD-group kernels: elsewhere there is nothing to
-     * build.
+     * Llama Q4_0's batched prefill runs its projections on the tensor cores (cuBLAS or the JIT
+     * GEMM, on FP16-decoded weights) or on the Metal SIMD-group kernels: elsewhere there is nothing
+     * to build.
      */
     @Override
     public Optional<String> batchPrefillNeeds(Combination c, ExecutionPolicy policy) {
         if (c.weights() == DataType.Q4_0
                 && !BackendId.METAL.equals(c.backend())
-                && !c.tensorCores()
-                && !Target.of(policy).cublas()) {
-            return Optional.of(
-                    "the llama Q4_0 batched prefill needs tensor cores, or cuBLAS through"
-                            + " --with-native-libraries");
+                && !c.tensorCores()) {
+            return Optional.of("the llama Q4_0 batched prefill needs tensor cores");
         }
         return Optional.empty();
     }
 
     /**
      * F16 has no stage layers. Q8_0 splits its single-token plan only. Q4_0 splits its batched
-     * prefill too, but a stage holding part of the model runs its projections through cuBLAS: only
-     * the whole model's layers decode them for the JIT tensor-core GEMM.
+     * prefill too, on the tensor cores: the Metal SIMD-group layers build the whole model only.
      */
     @Override
     public Optional<String> splitUnsupported(DataType weights, ExecutionPolicy policy, int stages) {
@@ -179,10 +176,12 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
             return TornadoPlanProvider.super.splitUnsupported(weights, policy, stages);
         }
         if (weights == DataType.Q4_0) {
-            return batched && stages > 1 && !Target.of(policy).cublas()
+            return batched
+                            && stages > 1
+                            && !Target.of(policy).supports(DeviceCapability.TENSOR_CORE_MMA)
                     ? Optional.of(
-                            "the llama Q4_0 batched prefill of a pipeline stage runs its"
-                                    + " projections through cuBLAS: add --with-native-libraries")
+                            "the llama Q4_0 batched prefill of a pipeline stage runs on the"
+                                    + " tensor cores")
                     : Optional.empty();
         }
         return batched
