@@ -35,6 +35,7 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 // @formatter:off
 /**
@@ -220,11 +221,15 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      * layer graph writes and reads in turn, in graph order.
      */
     private boolean dequantGemmEligible(int n, int k) {
+        return dequantGemmShape(n, k) && n >= DEQUANT_GEMM_MIN_OUTPUTS;
+    }
+
+    /** {@link #dequantGemmEligible} without the minimum output width. */
+    private boolean dequantGemmShape(int n, int k) {
         return state.workspace.wrapDequantScratchFP16 != null
                 && Qwen35Configuration.dequantGemmWidth(batchSize)
                 && n % GEMM_TILE == 0
                 && k % 16 == 0
-                && n >= DEQUANT_GEMM_MIN_OUTPUTS
                 && (long) n * k <= state.workspace.wrapDequantScratchFP16.getSize();
     }
 
@@ -614,6 +619,133 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     }
 
     /**
+     * Whether the K-quant projection {@code w} of {@code outputs} over {@code inputs} runs as the
+     * dequantize-then-GEMM pair: tensor cores, a width that fills the GEMM tiles, and an input the
+     * pair can read as FP16. The tiled decoders need whole super-blocks along {@code inputs} and
+     * 128-row tiles along {@code outputs}. Example: Qwen3.5-0.8B Q4_K_M's Q4_K gate and up, Q5_K
+     * qkv and Q6_K down, which otherwise run the scalar tiled kernels.
+     */
+    private boolean kQuantPair(TornadoTensor w, FloatArray xBatch, int outputs, int inputs) {
+        DataType type = w.dataType();
+        return (type == DataType.Q4_K || type == DataType.Q5_K || type == DataType.Q6_K)
+                && mmaEligible(inputs, outputs)
+                && state.workspace.wrapDequantScratchFP16 != null
+                && Qwen35Configuration.dequantGemmWidth(batchSize)
+                && outputs % GEMM_TILE == 0
+                && inputs % 256 == 0
+                && (xBatch == state.workspace.wrapNormedBatch
+                        || (long) batchSize * inputs
+                                <= state.workspace.wrapHbFP16BatchMMA.getSize());
+    }
+
+    /**
+     * {@code out (+)= w . x} for a K-quant {@code w} as the pair: {@code x} in FP16 (the normed
+     * chunk's copy, or converted into {@code wrapHbFP16BatchMMA}, which nothing reads between here
+     * and the GEMM), {@code w} decoded into the shared scratch in the GEMM's tile order, then the
+     * GEMM, adding into {@code out} for a residual projection.
+     */
+    private void kQuantProjection(
+            TaskGraph graph,
+            int layer,
+            String task,
+            TornadoTensor w,
+            FloatArray xBatch,
+            FloatArray outBatch,
+            int inputs,
+            int outputs,
+            boolean residual) {
+        String qualified = GraphNames.batchLayer(layer) + "." + task;
+        HalfFloatArray a = state.workspace.wrapNormedFP16Batch;
+        if (xBatch != state.workspace.wrapNormedBatch) {
+            // Named as the Q4_0 paths name their conversion: attn_output_fp16, ffn_down_fp16.
+            String convert = task.replace("_proj", "_fp16");
+            a = state.workspace.wrapHbFP16BatchMMA;
+            fp16Converts.put(GraphNames.batchLayer(layer) + "." + convert, batchSize * inputs);
+            graph.task(convert, Qwen35MMAKernels::convertToFP16, context, xBatch, a);
+        }
+        int elements = outputs * inputs;
+        dequantTasks.put(
+                qualified + "_dequant", Math.min(elements, Qwen35MMAKernels.TILED_DECODE_LANES));
+        gemmTasks.put(qualified, outputs);
+        graph.task(
+                task + "_dequant",
+                switch (w.dataType()) {
+                    case Q4_K -> Qwen35MMAKernels::dequantizeQ4_KToFP16Tiled;
+                    case Q5_K -> Qwen35MMAKernels::dequantizeQ5_KToFP16Tiled;
+                    default -> Qwen35MMAKernels::dequantizeQ6_KToFP16Tiled;
+                },
+                context,
+                w.asByteArray(),
+                state.workspace.wrapDequantScratchFP16,
+                0,
+                elements,
+                inputs,
+                neverDecoded,
+                0);
+        pairGemm(
+                graph,
+                task,
+                a,
+                outBatch,
+                null,
+                null,
+                outputs,
+                inputs,
+                residual ? Epilogue.RESIDUAL : Epilogue.STORE);
+    }
+
+    /** The FP32 inputs converted to FP16 for a K-quant pair, with their element counts. */
+    private final java.util.Map<String, Integer> fp16Converts = new java.util.LinkedHashMap<>();
+
+    /**
+     * The decode flag the tiled decoders check, never set: the K-quant pairs decode for every
+     * chunk.
+     */
+    private final IntArray neverDecoded = new IntArray(1);
+
+    /**
+     * Grows the shared scratch to the largest K-quant matrix that takes the pair, when that is
+     * larger than the gate/up matrix the state sizes it for. Example: Qwen3.5-0.8B Q4_K_M's Q5_K
+     * qkv, 6,144 x 1,024, against 3,584 x 1,024. It never shrinks: the Q4_0 rules read its size.
+     */
+    private void allocateKQuantScratch() {
+        if (state.workspace.wrapDequantScratchFP16 == null) {
+            return;
+        }
+        int dim = config.dim();
+        Object[][] projections = {
+            {weights.wqLayered, config.queryGateDim(), dim},
+            {weights.wkLayered, config.kvDim(), dim},
+            {weights.wvLayered, config.kvDim(), dim},
+            {weights.woLayered, dim, config.attentionOutputInputDim()},
+            {weights.w1Layered, config.hiddenDim(), dim},
+            {weights.w3Layered, config.hiddenDim(), dim},
+            {weights.w2Layered, dim, config.hiddenDim()},
+            {weights.ssmQkv, config.deltaNetConvDim(), dim},
+            {weights.ssmGate, config.deltaNetValueDim(), dim},
+            {weights.ssmOut, dim, config.deltaNetValueDim()}
+        };
+        long halves = 0;
+        for (Object[] projection : projections) {
+            TornadoTensor[] tensors = (TornadoTensor[]) projection[0];
+            int outputs = (Integer) projection[1];
+            int inputs = (Integer) projection[2];
+            for (int layer = firstLayer; layer < endLayer; layer++) {
+                if (tensors != null
+                        && layer < tensors.length
+                        && tensors[layer] != null
+                        && kQuantPair(tensors[layer], null, outputs, inputs)) {
+                    halves = Math.max(halves, (long) outputs * inputs);
+                }
+            }
+        }
+        if (halves > state.workspace.wrapDequantScratchFP16.getSize()) {
+            state.workspace.wrapDequantScratchFP16 =
+                    TornadoWorkspaces.halfFloats(Math.toIntExact(halves));
+        }
+    }
+
+    /**
      * Whether a Q4_0 projection over this shape can run on the tensor cores.
      *
      * <p>The chunk has to fill whole 16-row MMA tiles, because the store writes a whole tile and
@@ -680,6 +812,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         this.firstLayer = firstLayer;
         this.endLayer = endLayer;
         allocateQ8Scratch();
+        allocateKQuantScratch();
         if (feedForward != null && !int8Quantizes(config.dim())) {
             throw new UnsupportedOperationException(
                     "this feed-forward runs on the int8 tensor cores, at widths that are a"
@@ -892,6 +1025,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             // Metal: the shared SIMD-group GEMMs, FP16 weight tiles. Example: Qwen3.5-4B's Q5_K
             // ssm_out took 40% of a prefill chunk on the scalar tiled kernel below.
             sharedProjection(graph, layer, task, w, xBatch, outBatch, n, d, residual);
+            return;
+        }
+        if (kQuantPair(w, xBatch, d, n)) {
+            kQuantProjection(graph, layer, task, w, xBatch, outBatch, n, d, residual);
             return;
         }
         switch (w.dataType()) {
@@ -2410,7 +2547,9 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     state.workspace.wrapSsmOutBatch,
                     state.workspace.wrapSsmOutFP16Batch);
             boolean ssmOutResidualFused = false;
-            if (dequantGemmEligible(config.dim(), valueDim) && valueDim % 64 == 0) {
+            // No minimum width: the direct Q5_K kernel is slower than the pair even at 1,024
+            // outputs (Qwen3.5-0.8B: 0.27 ms against about 0.08 ms per layer and chunk).
+            if (dequantGemmShape(config.dim(), valueDim) && valueDim % 64 == 0) {
                 // The same tiled pair the wide Q4_0 projections take, through the same scratch,
                 // with the Q5_K paired-nibble decoder (a lane per qs byte, which asks for whole
                 // fours of k-tiles per row block): its dequantization runs after the previous
@@ -2583,7 +2722,9 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             }
             if (state.workspace.wrapDequantScratchFP16 != null) {
                 layer.transferToDevice(
-                        DataTransferMode.FIRST_EXECUTION, state.workspace.wrapDequantScratchFP16);
+                        DataTransferMode.FIRST_EXECUTION,
+                        state.workspace.wrapDequantScratchFP16,
+                        neverDecoded);
             }
             if (state.workspace.wrapQ8ActBatch != null) {
                 layer.transferToDevice(
@@ -2644,7 +2785,8 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 layer.consumeFromDevice(predecessor, state.workspace.wrapAttnStageFP16);
             }
             if (state.workspace.wrapDequantScratchFP16 != null) {
-                layer.consumeFromDevice(predecessor, state.workspace.wrapDequantScratchFP16);
+                layer.consumeFromDevice(
+                        predecessor, state.workspace.wrapDequantScratchFP16, neverDecoded);
             }
             if (state.workspace.wrapDequantScratchF32 != null) {
                 layer.consumeFromDevice(predecessor, state.workspace.wrapDequantScratchF32);
@@ -2959,6 +3101,12 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     WorkerGridFactory.genericWorker(
                             (entry.getValue() + GEMM_LOCAL - 1) / GEMM_LOCAL * GEMM_LOCAL,
                             GEMM_LOCAL));
+        }
+        // The FP32 inputs of the K-quant pairs converted to FP16: one lane per element.
+        for (var entry : fp16Converts.entrySet()) {
+            scheduler.addWorkerGrid(
+                    entry.getKey(),
+                    WorkerGridFactory.genericWorker(entry.getValue(), ELEMENTWISE_LOCAL));
         }
         // The dequantizations that precede the FP16 GEMMs: one lane per weight element.
         for (var entry : dequantTasks.entrySet()) {
