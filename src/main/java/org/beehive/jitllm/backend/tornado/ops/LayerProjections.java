@@ -37,13 +37,20 @@ public abstract class LayerProjections implements Implementation {
             Fusion.of("projection + residual add", MAT_MUL, RESIDUAL_ADD);
 
     /**
+     * Three projections of one input that the layer runs as one GEMM, for example Gemma 4's q, k
+     * and v.
+     */
+    public static final Fusion QKV =
+            Fusion.of("q|k|v", MAT_MUL, MAT_MUL, MAT_MUL).when(Fusion::sameInput);
+
+    /**
      * Two projections of one input that the layer runs as one GEMM, for example Qwen2-MoE's shared
      * expert gate and up.
      */
     public static final Fusion GATE_UP =
             Fusion.of("gate|up", MAT_MUL, MAT_MUL).when(Fusion::sameInput);
 
-    private static final List<Fusion> FUSIONS = List.of(GATE_UP, PROJECTION_ADD, PROJECTION);
+    private static final List<Fusion> FUSIONS = List.of(QKV, GATE_UP, PROJECTION_ADD, PROJECTION);
 
     protected final Tasks tasks;
 
