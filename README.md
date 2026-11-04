@@ -148,10 +148,9 @@ types directly declares `tornado-api` itself, with `provided` scope.
 ### TornadoVM
 
 jitllm compiles against, and runs on, the TornadoVM SDK that `TORNADOVM_HOME` points at. Any SDK
-from **TornadoVM 7.3** on works: a released one, from the
+from **TornadoVM 8.0** on works: a released one, from the
 [official website](https://www.tornadovm.org/downloads) or [SDKMAN!](https://sdkman.io/sdks/tornadovm/)
-(`sdk install tornadovm`), or a local build of TornadoVM `develop`. 7.3 is the first release with
-the half-precision SIMD-group matrix API the Metal batched prefill compiles against. Its JDK line
+(`sdk install tornadovm`), or a local build of TornadoVM `develop`. Its JDK line
 must match the JDK you build with: a `-jdk21` SDK for JDK 21, a `-jdk22plus` SDK for JDK 22 and
 newer. The build checks both that `TORNADOVM_HOME` is set and that the line matches.
 
@@ -346,8 +345,7 @@ MLX 0.32.3's kernel library (`brew install mlx`) and an M4-class GPU.
 
 MLX calls should be dispatched without waiting for the GPU (`-Dtornado.mlx.async=true`); otherwise
 the MLX prefill is slower than jitllm's own kernels. The `jitllm` launcher and the JBang script set
-it on Metal with a TornadoVM SDK newer than 7.3.1, whose asynchronous mode also waits for MLX work
-before host reads and writes. With TornadoVM 7.3.1 it stays off. Set it yourself in
+it on Metal. Set it yourself in
 `JAVA_TOOL_OPTIONS` to override the launcher, or as a system property when you embed jitllm:
 
 ```bash

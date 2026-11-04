@@ -248,9 +248,8 @@ projection, its RoPE) rather than copying the layer graph.
   `-Djitllm.prefill.decodedProjections=resident|per-chunk`. Packed projections are refused by
   name. Needs `brew install mlx` (MLX 0.32.3) and an M4-class GPU. MLX calls should be
   dispatched without waiting for the GPU (`-Dtornado.mlx.async=true`); otherwise prefill is
-  slower than the JIT kernels. The `jitllm` launcher and the JBang script set it on Metal with a
-  TornadoVM SDK newer than 7.3.1, whose asynchronous mode also waits for MLX work before host
-  reads and writes; with TornadoVM 7.3.1 it stays off. `JAVA_TOOL_OPTIONS` overrides the
+  slower than the JIT kernels. The `jitllm` launcher and the JBang script set it on Metal.
+  `JAVA_TOOL_OPTIONS` overrides the
   launcher, and an embedding application sets it as a system property.
 
 Prompt processing on an NVIDIA A100 80GB (pp512, chunk 512, `--cuda-graphs`, tok/s); batched
