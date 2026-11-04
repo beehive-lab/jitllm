@@ -227,7 +227,7 @@ public class MlxPrefillProjectionsTest {
     // ── stacking ─────────────────────────────────────────────────────────────
 
     @Test
-    public void stackedTensorsKeepTheirOrderAndGroups() {
+    public void joinedTensorsKeepTheirOrderAndGroups() {
         byte[][] a = signedRamp(2);
         byte[][] b = new byte[1][GROUP];
         Arrays.fill(b[0], (byte) 5);
@@ -236,7 +236,7 @@ public class MlxPrefillProjectionsTest {
                         MlxPrefill.Projections.AFFINE,
                         q8(new float[] {0.5f, 0.25f}, a),
                         q8(new float[] {2f}, b));
-        assertEquals("three groups, in the order stacked", 3, m.scales().getSize());
+        assertEquals("three groups, in the order joined", 3, m.scales().getSize());
         assertEquals(2f, m.scales().get(2).getFloat32(), 0f);
         assertEquals(10f, reconstruct(m, 2 * GROUP + 7), 0f);
         assertEquals(0.5f * a[0][1], reconstruct(m, 1), 0f);
@@ -244,16 +244,16 @@ public class MlxPrefillProjectionsTest {
     }
 
     @Test
-    public void anF16MatrixIsTheModelsOwnArrayUnlessStacked() {
+    public void anF16MatrixIsTheModelsOwnArrayUnlessJoined() {
         FP16TornadoTensor wo = fp16(64);
         assertSame(
                 "a single F16 tensor is multiplied as it is",
                 wo.asHalfFloatArray(),
                 MlxPrefillProjections.matrix(MlxPrefill.Projections.FP16, wo).fp16());
-        HalfFloatArray stacked =
+        HalfFloatArray joined =
                 MlxPrefillProjections.matrix(MlxPrefill.Projections.FP16, fp16(64), fp16(32))
                         .fp16();
-        assertEquals(96, stacked.getSize());
+        assertEquals(96, joined.getSize());
     }
 
     // ── which model weights the prefill graphs bind ──────────────────────────
@@ -266,11 +266,11 @@ public class MlxPrefillProjectionsTest {
                         MlxPrefillProjections.notBound(
                                 new MlxPrefill(DataType.F16, MlxPrefill.Projections.FP16), layer));
         for (TornadoTensor t : List.of(layer.qkv()[0], layer.qkv()[1], layer.qkv()[2])) {
-            assertTrue("stacked QKV is a copy", notBound.containsKey(t));
+            assertTrue("joined QKV is a copy", notBound.containsKey(t));
             assertTrue("as its native array too", notBound.containsKey(t.asHalfFloatArray()));
         }
         for (TornadoTensor t : layer.gateUp()) {
-            assertTrue("stacked gate/up is a copy", notBound.containsKey(t.asHalfFloatArray()));
+            assertTrue("joined gate/up is a copy", notBound.containsKey(t.asHalfFloatArray()));
         }
         assertTrue("wo is bound as it is", !notBound.containsKey(layer.wo().asHalfFloatArray()));
         assertTrue("w2 is bound as it is", !notBound.containsKey(layer.w2().asHalfFloatArray()));

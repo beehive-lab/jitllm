@@ -65,7 +65,7 @@ public abstract class DequantizingMatMul implements Implementation {
     @Override
     public BatchPrefillWorkspace needs(List<Step> steps, Target target) {
         Sizes s = Sizes.of(steps);
-        return BatchPrefillWorkspace.fixed(
+        return BatchPrefillWorkspace.withoutResidencyChoice(
                 SplitKGemm.bytes(s.rows, s.widestSplit, nativeGemm()) + 2L * s.widest);
     }
 

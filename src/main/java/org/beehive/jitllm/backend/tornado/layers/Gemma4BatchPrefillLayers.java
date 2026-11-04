@@ -206,7 +206,7 @@ public class Gemma4BatchPrefillLayers
     // @formatter:off
     /**
      * Whether the plan runs the projections on cuBLAS: each layer's projections decoded to FP16
-     * row-major matrices, several tensors stacked into one matrix (query, key and value; gate and
+     * row-major matrices, several tensors joined into one matrix (query, key and value; gate and
      * up) so one GEMM computes them side by side. Otherwise the JIT kernels run them.
      */
     // @formatter:on
@@ -265,7 +265,7 @@ public class Gemma4BatchPrefillLayers
     /**
      * With native libraries ({@code --with-native-libraries}) on Metal: the query/key/value,
      * output, gate/up and down projections as MLX GEMMs over each layer's weights in MLX's form
-     * ({@link MlxPrefill#projections()}), query, key and value stacked into one matrix and gate and
+     * ({@link MlxPrefill#projections()}), query, key and value joined into one matrix and gate and
      * up into another; otherwise {@code null}. Attention, the norms and the per-layer-embedding
      * GEMMs stay on the Metal kernels.
      */
@@ -1050,7 +1050,7 @@ public class Gemma4BatchPrefillLayers
     }
 
     /**
-     * The stacked query/key/value GEMM on MLX into the packed {@code [q|k|v]} rows the head norms
+     * The joined query/key/value GEMM on MLX into the packed {@code [q|k|v]} rows the head norms
      * and the rotation read, in FP32.
      */
     private void mlxQkvProjection(TaskGraph layer, int layerIndex, int stride) {

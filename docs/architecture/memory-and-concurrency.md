@@ -149,7 +149,7 @@ components are not bisected against measurement, so a plan that carries them is
 `CONSERVATIVE`.
 
 The MLX prefill on Metal is accounted the same way (`MlxPrefill.workspace`, through each
-provider's `batchPrefillWorkspace`): the stacked F16 copies, or the resident FP16 copies or
+provider's `batchPrefillWorkspace`): the joined F16 copies, or the resident FP16 copies or
 affine repack of Q8_0 and Q4_0 projections, the FP16 GEMM staging, and the attention's
 contiguous key/value buffers sized for the whole context. The model's projection weights are
 not charged twice: the prefill graphs stop binding the ones MLX replaced and the decode graphs

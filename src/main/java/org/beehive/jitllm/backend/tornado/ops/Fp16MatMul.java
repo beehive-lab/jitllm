@@ -25,7 +25,7 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  * FP16Projections}), and the rest go to cuBLAS as they are. The subclass picks the GEMM.
  *
  * <p>Example: Llama-3.2-1B F16 on the JIT GEMMs uploads its weights once and copies none; on cuBLAS
- * it keeps a stacked copy of q|k|v and of gate|up.
+ * it keeps a joined copy of q|k|v and of gate|up.
  */
 public abstract class Fp16MatMul implements Implementation {
 
@@ -55,21 +55,31 @@ public abstract class Fp16MatMul implements Implementation {
     @Override
     public BatchPrefillWorkspace needs(List<Step> steps, Target target) {
         Sizes s = Sizes.of(steps);
-        long fixed = SplitKGemm.bytes(s.rows, s.widestSplit, nativeGemm());
+        long splitKBytes = SplitKGemm.bytes(s.rows, s.widestSplit, nativeGemm());
         if (!nativeGemm()) {
-            return BatchPrefillWorkspace.fixed(fixed);
+            return BatchPrefillWorkspace.withoutResidencyChoice(splitKBytes);
         }
-        // As the stacked copies have always been charged: every projection's weights, although
+        // As the copies have always been charged: every projection's weights, although
         // only q|k|v and gate|up are copied.
         return new BatchPrefillWorkspace(
                 s.weights,
-                fixed
+                splitKBytes
                         + FP16Projections.residentBytes(s.weights)
                         + FP16Projections.workspaceBytes(
-                                true, s.widestStacked, s.rows, s.widestSplit, s.stacked, true),
-                fixed
+                                true,
+                                s.nativeLibScratchBufferSize,
+                                s.rows,
+                                s.widestSplit,
+                                s.nativeLibProjectionCalls,
+                                true),
+                splitKBytes
                         + FP16Projections.workspaceBytes(
-                                false, s.widestStacked, s.rows, s.widestSplit, s.stacked, true));
+                                false,
+                                s.nativeLibScratchBufferSize,
+                                s.rows,
+                                s.widestSplit,
+                                s.nativeLibProjectionCalls,
+                                true));
     }
 
     @Override
@@ -77,39 +87,39 @@ public abstract class Fp16MatMul implements Implementation {
             List<Step> steps, Target target, KernelContext context, WeightPrepacking prepacking) {
         Sizes s = Sizes.of(steps);
         SplitKGemm splitK = new SplitKGemm(context, s.rows, s.widestSplit, nativeGemm());
-        FP16Projections stacked =
+        FP16Projections nativeLibProjections =
                 nativeGemm()
                         ? new FP16Projections(
                                 context,
                                 prepacking,
-                                s.widestStacked,
+                                s.nativeLibScratchBufferSize,
                                 s.rows,
                                 s.widestSplit,
                                 FP16Projections.resident(target.policy(), s.weights),
-                                s.stacked,
+                                s.nativeLibProjectionCalls,
                                 true)
                         : null;
-        return new Tasks(context, splitK, stacked);
+        return new Tasks(context, splitK, nativeLibProjections);
     }
 
-    /** The projections: in place on the JIT GEMMs, q|k|v and gate|up stacked for cuBLAS. */
+    /** The projections: in place on the JIT GEMMs, q|k|v and gate|up joined for cuBLAS. */
     private static final class Tasks extends TensorCoreSteps {
 
         private final SplitKGemm splitK;
-        private final FP16Projections stacked;
+        private final FP16Projections nativeLibProjections;
 
-        Tasks(KernelContext context, SplitKGemm splitK, FP16Projections stacked) {
+        Tasks(KernelContext context, SplitKGemm splitK, FP16Projections nativeLibProjections) {
             super(context);
             this.splitK = splitK;
-            this.stacked = stacked;
+            this.nativeLibProjections = nativeLibProjections;
         }
 
         @Override
         public Object[] buffers() {
-            if (stacked == null) {
+            if (nativeLibProjections == null) {
                 return new Object[] {splitK.partial()};
             }
-            Object[] copies = stacked.buffers();
+            Object[] copies = nativeLibProjections.buffers();
             Object[] all = new Object[copies.length + 1];
             all[0] = splitK.partial();
             System.arraycopy(copies, 0, all, 1, copies.length);
@@ -138,8 +148,9 @@ public abstract class Fp16MatMul implements Implementation {
                         first.batchSize(),
                         first.rows(),
                         first.columns());
-            } else if (stacked != null) {
-                stacked.project(graph, task, a, c, first.batchSize(), first.columns(), w);
+            } else if (nativeLibProjections != null) {
+                nativeLibProjections.project(
+                        graph, task, a, c, first.batchSize(), first.columns(), w);
             } else if (matMuls.size() == 3) {
                 graph.task(
                         task,
@@ -173,8 +184,8 @@ public abstract class Fp16MatMul implements Implementation {
         @Override
         protected void addProjectionGrids(GridScheduler scheduler) {
             splitK.addGrids(scheduler);
-            if (stacked != null) {
-                stacked.addGrids(scheduler);
+            if (nativeLibProjections != null) {
+                nativeLibProjections.addGrids(scheduler);
             }
         }
     }
@@ -182,16 +193,21 @@ public abstract class Fp16MatMul implements Implementation {
     /**
      * The sizes the GEMMs need: every projection's weights, the rows, the widest output a
      * one-matrix GEMM writes (sizing the split GEMM's partial products), and of the q|k|v and
-     * gate|up projections, which cuBLAS reads stacked, the largest and how many there are.
+     * gate|up projections, which cuBLAS reads joined, the largest and how many there are.
      */
-    private record Sizes(long weights, int rows, int widestSplit, long widestStacked, int stacked) {
+    private record Sizes(
+            long weights,
+            int rows,
+            int widestSplit,
+            long nativeLibScratchBufferSize,
+            int nativeLibProjectionCalls) {
 
         static Sizes of(List<Step> steps) {
             long weights = 0;
             int rows = 0;
             int widestSplit = 0;
-            long widestStacked = 0;
-            int stacked = 0;
+            long nativeLibScratchBufferSize = 0;
+            int nativeLibProjectionCalls = 0;
             for (Step step : steps) {
                 List<MatMul> matMuls = step.matMuls();
                 if (matMuls.isEmpty()) {
@@ -199,14 +215,20 @@ public abstract class Fp16MatMul implements Implementation {
                 }
                 weights += step.weights();
                 rows = matMuls.get(0).batchSize();
-                if (TensorCoreSteps.stacks(matMuls.get(0))) {
-                    widestStacked = Math.max(widestStacked, step.weights());
-                    stacked++;
+                if (TensorCoreSteps.startsNativeLibCopy(matMuls.get(0))) {
+                    nativeLibScratchBufferSize =
+                            Math.max(nativeLibScratchBufferSize, step.weights());
+                    nativeLibProjectionCalls++;
                 } else {
                     widestSplit = Math.max(widestSplit, step.outputWidth());
                 }
             }
-            return new Sizes(weights, rows, widestSplit, widestStacked, stacked);
+            return new Sizes(
+                    weights,
+                    rows,
+                    widestSplit,
+                    nativeLibScratchBufferSize,
+                    nativeLibProjectionCalls);
         }
     }
 }

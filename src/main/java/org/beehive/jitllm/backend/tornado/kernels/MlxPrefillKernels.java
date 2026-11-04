@@ -26,7 +26,7 @@ public final class MlxPrefillKernels {
         }
     }
 
-    /** Splits the stacked {@code [B][qDim | kvDim | kvDim]} QKV product into FP32 Q, K and V. */
+    /** Splits the joined {@code [B][qDim | kvDim | kvDim]} QKV product into FP32 Q, K and V. */
     public static void splitQkv(
             KernelContext context,
             HalfFloatArray qkv,
@@ -62,8 +62,8 @@ public final class MlxPrefillKernels {
     }
 
     /**
-     * {@code hb[b][i] = SiLU(gateUp[b][i]) * gateUp[b][hidden + i]} over the stacked {@code
-     * [B][gate | up]} product, in FP16 for the down projection.
+     * {@code hb[b][i] = SiLU(gateUp[b][i]) * gateUp[b][hidden + i]} over the joined {@code [B][gate
+     * | up]} product, in FP16 for the down projection.
      */
     public static void swiglu(
             KernelContext context,
@@ -242,7 +242,7 @@ public final class MlxPrefillKernels {
 
     /**
      * {@code rowScale[b] = min(1, PROJECTION_INPUT_LIMIT / max_i |GELU(gate[b][i]) * up[b][i]|)}:
-     * {@link #swigluRowScale} for a GeGLU feed-forward (Gemma), over the stacked {@code [B][gate |
+     * {@link #swigluRowScale} for a GeGLU feed-forward (Gemma), over the joined {@code [B][gate |
      * up]} product. One workgroup of {@code localSize} threads per row, over {@code rows} rows.
      */
     public static void gegluRowScale(
@@ -279,7 +279,7 @@ public final class MlxPrefillKernels {
     }
 
     /**
-     * {@code hb[b][i] = FP16(GELU(gate[b][i]) * up[b][i] * rowScale[b])} over the stacked {@code
+     * {@code hb[b][i] = FP16(GELU(gate[b][i]) * up[b][i] * rowScale[b])} over the joined {@code
      * [B][gate | up]} product, for the down projection.
      */
     public static void gegluScaled(

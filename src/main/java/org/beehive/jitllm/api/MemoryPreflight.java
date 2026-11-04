@@ -135,7 +135,7 @@ final class MemoryPreflight {
         try {
             var model = ModelLoader.describe(modelFile, contextLength);
             var workspace = workspace(model, modelFile, options, policy);
-            if (workspace.isEmpty() || !workspace.get().decodesProjections()) {
+            if (workspace.isEmpty() || !workspace.get().hasResidencyChoice()) {
                 return policy;
             }
             MemoryPlan others = plan(modelFile, contextLength, options, policy, false);

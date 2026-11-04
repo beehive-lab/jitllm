@@ -20,7 +20,7 @@ import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
  *
  * <p>On by default where they are implemented and installed ({@link #defaultFor}); everywhere else
  * the JIT kernels run. On CUDA the native path replaces batched-prefill projections with cuBLAS
- * GEMMs over stacked weight copies (and the first chunk's attention with cuDNN where it is usable),
+ * GEMMs over joined weight copies (and the first chunk's attention with cuDNN where it is usable),
  * which costs device memory beside the weights. On Metal it runs the batched prefill's attention
  * and projections on Apple MLX ({@link MlxPrefill}). {@code --no-native-libraries} keeps the JIT
  * kernels.

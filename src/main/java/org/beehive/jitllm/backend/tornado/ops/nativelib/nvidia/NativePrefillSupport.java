@@ -248,7 +248,7 @@ public final class NativePrefillSupport {
      *
      * <p>Implies {@code Target.cublas()}: the two have only ever been measured and validated
      * together, and the fallback family that covers the later chunks is built from the primary's
-     * stacked weights, which only exist when the projections are native. A {@code false} here
+     * weight copies, which only exist when the projections are native. A {@code false} here
      * therefore <b>keeps the native projections</b> and selects the batched JIT paged attention for
      * every chunk, rather than giving up the whole path.
      *

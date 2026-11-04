@@ -641,9 +641,9 @@ public final class Qwen35MMAKernels {
      * writes half position {@code h} from its row and k. Skipped once {@code done[flag]} is set,
      * for a decoded copy that outlives the chunk.
      *
-     * <p>A matrix stacked under others starts at a whole 128-row block, so {@code destOffset} is
-     * its first row times {@code k} and its tiles follow theirs. Requires {@code n / k % 128 == 0}
-     * and {@code k % 32 == 0}. Worker: {@code min(n, TILED_DECODE_LANES)} lanes, striding.
+     * <p>A matrix joined after others starts at a whole 128-row block, so {@code destOffset} is its
+     * first row times {@code k} and its tiles follow theirs. Requires {@code n / k % 128 == 0} and
+     * {@code k % 32 == 0}. Worker: {@code min(n, TILED_DECODE_LANES)} lanes, striding.
      */
     // @formatter:on
     public static void dequantizeQ8_0ToFP16Tiled(

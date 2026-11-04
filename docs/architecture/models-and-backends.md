@@ -223,7 +223,7 @@ projection, its RoPE) rather than copying the layer graph.
   order differs from the unsplit GEMM; `-Djitllm.prefill.splitK=false` keeps every GEMM whole.
 - **Native libraries.** On by default where implemented and installed
   (`NativeLibrarySupport.defaultFor`): every one of these GEMMs is then
-  `cublasGemmExFP16FP32`; Q, K and V (and gate and up) are stacked into one buffer so one call
+  `cublasGemmExFP16FP32`; Q, K and V (and gate and up) are joined into one buffer so one call
   covers them. The flag is accepted for Llama (Q4_0, Q8_0, F16), Mistral, Qwen2 / DeepSeek, Qwen3,
   Phi-3 and Granite (Q8_0, F16), Devstral (Q8_0, Q4_K, F16), Gemma 4 (Q8_0, Q4_0) and Qwen3.5 (Q8_0); the
   JIT kernels run elsewhere. Where the path exists but cuBLAS does not load, the run notes once
@@ -242,7 +242,7 @@ projection, its RoPE) rather than copying the layer graph.
   (F16, Q8_0), and Gemma 4 (Q8_0); everything else runs the JIT kernels.
   `--with-native-libraries` requires the MLX path and refuses any configuration without one;
   `--no-native-libraries` keeps the JIT kernels. F16 weights are multiplied as they are, split Q/K/V
-  and gate/up stacked into one copy each. Q8_0 and Q4_0 weights are either decoded once into
+  and gate/up joined into one copy each. Q8_0 and Q4_0 weights are either decoded once into
   resident FP16 copies or repacked exactly into MLX's affine format — the same
   `decodedProjections` residency as above, settled against the budget at load or pinned with
   `-Djitllm.prefill.decodedProjections=resident|per-chunk`. Packed projections are refused by

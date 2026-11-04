@@ -53,8 +53,9 @@ import org.beehive.jitllm.runtime.policy.StorageOptions;
  * this table was first bisected). Its decode graphs now consume the copy the prefill graphs
  * uploaded, so the families that <b>bind</b> weights is one, not two — {@code
  * Configuration.weightBindingFamilies} — and what batched prefill adds is its staging, padded to
- * 128-row tensor-core tiles. A native (library) prefill family still keeps stacked projection
- * copies beside the originals; those are their own component.
+ * 128-row tensor-core tiles. A native (library) prefill family also needs copies of its projection
+ * weights beside the originals, kept for the session or refilled per chunk; they are part of the
+ * batched prefill workspace.
  */
 public final class TornadoMemoryModel {
 
@@ -284,7 +285,7 @@ public final class TornadoMemoryModel {
         //   decode layer graphs      0.1 -> 560.1 MiB   (+560.0, five weights x 28 layers)
         //   fallback family         absent -> 0.0 MiB   (three carriers, nothing uploaded)
         //
-        // The stacked copies do not show up as growth in the prefill family because they displace
+        // Kept copies do not show up as growth in the prefill family because they displace
         // exactly the five originals it stopped reading. Those five reappear in the decode family,
         // which now uploads them itself -- so the cost of the native path is one extra copy of the
         // projection weights, plus the staging. The copies are the family's batched-prefill
@@ -340,7 +341,7 @@ public final class TornadoMemoryModel {
             BatchPrefillWorkspace ws = workspace.get();
             components.add(
                     new MemoryComponent(
-                            ws.decodesProjections()
+                            ws.hasResidencyChoice()
                                     ? (resident
                                             ? "batched prefill workspace (decoded projections"
                                                     + " resident)"
@@ -498,10 +499,10 @@ public final class TornadoMemoryModel {
             long others,
             long configuredBudgetBytes,
             int sessions) {
-        if (!workspace.decodesProjections()) {
+        if (!workspace.hasResidencyChoice()) {
             return false;
         }
-        boolean allowed = FP16Projections.resident(policy, workspace.decodedWeights());
+        boolean allowed = FP16Projections.resident(policy, workspace.residentCopiesSize());
         if (!allowed || policy.decodedProjections() != ExecutionPolicy.DecodedProjections.BACKEND) {
             return allowed;
         }

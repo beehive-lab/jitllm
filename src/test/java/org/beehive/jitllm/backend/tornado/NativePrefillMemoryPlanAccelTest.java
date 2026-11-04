@@ -43,10 +43,10 @@ import org.junit.Test;
  *   total                      1212.7       1774.7       +562.0
  * </pre>
  *
- * <p>The stacked copies do not appear as growth in the prefill family: they displace exactly the
- * five originals it stops reading. Those five reappear in the decode family, which uploads them
- * itself. So the path's real cost is one extra copy of the projection weights plus the staging, and
- * that is the difference this test requires the prediction to show.
+ * <p>Kept copies do not appear as growth in the prefill family: they displace exactly the five
+ * originals it stops reading. Those five reappear in the decode family, which uploads them itself.
+ * So the path's real cost is one extra copy of the projection weights plus the staging, and that is
+ * the difference this test requires the prediction to show.
  *
  * <h2>Why the fallback family must not move the number</h2>
  *
@@ -65,13 +65,13 @@ public class NativePrefillMemoryPlanAccelTest {
     private static final int CONTEXT = 600;
     private static final int BATCH = 128;
 
-    /** Stacked {@code [q|k|v]} and {@code [gate|up]} for 28 layers, from the trace above. */
-    private static final long MEASURED_STACKED_MIB = 560;
+    /** Joined {@code [q|k|v]} and {@code [gate|up]} for 28 layers, from the trace above. */
+    private static final long MEASURED_COPIES_MIB = 560;
 
     /** Four half-precision {@code [head][token][headDim]} tensors at width 128. */
     private static final long MEASURED_STAGING_MIB = 2;
 
-    /** The batched-prefill workspace with the stacked copies kept for the session. */
+    /** The batched-prefill workspace with the copies kept for the session. */
     private static final String RESIDENT =
             "batched prefill workspace (decoded projections resident)";
 
@@ -105,7 +105,7 @@ public class NativePrefillMemoryPlanAccelTest {
 
             // ── the two costs exist exactly where the path does ──────────────
             assertTrue(
-                    "the native path keeps stacked projection weights and the plan does not"
+                    "the native path keeps projection copies and the plan does not"
                             + " charge them: "
                             + names(on),
                     component(on, RESIDENT).isPresent());
@@ -113,7 +113,7 @@ public class NativePrefillMemoryPlanAccelTest {
                     "the fused attention's staging is missing from the plan: " + names(on),
                     component(on, STAGING).isPresent());
             assertTrue(
-                    "the generated-kernel path keeps no stacked weights, yet the plan charges for"
+                    "the generated-kernel path keeps no projection copies, yet the plan charges for"
                             + " them: "
                             + names(off),
                     component(off, JIT).isPresent());
@@ -122,15 +122,15 @@ public class NativePrefillMemoryPlanAccelTest {
                     component(off, STAGING).isPresent());
 
             // ── and they are the size the trace measured ─────────────────────
-            long stackedMib =
+            long copiesMib =
                     (component(on, RESIDENT).orElseThrow().logicalBytes()
                                     - component(off, JIT).orElseThrow().logicalBytes())
                             / MIB;
             long stagingMib = component(on, STAGING).orElseThrow().logicalBytes() / MIB;
             assertEquals(
-                    "stacked projection weights, against the measured allocation",
-                    MEASURED_STACKED_MIB,
-                    stackedMib);
+                    "projection copies, against the measured allocation",
+                    MEASURED_COPIES_MIB,
+                    copiesMib);
             assertEquals(
                     "fused attention staging, against the measured allocation",
                     MEASURED_STAGING_MIB,
@@ -140,7 +140,7 @@ public class NativePrefillMemoryPlanAccelTest {
             assertEquals(
                     "native on and off must differ by exactly what the native path adds, and by"
                             + " nothing the fallback family contributes",
-                    MEASURED_STACKED_MIB + MEASURED_STAGING_MIB,
+                    MEASURED_COPIES_MIB + MEASURED_STAGING_MIB,
                     deltaMib);
             assertNotEquals(
                     "the two configurations predicted the same budget, so the plan cannot be"
@@ -202,8 +202,8 @@ public class NativePrefillMemoryPlanAccelTest {
     }
 
     /**
-     * Where the stacked copies would not fit the budget, the plan keeps one scratch refilled per
-     * chunk instead, the size of the widest copy (gate|up, 12 MiB for Qwen3-0.6B), and fits.
+     * Where the copies would not fit the budget, the plan keeps one scratch refilled per chunk
+     * instead, the size of the widest copy (gate|up, 12 MiB for Qwen3-0.6B), and fits.
      */
     @Test
     public void copiesThatDoNotFitAreRefilledPerChunk() throws Exception {
@@ -239,7 +239,7 @@ public class NativePrefillMemoryPlanAccelTest {
                     "the scratch must cost far less than the copies it replaces: saved "
                             + savedMib
                             + " MiB",
-                    savedMib > MEASURED_STACKED_MIB - 20);
+                    savedMib > MEASURED_COPIES_MIB - 20);
         } finally {
             restore(previous);
         }
@@ -270,7 +270,7 @@ public class NativePrefillMemoryPlanAccelTest {
                                 Boolean.getBoolean(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY))
                         .build();
         boolean fp16Cache = StorageOptions.fromSystemProperties().usesFp16KeyValueCache();
-        // With the family's batched-prefill workspace, where the stacked copies are charged.
+        // With the family's batched-prefill workspace, where the copies are charged.
         return TornadoMemoryModel.predict(
                 weights,
                 loaded.configuration(),

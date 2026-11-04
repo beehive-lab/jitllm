@@ -80,8 +80,8 @@ public final class LocalModels {
                         : options.executionPolicy();
         if (gpu) {
             // Resident or per chunk is decided for the policy the session runs. The device's
-            // default can turn native libraries on after the check above, and cuBLAS's stacked
-            // copies of F16 weights exist only then.
+            // default can turn native libraries on after the check above, and cuBLAS's copies of
+            // F16 weights exist only then.
             policy =
                     policy.equals(options.executionPolicy())
                             ? ExecutionPolicy.from(policy)
@@ -218,9 +218,8 @@ public final class LocalModels {
     }
 
     /**
-     * {@code policy} with its decoded or stacked projection copies settled as a load settles them:
-     * kept for the whole session where they fit the budget, one shared scratch refilled per chunk
-     * where they do not.
+     * {@code policy} with its projection copies settled as a load settles them: kept for the whole
+     * session where they fit the budget, one shared scratch refilled per chunk where they do not.
      *
      * @throws InsufficientDeviceMemoryException when even the scratch does not fit
      */
