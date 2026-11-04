@@ -11,6 +11,7 @@ import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.SplitKGemm;
 import org.beehive.jitllm.backend.tornado.layers.TensorCoreBatchAttention;
@@ -224,6 +225,14 @@ public class Qwen3FP16LayersBatchPrefillMMA
     private final HalfFloatArray[] qkvCat;
 
     /**
+     * With cuBLAS, when the stacked copies above are not kept for the whole session: one shared
+     * scratch that each layer refills with its q|k|v, then its gate|up, just before the GEMM, in
+     * every chunk; {@code null} otherwise. The memory check picks which ({@link #workspace}).
+     * Example: Qwen3-8B F16 under a 22 GB budget, where the copies would take 8.4 GiB.
+     */
+    private final FP16Projections stacked;
+
+    /**
      * Staging for the cuDNN call: contiguous FP16 Q, GQA-expanded K/V, and its output, all {@code
      * [head][tok][headDim]}. Allocated once and reused by every layer graph, because the layers run
      * one after another.
@@ -308,8 +317,28 @@ public class Qwen3FP16LayersBatchPrefillMMA
     }
 
     /**
-     * What these layers allocate for one session at {@code batchSize} beyond the native library's
-     * stacked weights and attention staging, which the configuration accounts; see the constructor.
+     * The weights cuBLAS reads as stacked copies: every layer's q|k|v and gate|up. Qwen3-8B: 36
+     * layers of 6144 x 4096 and 24576 x 4096, 4.5 G weights, 8.4 GiB in F16.
+     */
+    static long stackedWeights(Qwen3Configuration config) {
+        long qkvRows =
+                (long) config.numberOfHeadsKey() * config.numberOfHeads()
+                        + 2L * config.numberOfHeadsValue() * config.numberOfKeyValueHeads();
+        return config.numberOfLayers() * (qkvRows + 2L * config.hiddenDim()) * config.dim();
+    }
+
+    /** The largest single stacked copy, the size of the per-chunk scratch: gate|up. */
+    static long widestStacked(Qwen3Configuration config) {
+        long qkvRows =
+                (long) config.numberOfHeadsKey() * config.numberOfHeads()
+                        + 2L * config.numberOfHeadsValue() * config.numberOfKeyValueHeads();
+        return Math.max(qkvRows, 2L * config.hiddenDim()) * config.dim();
+    }
+
+    /**
+     * What these layers allocate for one session at {@code batchSize} beyond the cuDNN attention
+     * staging, which the configuration accounts; see the constructor. Under cuBLAS, the stacked
+     * copies kept for the session, or the scratch refilled per chunk: the memory check picks.
      */
     public static BatchPrefillWorkspace workspace(
             Qwen3Configuration config, int batchSize, ExecutionPolicy policy, boolean fp16Cache) {
@@ -331,8 +360,22 @@ public class Qwen3FP16LayersBatchPrefillMMA
                                 padded,
                                 config.contextLength())
                         : 0;
-        return BatchPrefillWorkspace.fixed(
-                attention + SplitKGemm.bytes(padded, config.dim(), false));
+        long fixed = attention + SplitKGemm.bytes(padded, config.dim(), false);
+        if (!Target.of(policy).cublas()) {
+            return BatchPrefillWorkspace.fixed(fixed);
+        }
+        long copies = stackedWeights(config);
+        return new BatchPrefillWorkspace(
+                copies,
+                fixed + FP16Projections.residentBytes(copies),
+                fixed
+                        + FP16Projections.workspaceBytes(
+                                false,
+                                widestStacked(config),
+                                padded,
+                                config.dim(),
+                                2 * config.numberOfLayers(),
+                                true));
     }
 
     public Qwen3FP16LayersBatchPrefillMMA(
@@ -406,8 +449,30 @@ public class Qwen3FP16LayersBatchPrefillMMA
                             + " batch-prefill graph%n",
                     4L * cudnnElems * Short.BYTES / (1024 * 1024));
         }
-        this.gateUpCat = new HalfFloatArray[nativeProjections ? config.numberOfLayers() : 0];
-        if (nativeProjections) {
+        boolean residentCopies =
+                nativeProjections
+                        && FP16Projections.resident(
+                                state.executionPolicy(), stackedWeights(config));
+        this.stacked =
+                nativeProjections && !residentCopies
+                        ? new FP16Projections(
+                                context,
+                                state.workspace.prepacking,
+                                widestStacked(config),
+                                paddedBatch,
+                                config.dim(),
+                                false,
+                                2 * config.numberOfLayers(),
+                                true)
+                        : null;
+        if (stacked != null) {
+            logInitialization(
+                    "[jitllm] prefill QKV and gate/up: cuBLAS over one %d MiB scratch, refilled"
+                            + " per chunk%n",
+                    2L * widestStacked(config) / (1024 * 1024));
+        }
+        this.gateUpCat = new HalfFloatArray[residentCopies ? config.numberOfLayers() : 0];
+        if (residentCopies) {
             long t0 = System.nanoTime();
             int rowsK = config.hiddenDim() * config.dim();
             for (int l = 0; l < config.numberOfLayers(); l++) {
@@ -430,8 +495,8 @@ public class Qwen3FP16LayersBatchPrefillMMA
                     (long) config.numberOfLayers() * 2 * rowsK * Short.BYTES / (1024 * 1024),
                     (System.nanoTime() - t0) / 1e9);
         }
-        this.qkvCat = new HalfFloatArray[nativeProjections ? config.numberOfLayers() : 0];
-        if (nativeProjections) {
+        this.qkvCat = new HalfFloatArray[residentCopies ? config.numberOfLayers() : 0];
+        if (residentCopies) {
             long t0 = System.nanoTime();
             for (int l = 0; l < config.numberOfLayers(); l++) {
                 HalfFloatArray wq = weights.wqLayered[l].asHalfFloatArray();
@@ -533,6 +598,7 @@ public class Qwen3FP16LayersBatchPrefillMMA
         this.cudnnOut = primary.cudnnOut;
         this.gateUpCat = primary.gateUpCat;
         this.qkvCat = primary.qkvCat;
+        this.stacked = primary.stacked;
         this.tcAttention =
                 TensorCoreBatchAttention.applies(
                                 state.usesFp16KeyValueCache(), paddedBatch, nEmbdHead)
@@ -655,6 +721,9 @@ public class Qwen3FP16LayersBatchPrefillMMA
                     batchPrefillLayer.transferToDevice(
                             DataTransferMode.FIRST_EXECUTION, tcAttention.buffers());
                 }
+                if (stacked != null) {
+                    batchPrefillLayer.consumeFromDevice(primaryGroup, stacked.buffers());
+                }
             } else {
                 String prev = graphPrefix + (firstLayer - layersPerGraph);
                 batchPrefillLayer.consumeFromDevice(
@@ -677,6 +746,9 @@ public class Qwen3FP16LayersBatchPrefillMMA
                 batchPrefillLayer.consumeFromDevice(prev, state.workspace.wrapBlockTable);
                 if (tcAttention != null) {
                     batchPrefillLayer.consumeFromDevice(prev, tcAttention.buffers());
+                }
+                if (stacked != null) {
+                    batchPrefillLayer.consumeFromDevice(prev, stacked.buffers());
                 }
             }
         } else if (firstLayer == 0) {
@@ -717,6 +789,10 @@ public class Qwen3FP16LayersBatchPrefillMMA
                 batchPrefillLayer.transferToDevice(
                         DataTransferMode.FIRST_EXECUTION, splitK.partial());
             }
+            if (stacked != null) {
+                batchPrefillLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, stacked.buffers());
+            }
             if (tcAttention != null) {
                 batchPrefillLayer.transferToDevice(
                         DataTransferMode.FIRST_EXECUTION, tcAttention.buffers());
@@ -746,6 +822,9 @@ public class Qwen3FP16LayersBatchPrefillMMA
             }
             if (!nativeProjections) {
                 batchPrefillLayer.consumeFromDevice(pred, splitK.partial());
+            }
+            if (stacked != null) {
+                batchPrefillLayer.consumeFromDevice(pred, stacked.buffers());
             }
             if (tcAttention != null) {
                 batchPrefillLayer.consumeFromDevice(pred, tcAttention.buffers());
@@ -799,7 +878,7 @@ public class Qwen3FP16LayersBatchPrefillMMA
                     weights.w2Layered[layerIndex].asHalfFloatArray(),
                     weights.w3Layered[layerIndex].asHalfFloatArray());
         }
-        if (nativeProjections) {
+        if (qkvCat.length > 0) {
             // Buffers this class owns, not the model's, so they need their own upload. The five
             // originals stay declared above: the decode layer graphs consume this graph's weight
             // buffers, and Qwen3FP16FFNLayersDecode uploads the ones this graph no longer reads.
@@ -1092,7 +1171,18 @@ public class Qwen3FP16LayersBatchPrefillMMA
     private void qkvProjection(TaskGraph batchPrefillLayer, int layerIndex, boolean cublas) {
         String tp = taskPrefix(layerIndex);
         int dim = config.dim();
-        if (cublas) {
+        if (cublas && stacked != null) {
+            stacked.project(
+                    batchPrefillLayer,
+                    tp + "qkvProj",
+                    state.workspace.wrapXbFP16Batch,
+                    state.workspace.qkvResultBatch,
+                    nativeGemmRows(),
+                    dim,
+                    weights.wqLayered[layerIndex],
+                    weights.wkLayered[layerIndex],
+                    weights.wvLayered[layerIndex]);
+        } else if (cublas) {
             batchPrefillLayer.libraryTask(
                     tp + "qkvProj",
                     CuBlas::cublasGemmExFP16FP32,
@@ -1169,7 +1259,17 @@ public class Qwen3FP16LayersBatchPrefillMMA
         String tp = taskPrefix(layerIndex);
         int dim = config.dim();
         int hidDim = config.hiddenDim();
-        if (cublas) {
+        if (cublas && stacked != null) {
+            stacked.project(
+                    batchPrefillLayer,
+                    tp + "gateUpProj",
+                    state.workspace.normedXFFNFP16,
+                    state.workspace.gateUpResultBatch,
+                    nativeGemmRows(),
+                    dim,
+                    weights.w1Layered[layerIndex],
+                    weights.w3Layered[layerIndex]);
+        } else if (cublas) {
             batchPrefillLayer.libraryTask(
                     tp + "gateUpProj",
                     CuBlas::cublasGemmExFP16FP32,
@@ -1442,6 +1542,10 @@ public class Qwen3FP16LayersBatchPrefillMMA
         }
         if (!nativeProjections) {
             splitK.addGrids(scheduler);
+        }
+        if (stacked != null) {
+            // The refill tasks' grids; the GEMMs are cuBLAS calls, which take none.
+            stacked.addGrids(scheduler);
         }
     }
 

@@ -10,15 +10,19 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.Qwen3FP16LayersBatchPrefillMMA;
 import org.beehive.jitllm.backend.tornado.memory.TornadoMemoryModel;
 import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.golden.GoldenFixture;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.runtime.memory.KeyValueReservation;
 import org.beehive.jitllm.runtime.memory.MemoryComponent;
 import org.beehive.jitllm.runtime.memory.MemoryPlan;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.policy.StorageOptions;
 import org.junit.Test;
 
 // @formatter:off
@@ -67,7 +71,17 @@ public class NativePrefillMemoryPlanAccelTest {
     /** Four half-precision {@code [head][token][headDim]} tensors at width 128. */
     private static final long MEASURED_STAGING_MIB = 2;
 
-    private static final String STACKED = "stacked projection weights (native prefill)";
+    /** The batched-prefill workspace with the stacked copies kept for the session. */
+    private static final String RESIDENT =
+            "batched prefill workspace (decoded projections resident)";
+
+    /** The same workspace with one scratch the copies are refilled into per chunk. */
+    private static final String PER_CHUNK =
+            "batched prefill workspace (decoded projections per chunk)";
+
+    /** The workspace of the generated-kernel path, which keeps no copies. */
+    private static final String JIT = "batched prefill workspace";
+
     private static final String STAGING = "fused attention staging (native prefill)";
 
     @Test
@@ -89,26 +103,29 @@ public class NativePrefillMemoryPlanAccelTest {
             System.setProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, "false");
             MemoryPlan off = predict(model, BATCH);
 
-            // ── the two components exist exactly where the path does ─────────
+            // ── the two costs exist exactly where the path does ──────────────
             assertTrue(
                     "the native path keeps stacked projection weights and the plan does not"
-                            + " mention them: "
+                            + " charge them: "
                             + names(on),
-                    component(on, STACKED).isPresent());
+                    component(on, RESIDENT).isPresent());
             assertTrue(
                     "the fused attention's staging is missing from the plan: " + names(on),
                     component(on, STAGING).isPresent());
-            assertFalse(
-                    "the generated-kernel path has no stacked weights, yet the plan charges for"
+            assertTrue(
+                    "the generated-kernel path keeps no stacked weights, yet the plan charges for"
                             + " them: "
                             + names(off),
-                    component(off, STACKED).isPresent());
+                    component(off, JIT).isPresent());
             assertFalse(
                     "the generated-kernel path has no fused attention staging: " + names(off),
                     component(off, STAGING).isPresent());
 
             // ── and they are the size the trace measured ─────────────────────
-            long stackedMib = component(on, STACKED).orElseThrow().logicalBytes() / MIB;
+            long stackedMib =
+                    (component(on, RESIDENT).orElseThrow().logicalBytes()
+                                    - component(off, JIT).orElseThrow().logicalBytes())
+                            / MIB;
             long stagingMib = component(on, STAGING).orElseThrow().logicalBytes() / MIB;
             assertEquals(
                     "stacked projection weights, against the measured allocation",
@@ -184,6 +201,50 @@ public class NativePrefillMemoryPlanAccelTest {
         }
     }
 
+    /**
+     * Where the stacked copies would not fit the budget, the plan keeps one scratch refilled per
+     * chunk instead, the size of the widest copy (gate|up, 12 MiB for Qwen3-0.6B), and fits.
+     */
+    @Test
+    public void copiesThatDoNotFitAreRefilledPerChunk() throws Exception {
+        Path model = GoldenFixture.locate(Fixture.QWEN3_0_6B_F16);
+        assumeTrue(
+                "environment absent: " + GoldenFixture.absentMessage(Fixture.QWEN3_0_6B_F16),
+                model != null);
+
+        String previous = System.getProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY);
+        try {
+            System.setProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, "true");
+            assumeTrue(
+                    "this host does not select the native prefill projections",
+                    Target.of(ExecutionPolicy.fromSystemProperties()).cublas());
+
+            MemoryPlan resident = predict(model, BATCH, 64L * 1024 * MIB);
+            assertTrue(names(resident), component(resident, RESIDENT).isPresent());
+
+            // 100 MiB short of the resident plan: the 560 MiB of copies cannot stay.
+            long tight = resident.predictedBudgetBytes() - 100 * MIB;
+            MemoryPlan perChunk = predict(model, BATCH, tight);
+            assertTrue(
+                    "copies that do not fit must be refilled per chunk: " + names(perChunk),
+                    component(perChunk, PER_CHUNK).isPresent());
+            assertTrue(
+                    "one refilled scratch has to fit where the copies did not",
+                    perChunk.fitsConfiguredBudget());
+            long savedMib =
+                    (component(resident, RESIDENT).orElseThrow().logicalBytes()
+                                    - component(perChunk, PER_CHUNK).orElseThrow().logicalBytes())
+                            / MIB;
+            assertTrue(
+                    "the scratch must cost far less than the copies it replaces: saved "
+                            + savedMib
+                            + " MiB",
+                    savedMib > MEASURED_STACKED_MIB - 20);
+        } finally {
+            restore(previous);
+        }
+    }
+
     private static Optional<MemoryComponent> component(MemoryPlan plan, String name) {
         return plan.components().stream().filter(c -> c.name().equals(name)).findFirst();
     }
@@ -208,8 +269,21 @@ public class NativePrefillMemoryPlanAccelTest {
                         .nativeLibraries(
                                 Boolean.getBoolean(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY))
                         .build();
+        boolean fp16Cache = StorageOptions.fromSystemProperties().usesFp16KeyValueCache();
+        // With the family's batched-prefill workspace, where the stacked copies are charged.
         return TornadoMemoryModel.predict(
-                weights, loaded.configuration(), policy, TornadoDevices.current(), budgetBytes);
+                weights,
+                loaded.configuration(),
+                policy,
+                TornadoDevices.current(),
+                budgetBytes,
+                KeyValueReservation.singlePrivate(fp16Cache),
+                Optional.of(
+                        Qwen3FP16LayersBatchPrefillMMA.workspace(
+                                (Qwen3Configuration) loaded.configuration(),
+                                batch,
+                                policy,
+                                fp16Cache)));
     }
 
     private static void restore(String previous) {

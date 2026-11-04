@@ -287,28 +287,19 @@ public final class TornadoMemoryModel {
         // The stacked copies do not show up as growth in the prefill family because they displace
         // exactly the five originals it stopped reading. Those five reappear in the decode family,
         // which now uploads them itself -- so the cost of the native path is one extra copy of the
-        // projection weights, plus the staging, and that is what these two components describe.
+        // projection weights, plus the staging. The copies are the family's batched-prefill
+        // workspace (kept for the session, or one scratch refilled per chunk); the staging is here.
         boolean nativePrefill = nativePrefillSelected(policy);
-        long stackedPerLayer = config.nativeStackedProjectionBytesPerLayer();
-        if (nativePrefill && stackedPerLayer > 0) {
+        long staging =
+                nativePrefill ? config.nativeAttentionStagingBytes(policy.prefillBatchSize()) : 0;
+        if (staging > 0) {
             components.add(
                     new MemoryComponent(
-                            "stacked projection weights (native prefill)",
-                            BufferClass.WEIGHTS_PER_LAYER,
-                            stackedPerLayer * config.numberOfLayers(),
+                            "fused attention staging (native prefill)",
+                            BufferClass.BATCH_STAGING,
+                            staging,
                             1,
-                            // Two stacked arrays per layer, each its own device buffer.
-                            2L * config.numberOfLayers() * header));
-            long staging = config.nativeAttentionStagingBytes(policy.prefillBatchSize());
-            if (staging > 0) {
-                components.add(
-                        new MemoryComponent(
-                                "fused attention staging (native prefill)",
-                                BufferClass.BATCH_STAGING,
-                                staging,
-                                1,
-                                4 * header));
-            }
+                            4 * header));
         }
 
         // ── control and result carriers ──────────────────────────────────────
@@ -400,7 +391,7 @@ public final class TornadoMemoryModel {
                         + "; kv "
                         + (keyValue.fp16() ? "FP16" : "FP32")
                         + keyValueAssumption(keyValue)
-                        + (nativePrefill && stackedPerLayer > 0 ? "; native prefill" : "")
+                        + (staging > 0 ? "; native prefill" : "")
                         + "; native-array header "
                         + header
                         + " B");
