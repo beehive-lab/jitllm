@@ -158,6 +158,20 @@ public final class WorkPlan {
         instances.values().forEach(instance -> instance.addGrids(scheduler));
     }
 
+    /** Whether a step of {@code region} runs on {@code library}, for example {@code "cuBLAS"}. */
+    public boolean runs(Region region, String library) {
+        List<Chosen> chosen = steps.get(region);
+        if (chosen == null) {
+            throw new IllegalArgumentException("not a region of this plan: " + region.name());
+        }
+        for (Chosen c : chosen) {
+            if (library.equals(c.implementation().library())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** The vendor libraries used, for example {@code "cuBLAS"}, or {@code "none"}. */
     public String libraries() {
         List<String> libraries = new ArrayList<>();
