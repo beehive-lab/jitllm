@@ -290,6 +290,10 @@ public class JitllmBench {
                             candidate ->
                                     org.beehive.jitllm.api.LocalModels.fitsDevice(
                                             path, fitOptions, candidate));
+            // And run's choice of resident or per-chunk projection copies, for this policy.
+            benchPolicy =
+                    org.beehive.jitllm.api.LocalModels.resolveDecodedProjections(
+                            path, fitOptions, benchPolicy);
             if (benchPolicy.phaseStrategy()
                     == org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy
                             .PREFILL_DECODE) {

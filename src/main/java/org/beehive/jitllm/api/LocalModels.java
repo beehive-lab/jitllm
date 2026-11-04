@@ -79,7 +79,17 @@ public final class LocalModels {
                         ? deviceDefault(model, modelFile, contextLength, options)
                         : options.executionPolicy();
         if (gpu) {
-            policy = ExecutionPolicy.from(policy).decodedProjections(decodedProjections).build();
+            // Resident or per chunk is decided for the policy the session runs. The device's
+            // default can turn native libraries on after the check above, and cuBLAS's stacked
+            // copies of F16 weights exist only then: Qwen3-8B F16 under a 22 GB budget gets one
+            // shared scratch instead of 8.4 GiB of copies.
+            policy =
+                    policy.equals(options.executionPolicy())
+                            ? ExecutionPolicy.from(policy)
+                                    .decodedProjections(decodedProjections)
+                                    .build()
+                            : MemoryPreflight.resolveDecodedProjections(
+                                    modelFile, contextLength, options, policy);
         }
         return new DelegatingModel(
                 model,
@@ -205,6 +215,22 @@ public final class LocalModels {
         Objects.requireNonNull(options, "options");
         int contextLength = options.contextLength() > 0 ? options.contextLength() : -1;
         return MemoryPreflight.fits(modelFile, contextLength, options, policy);
+    }
+
+    /**
+     * {@code policy} with its decoded or stacked projection copies settled as a load settles them:
+     * kept for the whole session where they fit the budget, one shared scratch refilled per chunk
+     * where they do not. Example: Qwen3-8B F16 on cuBLAS under a 22 GB budget gets the scratch.
+     *
+     * @throws InsufficientDeviceMemoryException when even the scratch does not fit
+     */
+    @Experimental
+    public static ExecutionPolicy resolveDecodedProjections(
+            Path modelFile, ModelOptions options, ExecutionPolicy policy) {
+        Objects.requireNonNull(modelFile, "modelFile");
+        Objects.requireNonNull(options, "options");
+        int contextLength = options.contextLength() > 0 ? options.contextLength() : -1;
+        return MemoryPreflight.resolveDecodedProjections(modelFile, contextLength, options, policy);
     }
 
     /** Preflights with the model file's own settings. */
