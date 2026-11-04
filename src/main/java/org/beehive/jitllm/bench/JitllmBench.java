@@ -267,7 +267,17 @@ public class JitllmBench {
         org.beehive.jitllm.integration.cli.ExperimentalWarnings.nativeLibraries(benchPolicy);
         if (!cpu) {
             // Flags left out take the device's default, as run, chat and serve do: the bench
-            // measures what a user who passes the same flags gets.
+            // measures what a user who passes the same flags gets. That includes run's memory
+            // check: a default whose copies would not fit is skipped, as Qwen3-8B F16's cuBLAS
+            // copies are on a 24 GB GPU.
+            org.beehive.jitllm.runtime.policy.StorageOptions storage =
+                    org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties();
+            org.beehive.jitllm.api.ModelOptions fitOptions =
+                    org.beehive.jitllm.api.ModelOptions.builder()
+                            .contextLength(maxCtx)
+                            .executionPolicy(benchPolicy)
+                            .storageOptions(storage)
+                            .build();
             benchPolicy =
                     org.beehive.jitllm.backend.tornado.DeviceDefaultPolicy.resolve(
                             model,
@@ -276,8 +286,10 @@ public class JitllmBench {
                                     && System.getProperty("jitllm.prefillBatchSize") == null,
                             !org.beehive.jitllm.runtime.policy.ExecutionPolicy
                                     .nativeLibrariesSpecified(),
-                            org.beehive.jitllm.runtime.policy.StorageOptions
-                                    .fromSystemProperties());
+                            storage,
+                            candidate ->
+                                    org.beehive.jitllm.api.LocalModels.fitsDevice(
+                                            path, fitOptions, candidate));
             if (benchPolicy.phaseStrategy()
                     == org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy
                             .PREFILL_DECODE) {

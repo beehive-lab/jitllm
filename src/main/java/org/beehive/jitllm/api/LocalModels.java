@@ -194,6 +194,19 @@ public final class LocalModels {
         return MemoryPreflight.plan(modelFile, contextLength, options);
     }
 
+    /**
+     * Whether {@code policy} is predicted to fit the device's memory budget for this file: the
+     * check a load makes before it takes the device's default. Example: Qwen3-8B F16 on a 24 GB
+     * GPU, where cuBLAS's stacked weight copies would not fit, so the default turns cuBLAS off.
+     */
+    @Experimental
+    public static boolean fitsDevice(Path modelFile, ModelOptions options, ExecutionPolicy policy) {
+        Objects.requireNonNull(modelFile, "modelFile");
+        Objects.requireNonNull(options, "options");
+        int contextLength = options.contextLength() > 0 ? options.contextLength() : -1;
+        return MemoryPreflight.fits(modelFile, contextLength, options, policy);
+    }
+
     /** Preflights with the model file's own settings. */
     @Experimental
     public static MemoryPlan preflight(Path modelFile) throws IOException {
