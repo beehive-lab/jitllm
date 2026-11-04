@@ -49,7 +49,10 @@
                  KernelContext.allocateHalf2LocalArray, signed int-to-float conversion, private
                  array zero-init, FP16 header selection, HalfFloat(short) bit reinterpretation,
                  in-kernel reads of MMA accumulator elements, byte-offset int8 fragment loads); an
-                 older SDK fails at compile time. Its JDK line
+                 older SDK fails at compile time. It must also carry
+                 TaskGraph.consumeFromUnifiedMemory (beehive-lab/TornadoVM#1315), which reads the
+                 weights in place on Apple silicon; no release has it yet, so until one does the
+                 SDK is a build of that pull request's branch. Its JDK line
                  must also match the JDK running Maven: a -jdk21 SDK for JDK 21, a -jdk22plus SDK for
                  JDK 22 and newer, or javac rejects its class files.
 
@@ -63,9 +66,9 @@
                  the class path instead. -->
         <tornadovm.module.path>${tornadovm.sdk.modules}</tornadovm.module.path>
         <tornadovm.add.modules>,tornado.api,tornado.runtime,tornado.cublas,tornado.cudnn,tornado.mlx</tornadovm.add.modules>
-        <!-- The test JVM resolves those modules eagerly, so it also needs what tornado.runtime
-                 requires at run time: the Graal the SDK vendors as tornado.graal. -->
-        <tornadovm.test.module.path>${tornadovm.module.path}${path.separator}${env.TORNADOVM_HOME}/share/java/graalJars</tornadovm.test.module.path>
+        <!-- The test JVM resolves those modules eagerly. TornadoVM 8 vendors no Graal: its compiler
+                 modules are in the same directory, so the test JVM needs nothing more. -->
+        <tornadovm.test.module.path>${tornadovm.module.path}</tornadovm.test.module.path>
         <tornadovm.sdk.check.skip>false</tornadovm.sdk.check.skip>
         <!-- The tornado.jdk.floor a matching SDK records in etc/tornado.jdk; set by the JDK profiles. -->
         <tornadovm.sdk.jdk.floor>22</tornadovm.sdk.jdk.floor>
@@ -223,7 +226,7 @@
                             <rules>
                                 <requireEnvironmentVariable>
                                     <variableName>TORNADOVM_HOME</variableName>
-                                    <message>TORNADOVM_HOME is not set. jitllm compiles against the TornadoVM SDK it points at (7.3 or newer, on the JDK line of the JDK running Maven): install one (sdk install tornadovm) or prepare one (scripts/tornadovm-dev.sh setup) and export TORNADOVM_HOME.</message>
+                                    <message>TORNADOVM_HOME is not set. jitllm compiles against the TornadoVM SDK it points at (one with TaskGraph.consumeFromUnifiedMemory, beehive-lab/TornadoVM#1315, on the JDK line of the JDK running Maven): prepare one from that pull request's commit (scripts/tornadovm-dev.sh setup --ref and its commit) and export TORNADOVM_HOME.</message>
                                 </requireEnvironmentVariable>
                                 <!-- Not requireFilesExist: it also requires the path to equal its
                                          canonical form, so it rejects any path through a symlink,

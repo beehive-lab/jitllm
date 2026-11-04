@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
@@ -115,7 +116,7 @@ public record MlxPrefill(DataType weights, Projections projections) {
      * run the JIT kernels, which read each tensor by its type.
      */
     public static Optional<MlxPrefill> resolve(
-            ExecutionPolicy policy, TornadoWeights weights, Configuration config) {
+            State state, TornadoWeights weights, Configuration config) {
         for (TornadoTensor[] layers : weights.projections()) {
             if (layers == null) {
                 continue; // a family that fuses some projections (Phi-3) has no split ones
@@ -126,7 +127,7 @@ public record MlxPrefill(DataType weights, Projections projections) {
                 }
             }
         }
-        return resolve(policy, weights.dataType(), config);
+        return resolve(state.executionPolicy(), weights.dataType(), config);
     }
 
     /** Whether MLX's kernel library can be reached from this process at all. */

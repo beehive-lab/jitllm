@@ -14,6 +14,7 @@ import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillAttention;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.GraniteState;
@@ -76,7 +77,7 @@ public class GraniteFP16LayersBatchPrefill implements BatchPrefillTransformerLay
         this.weights = weights;
         this.config = config;
         this.batchSize = batchSize;
-        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state.executionPolicy(), weights, config);
+        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state, weights, config);
         this.mlxAttention =
                 MlxPrefillAttention.ifPresent(
                         mlx,
@@ -181,8 +182,9 @@ public class GraniteFP16LayersBatchPrefill implements BatchPrefillTransformerLay
         if (mlxProjections != null) {
             mlxProjections.declare(layer, layerIndex, GraphNames.batchPrefillLayer(layerIndex - 1));
         }
-        layer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
+        UnifiedMemoryWeights.upload(
+                layer,
+                state.workspace,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 weights.wqLayered[layerIndex].asHalfFloatArray(),
                 weights.wkLayered[layerIndex].asHalfFloatArray(),

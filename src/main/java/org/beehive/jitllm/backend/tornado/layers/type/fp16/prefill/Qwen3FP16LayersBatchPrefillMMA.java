@@ -14,6 +14,7 @@ import org.beehive.jitllm.backend.tornado.layers.SplitKGemm;
 import org.beehive.jitllm.backend.tornado.layers.TensorCoreBatchAttention;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
@@ -750,8 +751,9 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     weights.w2Layered[layerIndex].asHalfFloatArray(),
                     weights.w3Layered[layerIndex].asHalfFloatArray());
         } else {
-            batchPrefillLayer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION,
+            UnifiedMemoryWeights.upload(
+                    batchPrefillLayer,
+                    state.workspace,
                     weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                     weights.wqLayered[layerIndex].asHalfFloatArray(),
                     weights.wkLayered[layerIndex].asHalfFloatArray(),

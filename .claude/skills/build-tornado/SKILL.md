@@ -9,9 +9,9 @@ metadata:
 # Build TornadoVM
 
 One SDK per (JDK line, backend). jitllm compiles against whatever SDK `TORNADOVM_HOME`
-points at, from TornadoVM 7.3.0 on. A released SDK (`sdk install tornadovm`) needs no build;
-build one when you need `develop` or a backend no release ships. `pom.xml` names one release,
-`tornadovm.release.version`, which is what `-P release` depends on.
+points at, if it has `TaskGraph.consumeFromUnifiedMemory` (beehive-lab/TornadoVM#1315). No
+release has it yet: build the branch of that pull request, `feat/consume-from-unified-memory`.
+`pom.xml` names one release, `tornadovm.release.version`, which is what `-P release` depends on.
 
 ## When to use
 

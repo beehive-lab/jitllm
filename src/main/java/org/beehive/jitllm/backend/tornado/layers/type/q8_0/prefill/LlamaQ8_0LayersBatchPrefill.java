@@ -15,6 +15,7 @@ import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
 import org.beehive.jitllm.backend.tornado.layers.QuantizedBatchProjections;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.LlamaFP16LayersBatchPrefill;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -92,7 +93,7 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         this.config = config;
         this.qDim = config.numberOfHeads() * config.headSize();
         this.batchSize = batchSize;
-        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state.executionPolicy(), weights, config);
+        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state, weights, config);
         this.mlxAttention =
                 MlxPrefillAttention.ifPresent(
                         mlx,
@@ -193,8 +194,9 @@ public class LlamaQ8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         }
 
         // Per-layer weights: upload once (Q8_0 format)
-        layer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
+        UnifiedMemoryWeights.upload(
+                layer,
+                state.workspace,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 weights.wqLayered[layerIndex].deviceArray(),
                 weights.wkLayered[layerIndex].deviceArray(),

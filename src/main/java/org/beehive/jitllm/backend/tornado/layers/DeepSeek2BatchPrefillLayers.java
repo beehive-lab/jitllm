@@ -9,6 +9,7 @@ import org.beehive.jitllm.backend.tornado.kernels.BatchMmaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.DeepSeek2BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.DeepSeek2State;
 import org.beehive.jitllm.inference.weights.DeepSeek2LayerWeights;
@@ -284,7 +285,7 @@ public class DeepSeek2BatchPrefillLayers implements BatchPrefillTransformerLayer
         own.add(kvAPadded[l]);
         own.add(kBF16[l]);
         own.add(vBF16[l]);
-        g.transferToDevice(DataTransferMode.FIRST_EXECUTION, own.toArray());
+        UnifiedMemoryWeights.upload(g, state.workspace, own.toArray());
 
         // ── attention ──
         rmsRows(

@@ -37,6 +37,12 @@ public final class TornadoWorkspace {
     /** Which weights this session's plan prepacks, set when the plan is built. */
     public WeightPrepacking prepacking = WeightPrepacking.NONE;
 
+    /**
+     * Whether this session's plan reads its weights in place from unified memory ({@code
+     * UnifiedMemoryWeights}), set when the plan is built.
+     */
+    public boolean unifiedMemory;
+
     /** Which task graph uploads each weight. Reset for every new execution plan. */
     public WeightBindings weightBindings = new WeightBindings();
 

@@ -200,6 +200,10 @@ public final class TornadoPlanRegistry {
                         ? WeightPrepacking.forPlan(provider, weights, state.executionPolicy())
                         : WeightPrepacking.NONE;
         state.workspace.weightBindings = new WeightBindings();
+        state.workspace.unifiedMemory =
+                UnifiedMemoryWeights.applies(
+                        provider, state.executionPolicy(), quantization, model.configuration());
+        state.workspace.prepacker.unifiedMemory = state.workspace.unifiedMemory;
         SingleTokenForwardPlanComponents components =
                 provider.components(quantization, state, model);
         // A provider may support a mode for one representation and not for another — Llama has
