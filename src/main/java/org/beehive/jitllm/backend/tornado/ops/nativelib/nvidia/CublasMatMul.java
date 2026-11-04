@@ -3,7 +3,6 @@ package org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia;
 import org.beehive.jitllm.backend.tornado.ops.DecodedMatMul;
 import org.beehive.jitllm.backend.tornado.ops.Step;
 import org.beehive.jitllm.backend.tornado.ops.Target;
-import org.beehive.jitllm.runtime.backend.DeviceCapability;
 
 /**
  * The tensor-core batched prefill on cuBLAS: JIT kernels decode the weights to FP16, then cuBLAS
@@ -21,9 +20,7 @@ public final class CublasMatMul extends DecodedMatMul {
 
     @Override
     public boolean accepts(Step step, Target target) {
-        return target.policy().nativeLibraries()
-                && target.supports(DeviceCapability.TENSOR_CORE_MMA)
-                && NativePrefillSupport.cublasAvailable();
+        return target.cublas();
     }
 
     @Override

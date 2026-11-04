@@ -6,6 +6,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
+import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
 import org.beehive.jitllm.golden.GoldenFixture;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
@@ -92,12 +93,12 @@ public class NativePrefillWeightHandoffAccelTest {
                                             .fromSystemProperties(),
                                     true,
                                     PROBE_SHAPE),
-                    NativePrefillSupport.nativeProjections(ExecutionPolicy.fromSystemProperties()));
+                    Target.of(ExecutionPolicy.fromSystemProperties()).cublas());
             System.setProperty(NATIVE_PROPERTY, "false");
             assertFalse(
                     "the off-switch did not switch anything off, so both halves of this"
                             + " comparison would run the same path and prove nothing",
-                    NativePrefillSupport.nativeProjections(ExecutionPolicy.fromSystemProperties()));
+                    Target.of(ExecutionPolicy.fromSystemProperties()).cublas());
 
             String jit = generate(model, false);
             String nativePrefill = generate(model, true);

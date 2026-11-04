@@ -3,7 +3,6 @@ package org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia;
 import org.beehive.jitllm.backend.tornado.ops.LayerProjections;
 import org.beehive.jitllm.backend.tornado.ops.Step;
 import org.beehive.jitllm.backend.tornado.ops.Target;
-import org.beehive.jitllm.runtime.backend.DeviceCapability;
 
 /**
  * {@link LayerProjections} on cuBLAS: the projections the layer class has a cuBLAS form for.
@@ -24,10 +23,7 @@ public final class CublasLayerProjections extends LayerProjections {
 
     @Override
     public boolean accepts(Step step, Target target) {
-        return target.policy().nativeLibraries()
-                && target.supports(DeviceCapability.TENSOR_CORE_MMA)
-                && NativePrefillSupport.cublasAvailable()
-                && tasks.cublasForm(step);
+        return target.cublas() && tasks.cublasForm(step);
     }
 
     @Override

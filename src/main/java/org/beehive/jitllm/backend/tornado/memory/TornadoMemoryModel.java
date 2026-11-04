@@ -3,7 +3,7 @@ package org.beehive.jitllm.backend.tornado.memory;
 import java.util.ArrayList;
 import java.util.List;
 import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
-import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.plan.layout.TornadoGraphTopology;
 import org.beehive.jitllm.inference.state.State;
@@ -88,7 +88,7 @@ public final class TornadoMemoryModel {
     // @formatter:on
     private static boolean nativePrefillSelected(ExecutionPolicy policy) {
         return ExecutionMode.of(policy) == ExecutionMode.BATCH_PREFILL_DECODE
-                && NativePrefillSupport.nativeProjections(policy);
+                && Target.of(policy).cublas();
     }
 
     /**

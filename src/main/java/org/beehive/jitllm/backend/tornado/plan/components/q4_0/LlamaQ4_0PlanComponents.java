@@ -13,7 +13,7 @@ import org.beehive.jitllm.backend.tornado.layers.type.q4_0.prefill.LlamaQ4_0Laye
 import org.beehive.jitllm.backend.tornado.layers.type.q4_0.prefill.LlamaQ4_0LayersBatchPrefillNative;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LogitsQ8_0Layer;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode.LogitsQ8_0LayerDecode;
-import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.StagedForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation;
@@ -131,7 +131,7 @@ public class LlamaQ4_0PlanComponents
         if (firstLayer == 0 && endLayer == config.numberOfLayers()) {
             return new LlamaQ4_0LayersBatchPrefillMMA(state, weights, config, batchSize);
         }
-        if (!NativePrefillSupport.nativeProjections(state.executionPolicy())) {
+        if (!Target.of(state.executionPolicy()).cublas()) {
             throw new UnsupportedOperationException(
                     "the Llama Q4_0 batched prefill of a pipeline stage runs its projections"
                             + " through cuBLAS: add --with-native-libraries");

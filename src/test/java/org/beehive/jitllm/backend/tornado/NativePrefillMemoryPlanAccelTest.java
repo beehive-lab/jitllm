@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Optional;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.memory.TornadoMemoryModel;
-import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.golden.GoldenFixture;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.beehive.jitllm.model.Model;
@@ -83,7 +83,7 @@ public class NativePrefillMemoryPlanAccelTest {
             assumeTrue(
                     "this host does not select the native prefill projections, so there is no"
                             + " native memory plan to check",
-                    NativePrefillSupport.nativeProjections(ExecutionPolicy.fromSystemProperties()));
+                    Target.of(ExecutionPolicy.fromSystemProperties()).cublas());
             MemoryPlan on = predict(model, BATCH);
 
             System.setProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, "false");
@@ -164,7 +164,7 @@ public class NativePrefillMemoryPlanAccelTest {
             System.setProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, "true");
             assumeTrue(
                     "this host does not select the native prefill projections",
-                    NativePrefillSupport.nativeProjections(ExecutionPolicy.fromSystemProperties()));
+                    Target.of(ExecutionPolicy.fromSystemProperties()).cublas());
 
             MemoryPlan generous = predict(model, BATCH, 64L * 1024 * MIB);
             assertTrue("a 64 GiB budget has to fit", generous.fitsConfiguredBudget());

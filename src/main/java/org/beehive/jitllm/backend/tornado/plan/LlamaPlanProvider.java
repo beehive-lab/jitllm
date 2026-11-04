@@ -13,7 +13,7 @@ import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.LlamaFP16Layer
 import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
-import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.fp16.LlamaFP16PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.q8_0.LlamaQ8_0PlanComponents;
@@ -159,7 +159,7 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
         if (c.weights() == DataType.Q4_0
                 && !BackendId.METAL.equals(c.backend())
                 && !c.tensorCores()
-                && !NativePrefillSupport.nativeProjections(policy)) {
+                && !Target.of(policy).cublas()) {
             return Optional.of(
                     "the llama Q4_0 batched prefill needs tensor cores, or cuBLAS through"
                             + " --with-native-libraries");
@@ -179,7 +179,7 @@ public final class LlamaPlanProvider implements TornadoPlanProvider {
             return TornadoPlanProvider.super.splitUnsupported(weights, policy, stages);
         }
         if (weights == DataType.Q4_0) {
-            return batched && stages > 1 && !NativePrefillSupport.nativeProjections(policy)
+            return batched && stages > 1 && !Target.of(policy).cublas()
                     ? Optional.of(
                             "the llama Q4_0 batched prefill of a pipeline stage runs its"
                                     + " projections through cuBLAS: add --with-native-libraries")
