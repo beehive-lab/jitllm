@@ -233,8 +233,8 @@ final class MemoryPreflight {
      * Whether a load under {@code policy} rather than the options' own passes {@link
      * #refuseIfOverCapacity}'s rule. Asked of the device's default policy, which is resolved only
      * once the model is loaded: batched prefill with the native libraries can need more than the
-     * policy checked before the load (Qwen3-8B F16 with cuBLAS keeps stacked copies of its
-     * projections, 9 GB). A prediction that cannot be computed does not count against it.
+     * policy checked before the load. A prediction that cannot be computed does not count against
+     * it.
      */
     static boolean fits(
             Path modelFile, int contextLength, ModelOptions options, ExecutionPolicy policy) {

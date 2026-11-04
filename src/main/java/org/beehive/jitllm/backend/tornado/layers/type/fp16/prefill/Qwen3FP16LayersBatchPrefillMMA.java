@@ -228,7 +228,6 @@ public class Qwen3FP16LayersBatchPrefillMMA
      * With cuBLAS, when the stacked copies above are not kept for the whole session: one shared
      * scratch that each layer refills with its q|k|v, then its gate|up, just before the GEMM, in
      * every chunk; {@code null} otherwise. The memory check picks which ({@link #workspace}).
-     * Example: Qwen3-8B F16 under a 22 GB budget, where the copies would take 8.4 GiB.
      */
     private final FP16Projections stacked;
 

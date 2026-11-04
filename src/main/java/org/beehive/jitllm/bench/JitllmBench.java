@@ -268,8 +268,7 @@ public class JitllmBench {
         if (!cpu) {
             // Flags left out take the device's default, as run, chat and serve do: the bench
             // measures what a user who passes the same flags gets. That includes run's memory
-            // check: a default whose copies would not fit is skipped, as Qwen3-8B F16's cuBLAS
-            // copies are on a 24 GB GPU.
+            // check: a default whose copies would not fit the budget is skipped.
             org.beehive.jitllm.runtime.policy.StorageOptions storage =
                     org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties();
             org.beehive.jitllm.api.ModelOptions fitOptions =
@@ -288,7 +287,7 @@ public class JitllmBench {
                                     .nativeLibrariesSpecified(),
                             storage,
                             candidate ->
-                                    org.beehive.jitllm.api.LocalModels.fitsDevice(
+                                    org.beehive.jitllm.api.LocalModels.fitsMemoryBudget(
                                             path, fitOptions, candidate));
             // And run's choice of resident or per-chunk projection copies, for this policy.
             benchPolicy =

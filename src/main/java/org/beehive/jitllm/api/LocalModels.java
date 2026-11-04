@@ -81,8 +81,7 @@ public final class LocalModels {
         if (gpu) {
             // Resident or per chunk is decided for the policy the session runs. The device's
             // default can turn native libraries on after the check above, and cuBLAS's stacked
-            // copies of F16 weights exist only then: Qwen3-8B F16 under a 22 GB budget gets one
-            // shared scratch instead of 8.4 GiB of copies.
+            // copies of F16 weights exist only then.
             policy =
                     policy.equals(options.executionPolicy())
                             ? ExecutionPolicy.from(policy)
@@ -205,12 +204,13 @@ public final class LocalModels {
     }
 
     /**
-     * Whether {@code policy} is predicted to fit the device's memory budget for this file: the
-     * check a load makes before it takes the device's default. Example: Qwen3-8B F16 on a 24 GB
-     * GPU, where cuBLAS's stacked weight copies would not fit, so the default turns cuBLAS off.
+     * Whether {@code policy} is predicted to fit the configured memory budget for this file: the
+     * check a load makes before it takes the device's default. With no budget set, every policy
+     * fits.
      */
     @Experimental
-    public static boolean fitsDevice(Path modelFile, ModelOptions options, ExecutionPolicy policy) {
+    public static boolean fitsMemoryBudget(
+            Path modelFile, ModelOptions options, ExecutionPolicy policy) {
         Objects.requireNonNull(modelFile, "modelFile");
         Objects.requireNonNull(options, "options");
         int contextLength = options.contextLength() > 0 ? options.contextLength() : -1;
@@ -220,7 +220,7 @@ public final class LocalModels {
     /**
      * {@code policy} with its decoded or stacked projection copies settled as a load settles them:
      * kept for the whole session where they fit the budget, one shared scratch refilled per chunk
-     * where they do not. Example: Qwen3-8B F16 on cuBLAS under a 22 GB budget gets the scratch.
+     * where they do not.
      *
      * @throws InsufficientDeviceMemoryException when even the scratch does not fit
      */
