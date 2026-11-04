@@ -1,6 +1,8 @@
 package org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.OptionalInt;
 import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.kernels.CuDnnPrefillAttentionKernels;
@@ -13,12 +15,29 @@ import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.SplitKGemm;
 import org.beehive.jitllm.backend.tornado.layers.TensorCoreBatchAttention;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
+import org.beehive.jitllm.backend.tornado.ops.LayerAttention;
+import org.beehive.jitllm.backend.tornado.ops.LayerProjections;
+import org.beehive.jitllm.backend.tornado.ops.Operands;
+import org.beehive.jitllm.backend.tornado.ops.Region;
+import org.beehive.jitllm.backend.tornado.ops.Step;
+import org.beehive.jitllm.backend.tornado.ops.Target;
+import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
+import org.beehive.jitllm.backend.tornado.ops.jit.JitLayerAttention;
+import org.beehive.jitllm.backend.tornado.ops.jit.JitLayerProjections;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.CublasLayerProjections;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.CudnnLayerAttention;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.program.op.Attention;
+import org.beehive.jitllm.program.op.MatMul;
+import org.beehive.jitllm.program.op.OperandRef;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.TensorRole;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -59,7 +78,10 @@ import uk.ac.manchester.tornado.cudnn.CuDnn;
  * <p>Requires dim, qDim, kvDim, and hidDim to be multiples of 128 (holds for all standard Qwen3
  * checkpoints).
  */
-public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLayerTaskGraphs {
+public class Qwen3FP16LayersBatchPrefillMMA
+        implements BatchPrefillTransformerLayerTaskGraphs,
+                LayerProjections.Tasks,
+                LayerAttention.Tasks {
 
     /** Legacy detail; the startup report's native-library and MMA lines cover it under -v. */
     private static void logInitialization(String format, Object... args) {
@@ -97,6 +119,24 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final Qwen3TornadoWeights weights;
     private final Qwen3Configuration config;
     private final KernelContext context = new KernelContext();
+
+    /** One layer's regions, in the order they run. */
+    private record LayerRegions(
+            Region qkv, Region attention, Region output, Region gateUp, Region down) {}
+
+    /** Every layer's regions. */
+    private final List<LayerRegions> regions;
+
+    /** Which of cuBLAS, cuDNN and the JIT kernels runs each region. */
+    private final WorkPlan plan;
+
+    /** The plan's record of the weights its steps read, which this class does not need. */
+    private final WeightBindings bindings = new WeightBindings();
+
+    /** The plan's arrays: the tasks this class adds name their buffers themselves. */
+    private static final Operands NO_OPERANDS =
+            Operands.of(java.util.Map.of(), (role, layer) -> null, List.of());
+
     private final int batchSize;
     // GEMM M dimension rounded up to whole 128-row tiles (BM); see the Llama
     // planner for the padding rationale. Non-GEMM kernels use the true batchSize.
@@ -339,10 +379,11 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // this tuple, and finding that out at execution time would be far too late.
         boolean fp16Kv = state.usesFp16KeyValueCache();
         this.sdpaShape = sdpaShape(config, batchSize);
-        this.cudnnAttention =
-                fp16Kv && NativePrefillSupport.nativeAttention(state.executionPolicy(), sdpaShape);
+        this.regions = regions(config, batchSize);
+        this.plan = plan();
+        this.cudnnAttention = plan.runs(regions.get(0).attention(), "cuDNN");
         this.useCudnnAttention = this.cudnnAttention;
-        this.nativeProjections = nativeProjections(state.executionPolicy());
+        this.nativeProjections = plan.runs(regions.get(0).qkv(), "cuBLAS");
         this.layersPerGraph = Math.min(prefillLayersPerGraph(), config.numberOfLayers());
         logInitialization(
                 "[jitllm] prefill acceleration: %s%n",
@@ -486,6 +527,8 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.cudnnAttention = primary.cudnnAttention;
         this.nativeProjections = primary.nativeProjections;
         this.sdpaShape = primary.sdpaShape;
+        this.regions = primary.regions;
+        this.plan = plan();
         this.layersPerGraph = primary.layersPerGraph;
         this.nHeadKv = primary.nHeadKv;
         this.nEmbdHead = primary.nEmbdHead;
@@ -808,38 +851,7 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         // and the normalization, RoPE and cache-write tasks downstream are untouched. Same
         // contract as the other native projections: FP16 operands, FP32 accumulation, FP32
         // qkvResultBatch.
-        if (nativeProjections) {
-            batchPrefillLayer.libraryTask(
-                    tp + "qkvProj",
-                    CuBlas::cublasGemmExFP16FP32,
-                    1,
-                    0,
-                    qDim + 2 * kvDim,
-                    nativeGemmRows(),
-                    dim,
-                    1.0f,
-                    qkvCat[layerIndex],
-                    dim,
-                    state.workspace.wrapXbFP16Batch,
-                    dim,
-                    0.0f,
-                    state.workspace.qkvResultBatch,
-                    qDim + 2 * kvDim);
-        } else {
-            batchPrefillLayer.task(
-                    tp + "qkvProj",
-                    TransformerBatchPrefillKernels::gemmMMAQKV,
-                    context,
-                    state.workspace.wrapXbFP16Batch,
-                    weights.wqLayered[layerIndex].asHalfFloatArray(),
-                    weights.wkLayered[layerIndex].asHalfFloatArray(),
-                    weights.wvLayered[layerIndex].asHalfFloatArray(),
-                    state.workspace.qkvResultBatch,
-                    paddedBatch,
-                    qDim,
-                    kvDim,
-                    dim);
-        }
+        plan.emit(batchPrefillLayer, regions.get(layerIndex).qkv(), NO_OPERANDS, bindings);
 
         // Qwen3: per-head RMS norm on Q and K before RoPE
         batchPrefillLayer.task(
@@ -876,8 +888,114 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.kvBlockCfg,
                     state.kvBlockStride,
                     qDim);
+        } else {
+            batchPrefillLayer.task(
+                    tp + "batch_rope_kv",
+                    Qwen3PagedKvKernels::batchedRopeWithKVCacheQwen3PackedPaged,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    state.workspace.qkvResultBatch,
+                    state.workspace.wrapKeyCache,
+                    state.workspace.wrapValueCache,
+                    config.ropeTheta(),
+                    kvDim,
+                    nEmbdHead,
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride,
+                    qDim);
+        }
+        plan.emit(batchPrefillLayer, regions.get(layerIndex).attention(), NO_OPERANDS, bindings);
 
-            if (useCudnnAttention) {
+        // Output projection: [M=batch, N=dim, K=qDim]
+        plan.emit(batchPrefillLayer, regions.get(layerIndex).output(), NO_OPERANDS, bindings);
+
+        // ── FFN Block ──────────────────────────────────────────────────────────
+        batchPrefillLayer.task(
+                tp + "batch_ffn_rms",
+                TransformerBatchPrefillKernels::batchedRmsReduceFusedResidual,
+                context,
+                state.workspace.wrapXBatch,
+                state.workspace.woOut,
+                state.workspace.ffnScaleBatch,
+                dim,
+                config.rmsNormEps(),
+                RMS_LOCAL_SIZE);
+
+        batchPrefillLayer.task(
+                tp + "batch_ffn_rms_apply",
+                TransformerBatchPrefillKernels::batchedFFNRmsApplyFP16,
+                context,
+                state.workspace.normedXFFNFP16,
+                state.workspace.wrapXBatch,
+                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                state.workspace.ffnScaleBatch,
+                dim);
+
+        // Gate/up: [M=batch, N=2*hidDim, K=dim], producing the packed [gate|up] rows the SwiGLU
+        // kernel reads as rowBase+i and rowBase+hidDim+i. One GEMM over the stacked weight
+        // reproduces that layout exactly -- output column c < hidDim comes from a gate row,
+        // c >= hidDim from an up row -- so the fusion is preserved rather than split into two
+        // calls. Same contract as woProj/w2Proj: FP16 operands, FP32 accumulation, FP32 output.
+        plan.emit(batchPrefillLayer, regions.get(layerIndex).gateUp(), NO_OPERANDS, bindings);
+
+        batchPrefillLayer.task(
+                tp + "swiglu",
+                TransformerBatchPrefillKernels::batchedFFNSwiGLUFP16Packed,
+                context,
+                state.workspace.wrapHbFP16Batch,
+                state.workspace.gateUpResultBatch,
+                hidDim);
+        // Down projection: [M=batch, N=dim, K=hidDim]. Same contract as woProj -- FP16
+        // operands, FP32 accumulation, FP32 w2Out -- and w2Resid still follows it, so the
+        // residual is added after the projection exactly as before.
+        plan.emit(batchPrefillLayer, regions.get(layerIndex).down(), NO_OPERANDS, bindings);
+        batchPrefillLayer.task(
+                tp + "w2Resid",
+                TransformerBatchPrefillKernels::batchedResidualAddFP32,
+                context,
+                state.workspace.wrapXBatch,
+                state.workspace.w2Out);
+    }
+
+    // @formatter:on
+
+    @Override
+    public boolean cublasForm(Step step) {
+        return true;
+    }
+
+    @Override
+    public void project(TaskGraph graph, Step step, Operands operands, boolean cublas) {
+        int layerIndex = step.layer();
+        switch (step.first(MatMul.class).weight().role()) {
+            case ATTENTION_QKV -> qkvProjection(graph, layerIndex, cublas);
+            case ATTENTION_OUTPUT -> outputProjection(graph, layerIndex, cublas);
+            case FFN_GATE_UP -> gateUpProjection(graph, layerIndex, cublas);
+            case FFN_DOWN -> downProjection(graph, layerIndex, cublas);
+            default ->
+                    throw new IllegalArgumentException("not a projection of this layer: " + step);
+        }
+    }
+
+    /**
+     * Whether {@code step}'s attention has a cuDNN form: the primary family's, with an FP16
+     * key/value cache, where cuDNN takes this attention shape. The fallback family has none.
+     */
+    @Override
+    public boolean cudnnForm(Step step) {
+        return state.usesFp16KeyValueCache()
+                && !consumeFromPrimary
+                && NativePrefillSupport.nativeAttention(state.executionPolicy(), sdpaShape);
+    }
+
+    @Override
+    public void attend(TaskGraph batchPrefillLayer, Step step, boolean cudnn) {
+        int layerIndex = step.layer();
+        String tp = taskPrefix(layerIndex);
+        if (useFp16KVCache()) {
+            if (cudnn) {
                 // Q from the packed FP32 QKV buffer, K/V gathered out of the paged cache with
                 // the 16:8 group expansion cuDNN's single head count cannot express, then the
                 // library call, then the output back into attnOutFP16's [tok][qDim] layout.
@@ -959,23 +1077,6 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             }
         } else {
             batchPrefillLayer.task(
-                    tp + "batch_rope_kv",
-                    Qwen3PagedKvKernels::batchedRopeWithKVCacheQwen3PackedPaged,
-                    context,
-                    state.workspace.batchStartPosHolder,
-                    state.workspace.qkvResultBatch,
-                    state.workspace.wrapKeyCache,
-                    state.workspace.wrapValueCache,
-                    config.ropeTheta(),
-                    kvDim,
-                    nEmbdHead,
-                    layerIndex,
-                    state.workspace.wrapBlockTable,
-                    state.kvBlockCfg,
-                    state.kvBlockStride,
-                    qDim);
-
-            batchPrefillLayer.task(
                     tp + "batch_attention",
                     TransformerPagedKvBatchPrefillKernels::batchedFlashAttentionFP16OutPaged,
                     context,
@@ -994,9 +1095,49 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.kvBlockStride,
                     qDim);
         }
+    }
 
-        // Output projection: [M=batch, N=dim, K=qDim]
-        if (nativeProjections) {
+    private void qkvProjection(TaskGraph batchPrefillLayer, int layerIndex, boolean cublas) {
+        String tp = taskPrefix(layerIndex);
+        int dim = config.dim();
+        if (cublas) {
+            batchPrefillLayer.libraryTask(
+                    tp + "qkvProj",
+                    CuBlas::cublasGemmExFP16FP32,
+                    1,
+                    0,
+                    qDim + 2 * kvDim,
+                    nativeGemmRows(),
+                    dim,
+                    1.0f,
+                    qkvCat[layerIndex],
+                    dim,
+                    state.workspace.wrapXbFP16Batch,
+                    dim,
+                    0.0f,
+                    state.workspace.qkvResultBatch,
+                    qDim + 2 * kvDim);
+        } else {
+            batchPrefillLayer.task(
+                    tp + "qkvProj",
+                    TransformerBatchPrefillKernels::gemmMMAQKV,
+                    context,
+                    state.workspace.wrapXbFP16Batch,
+                    weights.wqLayered[layerIndex].asHalfFloatArray(),
+                    weights.wkLayered[layerIndex].asHalfFloatArray(),
+                    weights.wvLayered[layerIndex].asHalfFloatArray(),
+                    state.workspace.qkvResultBatch,
+                    paddedBatch,
+                    qDim,
+                    kvDim,
+                    dim);
+        }
+    }
+
+    private void outputProjection(TaskGraph batchPrefillLayer, int layerIndex, boolean cublas) {
+        String tp = taskPrefix(layerIndex);
+        int dim = config.dim();
+        if (cublas) {
             // gemmMMA computes C[m][n] = sum_k A[m][k] * B[n][k] with A and B both row-major
             // and B already stored transposed, i.e. C = A * B^T. cuBLAS is column-major, where
             // that same buffer layout reads as C' = B'^T * A' -- hence OP_T on the weight,
@@ -1030,35 +1171,13 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     dim,
                     qDim);
         }
+    }
 
-        // ── FFN Block ──────────────────────────────────────────────────────────
-        batchPrefillLayer.task(
-                tp + "batch_ffn_rms",
-                TransformerBatchPrefillKernels::batchedRmsReduceFusedResidual,
-                context,
-                state.workspace.wrapXBatch,
-                state.workspace.woOut,
-                state.workspace.ffnScaleBatch,
-                dim,
-                config.rmsNormEps(),
-                RMS_LOCAL_SIZE);
-
-        batchPrefillLayer.task(
-                tp + "batch_ffn_rms_apply",
-                TransformerBatchPrefillKernels::batchedFFNRmsApplyFP16,
-                context,
-                state.workspace.normedXFFNFP16,
-                state.workspace.wrapXBatch,
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                state.workspace.ffnScaleBatch,
-                dim);
-
-        // Gate/up: [M=batch, N=2*hidDim, K=dim], producing the packed [gate|up] rows the SwiGLU
-        // kernel reads as rowBase+i and rowBase+hidDim+i. One GEMM over the stacked weight
-        // reproduces that layout exactly -- output column c < hidDim comes from a gate row,
-        // c >= hidDim from an up row -- so the fusion is preserved rather than split into two
-        // calls. Same contract as woProj/w2Proj: FP16 operands, FP32 accumulation, FP32 output.
-        if (nativeProjections) {
+    private void gateUpProjection(TaskGraph batchPrefillLayer, int layerIndex, boolean cublas) {
+        String tp = taskPrefix(layerIndex);
+        int dim = config.dim();
+        int hidDim = config.hiddenDim();
+        if (cublas) {
             batchPrefillLayer.libraryTask(
                     tp + "gateUpProj",
                     CuBlas::cublasGemmExFP16FP32,
@@ -1088,18 +1207,13 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     hidDim,
                     dim);
         }
+    }
 
-        batchPrefillLayer.task(
-                tp + "swiglu",
-                TransformerBatchPrefillKernels::batchedFFNSwiGLUFP16Packed,
-                context,
-                state.workspace.wrapHbFP16Batch,
-                state.workspace.gateUpResultBatch,
-                hidDim);
-        // Down projection: [M=batch, N=dim, K=hidDim]. Same contract as woProj -- FP16
-        // operands, FP32 accumulation, FP32 w2Out -- and w2Resid still follows it, so the
-        // residual is added after the projection exactly as before.
-        if (nativeProjections) {
+    private void downProjection(TaskGraph batchPrefillLayer, int layerIndex, boolean cublas) {
+        String tp = taskPrefix(layerIndex);
+        int dim = config.dim();
+        int hidDim = config.hiddenDim();
+        if (cublas) {
             batchPrefillLayer.libraryTask(
                     tp + "w2Proj",
                     CuBlas::cublasGemmExFP16FP32,
@@ -1127,15 +1241,114 @@ public class Qwen3FP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     dim,
                     hidDim);
         }
-        batchPrefillLayer.task(
-                tp + "w2Resid",
-                TransformerBatchPrefillKernels::batchedResidualAddFP32,
-                context,
-                state.workspace.wrapXBatch,
-                state.workspace.w2Out);
     }
 
-    // @formatter:on
+    /** The plan over {@link #regions}: cuBLAS and cuDNN first, then the JIT kernels. */
+    private WorkPlan plan() {
+        List<Region> all = new ArrayList<>();
+        for (LayerRegions r : regions) {
+            all.addAll(List.of(r.qkv(), r.attention(), r.output(), r.gateUp(), r.down()));
+        }
+        return WorkPlan.of(
+                all,
+                List.of(
+                        new CublasLayerProjections(this),
+                        new CudnnLayerAttention(this),
+                        new JitLayerProjections(this),
+                        new JitLayerAttention(this)),
+                Target.of(state.executionPolicy()),
+                context,
+                state.workspace.prepacking);
+    }
+
+    /** Every layer's regions: q|k|v, the attention, the output projection, gate|up and down. */
+    private static List<LayerRegions> regions(Qwen3Configuration config, int batchSize) {
+        int dim = config.dim();
+        int head = config.numberOfHeadsValue();
+        int qDim = config.numberOfHeadsKey() * config.numberOfHeads();
+        int kvDim = head * config.numberOfKeyValueHeads();
+        int hidden = config.hiddenDim();
+        List<LayerRegions> layers = new ArrayList<>(config.numberOfLayers());
+        for (int i = 0; i < config.numberOfLayers(); i++) {
+            Attention attention =
+                    new Attention(
+                            new OperandRef.Activation("qkv"),
+                            new OperandRef.Activation("qkv"),
+                            new OperandRef.Activation("qkv"),
+                            new OperandRef.Activation("attn"),
+                            config.numberOfHeads(),
+                            config.numberOfKeyValueHeads(),
+                            head,
+                            (float) (1.0 / Math.sqrt(head)),
+                            OptionalInt.empty(),
+                            DataType.F16);
+            layers.add(
+                    new LayerRegions(
+                            projection(
+                                    i,
+                                    batchSize,
+                                    "q|k|v",
+                                    TensorRole.ATTENTION_QKV,
+                                    "attnIn",
+                                    "qkv",
+                                    qDim + 2 * kvDim,
+                                    dim),
+                            new Region(i, "attention", batchSize, List.of(attention)),
+                            projection(
+                                    i,
+                                    batchSize,
+                                    "attention output",
+                                    TensorRole.ATTENTION_OUTPUT,
+                                    "attn",
+                                    "o",
+                                    dim,
+                                    qDim),
+                            projection(
+                                    i,
+                                    batchSize,
+                                    "gate|up",
+                                    TensorRole.FFN_GATE_UP,
+                                    "ffnIn",
+                                    "gateUp",
+                                    2 * hidden,
+                                    dim),
+                            projection(
+                                    i,
+                                    batchSize,
+                                    "down",
+                                    TensorRole.FFN_DOWN,
+                                    "hidden",
+                                    "down",
+                                    dim,
+                                    hidden)));
+        }
+        return layers;
+    }
+
+    private static Region projection(
+            int layer,
+            int tokens,
+            String name,
+            TensorRole role,
+            String input,
+            String output,
+            int rows,
+            int columns) {
+        return new Region(
+                layer,
+                name,
+                tokens,
+                List.of(
+                        new MatMul(
+                                new OperandRef.Weight(
+                                        role.name().toLowerCase(java.util.Locale.ROOT), role),
+                                new OperandRef.Activation(input),
+                                new OperandRef.Activation(output),
+                                rows,
+                                columns,
+                                tokens,
+                                DataType.F16)));
+    }
 
     // gemmMMA family: 256 threads/block (1D within block), grid over M- and N-blocks.
     static WorkerGrid mmaGrid(int paddedM, int N) {
