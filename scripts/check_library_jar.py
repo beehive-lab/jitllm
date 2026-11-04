@@ -25,6 +25,8 @@ ALLOWED_META_INF = (
 ALLOWED_META_INF_PREFIXES = (
     "META-INF/services/org.beehive.jitllm.",
     "META-INF/maven/io.github.beehive-lab/jitllm/",
+    # GraalVM native-image flags and metadata, picked up by any image built with the jar
+    "META-INF/native-image/io.github.beehive-lab/jitllm/",
 )
 
 # Named in the report because they are the ones that have broken consumers before.
