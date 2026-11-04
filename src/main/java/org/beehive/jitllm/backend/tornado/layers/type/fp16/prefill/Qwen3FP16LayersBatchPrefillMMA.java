@@ -285,20 +285,6 @@ public class Qwen3FP16LayersBatchPrefillMMA
         return GraphNames.batchPrefillLayer((layerIndex / g) * g);
     }
 
-    /**
-     * Whether the batch-prefill projections are single stacked cuBLAS GEMMs.
-     *
-     * <p><b>Single source of truth, and the reason it is a static.</b> The decode layer graphs
-     * consume this layer's weights from the batch-prefill graph, and this answer decides whether
-     * that graph still reads {@code wq}/{@code wk}/{@code wv} and {@code w1}/{@code w3} at all.
-     * TornadoVM builds a graph from its tasks' argument lists, so a weight the producer declares
-     * but hands to no task is never uploaded and the consumer binds a buffer nothing wrote. Both
-     * sides ask this one method; see {@code Qwen3FP16FFNLayersDecode.weightsNotProvidedBySource}.
-     */
-    public static boolean nativeProjections(ExecutionPolicy policy) {
-        return NativePrefillSupport.nativeProjections(policy);
-    }
-
     // @formatter:off
     /**
      * The fused-attention call this family would make, as the capability probe needs to see it.
@@ -427,6 +413,9 @@ public class Qwen3FP16LayersBatchPrefillMMA
             for (int l = 0; l < config.numberOfLayers(); l++) {
                 HalfFloatArray w1 = weights.w1Layered[l].asHalfFloatArray();
                 HalfFloatArray w3 = weights.w3Layered[l].asHalfFloatArray();
+                // cuBLAS reads the stacked copy, so the decode graphs upload w1 and w3 themselves.
+                state.workspace.weightBindings.recordReplaced(w1);
+                state.workspace.weightBindings.recordReplaced(w3);
                 HalfFloatArray cat = new HalfFloatArray(2 * rowsK);
                 for (int i = 0; i < rowsK; i++) {
                     cat.set(i, w1.get(i));
@@ -448,6 +437,9 @@ public class Qwen3FP16LayersBatchPrefillMMA
                 HalfFloatArray wq = weights.wqLayered[l].asHalfFloatArray();
                 HalfFloatArray wk = weights.wkLayered[l].asHalfFloatArray();
                 HalfFloatArray wv = weights.wvLayered[l].asHalfFloatArray();
+                state.workspace.weightBindings.recordReplaced(wq);
+                state.workspace.weightBindings.recordReplaced(wk);
+                state.workspace.weightBindings.recordReplaced(wv);
                 HalfFloatArray cat = new HalfFloatArray(wq.getSize() + wk.getSize() + wv.getSize());
                 int at = 0;
                 for (int i = 0; i < wq.getSize(); i++) cat.set(at++, wq.get(i));

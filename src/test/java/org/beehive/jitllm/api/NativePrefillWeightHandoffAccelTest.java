@@ -31,9 +31,10 @@ import org.junit.Test;
  *   <li><b>then QKV,</b> the same failure with three weights instead of two.
  * </ul>
  *
- * <p>Both are fixed by {@code Qwen3FP16FFNLayersDecode.weightsNotProvidedBySource}, which takes
- * ownership of exactly those five. This test is what proves it still does. Two things it
- * deliberately does <b>not</b> do, because both were tried and neither works:
+ * <p>Both are fixed by {@code Qwen3FP16LayersBatchPrefillMMA}, which records exactly those five as
+ * replaced ({@code WeightBindings.recordReplaced}), so the decode graphs upload them. This test is
+ * what proves it still does. Two things it deliberately does <b>not</b> do, because both were tried
+ * and neither works:
  *
  * <ul>
  *   <li>Inspect the source for weights that reach no task. The gate/up defect kept the JIT task in
@@ -106,7 +107,7 @@ public class NativePrefillWeightHandoffAccelTest {
                     "the native prefill path changed what the model decodes; the usual cause is the"
                             + " batch-prefill graph no longer uploading wq/wk/wv/w1/w3, which the"
                             + " decode graphs consume from it — see"
-                            + " Qwen3FP16FFNLayersDecode.weightsNotProvidedBySource",
+                            + " WeightBindings.recordReplaced in Qwen3FP16LayersBatchPrefillMMA",
                     jit,
                     nativePrefill);
         } finally {

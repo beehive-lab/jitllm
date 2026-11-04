@@ -42,8 +42,8 @@ import uk.ac.manchester.tornado.mlx.Mlx;
  *
  * <p>Built from an {@link MlxPrefill} the caller resolved, and only from it: a tensor that does not
  * match it — another type, or a prepacked weight — is refused, never handed back to the JIT
- * kernels, so the decode graphs that ask the same {@link MlxPrefill} which weights these graphs
- * bind ({@link #notBound}) are always right.
+ * kernels. Each weight read through a copy is recorded as replaced ({@link #notBound}), so the
+ * decode graphs upload it themselves.
  *
  * <p>The family keeps its RMS reductions ({@code batch_attn_rms}, {@code batch_ffn_rms}), RoPE and
  * attention; this replaces the RMS applies and the projection tasks around them. The FP16 operands
@@ -126,7 +126,7 @@ public final class MlxPrefillProjections {
     /**
      * The model weights of {@code layer} that MLX prefill graphs built for {@code mlx} do not bind,
      * each as its tensor and as its native array, so a graph that would bind them from those graphs
-     * must upload them instead.
+     * must upload them instead ({@code WeightBindings.recordReplaced}).
      *
      * <ul>
      *   <li>Q8_0 and Q4_0: every projection, since the GEMMs read the FP16 copies or the affine
@@ -137,7 +137,7 @@ public final class MlxPrefillProjections {
      * </ul>
      */
     // @formatter:on
-    public static Object[] notBound(MlxPrefill mlx, LayerWeights layer) {
+    static Object[] notBound(MlxPrefill mlx, LayerWeights layer) {
         List<TornadoTensor> copied = new ArrayList<>();
         if (mlx.projections() == MlxPrefill.Projections.FP16) {
             if (layer.qkv().length > 1) {
@@ -281,6 +281,9 @@ public final class MlxPrefillProjections {
                                     + t.dataType()
                                     + " projection");
                 }
+            }
+            for (Object w : notBound(mlx, perLayer[i])) {
+                state.workspace.weightBindings.recordReplaced(w);
             }
         }
         return new MlxPrefillProjections(

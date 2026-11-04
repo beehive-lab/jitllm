@@ -973,6 +973,19 @@ public class Gemma4BatchPrefillLayers
                             }
                             : new TornadoTensor[] {weights.wqLayered[l]};
             String name = "blk." + l;
+            // MLX reads its own form of every projection, so the decode graphs upload them.
+            for (TornadoTensor t : qkv) {
+                state.workspace.weightBindings.recordReplaced(t);
+            }
+            for (TornadoTensor t :
+                    new TornadoTensor[] {
+                        weights.woLayered[l],
+                        weights.w1Layered[l],
+                        weights.w3Layered[l],
+                        weights.w2Layered[l]
+                    }) {
+                state.workspace.weightBindings.recordReplaced(t);
+            }
             mlxQkv[l] = MlxPrefillProjections.matrix(form, requireMlx(name + ".attn_qkv", qkv));
             mlxWo[l] =
                     MlxPrefillProjections.matrix(

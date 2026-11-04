@@ -70,8 +70,8 @@ public class BatchedDecodeWeightHandoffAccelTest {
                     "the batched prefill/decode plan decoded something else. If a batch-prefill"
                             + " task stopped reading a weight, that weight is no longer uploaded and"
                             + " the decode graphs consuming it from that graph are reading zeros;"
-                            + " Qwen3FP16FFNLayers.weightsNotProvidedBySource is where the consumer"
-                            + " takes ownership of such a weight",
+                            + " the batch-prefill class must record such a weight with"
+                            + " WeightBindings.recordReplaced so the decode graphs upload it",
                     singleToken,
                     batched);
         } finally {
