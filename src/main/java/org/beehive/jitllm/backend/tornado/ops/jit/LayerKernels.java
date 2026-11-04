@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.ops.jit;
 
+import static org.beehive.jitllm.program.op.OperationKind.ATTENTION;
 import static org.beehive.jitllm.program.op.OperationKind.MAT_MUL;
 import static org.beehive.jitllm.program.op.OperationKind.RESIDUAL_ADD;
 import static org.beehive.jitllm.program.op.OperationKind.RMS_NORM;
@@ -26,9 +27,9 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 
 /**
  * The JIT kernels of a batched-prefill layer class that adds its own tasks for each step: RMS norm
- * with q|k|v, the output projection with its residual add, RMS norm with gate|up and SwiGLU, and
- * the down projection with its residual add. The layer class keeps the kernels; this class only
- * runs them in the steps the plan splits a layer into.
+ * with q|k|v, the attention, the output projection with its residual add, RMS norm with gate|up and
+ * SwiGLU, and the down projection with its residual add. The layer class keeps the kernels; this
+ * class only runs them in the steps the plan splits a layer into.
  *
  * <p>Example: on Metal, Llama's Q8_0 layer runs {@code batch_attn_rms}, {@code
  * batch_attn_rms_apply} and {@code batch_qkv} for the first step; under MLX the same step is MLX's.
@@ -49,6 +50,9 @@ public final class LayerKernels implements Implementation {
 
         /** The down projection, with the residual add. */
         void feedForwardDown(TaskGraph graph, int layer);
+
+        /** The attention, after RoPE has written the chunk's keys and values to the cache. */
+        void attention(TaskGraph graph, int layer);
 
         /** The grids of the tasks above in layer {@code layer}, under its prefix {@code p}. */
         void addGrids(GridScheduler scheduler, String p, int layer);
@@ -72,8 +76,16 @@ public final class LayerKernels implements Implementation {
     private static final Fusion PROJECTION_ADD =
             Fusion.of("projection + residual add", MAT_MUL, RESIDUAL_ADD);
 
+    private static final Fusion ATTENTION_ONLY = Fusion.of("attention", ATTENTION);
+
     private static final List<Fusion> FUSIONS =
-            List.of(ATTENTION_INPUT, GATE_UP, ATTENTION_INPUT_FUSED, GATE_UP_FUSED, PROJECTION_ADD);
+            List.of(
+                    ATTENTION_INPUT,
+                    GATE_UP,
+                    ATTENTION_INPUT_FUSED,
+                    GATE_UP_FUSED,
+                    PROJECTION_ADD,
+                    ATTENTION_ONLY);
 
     private static TensorRole role(Operation op) {
         return ((MatMul) op).weight().role();
@@ -119,6 +131,8 @@ public final class LayerKernels implements Implementation {
                     tasks.attentionInput(graph, i);
                 } else if (f == GATE_UP || f == GATE_UP_FUSED) {
                     tasks.feedForwardUp(graph, i);
+                } else if (f == ATTENTION_ONLY) {
+                    tasks.attention(graph, i);
                 } else if (f == PROJECTION_ADD) {
                     if (role(step.ops().get(0)) == TensorRole.ATTENTION_OUTPUT) {
                         tasks.attentionOutput(graph, i);

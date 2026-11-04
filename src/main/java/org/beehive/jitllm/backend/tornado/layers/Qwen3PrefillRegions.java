@@ -4,9 +4,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.function.BiFunction;
 import org.beehive.jitllm.backend.tornado.ops.Region;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
+import org.beehive.jitllm.program.op.Attention;
 import org.beehive.jitllm.program.op.MatMul;
 import org.beehive.jitllm.program.op.OperandRef;
 import org.beehive.jitllm.program.op.Operation;
@@ -157,6 +159,35 @@ public final class Qwen3PrefillRegions {
     }
 
     /** All regions of {@code layers}, in the order the layer graphs run them. */
+    /**
+     * Every layer's attention, one region each, between the two {@link Layer} regions: from q, k
+     * and v into {@code attn}.
+     */
+    public static List<Region> attention(Qwen3Configuration config, int tokens) {
+        int headSize = config.numberOfHeadsKey();
+        List<Region> regions = new ArrayList<>(config.numberOfLayers());
+        for (int i = 0; i < config.numberOfLayers(); i++) {
+            regions.add(
+                    new Region(
+                            i,
+                            "attention",
+                            tokens,
+                            List.of(
+                                    new Attention(
+                                            a("q"),
+                                            a("k"),
+                                            a("v"),
+                                            a("attn"),
+                                            config.numberOfHeads(),
+                                            config.numberOfKeyValueHeads(),
+                                            headSize,
+                                            (float) (1.0 / Math.sqrt(headSize)),
+                                            OptionalInt.empty(),
+                                            DataType.F32))));
+        }
+        return regions;
+    }
+
     public static List<Region> all(List<Layer> layers) {
         List<Region> regions = new ArrayList<>(2 * layers.size());
         for (Layer layer : layers) {
