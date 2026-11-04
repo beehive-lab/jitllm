@@ -27,6 +27,9 @@ LIBRARY_ENTRIES = [
     "META-INF/services/org.beehive.jitllm.model.provider.ModelProvider",
     "META-INF/maven/io.github.beehive-lab/jitllm/pom.xml",
     "META-INF/maven/io.github.beehive-lab/jitllm/pom.properties",
+    "META-INF/native-image/io.github.beehive-lab/jitllm/native-image.properties",
+    "META-INF/native-image/io.github.beehive-lab/jitllm/reachability-metadata.json",
+    "META-INF/native-image/io.github.beehive-lab/jitllm/tornadovm/reachability-metadata.json",
     "org/beehive/jitllm/",
     "org/beehive/jitllm/JitllmApp.class",
 ]
@@ -61,6 +64,13 @@ class CheckLibraryJarTest(unittest.TestCase):
         ]))
         self.assertEqual(1, len(problems))
         self.assertIn("org/apache/logging/log4j/Logger.class", problems[0])
+
+    def test_another_projects_native_image_metadata_fails(self):
+        problems = checker.check(self.jar(LIBRARY_ENTRIES + [
+            "META-INF/native-image/io.github.beehive-lab/tornado-runtime/native-image.properties",
+        ]))
+        self.assertEqual(1, len(problems))
+        self.assertIn("tornado-runtime/native-image.properties", problems[0])
 
     def test_a_jar_without_project_classes_fails(self):
         self.assertTrue(checker.check(self.jar(["META-INF/MANIFEST.MF"])))
