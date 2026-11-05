@@ -35,7 +35,7 @@ import uk.ac.manchester.tornado.mlx.provider.MlxLibraryProvider;
  * ({@link #workspace}). None of them can drift from the others, because none of them decides.
  *
  * <p><b>The weight representation is the residency of decoded projections.</b> F16 weights are
- * multiplied as they are, with Q/K/V and gate/up stacked into one GEMM each. Q8_0 and Q4_0 weights
+ * multiplied as they are, with Q/K/V and gate/up contiguous, one GEMM each. Q8_0 and Q4_0 weights
  * are either decoded once into resident FP16 copies ({@link Projections#FP16_DECODED}) or repacked
  * exactly into MLX's affine format, which the quantized GEMM decodes again for each chunk ({@link
  * Projections#AFFINE}). That is the choice {@link ExecutionPolicy#decodedProjections()} already
@@ -56,7 +56,10 @@ public record MlxPrefill(DataType weights, Projections projections) {
 
     /** The representation the MLX projection GEMMs read. */
     public enum Projections {
-        /** The model's F16 weights; split Q/K/V and gate/up are stacked into one copy each. */
+        /**
+         * The model's F16 weights; split Q/K/V and gate/up are copied into one contiguous buffer
+         * each.
+         */
         FP16,
         /** Q8_0 or Q4_0 weights decoded once into resident FP16 copies. */
         FP16_DECODED,
@@ -141,7 +144,7 @@ public record MlxPrefill(DataType weights, Projections projections) {
      * allocate by.
      *
      * <ul>
-     *   <li>the projections' MLX form: for F16, the stacked Q/K/V and gate/up copies of a family
+     *   <li>the projections' MLX form: for F16, the contiguous Q/K/V and gate/up copies of a family
      *       that keeps them split (a fused tensor is multiplied as it is, and bound, not copied);
      *       for Q8_0 and Q4_0, the resident FP16 copies or the affine repack, whichever the
      *       residency resolves to;
@@ -173,19 +176,22 @@ public record MlxPrefill(DataType weights, Projections projections) {
         long attention =
                 Short.BYTES
                         * (2 * rows * qDim + 2 * ((long) config.contextLength() + rows) * kvDim);
-        long fixed = staging + attention;
+        long stagingAndAttentionBytes = staging + attention;
         if (weights == DataType.F16) {
-            long stacked =
+            long nativeLibResidentContiguousSizePerLayer =
                     (fusedQkv ? 0 : (qDim + 2 * kvDim) * dim)
                             + (fusedGateUp ? 0 : 2 * hidden * dim);
-            return BatchPrefillWorkspace.fixed(
-                    fixed + Short.BYTES * stacked * config.numberOfLayers());
+            return BatchPrefillWorkspace.withoutResidencyChoice(
+                    stagingAndAttentionBytes
+                            + Short.BYTES
+                                    * nativeLibResidentContiguousSizePerLayer
+                                    * config.numberOfLayers());
         }
         long projections = config.projectionWeights();
         return new BatchPrefillWorkspace(
                 projections,
-                fixed + FP16Projections.residentBytes(projections),
-                fixed + affineBytes(weights, projections));
+                stagingAndAttentionBytes + FP16Projections.residentBytes(projections),
+                stagingAndAttentionBytes + affineBytes(weights, projections));
     }
 
     /**

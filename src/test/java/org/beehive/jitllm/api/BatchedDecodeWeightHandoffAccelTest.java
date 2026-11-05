@@ -21,7 +21,7 @@ import org.junit.Test;
  * then binds a buffer nothing ever wrote. It reads zeros. Nothing throws.
  *
  * <p>That is not hypothetical: replacing the batch-prefill {@code gateUpProj} kernel with a single
- * cuBLAS GEMM over a stacked {@code [gate|up]} weight took {@code w1} and {@code w3} out of every
+ * cuBLAS GEMM over a contiguous {@code [gate|up]} copy took {@code w1} and {@code w3} out of every
  * prefill task's argument list, decode's FFN then contributed exactly zero at every layer, and the
  * model emitted {@code ",,,,"}. Prefill's own output was bit-identical at every layer throughout.
  *
@@ -32,9 +32,9 @@ import org.junit.Test;
  * <ul>
  *   <li>Inspect the source for weights that reach no task. The defect kept the JIT task in an
  *       {@code else} branch, so the reference was still there to find.
- *   <li>Compare total bytes copied to the device. The defect substituted 336 MiB of stacked weights
- *       for the 336 MiB of {@code w1}/{@code w3} it stopped uploading; the totals matched to within
- *       12 MiB.
+ *   <li>Compare total bytes copied to the device. The defect substituted 336 MiB of contiguous
+ *       copies for the 336 MiB of {@code w1}/{@code w3} it stopped uploading; the totals matched to
+ *       within 12 MiB.
  * </ul>
  *
  * <p>The two plans run numerically different kernels, so this asserts token-level agreement over a

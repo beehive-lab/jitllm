@@ -267,7 +267,7 @@ public final class ExecutionPolicy {
      * Whether vendor native libraries (cuBLAS and cuDNN on CUDA, Apple MLX on Metal) may replace
      * JIT kernels where an implementation exists. Off by default: the JIT kernels run every
      * supported configuration, and the native path is experimental, narrower, and needs more device
-     * memory (stacked projection copies beside the weights).
+     * memory (projection copies beside the weights).
      */
     public boolean nativeLibraries() {
         return nativeLibraries;

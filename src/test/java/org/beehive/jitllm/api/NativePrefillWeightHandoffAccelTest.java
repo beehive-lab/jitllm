@@ -17,12 +17,12 @@ import org.junit.Test;
  * The native prefill path must not change what the model generates.
  *
  * <p>Turning it on replaces the batch-prefill {@code qkvProj} and {@code gateUpProj} MMA kernels
- * with single cuBLAS GEMMs over stacked {@code [q|k|v]} and {@code [gate|up]} weights. That leaves
- * {@code wq}, {@code wk}, {@code wv}, {@code w1} and {@code w3} as arguments to <b>no task</b> in
- * {@code batchPrefillLayer_<i>}. The decode layer graphs bind their weights from that graph, and
- * TornadoVM builds a graph out of its tasks' argument lists — so a weight the producer declares in
- * {@code transferToDevice} but hands to no task is never allocated there, never uploaded, and the
- * consumer binds a buffer nothing ever wrote. It reads zeros. Nothing throws.
+ * with single cuBLAS GEMMs over contiguous {@code [q|k|v]} and {@code [gate|up]} copies. That
+ * leaves {@code wq}, {@code wk}, {@code wv}, {@code w1} and {@code w3} as arguments to <b>no
+ * task</b> in {@code batchPrefillLayer_<i>}. The decode layer graphs bind their weights from that
+ * graph, and TornadoVM builds a graph out of its tasks' argument lists — so a weight the producer
+ * declares in {@code transferToDevice} but hands to no task is never allocated there, never
+ * uploaded, and the consumer binds a buffer nothing ever wrote. It reads zeros. Nothing throws.
  *
  * <p>That is not hypothetical. It is how this path failed twice:
  *
@@ -40,9 +40,9 @@ import org.junit.Test;
  * <ul>
  *   <li>Inspect the source for weights that reach no task. The gate/up defect kept the JIT task in
  *       an {@code else} branch, so the reference was still there to find.
- *   <li>Compare total bytes copied to the device. The defect substituted 336 MiB of stacked weights
- *       for the 336 MiB of {@code w1}/{@code w3} it stopped uploading; the totals matched to within
- *       12 MiB.
+ *   <li>Compare total bytes copied to the device. The defect substituted 336 MiB of contiguous
+ *       copies for the 336 MiB of {@code w1}/{@code w3} it stopped uploading; the totals matched to
+ *       within 12 MiB.
  * </ul>
  *
  * <p>The two configurations run numerically different kernels, so this asserts token-level
