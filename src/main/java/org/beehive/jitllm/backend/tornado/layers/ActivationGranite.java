@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.layers;
 import org.beehive.jitllm.backend.tornado.kernels.GraniteBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.GraniteKernels;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
@@ -33,8 +34,12 @@ public class ActivationGranite extends Activation {
         GraniteConfiguration cfg = (GraniteConfiguration) config;
         DataType embedding =
                 weights instanceof TornadoWeights t ? t.getTokenEmbeddingTable().dataType() : null;
-        if (keptEmbedding(embedding)) {
-            // The row decoded by its own representation, then the embedding multiplier.
+        if (embedding != null) {
+            TornadoWorkspaces.stagingHolds(state.workspace, embedding, config.dim());
+        }
+        if (embedding != null && stagedAsBytes(embedding, state.workspace.embeddingX)) {
+            // The row decoded by its own representation, then the embedding multiplier. An F16
+            // row staged in a Q8_0 model's byte buffer (an F16-mixed file) is one of these.
             return new TaskGraph(handle)
                     .transferToDevice(DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX)
                     .task(
@@ -90,7 +95,8 @@ public class ActivationGranite extends Activation {
     public GridScheduler updateGridScheduler(GridScheduler scheduler) {
         super.updateGridScheduler(scheduler);
         if (weights instanceof TornadoWeights t
-                && keptEmbedding(t.getTokenEmbeddingTable().dataType())) {
+                && stagedAsBytes(
+                        t.getTokenEmbeddingTable().dataType(), state.workspace.embeddingX)) {
             scheduler.addWorkerGrid(
                     getTaskGraph().getTaskGraphName() + ".scaleX",
                     WorkerGridFactory.genericWorker(config.dim(), 128));

@@ -72,10 +72,12 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
             case 2 -> "Q8_0"; // Q4_0 — its activations are quantized to Q8_0 blocks
             case 32 -> "FP16"; // MOSTLY_BF16 — BF16 weights use FP16 activation buffers
             case 3 -> "Q8_0"; // Q4_1
+            case 8 -> "Q8_0"; // Q5_0
             case 7 -> "Q8_0";
             case 14, 15 -> "Q8_0"; // Q4_K_S, Q4_K_M (K-quants use Q8_0 activations)
             case 16, 17 -> "Q8_0"; // Q5_K_S, Q5_K_M
             case 18 -> "Q8_0"; // Q6_K
+            case 30 -> "Q8_0"; // IQ4_XS
             default ->
                     throw new UnsupportedOperationException(
                             "Unsupported quantization format: "
@@ -90,6 +92,7 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
             case 1 -> "F16";
             case 2 -> "Q4_0";
             case 3 -> "Q4_1";
+            case 8 -> "Q5_0";
             case 32 -> "BF16";
             case 7 -> "Q8_0";
             case 14 -> "Q4_K_S";
@@ -97,6 +100,7 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
             case 16 -> "Q5_K_S";
             case 17 -> "Q5_K_M";
             case 18 -> "Q6_K";
+            case 30 -> "IQ4_XS";
             default -> "type_" + fileType;
         };
     }

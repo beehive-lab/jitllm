@@ -1230,6 +1230,53 @@ public class Qwen3Kernels {
         }
     }
 
+    /**
+     * {@link #batchedFusedQKRmsNorm} with one SIMD group per token and head. Worker: {@code B *
+     * (nHeads + nHeadKv) * 32} threads in groups of 128.
+     */
+    public static void batchedFusedQKRmsNormSimdgroup(
+            KernelContext context,
+            FloatArray wrapQBatch,
+            FloatArray wrapKBatch,
+            FloatArray qWeights,
+            FloatArray kWeights,
+            int nHeads,
+            int nHeadKv,
+            int nEmbdHead,
+            int qDim,
+            int kvDim,
+            float rmsNormEps) {
+        int slot = context.globalIdx >> 5;
+        int lane = context.localIdx & 31;
+        int batchIdx = slot / (nHeads + nHeadKv);
+        int headSlot = slot % (nHeads + nHeadKv);
+        if (headSlot < nHeads) {
+            int headOffset = batchIdx * qDim + headSlot * nEmbdHead;
+            float sum = 0.0f;
+            for (int i = lane; i < nEmbdHead; i += 32) {
+                float val = wrapQBatch.get(headOffset + i);
+                sum += val * val;
+            }
+            float ss = 1.0f / TornadoMath.sqrt(context.simdSum(sum) / nEmbdHead + rmsNormEps);
+            for (int i = lane; i < nEmbdHead; i += 32) {
+                wrapQBatch.set(
+                        headOffset + i, qWeights.get(i) * ss * wrapQBatch.get(headOffset + i));
+            }
+        } else {
+            int headOffset = batchIdx * kvDim + (headSlot - nHeads) * nEmbdHead;
+            float sum = 0.0f;
+            for (int i = lane; i < nEmbdHead; i += 32) {
+                float val = wrapKBatch.get(headOffset + i);
+                sum += val * val;
+            }
+            float ss = 1.0f / TornadoMath.sqrt(context.simdSum(sum) / nEmbdHead + rmsNormEps);
+            for (int i = lane; i < nEmbdHead; i += 32) {
+                wrapKBatch.set(
+                        headOffset + i, kWeights.get(i) * ss * wrapKBatch.get(headOffset + i));
+            }
+        }
+    }
+
     // ── Packed-QKV variants for the tensor-core batch prefill path ───────────
     // These mirror batchedFusedQKRmsNorm / batchedRopeWithKVCacheQwen3 but read
     // and write the packed [q | k | v] buffer produced by gemmMMAQKV
@@ -1304,6 +1351,76 @@ public class Qwen3Kernels {
                 qkvBatch.set(headOffset + i, kWeights.get(i) * ss * qkvBatch.get(headOffset + i));
             }
         }
+    }
+
+    /**
+     * {@link #batchedFusedQKRmsNormPacked} with one warp per token and head, summing in the same
+     * order as its 128-lane tree, so the results are bit for bit the same. Worker: {@code B *
+     * (nHeads + nHeadKv) * 32} threads in groups of 128.
+     */
+    public static void batchedFusedQKRmsNormPackedSimdgroup(
+            KernelContext context,
+            FloatArray qkvBatch,
+            FloatArray qWeights,
+            FloatArray kWeights,
+            int nHeads,
+            int nHeadKv,
+            int nEmbdHead,
+            int qDim,
+            int kvDim,
+            float rmsNormEps) {
+        int slot = context.globalIdx >> 5;
+        int lane = context.localIdx & 31;
+        int batchIdx = slot / (nHeads + nHeadKv);
+        int headSlot = slot % (nHeads + nHeadKv);
+        int qkvStride = qDim + 2 * kvDim;
+        int headOffset =
+                headSlot < nHeads
+                        ? batchIdx * qkvStride + headSlot * nEmbdHead
+                        : batchIdx * qkvStride + qDim + (headSlot - nHeads) * nEmbdHead;
+        float ss =
+                1.0f
+                        / TornadoMath.sqrt(
+                                sumOfSquares(context, qkvBatch, headOffset, nEmbdHead, lane)
+                                                / nEmbdHead
+                                        + rmsNormEps);
+        if (headSlot < nHeads) {
+            for (int i = lane; i < nEmbdHead; i += 32) {
+                qkvBatch.set(headOffset + i, qWeights.get(i) * ss * qkvBatch.get(headOffset + i));
+            }
+        } else {
+            for (int i = lane; i < nEmbdHead; i += 32) {
+                qkvBatch.set(headOffset + i, kWeights.get(i) * ss * qkvBatch.get(headOffset + i));
+            }
+        }
+    }
+
+    /**
+     * The sum of squares of {@code n} values from {@code base}, by the warp, added as a tree over
+     * lanes would add them: for 128 values, lane {@code i} adds {@code (x[i]^2 + x[i+64]^2) +
+     * (x[i+32]^2 + x[i+96]^2)}. Each square goes through a shuffle so that it is not fused into the
+     * add that follows.
+     */
+    private static float sumOfSquares(
+            KernelContext context, FloatArray x, int base, int n, int lane) {
+        float sum = 0.0f;
+        if (n == 128) {
+            float a = x.get(base + lane);
+            float b = x.get(base + lane + 32);
+            float c = x.get(base + lane + 64);
+            float d = x.get(base + lane + 96);
+            float a2 = context.simdShuffleDown(a * a, 0);
+            float b2 = context.simdShuffleDown(b * b, 0);
+            float c2 = context.simdShuffleDown(c * c, 0);
+            float d2 = context.simdShuffleDown(d * d, 0);
+            sum = (a2 + c2) + (b2 + d2);
+        } else {
+            for (int i = lane; i < n; i += 32) {
+                float v = x.get(base + i);
+                sum += context.simdShuffleDown(v * v, 0);
+            }
+        }
+        return context.simdSum(sum);
     }
 
     /**

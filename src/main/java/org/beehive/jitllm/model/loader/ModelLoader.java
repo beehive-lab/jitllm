@@ -10,9 +10,11 @@ import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.IQ4_XSTornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_1TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_KTornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q5_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q5_KTornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q6_KTornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor;
@@ -208,9 +210,11 @@ public final class ModelLoader {
             case Q8_0 -> new Q8_0FloatTensor(size, data);
             case Q4_0 -> new Q4_0FloatTensor(size, data);
             case Q4_1 -> new Q4_1FloatTensor(size, data);
+            case Q5_0 -> new Q5_0FloatTensor(size, data);
             case Q4_K -> new Q4_KFloatTensor(size, data);
             case Q5_K -> new Q5_KFloatTensor(size, data);
             case Q6_K -> new Q6_KFloatTensor(size, data);
+            case IQ4_XS -> new IQ4_XSFloatTensor(size, data);
             case F16 -> new FP16FloatTensor(size, data);
             case BF16 -> new BF16FloatTensor(size, data);
             default ->
@@ -256,6 +260,9 @@ public final class ModelLoader {
             case Q4_1 ->
                     Q4_1TornadoTensor.fromTornadoMemorySegment(
                             entry.memorySegment(), shapeOf(entry));
+            case Q5_0 ->
+                    Q5_0TornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
             case Q4_K ->
                     Q4_KTornadoTensor.fromTornadoMemorySegment(
                             entry.memorySegment(), shapeOf(entry));
@@ -264,6 +271,9 @@ public final class ModelLoader {
                             entry.memorySegment(), shapeOf(entry));
             case Q6_K ->
                     Q6_KTornadoTensor.fromTornadoMemorySegment(
+                            entry.memorySegment(), shapeOf(entry));
+            case IQ4_XS ->
+                    IQ4_XSTornadoTensor.fromTornadoMemorySegment(
                             entry.memorySegment(), shapeOf(entry));
             case BF16 ->
                     TornadoTensorLoader.convertBF16ToFP16(rawTensorData(entry), shapeOf(entry));
@@ -290,20 +300,26 @@ public final class ModelLoader {
     }
 
     /**
-     * What a model loaded with {@link #loadTornadoTensorNative} reports for these projections: the
-     * first type other than Q8_0, or Q8_0 when they all are. A Q4_K_M file reports Q4_K; a file
-     * that mixes Q8_0 with other types reports the first other type, so nothing that serves only
-     * uniform Q8_0 files (MLX) takes it.
+     * What a model loaded with {@link #loadTornadoTensorNative} reports for these projections: F16
+     * when they all are, otherwise the first type other than Q8_0 and F16, or Q8_0 when there is
+     * none. A Q4_K_M file reports Q4_K; a file that mixes Q8_0 with other types reports the first
+     * other type, so nothing that serves only uniform Q8_0 files (MLX) takes it. F16 counts only
+     * when uniform, since F16 plans read nothing else: a UD-Q8_K_XL file, F16 in some layers and
+     * Q8_0 in the rest, reports Q8_0 and runs the Q8_0 plans, which read each tensor by its type.
      */
     public static DataType keptType(TornadoTensor[]... projections) {
+        boolean allF16 = true;
+        DataType kept = DataType.Q8_0;
         for (TornadoTensor[] layers : projections) {
             for (TornadoTensor w : layers) {
-                if (w.dataType() != DataType.Q8_0) {
-                    return w.dataType();
+                DataType type = w.dataType();
+                allF16 &= type == DataType.F16;
+                if (kept == DataType.Q8_0 && type != DataType.Q8_0 && type != DataType.F16) {
+                    kept = type;
                 }
             }
         }
-        return DataType.Q8_0;
+        return allF16 ? DataType.F16 : kept;
     }
 
     /** The dimensions the file gives {@code entry}, recorded on the device tensor built from it. */

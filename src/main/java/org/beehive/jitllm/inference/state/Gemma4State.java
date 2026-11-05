@@ -185,7 +185,7 @@ public final class Gemma4State extends State {
                                     * org.beehive.jitllm.backend.tornado.kernels
                                             .Gemma4AttentionKernels.TC_STAGE_HALVES);
         }
-        this.workspace.weightsF16Scratch =
+        this.workspace.contiguousF16WeightsScratch =
                 TornadoWorkspaces.halfFloats(2 * config.maxFeedForwardLength() * config.dim());
         // A chunk's activation in int8 blocks for the int8 GEMMs over Q8_0 weights: a byte per
         // element and a scale per 32, at the widest input any projection reads.

@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado;
 
 import java.util.List;
+import java.util.function.Predicate;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.policy.StorageOptions;
@@ -33,6 +34,22 @@ public final class DeviceDefaultPolicy {
             boolean defaultBatching,
             boolean defaultNativeLibraries,
             StorageOptions storage) {
+        return resolve(
+                model, chosen, defaultBatching, defaultNativeLibraries, storage, policy -> true);
+    }
+
+    /**
+     * {@link #resolve(Model, ExecutionPolicy, boolean, boolean, StorageOptions)}, skipping a
+     * candidate {@code fits} says the memory budget cannot hold: the model then runs batched on the
+     * JIT kernels rather than running out of memory on the native libraries' copies.
+     */
+    public static ExecutionPolicy resolve(
+            Model model,
+            ExecutionPolicy chosen,
+            boolean defaultBatching,
+            boolean defaultNativeLibraries,
+            StorageOptions storage,
+            Predicate<ExecutionPolicy> fits) {
         ExecutionPolicy batched =
                 defaultBatching ? BatchPrefillSupport.defaultFor(model, chosen) : chosen;
         ExecutionPolicy accelerated =
@@ -42,6 +59,9 @@ public final class DeviceDefaultPolicy {
                 break;
             }
             java.util.Optional<String> refused = refusal(model, candidate, storage);
+            if (refused.isEmpty() && !fits.test(candidate)) {
+                refused = java.util.Optional.of("predicted not to fit the device memory budget");
+            }
             if (refused.isEmpty()) {
                 return candidate;
             }

@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.plan.components.fp16;
 
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
@@ -10,6 +11,7 @@ import org.beehive.jitllm.backend.tornado.layers.devstral.DevstralFP16FFNLayersD
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.DevstralFP16FFNLayers;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.LogitsFP16Layer;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.LogitsFP16LayerDecode;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.LlamaFP16LayersBatchPrefill;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.LlamaFP16LayersBatchPrefillMMA;
 import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation;
@@ -56,7 +58,10 @@ public class DevstralFP16PlanComponents implements BatchPrefillDecodeForwardPlan
     /** Llama's F16 tensor-core layers, sized by {@code qDim != dim}. */
     @Override
     public BatchPrefillTransformerLayerTaskGraphs batchPrefillTransformerLayers(int batchSize) {
-        return new LlamaFP16LayersBatchPrefillMMA(state, weights, config, batchSize);
+        if (TensorCoreSupport.isTensorCoreCapableBackend()) {
+            return new LlamaFP16LayersBatchPrefillMMA(state, weights, config, batchSize);
+        }
+        return new LlamaFP16LayersBatchPrefill(state, weights, config, batchSize);
     }
 
     /**

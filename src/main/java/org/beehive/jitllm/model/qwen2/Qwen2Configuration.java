@@ -18,6 +18,17 @@ public record Qwen2Configuration(
         float rmsNormEps,
         float ropeTheta)
         implements Configuration {
+
+    /**
+     * One: the decode graphs of a batched plan consume the weights the prefill graphs uploaded, so
+     * the plan holds them once. Measured: DeepSeek-R1-Distill-Qwen-7B Q8_0 (7.5 GiB file) peaks at
+     * 8.0 GiB of GPU memory batched on CUDA.
+     */
+    @Override
+    public int weightBindingFamilies(int layerGraphFamilies) {
+        return 1;
+    }
+
     @Override
     public String quantization() {
         return quantization;

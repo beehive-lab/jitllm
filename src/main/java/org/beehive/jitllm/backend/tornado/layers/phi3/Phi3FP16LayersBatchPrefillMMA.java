@@ -1,11 +1,9 @@
 package org.beehive.jitllm.backend.tornado.layers.phi3;
 
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.LlamaFP16LayersBatchPrefillMMA;
-import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Phi3State;
 import org.beehive.jitllm.inference.weights.tornado.Phi3TornadoWeights;
 import org.beehive.jitllm.model.phi3.Phi3Configuration;
-import uk.ac.manchester.tornado.api.TaskGraph;
 
 /**
  * Phi-3's tensor-core batched prefill: {@link LlamaFP16LayersBatchPrefillMMA}, reading the fused
@@ -39,34 +37,8 @@ public class Phi3FP16LayersBatchPrefillMMA extends LlamaFP16LayersBatchPrefillMM
     }
 
     @Override
-    protected void qkvProjection(TaskGraph batchPrefillLayer, int layerIndex) {
-        projectFP16(
-                batchPrefillLayer,
-                "qkvProj",
-                state.workspace.wrapXbFP16Batch,
-                phi3Weights().wqkvLayered[layerIndex].asHalfFloatArray(),
-                state.workspace.qkvResultBatch,
-                paddedBatch,
-                config.dim() + 2 * config.kvDim(),
-                config.dim());
-    }
-
-    @Override
-    protected void gateUpProjection(TaskGraph batchPrefillLayer, int layerIndex) {
-        projectFP16(
-                batchPrefillLayer,
-                "gateUpProj",
-                state.workspace.normedXFFNFP16,
-                phi3Weights().wUpLayered[layerIndex].asHalfFloatArray(),
-                state.workspace.gateUpResultBatch,
-                paddedBatch,
-                2 * config.hiddenDim(),
-                config.dim());
-    }
-
-    @Override
-    protected TornadoTensor downWeight(int layerIndex) {
-        return phi3Weights().wDownLayered[layerIndex];
+    protected boolean fusedProjections() {
+        return true;
     }
 
     @Override
