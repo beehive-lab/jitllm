@@ -95,7 +95,7 @@ public final class Q4_1FloatTensor extends FloatTensor {
 
     @Override
     public float dot(int thisOffset, FloatTensor that, int thatOffset, int size) {
-        if (JitllmApp.USE_VECTOR_API) {
+        if (JitllmApp.USE_VECTOR_API && supportsVectorizedDot(F_SPECIES)) {
             return vectorDot(this, thisOffset, (ArrayFloatTensor) that, thatOffset, size);
         } else {
             return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
