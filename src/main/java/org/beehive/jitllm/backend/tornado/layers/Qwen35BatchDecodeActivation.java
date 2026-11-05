@@ -49,6 +49,9 @@ public class Qwen35BatchDecodeActivation implements ActivationTaskGraph {
             Qwen35State state,
             Qwen35TornadoWeights weights,
             String lastBatchLayerId) {
+        DataType embedding = weights.getTokenEmbeddingTable().dataType();
+        TornadoWorkspaces.stagingHolds(state.workspace, embedding, dim);
+
         TaskGraph graph =
                 new TaskGraph(GraphNames.DECODE_ACTIVATION)
                         .consumeFromDevice(lastBatchLayerId, keyStore(state), valueStore(state))
@@ -60,8 +63,6 @@ public class Qwen35BatchDecodeActivation implements ActivationTaskGraph {
                         .transferToDevice(
                                 DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX);
 
-        DataType embedding = weights.getTokenEmbeddingTable().dataType();
-        TornadoWorkspaces.stagingHolds(state.workspace, embedding, dim);
         if (Activation.stagedAsBytes(embedding, state.workspace.embeddingX)) {
             graph.task(
                     "updateX",
