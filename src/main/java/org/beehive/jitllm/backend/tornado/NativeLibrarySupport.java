@@ -4,6 +4,9 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.LibraryProbe;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.plan.TornadoPlanRegistry;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
@@ -17,10 +20,10 @@ import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
  *
  * <p>On by default where they are implemented and installed ({@link #defaultFor}); everywhere else
  * the JIT kernels run. On CUDA the native path replaces batched-prefill projections with cuBLAS
- * GEMMs over stacked weight copies (and the first chunk's attention with cuDNN where it is usable),
- * which costs a second copy of those projections on the device — for Qwen3-8B F16, 8.6 GB beside
- * 13.2 GB of weights. On Metal it runs the batched prefill's attention and projections on Apple MLX
- * ({@link MlxPrefill}). {@code --no-native-libraries} keeps the JIT kernels.
+ * GEMMs over contiguous weight copies (and the first chunk's attention with cuDNN where it is
+ * usable), which costs device memory beside the weights. On Metal it runs the batched prefill's
+ * attention and projections on Apple MLX ({@link MlxPrefill}). {@code --no-native-libraries} keeps
+ * the JIT kernels.
  *
  * <p>Which families and weights have a path on which backend is each provider's answer ({@code
  * TornadoPlanProvider.nativeLibraryWeights}); nothing here lists them.
@@ -55,9 +58,9 @@ public final class NativeLibrarySupport {
         boolean metal = BackendId.METAL.equals(combination.backend());
         boolean available =
                 metal
-                        ? loads(MlxPrefill::available)
+                        ? LibraryProbe.loads(MlxPrefill::available)
                         : NativePrefillSupport.cublasLtResolvable()
-                                && loads(NativePrefillSupport::cublasAvailable);
+                                && LibraryProbe.loads(NativePrefillSupport::cublasAvailable);
         if (!available) {
             noteInstall(
                     metal ? "MLX (brew install mlx)" : "cuBLAS 12 and cuDNN 9",
@@ -72,7 +75,7 @@ public final class NativeLibrarySupport {
                 return policy;
             }
         }
-        if (!metal && !loads(NativePrefillSupport::cudnnAvailable)) {
+        if (!metal && !LibraryProbe.loads(NativePrefillSupport::cudnnAvailable)) {
             noteInstall("cuDNN 9", "prefill attention falls back to the JIT kernels");
         }
         return ExecutionPolicy.from(policy).nativeLibraries(true).build();
@@ -95,15 +98,6 @@ public final class NativeLibrarySupport {
                                                         provider, nativeLibraries)
                                                 .contains(c.weights()))
                 .orElse(false);
-    }
-
-    /** Whether a library probe answers yes; a library whose classes cannot be linked does not. */
-    private static boolean loads(java.util.function.BooleanSupplier probe) {
-        try {
-            return probe.getAsBoolean();
-        } catch (RuntimeException | LinkageError e) {
-            return false;
-        }
     }
 
     private static void noteInstall(String libraries, String fallback) {

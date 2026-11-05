@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Set;
+import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
@@ -27,9 +28,11 @@ public class TornadoPlanRegistryTest {
                         DataType.Q8_0,
                         DataType.Q4_0,
                         DataType.Q4_1,
+                        DataType.Q5_0,
                         DataType.Q4_K,
                         DataType.Q5_K,
-                        DataType.Q6_K),
+                        DataType.Q6_K,
+                        DataType.IQ4_XS),
                 llama.supportedDataTypes());
         // Declared for the family, not per representation: Q4_0 has single-token kernels only, and
         // the registry refuses the other two modes for it by name rather than on a cast.
@@ -44,9 +47,11 @@ public class TornadoPlanRegistryTest {
                         DataType.Q8_0,
                         DataType.Q4_0,
                         DataType.Q4_1,
+                        DataType.Q5_0,
                         DataType.Q4_K,
                         DataType.Q5_K,
-                        DataType.Q6_K),
+                        DataType.Q6_K,
+                        DataType.IQ4_XS),
                 mistral.supportedDataTypes());
         assertEquals(
                 "single-token and batched prefill/decode (Llama's layer graphs)",
@@ -143,8 +148,8 @@ public class TornadoPlanRegistryTest {
                 Set.of(ExecutionMode.values()),
                 qwen35.supportedModes());
         assertEquals(
-                "admitted on the representation its trunk projections share",
-                Set.of(DataType.Q4_0, DataType.Q8_0),
+                "admitted on every type its layers read per tensor, as Qwen3",
+                TornadoSupportSets.F16_AND_NATIVE_QUANTIZED,
                 qwen35.supportedDataTypes());
     }
 

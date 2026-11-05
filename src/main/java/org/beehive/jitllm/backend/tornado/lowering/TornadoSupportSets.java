@@ -30,9 +30,11 @@ public final class TornadoSupportSets {
                             DataType.Q8_0,
                             DataType.Q4_0,
                             DataType.Q4_1,
+                            DataType.Q5_0,
                             DataType.Q4_K,
                             DataType.Q5_K,
-                            DataType.Q6_K));
+                            DataType.Q6_K,
+                            DataType.IQ4_XS));
 
     /** F16 and {@link #NATIVE_QUANTIZED}: what a family migrated to native loading admits. */
     public static final Set<DataType> F16_AND_NATIVE_QUANTIZED =
@@ -42,9 +44,11 @@ public final class TornadoSupportSets {
                             DataType.Q8_0,
                             DataType.Q4_0,
                             DataType.Q4_1,
+                            DataType.Q5_0,
                             DataType.Q4_K,
                             DataType.Q5_K,
-                            DataType.Q6_K));
+                            DataType.Q6_K,
+                            DataType.IQ4_XS));
 
     /** All three plan shapes. */
     public static final Set<ExecutionMode> EVERY_MODE = EnumSet.allOf(ExecutionMode.class);

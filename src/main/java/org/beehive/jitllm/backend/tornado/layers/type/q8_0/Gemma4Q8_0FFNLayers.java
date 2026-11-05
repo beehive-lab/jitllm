@@ -15,7 +15,6 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
-import org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
@@ -965,8 +964,9 @@ public class Gemma4Q8_0FFNLayers
             shared.add(weights.layerOutputScale[layerIndex].asFloatArray());
         }
         // The projections: the batch-prefill graph reads them itself, whichever JIT GEMMs it
-        // runs. On MLX it reads its own form of them instead, so they are uploaded here.
-        java.util.List<Object> projections = batchedPlan && mlxPrefill() ? own : shared;
+        // runs. On MLX it reads its own form of them instead (recorded as replaced), so they are
+        // uploaded here.
+        java.util.List<Object> projections = new java.util.ArrayList<>();
         projections.add(weights.wqLayered[layerIndex]);
         if (config.hasOwnKv(layerIndex)) {
             projections.add(weights.wkLayered[layerIndex]);
@@ -978,6 +978,9 @@ public class Gemma4Q8_0FFNLayers
         projections.add(weights.w1Layered[layerIndex]);
         projections.add(weights.w3Layered[layerIndex]);
         projections.add(weights.w2Layered[layerIndex]);
+        for (Object w : projections) {
+            (state.workspace.weightBindings.replaced(w) ? own : shared).add(w);
+        }
         if (batchedPlan) {
             unifiedLayer.consumeFromDevice(
                     GraphNames.batchPrefillLayer(layerIndex),
@@ -991,13 +994,6 @@ public class Gemma4Q8_0FFNLayers
         }
         gemma4State.workspace.prepacker.configureGraphInputs(
                 unifiedLayer, state.workspace.prepacking, own.toArray());
-    }
-
-    /** Whether the batched prefill multiplies the projections on MLX, in its own form of them. */
-    private boolean mlxPrefill() {
-        return Gemma4BatchPrefillLayers.mlxPrefill(
-                        gemma4State.executionPolicy(), weights.dataType(), config)
-                .isPresent();
     }
 
     /** Which RoPE pairs the graph being built has bound already: sliding, full. */

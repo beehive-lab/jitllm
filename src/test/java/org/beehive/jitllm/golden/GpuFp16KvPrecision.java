@@ -44,9 +44,19 @@ public final class GpuFp16KvPrecision {
     }
 
     public static void check(Fixture fixture, Mode mode) throws Exception {
+        check(fixture, mode, 0.9999, 0.01);
+    }
+
+    /**
+     * {@link #check(Fixture, Mode)} with the family's own bounds, for a model whose logits move
+     * more than the cache's rounding under any small change (Qwen2-MoE: its CPU FP16 cache moves
+     * them as much).
+     */
+    public static void check(Fixture fixture, Mode mode, double minCosine, double maxRelativeL2)
+            throws Exception {
         Path file = GoldenFixture.locate(fixture);
         assumeTrue("environment absent: " + GoldenFixture.absentMessage(fixture), file != null);
-        check(file, fixture.toString(), mode);
+        check(file, fixture.toString(), mode, minCosine, maxRelativeL2);
     }
 
     /**
@@ -56,7 +66,7 @@ public final class GpuFp16KvPrecision {
     public static void check(String fileName, Mode mode) throws Exception {
         Path file = GoldenFixture.modelsRoot().resolve(fileName);
         assumeTrue("environment absent: " + file, java.nio.file.Files.isRegularFile(file));
-        check(file, fileName, mode);
+        check(file, fileName, mode, 0.9999, 0.01);
     }
 
     // @formatter:off
@@ -68,8 +78,14 @@ public final class GpuFp16KvPrecision {
      */
     // @formatter:on
     public static void checkBatchedOnMetal(Fixture fixture) throws Exception {
+        checkBatchedOnMetal(fixture, 0.9999, 0.01);
+    }
+
+    /** {@link #checkBatchedOnMetal(Fixture)} with the family's own bounds. */
+    public static void checkBatchedOnMetal(Fixture fixture, double minCosine, double maxRelativeL2)
+            throws Exception {
         assumeTrue("batched FP16 prefill of this family runs on Metal only", metal());
-        check(fixture, Mode.BATCHED);
+        check(fixture, Mode.BATCHED, minCosine, maxRelativeL2);
     }
 
     /** {@link #checkBatchedOnMetal(Fixture)} for a model without a pinned fixture. */
@@ -85,7 +101,9 @@ public final class GpuFp16KvPrecision {
                         .equals(org.beehive.jitllm.runtime.backend.BackendId.METAL);
     }
 
-    private static void check(Path file, String fixture, Mode mode) throws Exception {
+    private static void check(
+            Path file, String fixture, Mode mode, double minCosine, double maxRelativeL2)
+            throws Exception {
         assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
         String[] keys = {"use.tornadovm", "jitllm.withPrefillDecode", "jitllm.prefillBatchSize"};
         String[] previous = new String[keys.length];
@@ -120,7 +138,7 @@ public final class GpuFp16KvPrecision {
                             + prompt.size()
                             + " "
                             + comparison);
-            comparison.assertWithin(fixture + " " + mode, 0.9999, 0.01, 0.95);
+            comparison.assertWithin(fixture + " " + mode, minCosine, maxRelativeL2, 0.95);
         } finally {
             for (int i = 0; i < keys.length; i++) {
                 if (previous[i] == null) {

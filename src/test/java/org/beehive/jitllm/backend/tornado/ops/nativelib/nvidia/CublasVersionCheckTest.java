@@ -1,4 +1,4 @@
-package org.beehive.jitllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;

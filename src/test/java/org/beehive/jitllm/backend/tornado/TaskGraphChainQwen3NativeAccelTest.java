@@ -6,6 +6,7 @@ import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
 import java.util.Map;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
 import org.beehive.jitllm.golden.GoldenFixture;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;

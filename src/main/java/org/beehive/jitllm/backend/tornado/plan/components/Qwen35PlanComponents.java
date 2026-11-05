@@ -104,9 +104,10 @@ public class Qwen35PlanComponents
      *
      * <p>A Q8_0 or Q4_0 embedding is decoded on the device: the host copies each token's raw row,
      * which costs nothing next to decoding the chunk in Java before the JIT has compiled that loop.
-     * Any other embedding the host decodes straight into the FP32 batch carrier, and this graph
-     * transfers it and runs the shared pass-through, which exists to give TornadoVM a task to
-     * attach the transfer to.
+     * An F16 file's F16 embedding is copied raw too, into the FP16 carrier, and converted on the
+     * device, as {@code TornadoBatchPrefillPass.stage} stages it. Any other embedding the host
+     * decodes straight into the FP32 batch carrier, and this graph transfers it and runs the shared
+     * pass-through, which exists to give TornadoVM a task to attach the transfer to.
      */
     @Override
     public ActivationTaskGraph batchPrefillActivation(int batchSize) {
@@ -114,7 +115,8 @@ public class Qwen35PlanComponents
         if (embedding == DataType.Q8_0 || embedding == DataType.Q4_0) {
             return new BatchPrefillQ8DeviceActivation(state, config, batchSize, embedding);
         }
-        return new BatchPrefillActivation(state, config, batchSize, true);
+        boolean f16Staged = embedding == DataType.F16 && "FP16".equals(config.quantization());
+        return new BatchPrefillActivation(state, config, batchSize, !f16Staged);
     }
 
     @Override

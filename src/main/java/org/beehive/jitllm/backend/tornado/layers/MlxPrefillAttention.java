@@ -1,8 +1,8 @@
 package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.Optional;
-import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.kernels.MlxPrefillKernels;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import uk.ac.manchester.tornado.api.GridScheduler;

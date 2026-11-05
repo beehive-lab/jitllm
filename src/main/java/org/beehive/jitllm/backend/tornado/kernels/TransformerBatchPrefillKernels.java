@@ -165,6 +165,97 @@ public final class TransformerBatchPrefillKernels {
     }
 
     /**
+     * {@link #batchedFusedQKVMatmul} for a Q that is not {@code dim} wide ({@code qDim = heads *
+     * headDim}, Devstral's shape): the rows run {@code qDim + 2 * kvDim}, the input stays {@code
+     * dim}.
+     */
+    public static void batchedFusedQKVMatmulNonSquare(
+            KernelContext context,
+            HalfFloatArray xbFP16Batch,
+            FloatArray wrapQBatch,
+            FloatArray wrapKBatch,
+            FloatArray wrapVBatch,
+            HalfFloatArray wq,
+            HalfFloatArray wk,
+            HalfFloatArray wv,
+            int dim,
+            int qDim,
+            int kvDim,
+            int localWorkGroupSize) {
+        int groupId = context.groupIdx;
+        int localId = context.localIdx;
+        int totalRows = qDim + 2 * kvDim;
+        int batchIdx = groupId / totalRows;
+        int rowIdx = groupId % totalRows;
+        int inputOff = batchIdx * dim;
+
+        float[] localSum = context.allocateFloatLocalArray(localWorkGroupSize);
+
+        if (rowIdx < qDim) {
+            int rowOff = rowIdx * dim;
+            float partial = 0.0f;
+            for (int j = localId; j < dim; j += localWorkGroupSize) {
+                partial +=
+                        wq.get(rowOff + j).getFloat32()
+                                * xbFP16Batch.get(inputOff + j).getFloat32();
+            }
+            localSum[localId] = partial;
+            context.localBarrier();
+            for (int s = localWorkGroupSize / 2; s > 0; s >>= 1) {
+                if (localId < s) {
+                    localSum[localId] += localSum[localId + s];
+                }
+                context.localBarrier();
+            }
+            if (localId == 0) {
+                wrapQBatch.set(batchIdx * qDim + rowIdx, localSum[0]);
+            }
+
+        } else if (rowIdx < qDim + kvDim) {
+            int kRow = rowIdx - qDim;
+            int rowOff = kRow * dim;
+            float partial = 0.0f;
+            for (int j = localId; j < dim; j += localWorkGroupSize) {
+                partial +=
+                        wk.get(rowOff + j).getFloat32()
+                                * xbFP16Batch.get(inputOff + j).getFloat32();
+            }
+            localSum[localId] = partial;
+            context.localBarrier();
+            for (int s = localWorkGroupSize / 2; s > 0; s >>= 1) {
+                if (localId < s) {
+                    localSum[localId] += localSum[localId + s];
+                }
+                context.localBarrier();
+            }
+            if (localId == 0) {
+                wrapKBatch.set(batchIdx * kvDim + kRow, localSum[0]);
+            }
+
+        } else {
+            int vRow = rowIdx - qDim - kvDim;
+            int rowOff = vRow * dim;
+            float partial = 0.0f;
+            for (int j = localId; j < dim; j += localWorkGroupSize) {
+                partial +=
+                        wv.get(rowOff + j).getFloat32()
+                                * xbFP16Batch.get(inputOff + j).getFloat32();
+            }
+            localSum[localId] = partial;
+            context.localBarrier();
+            for (int s = localWorkGroupSize / 2; s > 0; s >>= 1) {
+                if (localId < s) {
+                    localSum[localId] += localSum[localId + s];
+                }
+                context.localBarrier();
+            }
+            if (localId == 0) {
+                wrapVBatch.set(batchIdx * kvDim + vRow, localSum[0]);
+            }
+        }
+    }
+
+    /**
      * Batched DECODE flash attention: B independent sequences, one query token each. Identical
      * online-softmax math to {@link #batchedFlashAttention}, but each batch slot has its OWN KV
      * cache region and its OWN position, so slot {@code b} attends positions {@code
@@ -534,6 +625,103 @@ public final class TransformerBatchPrefillKernels {
 
         } else {
             int vRow = rowIdx - dim - kvDim;
+            int rowBlockOffset = vRow * blocksPerRow;
+            float partial = 0.0f;
+            for (int j = localId; j < dim; j += localWorkGroupSize) {
+                int blockByteOffset = (rowBlockOffset + j / blockSize) * Q8_0_BLOCK_BYTES;
+                float scale = wv.getHalfFloat(blockByteOffset).getFloat32();
+                float quant = wv.get(blockByteOffset + 2 + j % blockSize);
+                partial += quant * scale * wrapXbBatch.get(inputOff + j);
+            }
+            localSum[localId] = partial;
+            context.localBarrier();
+            for (int s = localWorkGroupSize / 2; s > 0; s >>= 1) {
+                if (localId < s) {
+                    localSum[localId] += localSum[localId + s];
+                }
+                context.localBarrier();
+            }
+            if (localId == 0) {
+                wrapVBatch.set(batchIdx * kvDim + vRow, localSum[0]);
+            }
+        }
+    }
+
+    /**
+     * {@link #batchedFusedQKVMatmulQ8} for a Q that is not {@code dim} wide; see {@link
+     * #batchedFusedQKVMatmulNonSquare}.
+     */
+    public static void batchedFusedQKVMatmulQ8NonSquare(
+            KernelContext context,
+            FloatArray wrapXbBatch,
+            FloatArray wrapQBatch,
+            FloatArray wrapKBatch,
+            FloatArray wrapVBatch,
+            ByteArray wq,
+            ByteArray wk,
+            ByteArray wv,
+            int dim,
+            int qDim,
+            int kvDim,
+            int localWorkGroupSize) {
+        int groupId = context.groupIdx;
+        int localId = context.localIdx;
+        int totalRows = qDim + 2 * kvDim;
+        int batchIdx = groupId / totalRows;
+        int rowIdx = groupId % totalRows;
+        int inputOff = batchIdx * dim;
+
+        int blockSize = 32;
+        int Q8_0_BLOCK_BYTES = 34;
+        int blocksPerRow = (dim + blockSize - 1) / blockSize;
+
+        float[] localSum = context.allocateFloatLocalArray(localWorkGroupSize);
+
+        if (rowIdx < qDim) {
+            int rowBlockOffset = rowIdx * blocksPerRow;
+            float partial = 0.0f;
+            for (int j = localId; j < dim; j += localWorkGroupSize) {
+                int blockByteOffset = (rowBlockOffset + j / blockSize) * Q8_0_BLOCK_BYTES;
+                float scale = wq.getHalfFloat(blockByteOffset).getFloat32();
+                float quant = wq.get(blockByteOffset + 2 + j % blockSize);
+                partial += quant * scale * wrapXbBatch.get(inputOff + j);
+            }
+            localSum[localId] = partial;
+            context.localBarrier();
+            for (int s = localWorkGroupSize / 2; s > 0; s >>= 1) {
+                if (localId < s) {
+                    localSum[localId] += localSum[localId + s];
+                }
+                context.localBarrier();
+            }
+            if (localId == 0) {
+                wrapQBatch.set(batchIdx * qDim + rowIdx, localSum[0]);
+            }
+
+        } else if (rowIdx < qDim + kvDim) {
+            int kRow = rowIdx - qDim;
+            int rowBlockOffset = kRow * blocksPerRow;
+            float partial = 0.0f;
+            for (int j = localId; j < dim; j += localWorkGroupSize) {
+                int blockByteOffset = (rowBlockOffset + j / blockSize) * Q8_0_BLOCK_BYTES;
+                float scale = wk.getHalfFloat(blockByteOffset).getFloat32();
+                float quant = wk.get(blockByteOffset + 2 + j % blockSize);
+                partial += quant * scale * wrapXbBatch.get(inputOff + j);
+            }
+            localSum[localId] = partial;
+            context.localBarrier();
+            for (int s = localWorkGroupSize / 2; s > 0; s >>= 1) {
+                if (localId < s) {
+                    localSum[localId] += localSum[localId + s];
+                }
+                context.localBarrier();
+            }
+            if (localId == 0) {
+                wrapKBatch.set(batchIdx * kvDim + kRow, localSum[0]);
+            }
+
+        } else {
+            int vRow = rowIdx - qDim - kvDim;
             int rowBlockOffset = vRow * blocksPerRow;
             float partial = 0.0f;
             for (int j = localId; j < dim; j += localWorkGroupSize) {
@@ -2868,25 +3056,27 @@ public final class TransformerBatchPrefillKernels {
         int output = (context.groupIdx << 2) + (context.localIdx >> 5);
         int batchIdx = output / d;
         int rowIdx = output - batchIdx * d;
-        if (batchIdx < activeRows) {
-            int inputOff = batchIdx * n + lane;
-            int blocks = n >> 5;
-            int rowOff = rowIdx * blocks * 34;
-            float partial = 0.0f;
-            for (int b = 0; b < blocks; b++) {
-                int blockOff = rowOff + b * 34;
-                float scale = w.getHalfFloat(blockOff).getFloat32();
-                partial += scale * w.get(blockOff + 2 + lane) * inputBatch.get(inputOff + (b << 5));
-            }
-            partial += context.simdShuffleDown(partial, 16);
-            partial += context.simdShuffleDown(partial, 8);
-            partial += context.simdShuffleDown(partial, 4);
-            partial += context.simdShuffleDown(partial, 2);
-            partial += context.simdShuffleDown(partial, 1);
-            if (lane == 0) {
-                int out = batchIdx * d + rowIdx;
-                outputBatch.set(out, accumulate != 0 ? outputBatch.get(out) + partial : partial);
-            }
+        // The shuffles stay outside any branch: TornadoVM 8.0.1 (Metal) computes wrong sums for
+        // shuffles inside one, even one every lane of the SIMD group takes. A row past
+        // activeRows runs no blocks and stores nothing.
+        boolean active = batchIdx < activeRows;
+        int inputOff = batchIdx * n + lane;
+        int blocks = active ? n >> 5 : 0;
+        int rowOff = rowIdx * (n >> 5) * 34;
+        float partial = 0.0f;
+        for (int b = 0; b < blocks; b++) {
+            int blockOff = rowOff + b * 34;
+            float scale = w.getHalfFloat(blockOff).getFloat32();
+            partial += scale * w.get(blockOff + 2 + lane) * inputBatch.get(inputOff + (b << 5));
+        }
+        partial += context.simdShuffleDown(partial, 16);
+        partial += context.simdShuffleDown(partial, 8);
+        partial += context.simdShuffleDown(partial, 4);
+        partial += context.simdShuffleDown(partial, 2);
+        partial += context.simdShuffleDown(partial, 1);
+        if (active && lane == 0) {
+            int out = batchIdx * d + rowIdx;
+            outputBatch.set(out, accumulate != 0 ? outputBatch.get(out) + partial : partial);
         }
     }
 
@@ -3260,6 +3450,143 @@ public final class TransformerBatchPrefillKernels {
         }
         if (r + 3 < d && b + 3 < batch) {
             outputBatch.set((b + 3) * d + r + 3, outputBatch.get((b + 3) * d + r + 3) + a33);
+        }
+    }
+
+    /**
+     * {@code out[b, r] = sum_k x[b, k] * w[r, k]}: {@link #batchedGemmFP16WithResidual} storing its
+     * sums instead of adding them. Same tiles and grid. Example: Qwen3.5's F16 ssm_qkv projection
+     * off Metal.
+     */
+    public static void batchedGemmFP16(
+            KernelContext context,
+            FloatArray inputBatch,
+            FloatArray outputBatch,
+            HalfFloatArray w,
+            int n,
+            int d,
+            int batch) {
+        float[] ws = context.allocateFloatLocalArray(64 * 33);
+        float[] xs = context.allocateFloatLocalArray(64 * 33);
+        int tid = context.localIdx;
+        int tx = tid & 15;
+        int ty = tid >> 4;
+        int rowTiles = (d + 63) >> 6;
+        int g = context.groupIdx;
+        int r0 = (g % rowTiles) << 6;
+        int b0 = (g / rowTiles) << 6;
+        float a00 = 0.0f;
+        float a01 = 0.0f;
+        float a02 = 0.0f;
+        float a03 = 0.0f;
+        float a10 = 0.0f;
+        float a11 = 0.0f;
+        float a12 = 0.0f;
+        float a13 = 0.0f;
+        float a20 = 0.0f;
+        float a21 = 0.0f;
+        float a22 = 0.0f;
+        float a23 = 0.0f;
+        float a30 = 0.0f;
+        float a31 = 0.0f;
+        float a32 = 0.0f;
+        float a33 = 0.0f;
+        for (int k0 = 0; k0 < n; k0 += 32) {
+            for (int e = tid; e < 2048; e += 256) {
+                int rr = e >> 5;
+                int kk = e & 31;
+                int k = k0 + kk;
+                float wv = 0.0f;
+                if (r0 + rr < d && k < n) {
+                    wv = w.get((r0 + rr) * n + k).getFloat32();
+                }
+                ws[rr * 33 + kk] = wv;
+                float xv = 0.0f;
+                if (b0 + rr < batch && k < n) {
+                    xv = inputBatch.get((b0 + rr) * n + k);
+                }
+                xs[rr * 33 + kk] = xv;
+            }
+            context.localBarrier();
+            int wr = (ty << 2) * 33;
+            int xr = (tx << 2) * 33;
+            for (int kk = 0; kk < 32; kk++) {
+                float w0 = ws[wr + 0 + kk];
+                float w1 = ws[wr + 33 + kk];
+                float w2 = ws[wr + 66 + kk];
+                float w3 = ws[wr + 99 + kk];
+                float x0 = xs[xr + 0 + kk];
+                float x1 = xs[xr + 33 + kk];
+                float x2 = xs[xr + 66 + kk];
+                float x3 = xs[xr + 99 + kk];
+                a00 += w0 * x0;
+                a01 += w0 * x1;
+                a02 += w0 * x2;
+                a03 += w0 * x3;
+                a10 += w1 * x0;
+                a11 += w1 * x1;
+                a12 += w1 * x2;
+                a13 += w1 * x3;
+                a20 += w2 * x0;
+                a21 += w2 * x1;
+                a22 += w2 * x2;
+                a23 += w2 * x3;
+                a30 += w3 * x0;
+                a31 += w3 * x1;
+                a32 += w3 * x2;
+                a33 += w3 * x3;
+            }
+            context.localBarrier();
+        }
+        int r = r0 + (ty << 2);
+        int b = b0 + (tx << 2);
+        if (r + 0 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 0, a00);
+        }
+        if (r + 0 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 0, a01);
+        }
+        if (r + 0 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 0, a02);
+        }
+        if (r + 0 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 0, a03);
+        }
+        if (r + 1 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 1, a10);
+        }
+        if (r + 1 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 1, a11);
+        }
+        if (r + 1 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 1, a12);
+        }
+        if (r + 1 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 1, a13);
+        }
+        if (r + 2 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 2, a20);
+        }
+        if (r + 2 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 2, a21);
+        }
+        if (r + 2 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 2, a22);
+        }
+        if (r + 2 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 2, a23);
+        }
+        if (r + 3 < d && b + 0 < batch) {
+            outputBatch.set((b + 0) * d + r + 3, a30);
+        }
+        if (r + 3 < d && b + 1 < batch) {
+            outputBatch.set((b + 1) * d + r + 3, a31);
+        }
+        if (r + 3 < d && b + 2 < batch) {
+            outputBatch.set((b + 2) * d + r + 3, a32);
+        }
+        if (r + 3 < d && b + 3 < batch) {
+            outputBatch.set((b + 3) * d + r + 3, a33);
         }
     }
 

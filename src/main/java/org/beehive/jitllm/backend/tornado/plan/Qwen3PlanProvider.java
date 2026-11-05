@@ -6,12 +6,12 @@ import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
-import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.Qwen3FP16LayersBatchDecodeMMA;
 import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.fp16.Qwen3FP16PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.q8_0.Qwen3Q8_0PlanComponents;
@@ -158,7 +158,7 @@ public final class Qwen3PlanProvider implements TornadoPlanProvider {
             return Optional.of(
                     org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill
                             .Qwen3Q8_0LayersBatchPrefillMMA.workspace(
-                            qwen3, batchSize, policy, fp16Cache));
+                            qwen3, batchSize, policy, fp16Cache, weights));
         }
         return Optional.empty();
     }

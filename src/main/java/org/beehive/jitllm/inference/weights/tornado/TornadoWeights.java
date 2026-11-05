@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.model.loader.ModelLoader;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.TensorRole;
 
 /**
  * Base class for TornadoVM-optimized weights. All weight fields are TornadoTensor types (parallel
@@ -93,6 +94,22 @@ public abstract class TornadoWeights implements Weights {
     /** Lanes per workgroup for the RMS norm in front of the logits. */
     public int logitsRmsLocalSize() {
         return 256;
+    }
+
+    /** Layer {@code layer}'s weight with {@code role}, for example its Q weight or its FFN norm. */
+    public TornadoTensor tensor(TensorRole role, int layer) {
+        return switch (role) {
+            case ATTENTION_NORM -> rms_att_weightLayered[layer];
+            case FFN_NORM -> rms_ffn_weightLayered[layer];
+            case ATTENTION_QUERY -> wqLayered[layer];
+            case ATTENTION_KEY -> wkLayered[layer];
+            case ATTENTION_VALUE -> wvLayered[layer];
+            case ATTENTION_OUTPUT -> woLayered[layer];
+            case FFN_GATE -> w1Layered[layer];
+            case FFN_UP -> w3Layered[layer];
+            case FFN_DOWN -> w2Layered[layer];
+            default -> throw new IllegalArgumentException("not a per-layer weight here: " + role);
+        };
     }
 
     /** The per-layer projections a plan may prepack; a family with more of its own adds them. */

@@ -1,8 +1,10 @@
-package org.beehive.jitllm.backend.tornado;
+package org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.BooleanSupplier;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.ops.Target;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.LibraryProbe;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import uk.ac.manchester.tornado.api.common.LibraryTaskDescriptor;
 import uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider;
@@ -23,8 +25,9 @@ import uk.ac.manchester.tornado.runtime.library.spi.TornadoLibraryProvider;
  * absent on its own:
  *
  * <ul>
- *   <li>{@link #nativeProjections()} — cuBLAS is reachable, so the four prefill projections (QKV,
- *       gate/up, output and down) can be single FP16 GEMMs over stacked weights.
+ *   <li>{@link #cublasAvailable()} — cuBLAS is reachable, so the prefill projections can be FP16
+ *       GEMMs. Whether a session uses it is {@code Target.cublas()}, which adds the policy and the
+ *       tensor-core gate.
  *   <li>{@link #nativeAttention(SdpaShape)} — cuDNN's fused scaled-dot-product attention is
  *       reachable <b>and usable for the shape this session will ask it for</b>, so the first
  *       prefill chunk's attention can be one fused call.
@@ -32,10 +35,7 @@ import uk.ac.manchester.tornado.runtime.library.spi.TornadoLibraryProvider;
  *
  * <p><b>Both are gated on the tensor-core backend first</b>, and that is not a convenience. The
  * tensor-core gate is the same predicate {@code Qwen3FP16PlanComponents} uses to decide whether the
- * MMA batch-prefill family is the one being built at all, and the decode layer graphs ask {@link
- * #nativeProjections()} to work out which weights the prefill graphs stopped reading. If the two
- * sides could ever disagree, the decode graphs would consume a buffer that was never uploaded and
- * read zeros — silently, with no diagnostic.
+ * MMA batch-prefill family is the one being built at all.
  *
  * <p><b>Resolved lazily.</b> Nothing here runs unless something asks, and what asks is the
  * tensor-core batch-prefill planner and the decode family that pairs with it. A CPU run, an OpenCL
@@ -50,13 +50,6 @@ import uk.ac.manchester.tornado.runtime.library.spi.TornadoLibraryProvider;
  * only some of these are on has never been validated end to end.
  */
 public final class NativePrefillSupport {
-
-    /**
-     * The opt-in, {@code -Djitllm.nativeLibraries=true} ({@code --with-native-libraries}); the
-     * legacy {@code -Djitllm.prefill.native} is honoured when set. Resolved into {@link
-     * ExecutionPolicy#nativeLibraries()}, which is what the plan reads.
-     */
-    public static final String PROPERTY = ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY;
 
     /**
      * The execution-plan id the capability probe borrows.
@@ -84,11 +77,11 @@ public final class NativePrefillSupport {
             int batch, int heads, int seqQ, int seqKv, int headDim, float scale, boolean causal) {}
 
     /**
-     * How the probe answers. Package-private and swappable so a test can simulate a host whose
-     * fused SDPA is absent or present-but-unusable, which no property and no fixture can otherwise
-     * produce on a machine whose toolkit supports it.
+     * How the probe answers. Swappable so a test can simulate a host whose fused SDPA is absent or
+     * present-but-unusable, which no property and no fixture can otherwise produce on a machine
+     * whose toolkit supports it.
      */
-    interface SdpaProbe {
+    public interface SdpaProbe {
         boolean usable(SdpaShape shape);
     }
 
@@ -98,32 +91,11 @@ public final class NativePrefillSupport {
     private static final Map<SdpaShape, Boolean> SDPA_CACHE = new ConcurrentHashMap<>();
 
     /** Installs a probe for a test; returns the previous one so the test can restore it. */
-    static SdpaProbe setSdpaProbeForTesting(SdpaProbe probe) {
+    public static SdpaProbe setSdpaProbeForTesting(SdpaProbe probe) {
         SdpaProbe previous = sdpaProbe;
         sdpaProbe = probe;
         SDPA_CACHE.clear();
         return previous;
-    }
-
-    /**
-     * Whether the four batch-prefill projections run as cuBLAS GEMMs over stacked weights, for a
-     * session running {@code policy}.
-     *
-     * <p><b>Both sides of the weight hand-off ask this with the same policy.</b> The batch-prefill
-     * graphs and the decode graphs that consume their weights are built in one pass; an answer that
-     * differed between them would leave the decode side binding buffers the prefill side never
-     * uploaded — the silent-zeros defect the weight-handoff regression tests exist to catch. The
-     * policy is fixed for a plan's life, which is what makes the two answers agree.
-     */
-    public static boolean nativeProjections(ExecutionPolicy policy) {
-        return policy.nativeLibraries()
-                && TensorCoreSupport.isTensorCoreCapableBackend()
-                && Probe.CUBLAS;
-    }
-
-    /** {@link #nativeProjections(ExecutionPolicy)} for the policy the properties resolve to. */
-    public static boolean nativeProjections() {
-        return nativeProjections(ExecutionPolicy.fromSystemProperties());
     }
 
     /** Whether cuBLAS can be reached from this process at all. */
@@ -132,7 +104,7 @@ public final class NativePrefillSupport {
     }
 
     /** The cuBLAS the TornadoVM binding, and the cuDNN builds it pairs with, load. */
-    static final String CUBLAS_LT_SONAME = "libcublasLt.so.12";
+    public static final String CUBLAS_LT_SONAME = "libcublasLt.so.12";
 
     // @formatter:off
     /**
@@ -274,9 +246,9 @@ public final class NativePrefillSupport {
      * Whether the first prefill chunk of a sequence can run its attention as one fused cuDNN call
      * at {@code shape}.
      *
-     * <p>Implies {@link #nativeProjections()}: the two have only ever been measured and validated
+     * <p>Implies {@code Target.cublas()}: the two have only ever been measured and validated
      * together, and the fallback family that covers the later chunks is built from the primary's
-     * stacked weights, which only exist when the projections are native. A {@code false} here
+     * weight copies, which only exist when the projections are native. A {@code false} here
      * therefore <b>keeps the native projections</b> and selects the batched JIT paged attention for
      * every chunk, rather than giving up the whole path.
      *
@@ -288,7 +260,7 @@ public final class NativePrefillSupport {
      */
     // @formatter:on
     public static boolean nativeAttention(ExecutionPolicy policy, SdpaShape shape) {
-        if (!nativeProjections(policy) || !Probe.CUDNN) {
+        if (!Target.of(policy).cublas() || !Probe.CUDNN) {
             return false;
         }
         return SDPA_CACHE.computeIfAbsent(shape, s -> sdpaProbe.usable(s));
@@ -408,27 +380,20 @@ public final class NativePrefillSupport {
 
     /**
      * The library probes, in their own holder so that the class initializer above — which every
-     * caller of {@link #nativeProjections()} triggers — does not dlopen anything. Only a caller
-     * that gets past the tensor-core gate reaches these fields.
+     * caller of {@code Target.cublas()} triggers — does not dlopen anything. Only a caller that
+     * gets past the tensor-core gate reaches these fields.
      */
     private static final class Probe {
 
         /** cuBLAS answers for itself: the provider dlopens the library and reports the result. */
-        private static final boolean CUBLAS = probe(CuBlasLibraryProvider::isAvailable);
+        private static final boolean CUBLAS =
+                LibraryProbe.loads(CuBlasLibraryProvider::isAvailable);
 
         /**
          * Whether cuDNN itself is reachable. Necessary and <b>not</b> sufficient for the fused
          * attention, which additionally needs a shim that may be absent, stubbed or unusable for
          * the shape — see {@link #nativeAttention(SdpaShape)}.
          */
-        private static final boolean CUDNN = probe(CuDnnLibraryProvider::isAvailable);
-
-        private static boolean probe(BooleanSupplier available) {
-            try {
-                return available.getAsBoolean();
-            } catch (RuntimeException | LinkageError e) {
-                return false;
-            }
-        }
+        private static final boolean CUDNN = LibraryProbe.loads(CuDnnLibraryProvider::isAvailable);
     }
 }

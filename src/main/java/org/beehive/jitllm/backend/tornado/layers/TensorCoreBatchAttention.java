@@ -32,6 +32,10 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  * scratch with that many columns per head and narrowed on the way to FP16. The extra columns read
  * the next key/value head's rows, so the transposed values carry that much zero padding past the
  * last head.
+ *
+ * <p>A head 64, 96 or 128 wide instead runs {@link
+ * TensorCoreAttentionKernels#flashAttentionHead128} or its 64- and 96-wide forms, which keep the
+ * scores on chip: no scores, probabilities or FP32 output in memory.
  */
 // @formatter:on
 public final class TensorCoreBatchAttention {
@@ -51,6 +55,7 @@ public final class TensorCoreBatchAttention {
     private final int paddedPositions;
     private final int headsPerPass;
     private final int wide;
+    private final boolean flash;
     private final HalfFloatArray queries;
     private final HalfFloatArray keys;
     private final HalfFloatArray valuesT;
@@ -93,21 +98,31 @@ public final class TensorCoreBatchAttention {
         this.paddedPositions = paddedPositions(contextLength);
         this.headsPerPass = headsPerPass(heads, rows, paddedPositions);
         this.wide = wide(headSize);
+        this.flash = flash(headSize);
         int scoreRows = rows * headsPerPass * paddedPositions;
         this.queries = TornadoWorkspaces.halfFloats(rows * qDim);
         this.keys = TornadoWorkspaces.halfFloats(kvDim * paddedPositions);
         this.valuesT =
                 TornadoWorkspaces.halfFloats(
-                        kvDim * paddedPositions + valuesPad(headSize, paddedPositions));
-        this.scores = TornadoWorkspaces.floats(scoreRows);
-        this.probs = TornadoWorkspaces.halfFloats(scoreRows);
-        this.attn = TornadoWorkspaces.floats(rows * heads * wide);
+                        kvDim * paddedPositions
+                                + (flash ? 0 : valuesPad(headSize, paddedPositions)));
+        this.scores = flash ? null : TornadoWorkspaces.floats(scoreRows);
+        this.probs = flash ? null : TornadoWorkspaces.halfFloats(scoreRows);
+        this.attn = flash ? null : TornadoWorkspaces.floats(rows * heads * wide);
+    }
+
+    /** Whether a head this wide runs the flash kernel. */
+    private static boolean flash(int headSize) {
+        return headSize == 64 || headSize == 96 || headSize == 128;
     }
 
     /** The device bytes {@link #TensorCoreBatchAttention} allocates for this shape. */
     public static long bytes(
             int qDim, int kvDim, int headSize, int heads, int rows, int contextLength) {
         int positions = paddedPositions(contextLength);
+        if (flash(headSize)) {
+            return ((long) rows * qDim + 2L * kvDim * positions) * Short.BYTES;
+        }
         long scoreRows = (long) rows * headsPerPass(heads, rows, positions) * positions;
         long halfs =
                 (long) rows * qDim // queries
@@ -144,7 +159,9 @@ public final class TensorCoreBatchAttention {
 
     /** The device buffers the tasks use, for the layer graphs' transfers. */
     public Object[] buffers() {
-        return new Object[] {queries, keys, valuesT, scores, probs, attn};
+        return flash
+                ? new Object[] {queries, keys, valuesT}
+                : new Object[] {queries, keys, valuesT, scores, probs, attn};
     }
 
     // @formatter:off
@@ -160,6 +177,10 @@ public final class TensorCoreBatchAttention {
     /** {@link #appendTasks(TaskGraph, KernelContext, int)} with task ids prefixed by {@code tp}. */
     public void appendTasks(TaskGraph layer, KernelContext context, int kvLayer, String tp) {
         int qkvStride = qDim + 2 * kvDim;
+        if (flash) {
+            appendFlashTasks(layer, context, kvLayer, tp, qkvStride);
+            return;
+        }
         layer.task(
                 tp + "attn_gather",
                 TensorCoreAttentionKernels::gatherPagedKeyValues,
@@ -268,6 +289,54 @@ public final class TensorCoreBatchAttention {
         }
     }
 
+    private void appendFlashTasks(
+            TaskGraph layer, KernelContext context, int kvLayer, String tp, int qkvStride) {
+        layer.task(
+                tp + "attn_gather",
+                TensorCoreAttentionKernels::gatherPagedKeysTransposed,
+                context,
+                state.workspace.batchStartPosHolder,
+                state.workspace.wrapKeyCacheFP16,
+                state.workspace.wrapValueCacheFP16,
+                keys,
+                valuesT,
+                kvLayer,
+                kvDim,
+                headSize,
+                state.workspace.wrapBlockTable,
+                state.kvBlockCfg,
+                state.kvBlockStride,
+                paddedPositions);
+        layer.task(
+                tp + "attn_q16",
+                TensorCoreAttentionKernels::queriesToHalf,
+                context,
+                state.workspace.qkvResultBatch,
+                queries,
+                qDim,
+                qkvStride,
+                rows * qDim);
+        layer.task(
+                tp + "attn_flash",
+                headSize == 64
+                        ? TensorCoreAttentionKernels::flashAttentionHead64
+                        : headSize == 96
+                                ? TensorCoreAttentionKernels::flashAttentionHead96
+                                : TensorCoreAttentionKernels::flashAttentionHead128,
+                context,
+                state.workspace.batchStartPosHolder,
+                queries,
+                keys,
+                valuesT,
+                state.workspace.attnOutFP16,
+                heads,
+                kvMul,
+                qDim,
+                rows / TensorCoreAttentionKernels.FLASH_ROWS,
+                paddedPositions,
+                (float) (1.0 / Math.sqrt(headSize)));
+    }
+
     /** Registers the grids of {@link #appendTasks} for the layer graph named {@code graph}. */
     public void addGrids(GridScheduler scheduler, String graph) {
         addGrids(scheduler, graph, "");
@@ -278,6 +347,15 @@ public final class TensorCoreBatchAttention {
         String p = graph + "." + tp;
         scheduler.addWorkerGrid(p + "attn_gather", elementwise(paddedPositions * kvDim));
         scheduler.addWorkerGrid(p + "attn_q16", elementwise(rows * qDim));
+        if (flash) {
+            int threads = TensorCoreAttentionKernels.FLASH_THREADS;
+            WorkerGrid1D grid =
+                    new WorkerGrid1D(
+                            rows / TensorCoreAttentionKernels.FLASH_ROWS * heads * threads);
+            grid.setLocalWork(threads, 1, 1);
+            scheduler.addWorkerGrid(p + "attn_flash", grid);
+            return;
+        }
         int hp = headsPerPass;
         for (int pass = 0; pass * hp < heads; pass++) {
             scheduler.addWorkerGrid(p + "attn_scores_" + pass, mmaGrid(rows, paddedPositions, hp));

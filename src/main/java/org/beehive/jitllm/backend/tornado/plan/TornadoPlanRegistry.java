@@ -199,6 +199,7 @@ public final class TornadoPlanRegistry {
                 model.weights() instanceof TornadoWeights weights
                         ? WeightPrepacking.forPlan(provider, weights, state.executionPolicy())
                         : WeightPrepacking.NONE;
+        state.workspace.weightBindings = new WeightBindings();
         SingleTokenForwardPlanComponents components =
                 provider.components(quantization, state, model);
         // A provider may support a mode for one representation and not for another — Llama has

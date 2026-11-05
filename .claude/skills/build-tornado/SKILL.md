@@ -1,6 +1,6 @@
 ---
 name: build-tornado
-description: Build a TornadoVM SDK for jitllm. Use when TORNADOVM_HOME is unset, points at the wrong JDK line or backend, or at a TornadoVM older than 7.3.
+description: Build a TornadoVM SDK for jitllm. Use when TORNADOVM_HOME is unset, points at the wrong JDK line or backend, or at a TornadoVM older than 8.0.
 license: Apache-2.0
 metadata:
   author: TornadoVM Team
@@ -9,7 +9,7 @@ metadata:
 # Build TornadoVM
 
 One SDK per (JDK line, backend). jitllm compiles against whatever SDK `TORNADOVM_HOME`
-points at, from TornadoVM 7.3.0 on. A released SDK (`sdk install tornadovm`) needs no build;
+points at, from TornadoVM 8.0 on. A released SDK (`sdk install tornadovm`) needs no build;
 build one when you need `develop` or a backend no release ships. `pom.xml` names one release,
 `tornadovm.release.version`, which is what `-P release` depends on.
 
@@ -34,7 +34,7 @@ sed -n 's:.*<tornadovm.release.version>\(.*\)</tornadovm.release.version>.*:\1:p
 - **Backend**: `opencl`, `cuda` or `metal`. Comma-separated combinations are accepted but
   make the runtime pick between them, so prefer one.
 - **JDK line**: 21 or 25. It must be the same JDK you build and run jitllm with.
-- **Version**: the release above, or `develop` for APIs no release has yet (7.3 at least).
+- **Version**: the release above, or `develop` for APIs no release has yet (8.0 at least).
 
 ## 2. Check the environment
 
@@ -49,7 +49,7 @@ system_profiler SPDisplaysDataType | head    # macOS/Metal
 Use a directory per tuple, so one build does not overwrite another's `dist/`.
 
 ```bash
-TVM_VERSION=7.3.1                             # tornadovm.release.version from step 1
+TVM_VERSION=8.0.0                             # tornadovm.release.version from step 1
 TVM_SRC="$HOME/tornadovm-sdks/jdk21-cuda"     # name it after the tuple
 git clone --depth 1 --branch "v$TVM_VERSION" https://github.com/beehive-lab/TornadoVM.git "$TVM_SRC"
 # for develop: --branch develop

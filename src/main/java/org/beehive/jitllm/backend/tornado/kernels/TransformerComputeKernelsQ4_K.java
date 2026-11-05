@@ -7,6 +7,7 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
+import uk.ac.manchester.tornado.api.types.vectors.Float4;
 import uk.ac.manchester.tornado.api.utils.QuantizationUtils;
 
 /**
@@ -42,6 +43,15 @@ public final class TransformerComputeKernelsQ4_K {
 
     /** Byte offset of the 4-bit weights within a super-block. */
     private static final int QS_OFFSET = 16;
+
+    /**
+     * The activation's scale-downs that let a 4-bit quant be masked where it lies in its word, not
+     * shifted down: 256, 65536 and 2^24 for its second, third and fourth byte (exact).
+     */
+    private static final float S1 = 1.0f / 256.0f;
+
+    private static final float S2 = 1.0f / 65536.0f;
+    private static final float S3 = 1.0f / 16777216.0f;
 
     /**
      * Prompt rows a tiled batch workgroup covers: eight, as for Q5_K, whose decode is as costly.
@@ -245,6 +255,121 @@ public final class TransformerComputeKernelsQ4_K {
         partialSum += context.simdShuffleDown(partialSum, 2);
         partialSum += context.simdShuffleDown(partialSum, 1);
         return partialSum;
+    }
+
+    // @formatter:off
+    /**
+     * One lane's share of one row's super-block at {@code base}: 32 weights, in four runs of eight
+     * (sub-blocks {@code 2iq}, {@code 2iq+1}, {@code 2iq+4} and {@code 2iq+5}). {@code qOffset} is
+     * where the lane's quants start in {@code qs}; {@code shift} picks its two scale bytes of each
+     * word. {@code ya1}, {@code ya2}, {@code ya3} (and so on) arrive divided by 256, 65536 and 2^24
+     * so that the quants are masked where they lie; {@code sa..sd} are each run's plain sum, for
+     * the mins.
+     */
+    // @formatter:on
+    private static float blockDot(
+            ByteArray w,
+            int base,
+            int shift,
+            int qOffset,
+            float ya0,
+            float ya1,
+            float ya2,
+            float ya3,
+            float ya4,
+            float ya5,
+            float ya6,
+            float ya7,
+            float yb0,
+            float yb1,
+            float yb2,
+            float yb3,
+            float yb4,
+            float yb5,
+            float yb6,
+            float yb7,
+            float yc0,
+            float yc1,
+            float yc2,
+            float yc3,
+            float yc4,
+            float yc5,
+            float yc6,
+            float yc7,
+            float yd0,
+            float yd1,
+            float yd2,
+            float yd3,
+            float yd4,
+            float yd5,
+            float yd6,
+            float yd7,
+            float sa,
+            float sb,
+            float sc,
+            float sd) {
+        float dd = w.getHalfFloat(base).getFloat32();
+        float dmin = w.getHalfFloat(base + 2).getFloat32();
+        int a = (w.getInt(base + SCALES_OFFSET) >>> shift) & 0xFFFF;
+        int b = (w.getInt(base + SCALES_OFFSET + 4) >>> shift) & 0xFFFF;
+        int c = (w.getInt(base + SCALES_OFFSET + 8) >>> shift) & 0xFFFF;
+        int qa = base + QS_OFFSET + qOffset;
+        int q0 = w.getInt(qa);
+        int q1 = w.getInt(qa + 4);
+        int q2 = w.getInt(qa + 64);
+        int q3 = w.getInt(qa + 68);
+        int h0 = q0 >>> 4;
+        int h1 = q1 >>> 4;
+        int h2 = q2 >>> 4;
+        int h3 = q3 >>> 4;
+        float da =
+                ya0 * (q0 & 0xF)
+                        + ya1 * (q0 & 0xF00)
+                        + ya2 * (q0 & 0xF0000)
+                        + ya3 * (q0 & 0xF000000)
+                        + ya4 * (q1 & 0xF)
+                        + ya5 * (q1 & 0xF00)
+                        + ya6 * (q1 & 0xF0000)
+                        + ya7 * (q1 & 0xF000000);
+        float db =
+                yb0 * (h0 & 0xF)
+                        + yb1 * (h0 & 0xF00)
+                        + yb2 * (h0 & 0xF0000)
+                        + yb3 * (h0 & 0xF000000)
+                        + yb4 * (h1 & 0xF)
+                        + yb5 * (h1 & 0xF00)
+                        + yb6 * (h1 & 0xF0000)
+                        + yb7 * (h1 & 0xF000000);
+        float dc =
+                yc0 * (q2 & 0xF)
+                        + yc1 * (q2 & 0xF00)
+                        + yc2 * (q2 & 0xF0000)
+                        + yc3 * (q2 & 0xF000000)
+                        + yc4 * (q3 & 0xF)
+                        + yc5 * (q3 & 0xF00)
+                        + yc6 * (q3 & 0xF0000)
+                        + yc7 * (q3 & 0xF000000);
+        float de =
+                yd0 * (h2 & 0xF)
+                        + yd1 * (h2 & 0xF00)
+                        + yd2 * (h2 & 0xF0000)
+                        + yd3 * (h2 & 0xF000000)
+                        + yd4 * (h3 & 0xF)
+                        + yd5 * (h3 & 0xF00)
+                        + yd6 * (h3 & 0xF0000)
+                        + yd7 * (h3 & 0xF000000);
+        // Sub-blocks 2iq and 2iq+1 take the plain 6-bit pairs; 2iq+4 and 2iq+5 take four bits
+        // from c and two from the top of a (scale) and b (min).
+        int sc0 = a & 63;
+        int sc1 = (a >>> 8) & 63;
+        int m0 = b & 63;
+        int m1 = (b >>> 8) & 63;
+        int sc4 = (c & 0xF) | (((a >>> 6) & 3) << 4);
+        int sc5 = ((c >>> 8) & 0xF) | (((a >>> 14) & 3) << 4);
+        int m4 = ((c >>> 4) & 0xF) | (((b >>> 6) & 3) << 4);
+        int m5 = ((c >>> 12) & 0xF) | (((b >>> 14) & 3) << 4);
+        return dd * (sc0 * da + sc1 * db + sc4 * dc + sc5 * de)
+                - dmin * (m0 * sa + m1 * sb + m4 * sc + m5 * sd);
     }
 
     /**
@@ -716,6 +841,243 @@ public final class TransformerComputeKernelsQ4_K {
         }
     }
 
+    /**
+     * {@code hb[row] = SiLU(w1[row]·x) * (w3[row]·x)} for four rows per SIMD group (Metal): the
+     * activation a lane loads serves the four gate rows and the four up rows. Launch {@link
+     * #SIMDGROUP_GROUP_ROWS} rows per workgroup of {@code 32 * SIMDGROUPS} threads, as {@link
+     * #matrixVectorQ4_KSimdgroup}.
+     */
+    public static void fusedFFNGateUpSiLUQ4_KSimdgroup(
+            KernelContext context,
+            FloatArray x,
+            FloatArray hb,
+            ByteArray w1,
+            ByteArray w3,
+            int n,
+            int d) {
+        int lane = context.localIdx & 31;
+        int row0 = (context.groupIdx * SIMDGROUPS + (context.localIdx >> 5)) * SIMDGROUP_ROWS;
+        int blocks = n / QK_K;
+        int rowBytes = blocks * BLOCK_BYTES;
+        int ix = lane >> 3;
+        int iq = (lane & 7) >> 2;
+        int ir = lane & 3;
+        int shift = 16 * iq;
+        float gate0 = 0.0f;
+        float gate1 = 0.0f;
+        float gate2 = 0.0f;
+        float gate3 = 0.0f;
+        float up0 = 0.0f;
+        float up1 = 0.0f;
+        float up2 = 0.0f;
+        float up3 = 0.0f;
+        for (int ib = ix; ib < blocks; ib += 4) {
+            int xb = ib * QK_K + 64 * iq + 8 * ir;
+            Float4 xa0 = x.getFloat4(xb + 0);
+            Float4 xa1 = x.getFloat4(xb + 4);
+            Float4 xb0 = x.getFloat4(xb + 32);
+            Float4 xb1 = x.getFloat4(xb + 36);
+            Float4 xc0 = x.getFloat4(xb + 128);
+            Float4 xc1 = x.getFloat4(xb + 132);
+            Float4 xd0 = x.getFloat4(xb + 160);
+            Float4 xd1 = x.getFloat4(xb + 164);
+            float sa =
+                    xa0.getX()
+                            + xa0.getY()
+                            + xa0.getZ()
+                            + xa0.getW()
+                            + xa1.getX()
+                            + xa1.getY()
+                            + xa1.getZ()
+                            + xa1.getW();
+            float sb =
+                    xb0.getX()
+                            + xb0.getY()
+                            + xb0.getZ()
+                            + xb0.getW()
+                            + xb1.getX()
+                            + xb1.getY()
+                            + xb1.getZ()
+                            + xb1.getW();
+            float sc =
+                    xc0.getX()
+                            + xc0.getY()
+                            + xc0.getZ()
+                            + xc0.getW()
+                            + xc1.getX()
+                            + xc1.getY()
+                            + xc1.getZ()
+                            + xc1.getW();
+            float sd =
+                    xd0.getX()
+                            + xd0.getY()
+                            + xd0.getZ()
+                            + xd0.getW()
+                            + xd1.getX()
+                            + xd1.getY()
+                            + xd1.getZ()
+                            + xd1.getW();
+            float ya0 = xa0.getX();
+            float ya1 = xa0.getY() * S1;
+            float ya2 = xa0.getZ() * S2;
+            float ya3 = xa0.getW() * S3;
+            float ya4 = xa1.getX();
+            float ya5 = xa1.getY() * S1;
+            float ya6 = xa1.getZ() * S2;
+            float ya7 = xa1.getW() * S3;
+            float yb0 = xb0.getX();
+            float yb1 = xb0.getY() * S1;
+            float yb2 = xb0.getZ() * S2;
+            float yb3 = xb0.getW() * S3;
+            float yb4 = xb1.getX();
+            float yb5 = xb1.getY() * S1;
+            float yb6 = xb1.getZ() * S2;
+            float yb7 = xb1.getW() * S3;
+            float yc0 = xc0.getX();
+            float yc1 = xc0.getY() * S1;
+            float yc2 = xc0.getZ() * S2;
+            float yc3 = xc0.getW() * S3;
+            float yc4 = xc1.getX();
+            float yc5 = xc1.getY() * S1;
+            float yc6 = xc1.getZ() * S2;
+            float yc7 = xc1.getW() * S3;
+            float yd0 = xd0.getX();
+            float yd1 = xd0.getY() * S1;
+            float yd2 = xd0.getZ() * S2;
+            float yd3 = xd0.getW() * S3;
+            float yd4 = xd1.getX();
+            float yd5 = xd1.getY() * S1;
+            float yd6 = xd1.getZ() * S2;
+            float yd7 = xd1.getW() * S3;
+            for (int r = 0; r < SIMDGROUP_ROWS; r++) {
+                int row = row0 + r;
+                if (row < d) {
+                    int base = row * rowBytes + ib * BLOCK_BYTES;
+                    float g =
+                            blockDot(
+                                    w1,
+                                    base,
+                                    shift,
+                                    32 * iq + 8 * ir,
+                                    ya0,
+                                    ya1,
+                                    ya2,
+                                    ya3,
+                                    ya4,
+                                    ya5,
+                                    ya6,
+                                    ya7,
+                                    yb0,
+                                    yb1,
+                                    yb2,
+                                    yb3,
+                                    yb4,
+                                    yb5,
+                                    yb6,
+                                    yb7,
+                                    yc0,
+                                    yc1,
+                                    yc2,
+                                    yc3,
+                                    yc4,
+                                    yc5,
+                                    yc6,
+                                    yc7,
+                                    yd0,
+                                    yd1,
+                                    yd2,
+                                    yd3,
+                                    yd4,
+                                    yd5,
+                                    yd6,
+                                    yd7,
+                                    sa,
+                                    sb,
+                                    sc,
+                                    sd);
+                    ;
+                    float u =
+                            blockDot(
+                                    w3,
+                                    base,
+                                    shift,
+                                    32 * iq + 8 * ir,
+                                    ya0,
+                                    ya1,
+                                    ya2,
+                                    ya3,
+                                    ya4,
+                                    ya5,
+                                    ya6,
+                                    ya7,
+                                    yb0,
+                                    yb1,
+                                    yb2,
+                                    yb3,
+                                    yb4,
+                                    yb5,
+                                    yb6,
+                                    yb7,
+                                    yc0,
+                                    yc1,
+                                    yc2,
+                                    yc3,
+                                    yc4,
+                                    yc5,
+                                    yc6,
+                                    yc7,
+                                    yd0,
+                                    yd1,
+                                    yd2,
+                                    yd3,
+                                    yd4,
+                                    yd5,
+                                    yd6,
+                                    yd7,
+                                    sa,
+                                    sb,
+                                    sc,
+                                    sd);
+                    ;
+                    if (r == 0) {
+                        gate0 += g;
+                        up0 += u;
+                    } else if (r == 1) {
+                        gate1 += g;
+                        up1 += u;
+                    } else if (r == 2) {
+                        gate2 += g;
+                        up2 += u;
+                    } else {
+                        gate3 += g;
+                        up3 += u;
+                    }
+                }
+            }
+        }
+        gate0 = simdSum(context, gate0);
+        gate1 = simdSum(context, gate1);
+        gate2 = simdSum(context, gate2);
+        gate3 = simdSum(context, gate3);
+        up0 = simdSum(context, up0);
+        up1 = simdSum(context, up1);
+        up2 = simdSum(context, up2);
+        up3 = simdSum(context, up3);
+        if (lane == 0) {
+            storeSwiGlu(hb, row0, d, gate0, up0);
+            storeSwiGlu(hb, row0 + 1, d, gate1, up1);
+            storeSwiGlu(hb, row0 + 2, d, gate2, up2);
+            storeSwiGlu(hb, row0 + 3, d, gate3, up3);
+        }
+    }
+
+    /** {@code hb[row] = SiLU(gate) * up} where the row exists. */
+    private static void storeSwiGlu(FloatArray hb, int row, int d, float gate, float up) {
+        if (row < d) {
+            hb.set(row, gate / (1.0f + TornadoMath.exp(-gate)) * up);
+        }
+    }
+
     /** Prompt rows a tiled batch workgroup covers. */
     public static int rowTile() {
         return ROW_TILE;
@@ -1093,6 +1455,370 @@ public final class TransformerComputeKernelsQ4_K {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Output rows per SIMD group of {@link #matrixVectorQ4_KSimdgroup}: the activation a lane loads
+     * serves all four.
+     */
+    public static final int SIMDGROUP_ROWS = 4;
+
+    /** SIMD groups per workgroup of {@link #matrixVectorQ4_KSimdgroup}. */
+    public static final int SIMDGROUPS = 2;
+
+    /** Output rows per workgroup of {@link #matrixVectorQ4_KSimdgroup}. */
+    public static final int SIMDGROUP_GROUP_ROWS = SIMDGROUP_ROWS * SIMDGROUPS;
+
+    /**
+     * {@code output[row] = w[row]·x}, one SIMD group per four rows (Metal).
+     *
+     * <p>Eight lanes cover a super-block, so a SIMD group walks four at a time. Each lane reads 32
+     * weights of a super-block as four 32-bit words and the scales as three, instead of a byte per
+     * weight. Example: lane 13 takes super-blocks 1, 5, 9, ... and, in each, weights 8..15 of
+     * sub-blocks 2, 3, 6 and 7. A nibble is masked in place, not shifted down: the activation it
+     * multiplies was divided by 256, 65536 or 2^24 instead (exact, powers of two). Launch {@link
+     * #SIMDGROUP_GROUP_ROWS} rows per workgroup of {@code 32 * SIMDGROUPS} threads.
+     */
+    public static void matrixVectorQ4_KSimdgroup(
+            KernelContext context, FloatArray x, FloatArray out, ByteArray w, int n, int d) {
+        // The body is here, not in a shared helper: TornadoVM 7.3 refuses to inline a callee of
+        // more than 600 nodes, and the kernel root has no such limit.
+        int lane = context.localIdx & 31;
+        int row0 = (context.groupIdx * SIMDGROUPS + (context.localIdx >> 5)) * SIMDGROUP_ROWS;
+        int blocks = n / QK_K;
+        int rowBytes = blocks * BLOCK_BYTES;
+        int ix = lane >> 3;
+        int iq = (lane & 7) >> 2;
+        int ir = lane & 3;
+        int shift = 16 * iq;
+        float sum0 = 0.0f;
+        float sum1 = 0.0f;
+        float sum2 = 0.0f;
+        float sum3 = 0.0f;
+        for (int ib = ix; ib < blocks; ib += 4) {
+            int xb = ib * QK_K + 64 * iq + 8 * ir;
+            Float4 xa0 = x.getFloat4(xb + 0);
+            Float4 xa1 = x.getFloat4(xb + 4);
+            Float4 xb0 = x.getFloat4(xb + 32);
+            Float4 xb1 = x.getFloat4(xb + 36);
+            Float4 xc0 = x.getFloat4(xb + 128);
+            Float4 xc1 = x.getFloat4(xb + 132);
+            Float4 xd0 = x.getFloat4(xb + 160);
+            Float4 xd1 = x.getFloat4(xb + 164);
+            float sa =
+                    xa0.getX()
+                            + xa0.getY()
+                            + xa0.getZ()
+                            + xa0.getW()
+                            + xa1.getX()
+                            + xa1.getY()
+                            + xa1.getZ()
+                            + xa1.getW();
+            float sb =
+                    xb0.getX()
+                            + xb0.getY()
+                            + xb0.getZ()
+                            + xb0.getW()
+                            + xb1.getX()
+                            + xb1.getY()
+                            + xb1.getZ()
+                            + xb1.getW();
+            float sc =
+                    xc0.getX()
+                            + xc0.getY()
+                            + xc0.getZ()
+                            + xc0.getW()
+                            + xc1.getX()
+                            + xc1.getY()
+                            + xc1.getZ()
+                            + xc1.getW();
+            float sd =
+                    xd0.getX()
+                            + xd0.getY()
+                            + xd0.getZ()
+                            + xd0.getW()
+                            + xd1.getX()
+                            + xd1.getY()
+                            + xd1.getZ()
+                            + xd1.getW();
+            float ya0 = xa0.getX();
+            float ya1 = xa0.getY() * S1;
+            float ya2 = xa0.getZ() * S2;
+            float ya3 = xa0.getW() * S3;
+            float ya4 = xa1.getX();
+            float ya5 = xa1.getY() * S1;
+            float ya6 = xa1.getZ() * S2;
+            float ya7 = xa1.getW() * S3;
+            float yb0 = xb0.getX();
+            float yb1 = xb0.getY() * S1;
+            float yb2 = xb0.getZ() * S2;
+            float yb3 = xb0.getW() * S3;
+            float yb4 = xb1.getX();
+            float yb5 = xb1.getY() * S1;
+            float yb6 = xb1.getZ() * S2;
+            float yb7 = xb1.getW() * S3;
+            float yc0 = xc0.getX();
+            float yc1 = xc0.getY() * S1;
+            float yc2 = xc0.getZ() * S2;
+            float yc3 = xc0.getW() * S3;
+            float yc4 = xc1.getX();
+            float yc5 = xc1.getY() * S1;
+            float yc6 = xc1.getZ() * S2;
+            float yc7 = xc1.getW() * S3;
+            float yd0 = xd0.getX();
+            float yd1 = xd0.getY() * S1;
+            float yd2 = xd0.getZ() * S2;
+            float yd3 = xd0.getW() * S3;
+            float yd4 = xd1.getX();
+            float yd5 = xd1.getY() * S1;
+            float yd6 = xd1.getZ() * S2;
+            float yd7 = xd1.getW() * S3;
+            for (int r = 0; r < SIMDGROUP_ROWS; r++) {
+                int row = row0 + r;
+                if (row < d) {
+                    float part =
+                            blockDot(
+                                    w,
+                                    row * rowBytes + ib * BLOCK_BYTES,
+                                    shift,
+                                    32 * iq + 8 * ir,
+                                    ya0,
+                                    ya1,
+                                    ya2,
+                                    ya3,
+                                    ya4,
+                                    ya5,
+                                    ya6,
+                                    ya7,
+                                    yb0,
+                                    yb1,
+                                    yb2,
+                                    yb3,
+                                    yb4,
+                                    yb5,
+                                    yb6,
+                                    yb7,
+                                    yc0,
+                                    yc1,
+                                    yc2,
+                                    yc3,
+                                    yc4,
+                                    yc5,
+                                    yc6,
+                                    yc7,
+                                    yd0,
+                                    yd1,
+                                    yd2,
+                                    yd3,
+                                    yd4,
+                                    yd5,
+                                    yd6,
+                                    yd7,
+                                    sa,
+                                    sb,
+                                    sc,
+                                    sd);
+                    if (r == 0) {
+                        sum0 += part;
+                    } else if (r == 1) {
+                        sum1 += part;
+                    } else if (r == 2) {
+                        sum2 += part;
+                    } else {
+                        sum3 += part;
+                    }
+                }
+            }
+        }
+        sum0 = simdSum(context, sum0);
+        sum1 = simdSum(context, sum1);
+        sum2 = simdSum(context, sum2);
+        sum3 = simdSum(context, sum3);
+        if (lane == 0) {
+            store(out, row0, d, sum0, false);
+            store(out, row0 + 1, d, sum1, false);
+            store(out, row0 + 2, d, sum2, false);
+            store(out, row0 + 3, d, sum3, false);
+        }
+    }
+
+    /** {@code hb[row] += w[row]·x}; see {@link #matrixVectorQ4_KSimdgroup}. */
+    public static void matrixVectorWithResidualQ4_KSimdgroup(
+            KernelContext context, FloatArray x, FloatArray hb, ByteArray w, int n, int d) {
+        int lane = context.localIdx & 31;
+        int row0 = (context.groupIdx * SIMDGROUPS + (context.localIdx >> 5)) * SIMDGROUP_ROWS;
+        int blocks = n / QK_K;
+        int rowBytes = blocks * BLOCK_BYTES;
+        int ix = lane >> 3;
+        int iq = (lane & 7) >> 2;
+        int ir = lane & 3;
+        int shift = 16 * iq;
+        float sum0 = 0.0f;
+        float sum1 = 0.0f;
+        float sum2 = 0.0f;
+        float sum3 = 0.0f;
+        for (int ib = ix; ib < blocks; ib += 4) {
+            int xb = ib * QK_K + 64 * iq + 8 * ir;
+            Float4 xa0 = x.getFloat4(xb + 0);
+            Float4 xa1 = x.getFloat4(xb + 4);
+            Float4 xb0 = x.getFloat4(xb + 32);
+            Float4 xb1 = x.getFloat4(xb + 36);
+            Float4 xc0 = x.getFloat4(xb + 128);
+            Float4 xc1 = x.getFloat4(xb + 132);
+            Float4 xd0 = x.getFloat4(xb + 160);
+            Float4 xd1 = x.getFloat4(xb + 164);
+            float sa =
+                    xa0.getX()
+                            + xa0.getY()
+                            + xa0.getZ()
+                            + xa0.getW()
+                            + xa1.getX()
+                            + xa1.getY()
+                            + xa1.getZ()
+                            + xa1.getW();
+            float sb =
+                    xb0.getX()
+                            + xb0.getY()
+                            + xb0.getZ()
+                            + xb0.getW()
+                            + xb1.getX()
+                            + xb1.getY()
+                            + xb1.getZ()
+                            + xb1.getW();
+            float sc =
+                    xc0.getX()
+                            + xc0.getY()
+                            + xc0.getZ()
+                            + xc0.getW()
+                            + xc1.getX()
+                            + xc1.getY()
+                            + xc1.getZ()
+                            + xc1.getW();
+            float sd =
+                    xd0.getX()
+                            + xd0.getY()
+                            + xd0.getZ()
+                            + xd0.getW()
+                            + xd1.getX()
+                            + xd1.getY()
+                            + xd1.getZ()
+                            + xd1.getW();
+            float ya0 = xa0.getX();
+            float ya1 = xa0.getY() * S1;
+            float ya2 = xa0.getZ() * S2;
+            float ya3 = xa0.getW() * S3;
+            float ya4 = xa1.getX();
+            float ya5 = xa1.getY() * S1;
+            float ya6 = xa1.getZ() * S2;
+            float ya7 = xa1.getW() * S3;
+            float yb0 = xb0.getX();
+            float yb1 = xb0.getY() * S1;
+            float yb2 = xb0.getZ() * S2;
+            float yb3 = xb0.getW() * S3;
+            float yb4 = xb1.getX();
+            float yb5 = xb1.getY() * S1;
+            float yb6 = xb1.getZ() * S2;
+            float yb7 = xb1.getW() * S3;
+            float yc0 = xc0.getX();
+            float yc1 = xc0.getY() * S1;
+            float yc2 = xc0.getZ() * S2;
+            float yc3 = xc0.getW() * S3;
+            float yc4 = xc1.getX();
+            float yc5 = xc1.getY() * S1;
+            float yc6 = xc1.getZ() * S2;
+            float yc7 = xc1.getW() * S3;
+            float yd0 = xd0.getX();
+            float yd1 = xd0.getY() * S1;
+            float yd2 = xd0.getZ() * S2;
+            float yd3 = xd0.getW() * S3;
+            float yd4 = xd1.getX();
+            float yd5 = xd1.getY() * S1;
+            float yd6 = xd1.getZ() * S2;
+            float yd7 = xd1.getW() * S3;
+            for (int r = 0; r < SIMDGROUP_ROWS; r++) {
+                int row = row0 + r;
+                if (row < d) {
+                    float part =
+                            blockDot(
+                                    w,
+                                    row * rowBytes + ib * BLOCK_BYTES,
+                                    shift,
+                                    32 * iq + 8 * ir,
+                                    ya0,
+                                    ya1,
+                                    ya2,
+                                    ya3,
+                                    ya4,
+                                    ya5,
+                                    ya6,
+                                    ya7,
+                                    yb0,
+                                    yb1,
+                                    yb2,
+                                    yb3,
+                                    yb4,
+                                    yb5,
+                                    yb6,
+                                    yb7,
+                                    yc0,
+                                    yc1,
+                                    yc2,
+                                    yc3,
+                                    yc4,
+                                    yc5,
+                                    yc6,
+                                    yc7,
+                                    yd0,
+                                    yd1,
+                                    yd2,
+                                    yd3,
+                                    yd4,
+                                    yd5,
+                                    yd6,
+                                    yd7,
+                                    sa,
+                                    sb,
+                                    sc,
+                                    sd);
+                    if (r == 0) {
+                        sum0 += part;
+                    } else if (r == 1) {
+                        sum1 += part;
+                    } else if (r == 2) {
+                        sum2 += part;
+                    } else {
+                        sum3 += part;
+                    }
+                }
+            }
+        }
+        sum0 = simdSum(context, sum0);
+        sum1 = simdSum(context, sum1);
+        sum2 = simdSum(context, sum2);
+        sum3 = simdSum(context, sum3);
+        if (lane == 0) {
+            store(hb, row0, d, sum0, true);
+            store(hb, row0 + 1, d, sum1, true);
+            store(hb, row0 + 2, d, sum2, true);
+            store(hb, row0 + 3, d, sum3, true);
+        }
+    }
+
+    /** The sum over a SIMD group's 32 lanes, in lane 0. */
+    private static float simdSum(KernelContext context, float v) {
+        v += context.simdShuffleDown(v, 16);
+        v += context.simdShuffleDown(v, 8);
+        v += context.simdShuffleDown(v, 4);
+        v += context.simdShuffleDown(v, 2);
+        v += context.simdShuffleDown(v, 1);
+        return v;
+    }
+
+    /** Writes, or adds to, {@code out[row]} where the row exists. */
+    private static void store(FloatArray out, int row, int d, float v, boolean residual) {
+        if (row < d) {
+            out.set(row, residual ? out.get(row) + v : v);
         }
     }
 }

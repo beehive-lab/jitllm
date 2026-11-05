@@ -7,11 +7,13 @@ import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
 import org.beehive.jitllm.Options;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
 import org.beehive.jitllm.golden.GoldenFixture;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 // @formatter:off
@@ -65,11 +67,11 @@ public class NativeAttentionCapabilityAccelTest {
 
         String previousGpu = System.getProperty(GPU_PROPERTY);
         String previousKv = System.getProperty(KV_FP16_PROPERTY);
-        String previousNative = System.getProperty(NativePrefillSupport.PROPERTY);
+        String previousNative = System.getProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY);
         System.setProperty(GPU_PROPERTY, "true");
         System.setProperty(KV_FP16_PROPERTY, "true");
         // Native libraries are opt-in (--with-native-libraries); this test is about their dispatch.
-        System.setProperty(NativePrefillSupport.PROPERTY, "true");
+        System.setProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, "true");
         NativePrefillSupport.SdpaProbe previousProbe = null;
         try {
             PlanDispatchEvidence.NativePrefillEvidence selected = buildAndRead(model);
@@ -133,7 +135,7 @@ public class NativeAttentionCapabilityAccelTest {
             }
             restore(GPU_PROPERTY, previousGpu);
             restore(KV_FP16_PROPERTY, previousKv);
-            restore(NativePrefillSupport.PROPERTY, previousNative);
+            restore(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, previousNative);
         }
     }
 

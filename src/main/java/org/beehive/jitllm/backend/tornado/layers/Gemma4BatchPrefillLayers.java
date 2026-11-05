@@ -2,9 +2,8 @@ package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
-import org.beehive.jitllm.backend.tornado.MlxPrefill;
-import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
 import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.BatchMmaKernels;
@@ -21,6 +20,16 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
+import org.beehive.jitllm.backend.tornado.ops.LayerProjections;
+import org.beehive.jitllm.backend.tornado.ops.Operands;
+import org.beehive.jitllm.backend.tornado.ops.Region;
+import org.beehive.jitllm.backend.tornado.ops.Step;
+import org.beehive.jitllm.backend.tornado.ops.Target;
+import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
+import org.beehive.jitllm.backend.tornado.ops.jit.JitLayerProjections;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.CublasLayerProjections;
+import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -29,8 +38,12 @@ import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.Gemma4State;
 import org.beehive.jitllm.inference.weights.tornado.Gemma4TornadoWeights;
 import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
+import org.beehive.jitllm.program.op.MatMul;
+import org.beehive.jitllm.program.op.OperandRef;
+import org.beehive.jitllm.program.op.Operation;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.TensorRole;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -80,7 +93,8 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  * a bound that was widened to admit it.
  */
 // @formatter:on
-public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTaskGraphs {
+public class Gemma4BatchPrefillLayers
+        implements BatchPrefillTransformerLayerTaskGraphs, LayerProjections.Tasks {
 
     @Override
     public String describeNativeLibraries() {
@@ -191,13 +205,53 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
 
     // @formatter:off
     /**
-     * With native libraries ({@code --with-native-libraries}): each layer's projections decoded
-     * once to FP16 row-major matrices for cuBLAS, several tensors stacked into one matrix (query,
-     * key and value; gate and up) so one GEMM computes them side by side; otherwise {@code null}
-     * and the JIT kernels run.
+     * Whether the plan runs the projections on cuBLAS: each layer's projections decoded to FP16
+     * row-major matrices, several tensors copied into one contiguous matrix (query, key and value;
+     * gate and up) so one GEMM computes them side by side. Otherwise the JIT kernels run them.
      */
     // @formatter:on
     private final boolean nativeProjections;
+
+    /**
+     * One layer's projections, a region each: q|k|v (the query alone in a layer that reads an
+     * earlier layer's cache), the output, gate|up and down, and with per-layer embeddings their
+     * gate and projection ({@code null} without).
+     */
+    private record LayerRegions(
+            Region qkv, Region output, Region gateUp, Region down, Region pleGate, Region pleProj) {
+
+        List<Region> all() {
+            List<Region> all = new ArrayList<>(List.of(qkv, output, gateUp, down));
+            if (pleGate != null) {
+                all.add(pleGate);
+                all.add(pleProj);
+            }
+            return all;
+        }
+    }
+
+    /** By layer, the regions of the layers this stack builds; {@code null} for the others. */
+    private final LayerRegions[] regions;
+
+    /** Layer 0's per-layer model projection, or {@code null} without per-layer embeddings. */
+    private final Region pleModel;
+
+    /** Which of cuBLAS and the JIT kernels runs each projection. */
+    private final WorkPlan plan;
+
+    /** The plan's record of the weights its steps read, which this class does not need. */
+    private final WeightBindings bindings = new WeightBindings();
+
+    /** The plan's arrays: the tasks this class adds name their buffers themselves. */
+    private static final Operands NO_OPERANDS =
+            Operands.of(java.util.Map.of(), (role, layer) -> null, List.of());
+
+    /** The weight names of the per-layer-embedding projections, which have no role of their own. */
+    private static final String PLE_GATE = "inp_gate";
+
+    private static final String PLE_PROJ = "proj";
+
+    private static final String PLE_MODEL_PROJ = "per_layer_model_proj";
 
     // @formatter:off
     /**
@@ -211,8 +265,8 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     /**
      * With native libraries ({@code --with-native-libraries}) on Metal: the query/key/value,
      * output, gate/up and down projections as MLX GEMMs over each layer's weights in MLX's form
-     * ({@link MlxPrefill#projections()}), query, key and value stacked into one matrix and gate and
-     * up into another; otherwise {@code null}. Attention, the norms and the per-layer-embedding
+     * ({@link MlxPrefill#projections()}), query, key and value contiguous in one matrix and gate
+     * and up in another; otherwise {@code null}. Attention, the norms and the per-layer-embedding
      * GEMMs stay on the Metal kernels.
      */
     // @formatter:on
@@ -351,7 +405,30 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                                 "per_layer_model_proj")
                         : null;
 
-        this.nativeProjections = nativeProjections(state);
+        this.regions = new LayerRegions[config.numberOfLayers()];
+        List<Region> all = new ArrayList<>();
+        this.pleModel =
+                ple && firstLayer == 0
+                        ? region(
+                                0,
+                                "per-layer model projection",
+                                pleMatMul(PLE_MODEL_PROJ, "x16", "pleAll", perLayerTotal, dim))
+                        : null;
+        if (pleModel != null) {
+            all.add(pleModel);
+        }
+        for (int l = firstLayer; l < endLayer; l++) {
+            regions[l] = layerRegions(l);
+            all.addAll(regions[l].all());
+        }
+        this.plan =
+                WorkPlan.of(
+                        all,
+                        List.of(new CublasLayerProjections(this), new JitLayerProjections(this)),
+                        Target.of(state.executionPolicy()),
+                        context,
+                        state.workspace.prepacking);
+        this.nativeProjections = plan.runs(regions[firstLayer].qkv(), "cuBLAS");
         this.mlx = mlxPrefill(state.executionPolicy(), weights.dataType(), config).orElse(null);
         if (mlx != null) {
             buildMlxProjections();
@@ -765,7 +842,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             Gemma4BatchPrefillKernels::dequantizeQ8ToFP16,
                             context,
                             w.asByteArray(),
-                            state.workspace.weightsF16Scratch,
+                            state.workspace.contiguousF16WeightsScratch,
                             destOffset);
             case Q4_0 ->
                     layer.task(
@@ -773,7 +850,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             Gemma4BatchPrefillKernels::dequantizeQ4_0ToFP16,
                             context,
                             w.asByteArray(),
-                            state.workspace.weightsF16Scratch,
+                            state.workspace.contiguousF16WeightsScratch,
                             destOffset);
             case Q4_1 ->
                     layer.task(
@@ -781,7 +858,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             Gemma4BatchPrefillKernels::dequantizeQ4_1ToFP16,
                             context,
                             w.asByteArray(),
-                            state.workspace.weightsF16Scratch,
+                            state.workspace.contiguousF16WeightsScratch,
                             destOffset);
             case Q4_K, Q5_K, Q6_K ->
                     layer.task(
@@ -793,7 +870,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             },
                             context,
                             w.asByteArray(),
-                            state.workspace.weightsF16Scratch,
+                            state.workspace.contiguousF16WeightsScratch,
                             destOffset,
                             // Elements: 256 to a super-block of 144, 176 or 210 bytes.
                             w.asByteArray().getSize()
@@ -809,7 +886,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             Gemma4BatchPrefillKernels::copyF16,
                             context,
                             w.asHalfFloatArray(),
-                            state.workspace.weightsF16Scratch,
+                            state.workspace.contiguousF16WeightsScratch,
                             destOffset,
                             w.asHalfFloatArray().getSize());
             default ->
@@ -831,11 +908,6 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         return fp16KeyValue
                 && config.headDim(layerIndex) % Gemma4AttentionKernels.TC_HEAD == 0
                 && TensorCoreSupport.isTensorCoreCapableBackend();
-    }
-
-    /** Whether this state's prefill projections are cuBLAS GEMMs: requested, and available. */
-    static boolean nativeProjections(Gemma4State state) {
-        return NativePrefillSupport.nativeProjections(state.executionPolicy());
     }
 
     // ── MLX projections ──────────────────────────────────────────────────────
@@ -901,6 +973,19 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                             }
                             : new TornadoTensor[] {weights.wqLayered[l]};
             String name = "blk." + l;
+            // MLX reads its own form of every projection, so the decode graphs upload them.
+            for (TornadoTensor t : qkv) {
+                state.workspace.weightBindings.recordReplaced(t);
+            }
+            for (TornadoTensor t :
+                    new TornadoTensor[] {
+                        weights.woLayered[l],
+                        weights.w1Layered[l],
+                        weights.w3Layered[l],
+                        weights.w2Layered[l]
+                    }) {
+                state.workspace.weightBindings.recordReplaced(t);
+            }
             mlxQkv[l] = MlxPrefillProjections.matrix(form, requireMlx(name + ".attn_qkv", qkv));
             mlxWo[l] =
                     MlxPrefillProjections.matrix(
@@ -965,8 +1050,8 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     }
 
     /**
-     * The stacked query/key/value GEMM on MLX into the packed {@code [q|k|v]} rows the head norms
-     * and the rotation read, in FP32.
+     * The GEMM over contiguous query, key and value on MLX into the packed {@code [q|k|v]} rows the
+     * head norms and the rotation read, in FP32.
      */
     private void mlxQkvProjection(TaskGraph layer, int layerIndex, int stride) {
         MlxPrefillProjections.gemm(
@@ -1231,7 +1316,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     state.workspace.attnOutFP16,
                     state.workspace.attnScoresBatch,
                     state.workspace.splitKPartialBatch,
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.woOut,
                     state.workspace.normedXFFNFP16,
                     state.workspace.gateUpResultBatch,
@@ -1287,7 +1372,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     state.workspace.attnOutFP16,
                     state.workspace.attnScoresBatch,
                     state.workspace.splitKPartialBatch,
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.woOut,
                     state.workspace.normedXFFNFP16,
                     state.workspace.gateUpResultBatch,
@@ -1399,122 +1484,10 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 dim);
 
         if (hasOwnKv) {
-            boolean qkvDirect =
-                    !DEQUANT_PROJECTIONS
-                            && allQ8(
-                                    weights.wqLayered[layerIndex],
-                                    weights.wkLayered[layerIndex],
-                                    valueWeights(layerIndex));
             if (mlx != null) {
                 mlxQkvProjection(layer, layerIndex, stride);
-            } else if (simdgroup) {
-                simdgroupGemm(
-                        layer,
-                        "qkvProj",
-                        state.workspace.wrapXbFP16Batch,
-                        weights.wqLayered[layerIndex],
-                        state.workspace.qkvResultBatch,
-                        dim,
-                        qDim,
-                        stride,
-                        0);
-                simdgroupGemm(
-                        layer,
-                        "kProj",
-                        state.workspace.wrapXbFP16Batch,
-                        weights.wkLayered[layerIndex],
-                        state.workspace.qkvResultBatch,
-                        dim,
-                        kvDim,
-                        stride,
-                        qDim);
-                simdgroupGemm(
-                        layer,
-                        "vProj",
-                        state.workspace.wrapXbFP16Batch,
-                        weights.wvLayered[layerIndex],
-                        state.workspace.qkvResultBatch,
-                        dim,
-                        kvDim,
-                        stride,
-                        qDim + kvDim);
-            } else if (int8Qkv[layerIndex]) {
-                // Three GEMMs over one quantized activation, each into its slot of the packed
-                // [q|k|v] row; a layer without a value projection projects the key again.
-                int8Quantize(layer, "qkv_q8", state.workspace.wrapXbFP16Batch, dim);
-                int8Gemm(
-                        layer,
-                        "q_i8",
-                        weights.wqLayered[layerIndex],
-                        state.workspace.qkvResultBatch,
-                        qDim,
-                        dim,
-                        stride,
-                        0,
-                        false);
-                int8Gemm(
-                        layer,
-                        "k_i8",
-                        weights.wkLayered[layerIndex],
-                        state.workspace.qkvResultBatch,
-                        kvDim,
-                        dim,
-                        stride,
-                        qDim,
-                        false);
-                int8Gemm(
-                        layer,
-                        "v_i8",
-                        valueWeights(layerIndex),
-                        state.workspace.qkvResultBatch,
-                        kvDim,
-                        dim,
-                        stride,
-                        qDim + kvDim,
-                        false);
-            } else if (nativeProjections) {
-                addDequant(layer, "qDequant", weights.wqLayered[layerIndex], 0);
-                addDequant(layer, "kDequant", weights.wkLayered[layerIndex], qDim * dim);
-                addDequant(layer, "vDequant", valueWeights(layerIndex), (qDim + kvDim) * dim);
-                nativeGemm(
-                        layer,
-                        "qkvProj",
-                        state.workspace.weightsF16Scratch,
-                        state.workspace.wrapXbFP16Batch,
-                        state.workspace.qkvResultBatch,
-                        qDim + 2 * kvDim,
-                        dim);
-            } else if (!qkvDirect) {
-                // Query, key and value laid end to end make one [qDim + 2*kvDim, dim] matrix, so a
-                // single plain GEMM writes exactly the packed [q|k|v] row the head norms and the
-                // rotation already read.
-                addDequant(layer, "qDequant", weights.wqLayered[layerIndex], 0);
-                addDequant(layer, "kDequant", weights.wkLayered[layerIndex], qDim * dim);
-                addDequant(layer, "vDequant", valueWeights(layerIndex), (qDim + kvDim) * dim);
-                layer.task(
-                        "qkvProj",
-                        TransformerBatchPrefillKernels::gemmMMA,
-                        context,
-                        state.workspace.wrapXbFP16Batch,
-                        state.workspace.weightsF16Scratch,
-                        state.workspace.qkvResultBatch,
-                        paddedBatch,
-                        qDim + 2 * kvDim,
-                        dim);
             } else {
-                layer.task(
-                        "qkvProj",
-                        TransformerBatchPrefillKernels::gemmMMAQKVQ8,
-                        context,
-                        state.workspace.wrapXbFP16Batch,
-                        weights.wqLayered[layerIndex].asByteArray(),
-                        weights.wkLayered[layerIndex].asByteArray(),
-                        valueWeights(layerIndex).asByteArray(),
-                        state.workspace.qkvResultBatch,
-                        paddedBatch,
-                        qDim,
-                        kvDim,
-                        dim);
+                plan.emit(layer, regions[layerIndex].qkv(), NO_OPERANDS, bindings);
             }
             layer.task(
                     "batch_qkv_norm",
@@ -1567,62 +1540,8 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         } else {
             if (mlx != null) {
                 mlxQkvProjection(layer, layerIndex, stride);
-            } else if (simdgroup) {
-                simdgroupGemm(
-                        layer,
-                        "qkvProj",
-                        state.workspace.wrapXbFP16Batch,
-                        weights.wqLayered[layerIndex],
-                        state.workspace.qkvResultBatch,
-                        dim,
-                        qDim,
-                        stride,
-                        0);
-            } else if (int8Qkv[layerIndex]) {
-                int8Quantize(layer, "qkv_q8", state.workspace.wrapXbFP16Batch, dim);
-                int8Gemm(
-                        layer,
-                        "q_i8",
-                        weights.wqLayered[layerIndex],
-                        state.workspace.qkvResultBatch,
-                        qDim,
-                        dim,
-                        stride,
-                        0,
-                        false);
-            } else if (nativeProjections) {
-                addDequant(layer, "qDequant", weights.wqLayered[layerIndex], 0);
-                nativeGemm(
-                        layer,
-                        "qkvProj",
-                        state.workspace.weightsF16Scratch,
-                        state.workspace.wrapXbFP16Batch,
-                        state.workspace.qkvResultBatch,
-                        qDim,
-                        dim);
-            } else if (!DEQUANT_PROJECTIONS && allQ8(weights.wqLayered[layerIndex])) {
-                layer.task(
-                        "qkvProj",
-                        TransformerBatchPrefillKernels::gemmMMAQ8,
-                        context,
-                        state.workspace.wrapXbFP16Batch,
-                        weights.wqLayered[layerIndex].asByteArray(),
-                        state.workspace.qkvResultBatch,
-                        paddedBatch,
-                        qDim,
-                        dim);
             } else {
-                addDequant(layer, "qDequant", weights.wqLayered[layerIndex], 0);
-                layer.task(
-                        "qkvProj",
-                        TransformerBatchPrefillKernels::gemmMMA,
-                        context,
-                        state.workspace.wrapXbFP16Batch,
-                        state.workspace.weightsF16Scratch,
-                        state.workspace.qkvResultBatch,
-                        paddedBatch,
-                        qDim,
-                        dim);
+                plan.emit(layer, regions[layerIndex].qkv(), NO_OPERANDS, bindings);
             }
             layer.task(
                     "batch_qkv_norm",
@@ -1780,91 +1699,8 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     mlxOutHalf,
                     state.workspace.woOut,
                     batchSize * dim);
-        } else if (simdgroup) {
-            simdgroupGemm(
-                    layer,
-                    "woProj",
-                    state.workspace.attnOutFP16,
-                    weights.woLayered[layerIndex],
-                    state.workspace.woOut,
-                    qDim,
-                    dim,
-                    dim,
-                    0);
-        } else if (int8Wo[layerIndex]) {
-            int8Quantize(layer, "wo_q8", state.workspace.attnOutFP16, qDim);
-            int8Gemm(
-                    layer,
-                    "wo_i8",
-                    weights.woLayered[layerIndex],
-                    state.workspace.woOut,
-                    dim,
-                    qDim,
-                    dim,
-                    0,
-                    true);
-        } else if (nativeProjections) {
-            addDequant(layer, "woDequant", weights.woLayered[layerIndex], 0);
-            nativeGemm(
-                    layer,
-                    "woProj",
-                    state.workspace.weightsF16Scratch,
-                    state.workspace.attnOutFP16,
-                    state.workspace.woOut,
-                    dim,
-                    qDim);
-        } else if (SPLIT_K && (DEQUANT_SPLIT_K || !allQ8(weights.woLayered[layerIndex]))) {
-            addDequant(layer, "woDequant", weights.woLayered[layerIndex], 0);
-            layer.task(
-                    "woProj",
-                    Gemma4BatchPrefillKernels::gemmMMASplitK,
-                    context,
-                    state.workspace.attnOutFP16,
-                    state.workspace.weightsF16Scratch,
-                    state.workspace.splitKPartialBatch,
-                    paddedBatch,
-                    dim,
-                    qDim,
-                    SPLIT_K_SLICES);
-            layer.task(
-                    "woReduce",
-                    Gemma4BatchPrefillKernels::splitKReduce,
-                    context,
-                    state.workspace.splitKPartialBatch,
-                    state.workspace.woOut,
-                    paddedBatch * dim,
-                    SPLIT_K_SLICES);
-        } else if (SPLIT_K) {
-            layer.task(
-                    "woProj",
-                    Gemma4BatchPrefillKernels::gemmMMAQ8SplitK,
-                    context,
-                    state.workspace.attnOutFP16,
-                    weights.woLayered[layerIndex].asByteArray(),
-                    state.workspace.splitKPartialBatch,
-                    paddedBatch,
-                    dim,
-                    qDim,
-                    SPLIT_K_SLICES);
-            layer.task(
-                    "woReduce",
-                    Gemma4BatchPrefillKernels::splitKReduce,
-                    context,
-                    state.workspace.splitKPartialBatch,
-                    state.workspace.woOut,
-                    paddedBatch * dim,
-                    SPLIT_K_SLICES);
         } else {
-            layer.task(
-                    "woProj",
-                    TransformerBatchPrefillKernels::gemmMMAQ8,
-                    context,
-                    state.workspace.attnOutFP16,
-                    weights.woLayered[layerIndex].asByteArray(),
-                    state.workspace.woOut,
-                    paddedBatch,
-                    dim,
-                    qDim);
+            plan.emit(layer, regions[layerIndex].output(), NO_OPERANDS, bindings);
         }
         layer.task(
                 "batch_post_attn_rms",
@@ -1935,7 +1771,540 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     mlxDownRowScale,
                     ffnLen,
                     paddedBatch * ffnLen);
-        } else if (simdgroup) {
+        } else {
+            plan.emit(layer, regions[layerIndex].gateUp(), NO_OPERANDS, bindings);
+        }
+        if (mlx == null) {
+            layer.task(
+                    "batch_geglu",
+                    Gemma4BatchPrefillKernels::batchedGeGLUFP16Packed,
+                    context,
+                    state.workspace.wrapHbFP16Batch,
+                    state.workspace.gateUpResultBatch,
+                    ffnLen);
+        }
+        if (mlx != null) {
+            MlxPrefillProjections.gemm(
+                    layer,
+                    "w2Proj",
+                    mlxHbIn.get(ffnLen),
+                    mlxDown[layerIndex],
+                    mlxOutHalf,
+                    paddedBatch,
+                    ffnLen,
+                    dim);
+            layer.task(
+                    "mlx_w2_float",
+                    MlxPrefillKernels::toFloatRowScaled,
+                    context,
+                    mlxOutHalf,
+                    state.workspace.w2Out,
+                    mlxDownRowScale,
+                    dim,
+                    batchSize * dim);
+        } else {
+            plan.emit(layer, regions[layerIndex].down(), NO_OPERANDS, bindings);
+        }
+        layer.task(
+                "batch_post_ffn_rms",
+                TransformerBatchPrefillKernels::batchedRmsReduceParallel,
+                context,
+                state.workspace.w2Out,
+                state.workspace.branchScaleBatch,
+                dim,
+                config.rmsNormEps(),
+                RMS_LOCAL_SIZE);
+        layer.task(
+                "batch_post_ffn_apply",
+                Gemma4BatchPrefillKernels::batchedRmsApplyWithResidual,
+                context,
+                state.workspace.wrapXBatch,
+                state.workspace.w2Out,
+                weights.ffnPostNorm[layerIndex].asFloatArray(),
+                state.workspace.branchScaleBatch,
+                dim);
+
+        // ── Per-layer embedding ────────────────────────────────────────────────
+        if (ple) {
+            layer.task(
+                    "batch_x_cast",
+                    TransformerBatchPrefillKernels::batchedConvertFP32toFP16,
+                    context,
+                    state.workspace.wrapXBatch,
+                    state.workspace.wrapXFP16Batch);
+            plan.emit(layer, regions[layerIndex].pleGate(), NO_OPERANDS, bindings);
+            layer.task(
+                    "batch_ple_gate_gelu",
+                    Gemma4BatchPrefillKernels::batchedPleGateGeluMul,
+                    context,
+                    state.workspace.wrapPerLayerGateFP16Batch,
+                    state.workspace.wrapPerLayerGateBatch,
+                    state.workspace.wrapPerLayerInputsBatch,
+                    peOffset,
+                    nEmbdPerLayer,
+                    perLayerTotal);
+            plan.emit(layer, regions[layerIndex].pleProj(), NO_OPERANDS, bindings);
+            layer.task(
+                    "batch_ple_post_rms",
+                    TransformerBatchPrefillKernels::batchedRmsReduceParallel,
+                    context,
+                    state.workspace.wrapPerLayerOutBatch,
+                    state.workspace.branchScaleBatch,
+                    dim,
+                    config.rmsNormEps(),
+                    RMS_LOCAL_SIZE);
+            layer.task(
+                    "batch_ple_post_apply",
+                    Gemma4BatchPrefillKernels::batchedRmsApplyWithResidual,
+                    context,
+                    state.workspace.wrapXBatch,
+                    state.workspace.wrapPerLayerOutBatch,
+                    weights.perLayerPostNorm[layerIndex].asFloatArray(),
+                    state.workspace.branchScaleBatch,
+                    dim);
+        }
+
+        if (weights.layerOutputScale[layerIndex] != null) {
+            layer.task(
+                    "batch_layer_output_scale",
+                    Gemma4BatchPrefillKernels::batchedScaleInPlaceFromTensor,
+                    context,
+                    state.workspace.wrapXBatch,
+                    weights.layerOutputScale[layerIndex].asFloatArray());
+        }
+
+        layer.persistOnDevice(
+                state.workspace.wrapXBatch,
+                state.workspace.wrapKeyCache,
+                state.workspace.wrapValueCache);
+        return layer;
+    }
+
+    /** Layer {@code l}'s projection regions. */
+    private LayerRegions layerRegions(int l) {
+        int qDim = nHead * config.headDim(l);
+        int kvDim = config.keyValueHeads(l) * config.headDim(l);
+        int ffnLen = config.feedForwardLength(l);
+        MatMul q =
+                matMul(
+                        TensorRole.ATTENTION_QUERY,
+                        "attnIn",
+                        "qkv",
+                        qDim,
+                        dim,
+                        weights.wqLayered[l].dataType());
+        Region qkv =
+                config.hasOwnKv(l)
+                        ? region(
+                                l,
+                                "q|k|v",
+                                q,
+                                matMul(
+                                        TensorRole.ATTENTION_KEY,
+                                        "attnIn",
+                                        "qkv",
+                                        kvDim,
+                                        dim,
+                                        weights.wkLayered[l].dataType()),
+                                matMul(
+                                        TensorRole.ATTENTION_VALUE,
+                                        "attnIn",
+                                        "qkv",
+                                        kvDim,
+                                        dim,
+                                        valueWeights(l).dataType()))
+                        : region(l, "q", q);
+        return new LayerRegions(
+                qkv,
+                region(
+                        l,
+                        "output",
+                        matMul(
+                                TensorRole.ATTENTION_OUTPUT,
+                                "attn",
+                                "o",
+                                dim,
+                                qDim,
+                                weights.woLayered[l].dataType())),
+                region(
+                        l,
+                        "gate|up",
+                        matMul(
+                                TensorRole.FFN_GATE,
+                                "ffnIn",
+                                "gateUp",
+                                ffnLen,
+                                dim,
+                                weights.w1Layered[l].dataType()),
+                        matMul(
+                                TensorRole.FFN_UP,
+                                "ffnIn",
+                                "gateUp",
+                                ffnLen,
+                                dim,
+                                weights.w3Layered[l].dataType())),
+                region(
+                        l,
+                        "down",
+                        matMul(
+                                TensorRole.FFN_DOWN,
+                                "hidden",
+                                "down",
+                                dim,
+                                ffnLen,
+                                weights.w2Layered[l].dataType())),
+                ple
+                        ? region(
+                                l,
+                                "per-layer gate",
+                                pleMatMul(PLE_GATE, "x16", "pleGate", nEmbdPerLayer, dim))
+                        : null,
+                ple
+                        ? region(
+                                l,
+                                "per-layer projection",
+                                pleMatMul(PLE_PROJ, "pleGated", "pleOut", dim, nEmbdPerLayer))
+                        : null);
+    }
+
+    private Region region(int layer, String name, Operation... ops) {
+        return new Region(layer, name, batchSize, List.of(ops));
+    }
+
+    /** {@code input} times the layer's weight with {@code role}: {@code outputs} values per row. */
+    private MatMul matMul(
+            TensorRole role, String input, String output, int outputs, int inputs, DataType type) {
+        return new MatMul(
+                new OperandRef.Weight(role.name().toLowerCase(Locale.ROOT), role),
+                new OperandRef.Activation(input),
+                new OperandRef.Activation(output),
+                outputs,
+                inputs,
+                paddedBatch,
+                type);
+    }
+
+    /** A per-layer-embedding projection over its FP16 copy, named {@code name}. */
+    private MatMul pleMatMul(String name, String input, String output, int outputs, int inputs) {
+        return new MatMul(
+                new OperandRef.Weight(name, TensorRole.OTHER),
+                new OperandRef.Activation(input),
+                new OperandRef.Activation(output),
+                outputs,
+                inputs,
+                paddedBatch,
+                DataType.F16);
+    }
+
+    @Override
+    public boolean cublasForm(Step step) {
+        return true;
+    }
+
+    @Override
+    public void project(TaskGraph graph, Step step, Operands operands, boolean cublas) {
+        int layerIndex = step.layer();
+        OperandRef.Weight weight = step.first(MatMul.class).weight();
+        switch (weight.role()) {
+            case ATTENTION_QUERY -> qkvProjection(graph, layerIndex, cublas);
+            case ATTENTION_OUTPUT -> outputProjection(graph, layerIndex, cublas);
+            case FFN_GATE -> gateUpProjection(graph, layerIndex, cublas);
+            case FFN_DOWN -> downProjection(graph, layerIndex, cublas);
+            case OTHER -> {
+                switch (weight.name()) {
+                    case PLE_GATE -> pleGateProjection(graph, layerIndex, cublas);
+                    case PLE_PROJ -> pleProjection(graph, layerIndex, cublas);
+                    case PLE_MODEL_PROJ -> pleModelProjection(graph, cublas);
+                    default ->
+                            throw new IllegalArgumentException(
+                                    "not a projection of this layer: " + step);
+                }
+            }
+            default ->
+                    throw new IllegalArgumentException("not a projection of this layer: " + step);
+        }
+    }
+
+    /**
+     * The query, key and value projections into the packed [q|k|v] row; the query alone in a layer
+     * that reads an earlier layer's cache.
+     */
+    private void qkvProjection(TaskGraph layer, int layerIndex, boolean cublas) {
+        final int qDim = nHead * config.headDim(layerIndex);
+        final int kvDim = config.keyValueHeads(layerIndex) * config.headDim(layerIndex);
+        final int stride = qkvStride(layerIndex);
+        if (config.hasOwnKv(layerIndex)) {
+            boolean qkvDirect =
+                    !DEQUANT_PROJECTIONS
+                            && allQ8(
+                                    weights.wqLayered[layerIndex],
+                                    weights.wkLayered[layerIndex],
+                                    valueWeights(layerIndex));
+            if (simdgroup) {
+                simdgroupGemm(
+                        layer,
+                        "qkvProj",
+                        state.workspace.wrapXbFP16Batch,
+                        weights.wqLayered[layerIndex],
+                        state.workspace.qkvResultBatch,
+                        dim,
+                        qDim,
+                        stride,
+                        0);
+                simdgroupGemm(
+                        layer,
+                        "kProj",
+                        state.workspace.wrapXbFP16Batch,
+                        weights.wkLayered[layerIndex],
+                        state.workspace.qkvResultBatch,
+                        dim,
+                        kvDim,
+                        stride,
+                        qDim);
+                simdgroupGemm(
+                        layer,
+                        "vProj",
+                        state.workspace.wrapXbFP16Batch,
+                        weights.wvLayered[layerIndex],
+                        state.workspace.qkvResultBatch,
+                        dim,
+                        kvDim,
+                        stride,
+                        qDim + kvDim);
+            } else if (int8Qkv[layerIndex]) {
+                // Three GEMMs over one quantized activation, each into its slot of the packed
+                // [q|k|v] row; a layer without a value projection projects the key again.
+                int8Quantize(layer, "qkv_q8", state.workspace.wrapXbFP16Batch, dim);
+                int8Gemm(
+                        layer,
+                        "q_i8",
+                        weights.wqLayered[layerIndex],
+                        state.workspace.qkvResultBatch,
+                        qDim,
+                        dim,
+                        stride,
+                        0,
+                        false);
+                int8Gemm(
+                        layer,
+                        "k_i8",
+                        weights.wkLayered[layerIndex],
+                        state.workspace.qkvResultBatch,
+                        kvDim,
+                        dim,
+                        stride,
+                        qDim,
+                        false);
+                int8Gemm(
+                        layer,
+                        "v_i8",
+                        valueWeights(layerIndex),
+                        state.workspace.qkvResultBatch,
+                        kvDim,
+                        dim,
+                        stride,
+                        qDim + kvDim,
+                        false);
+            } else if (cublas) {
+                addDequant(layer, "qDequant", weights.wqLayered[layerIndex], 0);
+                addDequant(layer, "kDequant", weights.wkLayered[layerIndex], qDim * dim);
+                addDequant(layer, "vDequant", valueWeights(layerIndex), (qDim + kvDim) * dim);
+                nativeGemm(
+                        layer,
+                        "qkvProj",
+                        state.workspace.contiguousF16WeightsScratch,
+                        state.workspace.wrapXbFP16Batch,
+                        state.workspace.qkvResultBatch,
+                        qDim + 2 * kvDim,
+                        dim);
+            } else if (!qkvDirect) {
+                // Query, key and value laid end to end make one [qDim + 2*kvDim, dim] matrix, so a
+                // single plain GEMM writes exactly the packed [q|k|v] row the head norms and the
+                // rotation already read.
+                addDequant(layer, "qDequant", weights.wqLayered[layerIndex], 0);
+                addDequant(layer, "kDequant", weights.wkLayered[layerIndex], qDim * dim);
+                addDequant(layer, "vDequant", valueWeights(layerIndex), (qDim + kvDim) * dim);
+                layer.task(
+                        "qkvProj",
+                        TransformerBatchPrefillKernels::gemmMMA,
+                        context,
+                        state.workspace.wrapXbFP16Batch,
+                        state.workspace.contiguousF16WeightsScratch,
+                        state.workspace.qkvResultBatch,
+                        paddedBatch,
+                        qDim + 2 * kvDim,
+                        dim);
+            } else {
+                layer.task(
+                        "qkvProj",
+                        TransformerBatchPrefillKernels::gemmMMAQKVQ8,
+                        context,
+                        state.workspace.wrapXbFP16Batch,
+                        weights.wqLayered[layerIndex].asByteArray(),
+                        weights.wkLayered[layerIndex].asByteArray(),
+                        valueWeights(layerIndex).asByteArray(),
+                        state.workspace.qkvResultBatch,
+                        paddedBatch,
+                        qDim,
+                        kvDim,
+                        dim);
+            }
+        } else {
+            if (simdgroup) {
+                simdgroupGemm(
+                        layer,
+                        "qkvProj",
+                        state.workspace.wrapXbFP16Batch,
+                        weights.wqLayered[layerIndex],
+                        state.workspace.qkvResultBatch,
+                        dim,
+                        qDim,
+                        stride,
+                        0);
+            } else if (int8Qkv[layerIndex]) {
+                int8Quantize(layer, "qkv_q8", state.workspace.wrapXbFP16Batch, dim);
+                int8Gemm(
+                        layer,
+                        "q_i8",
+                        weights.wqLayered[layerIndex],
+                        state.workspace.qkvResultBatch,
+                        qDim,
+                        dim,
+                        stride,
+                        0,
+                        false);
+            } else if (cublas) {
+                addDequant(layer, "qDequant", weights.wqLayered[layerIndex], 0);
+                nativeGemm(
+                        layer,
+                        "qkvProj",
+                        state.workspace.contiguousF16WeightsScratch,
+                        state.workspace.wrapXbFP16Batch,
+                        state.workspace.qkvResultBatch,
+                        qDim,
+                        dim);
+            } else if (!DEQUANT_PROJECTIONS && allQ8(weights.wqLayered[layerIndex])) {
+                layer.task(
+                        "qkvProj",
+                        TransformerBatchPrefillKernels::gemmMMAQ8,
+                        context,
+                        state.workspace.wrapXbFP16Batch,
+                        weights.wqLayered[layerIndex].asByteArray(),
+                        state.workspace.qkvResultBatch,
+                        paddedBatch,
+                        qDim,
+                        dim);
+            } else {
+                addDequant(layer, "qDequant", weights.wqLayered[layerIndex], 0);
+                layer.task(
+                        "qkvProj",
+                        TransformerBatchPrefillKernels::gemmMMA,
+                        context,
+                        state.workspace.wrapXbFP16Batch,
+                        state.workspace.contiguousF16WeightsScratch,
+                        state.workspace.qkvResultBatch,
+                        paddedBatch,
+                        qDim,
+                        dim);
+            }
+        }
+    }
+
+    /** The attention output projection into {@code woOut}. */
+    private void outputProjection(TaskGraph layer, int layerIndex, boolean cublas) {
+        final int qDim = nHead * config.headDim(layerIndex);
+        if (simdgroup) {
+            simdgroupGemm(
+                    layer,
+                    "woProj",
+                    state.workspace.attnOutFP16,
+                    weights.woLayered[layerIndex],
+                    state.workspace.woOut,
+                    qDim,
+                    dim,
+                    dim,
+                    0);
+        } else if (int8Wo[layerIndex]) {
+            int8Quantize(layer, "wo_q8", state.workspace.attnOutFP16, qDim);
+            int8Gemm(
+                    layer,
+                    "wo_i8",
+                    weights.woLayered[layerIndex],
+                    state.workspace.woOut,
+                    dim,
+                    qDim,
+                    dim,
+                    0,
+                    true);
+        } else if (cublas) {
+            addDequant(layer, "woDequant", weights.woLayered[layerIndex], 0);
+            nativeGemm(
+                    layer,
+                    "woProj",
+                    state.workspace.contiguousF16WeightsScratch,
+                    state.workspace.attnOutFP16,
+                    state.workspace.woOut,
+                    dim,
+                    qDim);
+        } else if (SPLIT_K && (DEQUANT_SPLIT_K || !allQ8(weights.woLayered[layerIndex]))) {
+            addDequant(layer, "woDequant", weights.woLayered[layerIndex], 0);
+            layer.task(
+                    "woProj",
+                    Gemma4BatchPrefillKernels::gemmMMASplitK,
+                    context,
+                    state.workspace.attnOutFP16,
+                    state.workspace.contiguousF16WeightsScratch,
+                    state.workspace.splitKPartialBatch,
+                    paddedBatch,
+                    dim,
+                    qDim,
+                    SPLIT_K_SLICES);
+            layer.task(
+                    "woReduce",
+                    Gemma4BatchPrefillKernels::splitKReduce,
+                    context,
+                    state.workspace.splitKPartialBatch,
+                    state.workspace.woOut,
+                    paddedBatch * dim,
+                    SPLIT_K_SLICES);
+        } else if (SPLIT_K) {
+            layer.task(
+                    "woProj",
+                    Gemma4BatchPrefillKernels::gemmMMAQ8SplitK,
+                    context,
+                    state.workspace.attnOutFP16,
+                    weights.woLayered[layerIndex].asByteArray(),
+                    state.workspace.splitKPartialBatch,
+                    paddedBatch,
+                    dim,
+                    qDim,
+                    SPLIT_K_SLICES);
+            layer.task(
+                    "woReduce",
+                    Gemma4BatchPrefillKernels::splitKReduce,
+                    context,
+                    state.workspace.splitKPartialBatch,
+                    state.workspace.woOut,
+                    paddedBatch * dim,
+                    SPLIT_K_SLICES);
+        } else {
+            layer.task(
+                    "woProj",
+                    TransformerBatchPrefillKernels::gemmMMAQ8,
+                    context,
+                    state.workspace.attnOutFP16,
+                    weights.woLayered[layerIndex].asByteArray(),
+                    state.workspace.woOut,
+                    paddedBatch,
+                    dim,
+                    qDim);
+        }
+    }
+
+    /** Gate and up into the packed [gate|up] row the GeGLU reads. */
+    private void gateUpProjection(TaskGraph layer, int layerIndex, boolean cublas) {
+        final int ffnLen = config.feedForwardLength(layerIndex);
+        if (simdgroup) {
             simdgroupGemm(
                     layer,
                     "gateProj",
@@ -1979,13 +2348,13 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     2 * ffnLen,
                     ffnLen,
                     false);
-        } else if (nativeProjections) {
+        } else if (cublas) {
             addDequant(layer, "gateDequant", weights.w1Layered[layerIndex], 0);
             addDequant(layer, "upDequant", weights.w3Layered[layerIndex], ffnLen * dim);
             nativeGemm(
                     layer,
                     "gateUpProj",
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.normedXFFNFP16,
                     state.workspace.gateUpResultBatch,
                     2 * ffnLen,
@@ -2002,7 +2371,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     TransformerBatchPrefillKernels::gemmMMA,
                     context,
                     state.workspace.normedXFFNFP16,
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.gateUpResultBatch,
                     paddedBatch,
                     2 * ffnLen,
@@ -2020,35 +2389,12 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     ffnLen,
                     dim);
         }
-        if (mlx == null) {
-            layer.task(
-                    "batch_geglu",
-                    Gemma4BatchPrefillKernels::batchedGeGLUFP16Packed,
-                    context,
-                    state.workspace.wrapHbFP16Batch,
-                    state.workspace.gateUpResultBatch,
-                    ffnLen);
-        }
-        if (mlx != null) {
-            MlxPrefillProjections.gemm(
-                    layer,
-                    "w2Proj",
-                    mlxHbIn.get(ffnLen),
-                    mlxDown[layerIndex],
-                    mlxOutHalf,
-                    paddedBatch,
-                    ffnLen,
-                    dim);
-            layer.task(
-                    "mlx_w2_float",
-                    MlxPrefillKernels::toFloatRowScaled,
-                    context,
-                    mlxOutHalf,
-                    state.workspace.w2Out,
-                    mlxDownRowScale,
-                    dim,
-                    batchSize * dim);
-        } else if (simdgroup) {
+    }
+
+    /** The down projection into {@code w2Out}. */
+    private void downProjection(TaskGraph layer, int layerIndex, boolean cublas) {
+        final int ffnLen = config.feedForwardLength(layerIndex);
+        if (simdgroup) {
             simdgroupGemm(
                     layer,
                     "w2Proj",
@@ -2071,12 +2417,12 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     dim,
                     0,
                     true);
-        } else if (nativeProjections) {
+        } else if (cublas) {
             addDequant(layer, "w2Dequant", weights.w2Layered[layerIndex], 0);
             nativeGemm(
                     layer,
                     "w2Proj",
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.wrapHbFP16Batch,
                     state.workspace.w2Out,
                     dim,
@@ -2088,7 +2434,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     Gemma4BatchPrefillKernels::gemmMMASplitK,
                     context,
                     state.workspace.wrapHbFP16Batch,
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.splitKPartialBatch,
                     paddedBatch,
                     dim,
@@ -2134,155 +2480,82 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     dim,
                     ffnLen);
         }
-        layer.task(
-                "batch_post_ffn_rms",
-                TransformerBatchPrefillKernels::batchedRmsReduceParallel,
-                context,
-                state.workspace.w2Out,
-                state.workspace.branchScaleBatch,
-                dim,
-                config.rmsNormEps(),
-                RMS_LOCAL_SIZE);
-        layer.task(
-                "batch_post_ffn_apply",
-                Gemma4BatchPrefillKernels::batchedRmsApplyWithResidual,
-                context,
-                state.workspace.wrapXBatch,
-                state.workspace.w2Out,
-                weights.ffnPostNorm[layerIndex].asFloatArray(),
-                state.workspace.branchScaleBatch,
-                dim);
-
-        // ── Per-layer embedding ────────────────────────────────────────────────
-        if (ple) {
-            layer.task(
-                    "batch_x_cast",
-                    TransformerBatchPrefillKernels::batchedConvertFP32toFP16,
-                    context,
-                    state.workspace.wrapXBatch,
-                    state.workspace.wrapXFP16Batch);
-            if (simdgroup) {
-                simdgroupGemm(
-                        layer,
-                        "pleGateProj",
-                        state.workspace.wrapXFP16Batch,
-                        pleGateF16[layerIndex],
-                        state.workspace.wrapPerLayerGateBatch,
-                        dim,
-                        nEmbdPerLayer,
-                        nEmbdPerLayer,
-                        0);
-            } else if (nativeProjections) {
-                nativeGemm(
-                        layer,
-                        "pleGateProj",
-                        pleGateF16[layerIndex],
-                        state.workspace.wrapXFP16Batch,
-                        state.workspace.wrapPerLayerGateBatch,
-                        nEmbdPerLayer,
-                        dim);
-            } else {
-                layer.task(
-                        "pleGateProj",
-                        TransformerBatchPrefillKernels::gemmMMA,
-                        context,
-                        state.workspace.wrapXFP16Batch,
-                        pleGateF16[layerIndex],
-                        state.workspace.wrapPerLayerGateBatch,
-                        paddedBatch,
-                        nEmbdPerLayer,
-                        dim);
-            }
-            layer.task(
-                    "batch_ple_gate_gelu",
-                    Gemma4BatchPrefillKernels::batchedPleGateGeluMul,
-                    context,
-                    state.workspace.wrapPerLayerGateFP16Batch,
-                    state.workspace.wrapPerLayerGateBatch,
-                    state.workspace.wrapPerLayerInputsBatch,
-                    peOffset,
-                    nEmbdPerLayer,
-                    perLayerTotal);
-            if (simdgroup) {
-                simdgroupGemm(
-                        layer,
-                        "pleProj",
-                        state.workspace.wrapPerLayerGateFP16Batch,
-                        pleProjF16[layerIndex],
-                        state.workspace.wrapPerLayerOutBatch,
-                        nEmbdPerLayer,
-                        dim,
-                        dim,
-                        0);
-            } else if (nativeProjections) {
-                nativeGemm(
-                        layer,
-                        "pleProj",
-                        pleProjF16[layerIndex],
-                        state.workspace.wrapPerLayerGateFP16Batch,
-                        state.workspace.wrapPerLayerOutBatch,
-                        dim,
-                        nEmbdPerLayer);
-            } else {
-                layer.task(
-                        "pleProj",
-                        TransformerBatchPrefillKernels::gemmMMA,
-                        context,
-                        state.workspace.wrapPerLayerGateFP16Batch,
-                        pleProjF16[layerIndex],
-                        state.workspace.wrapPerLayerOutBatch,
-                        paddedBatch,
-                        dim,
-                        nEmbdPerLayer);
-            }
-            layer.task(
-                    "batch_ple_post_rms",
-                    TransformerBatchPrefillKernels::batchedRmsReduceParallel,
-                    context,
-                    state.workspace.wrapPerLayerOutBatch,
-                    state.workspace.branchScaleBatch,
-                    dim,
-                    config.rmsNormEps(),
-                    RMS_LOCAL_SIZE);
-            layer.task(
-                    "batch_ple_post_apply",
-                    Gemma4BatchPrefillKernels::batchedRmsApplyWithResidual,
-                    context,
-                    state.workspace.wrapXBatch,
-                    state.workspace.wrapPerLayerOutBatch,
-                    weights.perLayerPostNorm[layerIndex].asFloatArray(),
-                    state.workspace.branchScaleBatch,
-                    dim);
-        }
-
-        if (weights.layerOutputScale[layerIndex] != null) {
-            layer.task(
-                    "batch_layer_output_scale",
-                    Gemma4BatchPrefillKernels::batchedScaleInPlaceFromTensor,
-                    context,
-                    state.workspace.wrapXBatch,
-                    weights.layerOutputScale[layerIndex].asFloatArray());
-        }
-
-        layer.persistOnDevice(
-                state.workspace.wrapXBatch,
-                state.workspace.wrapKeyCache,
-                state.workspace.wrapValueCache);
-        return layer;
     }
 
-    /**
-     * The chunk-wide form of layer 0's one-time-per-token per-layer-embedding setup: scale the
-     * embeddings, project them to the per-layer inputs, normalize each layer's segment, and merge
-     * with the host-gathered per-layer token embedding rows.
-     */
-    private void appendPleSetup(TaskGraph layer) {
-        layer.task(
-                "batch_embed_cast",
-                TransformerBatchPrefillKernels::batchedConvertFP32toFP16,
-                context,
-                state.workspace.wrapXBatch,
-                state.workspace.wrapXFP16Batch);
+    /** The per-layer-embedding gate projection. */
+    private void pleGateProjection(TaskGraph layer, int layerIndex, boolean cublas) {
+        if (simdgroup) {
+            simdgroupGemm(
+                    layer,
+                    "pleGateProj",
+                    state.workspace.wrapXFP16Batch,
+                    pleGateF16[layerIndex],
+                    state.workspace.wrapPerLayerGateBatch,
+                    dim,
+                    nEmbdPerLayer,
+                    nEmbdPerLayer,
+                    0);
+        } else if (cublas) {
+            nativeGemm(
+                    layer,
+                    "pleGateProj",
+                    pleGateF16[layerIndex],
+                    state.workspace.wrapXFP16Batch,
+                    state.workspace.wrapPerLayerGateBatch,
+                    nEmbdPerLayer,
+                    dim);
+        } else {
+            layer.task(
+                    "pleGateProj",
+                    TransformerBatchPrefillKernels::gemmMMA,
+                    context,
+                    state.workspace.wrapXFP16Batch,
+                    pleGateF16[layerIndex],
+                    state.workspace.wrapPerLayerGateBatch,
+                    paddedBatch,
+                    nEmbdPerLayer,
+                    dim);
+        }
+    }
+
+    /** The per-layer-embedding projection back to the model width. */
+    private void pleProjection(TaskGraph layer, int layerIndex, boolean cublas) {
+        if (simdgroup) {
+            simdgroupGemm(
+                    layer,
+                    "pleProj",
+                    state.workspace.wrapPerLayerGateFP16Batch,
+                    pleProjF16[layerIndex],
+                    state.workspace.wrapPerLayerOutBatch,
+                    nEmbdPerLayer,
+                    dim,
+                    dim,
+                    0);
+        } else if (cublas) {
+            nativeGemm(
+                    layer,
+                    "pleProj",
+                    pleProjF16[layerIndex],
+                    state.workspace.wrapPerLayerGateFP16Batch,
+                    state.workspace.wrapPerLayerOutBatch,
+                    dim,
+                    nEmbdPerLayer);
+        } else {
+            layer.task(
+                    "pleProj",
+                    TransformerBatchPrefillKernels::gemmMMA,
+                    context,
+                    state.workspace.wrapPerLayerGateFP16Batch,
+                    pleProjF16[layerIndex],
+                    state.workspace.wrapPerLayerOutBatch,
+                    paddedBatch,
+                    dim,
+                    nEmbdPerLayer);
+        }
+    }
+
+    /** Layer 0's per-layer model projection of the scaled embeddings. */
+    private void pleModelProjection(TaskGraph layer, boolean cublas) {
         if (simdgroup) {
             simdgroupGemm(
                     layer,
@@ -2294,7 +2567,7 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     perLayerTotal,
                     perLayerTotal,
                     0);
-        } else if (nativeProjections) {
+        } else if (cublas) {
             nativeGemm(
                     layer,
                     "pleModelProj",
@@ -2315,6 +2588,21 @@ public class Gemma4BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     perLayerTotal,
                     dim);
         }
+    }
+
+    /**
+     * The chunk-wide form of layer 0's one-time-per-token per-layer-embedding setup: scale the
+     * embeddings, project them to the per-layer inputs, normalize each layer's segment, and merge
+     * with the host-gathered per-layer token embedding rows.
+     */
+    private void appendPleSetup(TaskGraph layer) {
+        layer.task(
+                "batch_embed_cast",
+                TransformerBatchPrefillKernels::batchedConvertFP32toFP16,
+                context,
+                state.workspace.wrapXBatch,
+                state.workspace.wrapXFP16Batch);
+        plan.emit(layer, pleModel, NO_OPERANDS, bindings);
         layer.task(
                 "batch_ple_proj_scale_norm",
                 Gemma4BatchPrefillKernels::batchedPleProjScaleAndNormalize,

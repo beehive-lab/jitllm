@@ -2,8 +2,8 @@ package org.beehive.jitllm.golden;
 
 import static org.junit.Assume.assumeTrue;
 
-import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
 import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;

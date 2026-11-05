@@ -259,6 +259,10 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
         var vocabWorker =
                 vocabularyWorker(config.vocabularySize(), vocabularyProjectionReducesWithShuffle);
         tornadoForwardScheduler.addWorkerGrid("logits.rms_reduce", rmsReduceWorker(logitsRMS));
+        if (schedulerType == SchedulerType.NON_NVIDIA) {
+            tornadoForwardScheduler.addWorkerGrid(
+                    "logits.rms_finalize", WorkerGridFactory.createSingleWorker());
+        }
         tornadoForwardScheduler.addWorkerGrid("logits.rms_apply_fp16", logitsRMS);
         tornadoForwardScheduler.addWorkerGrid("logits.vocab_proj", vocabWorker);
         if (deviceSample()) {

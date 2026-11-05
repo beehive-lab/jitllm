@@ -182,15 +182,13 @@ public class Fp16KeyValueSupportTest {
                             check(arch, weights, mode, BackendId.METAL, false, false));
                 }
             }
-            for (DataType weights : new DataType[] {DataType.Q4_0, DataType.Q8_0}) {
+            for (DataType weights :
+                    new DataType[] {DataType.F16, DataType.Q4_0, DataType.Q4_K, DataType.Q8_0}) {
                 assertEquals(
                         "qwen35 " + weights + " " + mode,
                         Optional.empty(),
                         check("qwen35", weights, mode, BackendId.METAL, false, false));
             }
-            assertTrue(
-                    "qwen35 F16 " + mode,
-                    check("qwen35", DataType.F16, mode, BackendId.METAL, false, false).isPresent());
             assertEquals(
                     mode.toString(),
                     mode == ExecutionMode.PREFILL_DECODE,
@@ -209,6 +207,12 @@ public class Fp16KeyValueSupportTest {
         }
         for (ExecutionMode mode :
                 new ExecutionMode[] {ExecutionMode.STANDARD, ExecutionMode.BATCH_PREFILL_DECODE}) {
+            for (DataType weights : new DataType[] {DataType.Q4_0, DataType.Q6_K, DataType.Q8_0}) {
+                assertEquals(
+                        "qwen2-moe " + weights + " " + mode,
+                        Optional.empty(),
+                        check("qwen2-moe", weights, mode, BackendId.METAL, false, false));
+            }
             assertEquals(
                     Optional.empty(),
                     check("gemma4", DataType.Q8_0, mode, BackendId.METAL, false, false));
@@ -234,15 +238,15 @@ public class Fp16KeyValueSupportTest {
         assertTrue(
                 check("gemma4", DataType.F16, ExecutionMode.STANDARD, BackendId.METAL, false, false)
                         .isPresent());
-        assertTrue(
-                check(
-                                "devstral",
-                                DataType.Q8_0,
-                                ExecutionMode.STANDARD,
-                                BackendId.METAL,
-                                false,
-                                false)
-                        .isPresent());
+        for (ExecutionMode mode :
+                new ExecutionMode[] {ExecutionMode.STANDARD, ExecutionMode.BATCH_PREFILL_DECODE}) {
+            for (DataType weights : new DataType[] {DataType.F16, DataType.Q4_K, DataType.Q8_0}) {
+                assertEquals(
+                        "devstral " + weights + " " + mode,
+                        Optional.empty(),
+                        check("devstral", weights, mode, BackendId.METAL, false, false));
+            }
+        }
     }
 
     @Test

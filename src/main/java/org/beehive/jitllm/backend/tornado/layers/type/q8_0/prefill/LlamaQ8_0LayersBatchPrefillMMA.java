@@ -1,8 +1,8 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.IntStream;
-import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
 import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
@@ -10,14 +10,22 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefill
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.layers.LlamaPrefillRegions;
 import org.beehive.jitllm.backend.tornado.layers.TensorCoreBatchAttention;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
+import org.beehive.jitllm.backend.tornado.ops.Implementations;
+import org.beehive.jitllm.backend.tornado.ops.Operands;
+import org.beehive.jitllm.backend.tornado.ops.Region;
+import org.beehive.jitllm.backend.tornado.ops.Target;
+import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.backend.DeviceCapabilities;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -26,8 +34,6 @@ import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
-import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
-import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 /**
  * Batched-prefill transformer-layer TaskGraphs for the unified batched prefill-decode plan ({@link
@@ -66,7 +72,7 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     @Override
     public String describeNativeLibraries() {
-        return projections.nativeGemm() ? "cuBLAS" : "none";
+        return plan.libraries();
     }
 
     // Local size for the parallel RMS reductions (one workgroup per token).
@@ -87,8 +93,20 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     /** The attention as tensor-core GEMMs, or null for the flash-attention kernel. */
     private final TensorCoreBatchAttention tcAttention;
 
-    /** The projections, each Q8_0 weight decoded to FP16 once per chunk. */
-    private final FP16Projections projections;
+    /**
+     * Each layer's operations, split where a family runs tasks of its own ({@link
+     * LlamaPrefillRegions}).
+     */
+    private final List<LlamaPrefillRegions.Layer> regions;
+
+    /**
+     * Runs those operations: the projections with each weight decoded to FP16 ({@link
+     * FP16Projections}), then cuBLAS or the JIT tensor-core GEMM.
+     */
+    private final WorkPlan plan;
+
+    /** The workspace buffers behind the activation names the operations use. */
+    private final Operands operands;
 
     public LlamaQ8_0LayersBatchPrefillMMA(
             State state, TornadoWeights weights, Configuration config, int batchSize) {
@@ -118,16 +136,43 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                                 paddedBatch,
                                 config.contextLength())
                         : null;
-        this.projections =
-                new FP16Projections(
-                        context,
-                        state.workspace.prepacking,
-                        widestProjection(config),
+        this.regions =
+                LlamaPrefillRegions.of(
+                        config,
+                        batchSize,
                         paddedBatch,
-                        config.dim(),
-                        FP16Projections.resident(state.executionPolicy(), decodedWeights(config)),
-                        4 * config.numberOfLayers(),
-                        NativePrefillSupport.nativeProjections(state.executionPolicy()));
+                        fusedProjections(),
+                        denseFeedForward(),
+                        (role, layer) -> weights.tensor(role, layer).dataType());
+        List<Region> all = LlamaPrefillRegions.all(regions);
+        this.plan =
+                WorkPlan.of(
+                        all,
+                        Implementations.tensorCorePrefill(),
+                        Target.of(state.executionPolicy()),
+                        context,
+                        state.workspace.prepacking);
+        this.operands =
+                Operands.of(
+                        Map.ofEntries(
+                                Map.entry("x", state.workspace.wrapXBatch),
+                                Map.entry("attnIn", state.workspace.wrapXbFP16Batch),
+                                Map.entry("attnIn.scale", state.workspace.attnScaleBatch),
+                                Map.entry("q", state.workspace.qkvResultBatch),
+                                Map.entry("k", state.workspace.qkvResultBatch),
+                                Map.entry("v", state.workspace.qkvResultBatch),
+                                Map.entry("qkv", state.workspace.qkvResultBatch),
+                                Map.entry("attn", state.workspace.attnOutFP16),
+                                Map.entry("o", state.workspace.woOut),
+                                Map.entry("ffnIn", state.workspace.normedXFFNFP16),
+                                Map.entry("ffnIn.scale", state.workspace.ffnScaleBatch),
+                                Map.entry("gate", state.workspace.gateUpResultBatch),
+                                Map.entry("up", state.workspace.gateUpResultBatch),
+                                Map.entry("gateUp", state.workspace.gateUpResultBatch),
+                                Map.entry("hidden", state.workspace.wrapHbFP16Batch),
+                                Map.entry("down", state.workspace.w2Out)),
+                        weights::tensor,
+                        all);
         this.layerITGs =
                 IntStream.range(0, config.numberOfLayers())
                         .mapToObj(this::createBatchPrefillLayerTaskGraph)
@@ -135,21 +180,20 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         .toList();
     }
 
-    /** The most weights one projection call multiplies: fused QKV, fused gate/up, Wo or W2. */
-    private static long widestProjection(Configuration config) {
-        long dim = config.dim();
-        long qDim = (long) config.numberOfHeads() * config.headSize();
-        return Math.max(
-                Math.max((qDim + 2L * config.kvDim()) * dim, 2L * config.hiddenDim() * dim),
-                Math.max(dim * qDim, dim * config.hiddenDim()));
+    /**
+     * Whether q|k|v and gate|up are one weight each, as in Phi-3. Called from the constructor, so
+     * an override returns a constant.
+     */
+    protected boolean fusedProjections() {
+        return false;
     }
 
-    /** The projection weights of every layer, which a resident copy holds decoded. */
-    private static long decodedWeights(Configuration config) {
-        long qDim = (long) config.numberOfHeads() * config.headSize();
-        return config.numberOfLayers()
-                * (long) config.dim()
-                * (2L * qDim + 2L * config.kvDim() + 3L * config.hiddenDim());
+    /**
+     * Whether the layers have the dense gate, up and down projections; Qwen2-MoE's experts replace
+     * them ({@link #feedForward}). Called from the constructor, so an override returns a constant.
+     */
+    protected boolean denseFeedForward() {
+        return true;
     }
 
     /** What these layers allocate for one session at {@code batchSize}; see the constructor. */
@@ -167,19 +211,20 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                                 padded,
                                 config.contextLength())
                         : 0;
-        long weights = decodedWeights(config);
-        boolean nativeGemm = NativePrefillSupport.nativeProjections(policy);
-        int calls = 4 * config.numberOfLayers();
-        long widest = widestProjection(config);
-        return new BatchPrefillWorkspace(
-                weights,
-                attention
-                        + FP16Projections.residentBytes(weights)
-                        + FP16Projections.workspaceBytes(
-                                true, widest, padded, config.dim(), calls, nativeGemm),
-                attention
-                        + FP16Projections.workspaceBytes(
-                                false, widest, padded, config.dim(), calls, nativeGemm));
+        // Asked on a tensor-core device only (TensorCoreSupport.isTensorCoreCapableBackend), so
+        // the projections are planned for one; the weight types do not change the sizes.
+        return WorkPlan.needs(
+                        LlamaPrefillRegions.all(
+                                LlamaPrefillRegions.of(
+                                        config,
+                                        batchSize,
+                                        padded,
+                                        false,
+                                        true,
+                                        (role, layer) -> DataType.Q8_0)),
+                        Implementations.tensorCorePrefill(),
+                        new Target(policy, DeviceCapabilities.of(DeviceCapability.TENSOR_CORE_MMA)))
+                .plus(attention);
     }
 
     // @formatter:off
@@ -228,8 +273,7 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.workspace.woOut,
                     state.workspace.wrapHbFP16Batch,
                     state.workspace.w2Out);
-            batchPrefillLayer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION, projections.buffers());
+            batchPrefillLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, plan.buffers());
             if (tcAttention != null) {
                 batchPrefillLayer.transferToDevice(
                         DataTransferMode.FIRST_EXECUTION, tcAttention.buffers());
@@ -260,7 +304,7 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     state.workspace.woOut,
                     state.workspace.wrapHbFP16Batch,
                     state.workspace.w2Out);
-            batchPrefillLayer.consumeFromDevice(pred, projections.buffers());
+            batchPrefillLayer.consumeFromDevice(pred, plan.buffers());
             if (tcAttention != null) {
                 batchPrefillLayer.consumeFromDevice(pred, tcAttention.buffers());
             }
@@ -292,30 +336,9 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         atLayerStart(batchPrefillLayer, layerIndex);
 
         // ── Attention Block ────────────────────────────────────────────────────
-        batchPrefillLayer.task(
-                "batch_attn_rms",
-                TransformerBatchPrefillKernels::batchedRmsReduceParallel,
-                context,
-                state.workspace.wrapXBatch,
-                state.workspace.attnScaleBatch,
-                dim,
-                config.rmsNormEps(),
-                RMS_LOCAL_SIZE);
-
-        batchPrefillLayer.task(
-                "batch_attn_rms_apply",
-                TransformerBatchPrefillKernels::batchedRmsApplyFP16,
-                context,
-                state.workspace.wrapXbFP16Batch,
-                state.workspace.wrapXBatch,
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                state.workspace.attnScaleBatch,
-                dim);
-
-        // Q, K, V in ONE tensor-core launch → packed [q|k|v] rows.
-        // Grid spans (dim + 2*kvDim)/128 N-blocks: no grid starvation on the
-        // skinny GQA projections, and the A operand is read once, not thrice.
-        qkvProjection(batchPrefillLayer, layerIndex);
+        // RMS norm, then Q, K and V in ONE tensor-core GEMM → packed [q|k|v] rows: no grid
+        // starvation on the skinny GQA projections, and the A operand is read once, not thrice.
+        emit(batchPrefillLayer, regions.get(layerIndex).beforeAttention());
 
         afterQkvProjection(batchPrefillLayer, layerIndex);
 
@@ -445,14 +468,7 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     qDim);
         }
 
-        projectQ8(
-                batchPrefillLayer,
-                "woProj",
-                state.workspace.attnOutFP16,
-                state.workspace.woOut,
-                paddedBatch,
-                qDim,
-                weights.woLayered[layerIndex]);
+        emit(batchPrefillLayer, regions.get(layerIndex).attentionOutput());
         afterAttentionOutputProjection(batchPrefillLayer, layerIndex);
 
         feedForward(batchPrefillLayer, layerIndex);
@@ -470,56 +486,17 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     protected Object[] layerWeights(int layerIndex) {
         return new Object[] {
             weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-            weights.wqLayered[layerIndex].asByteArray(),
-            weights.wkLayered[layerIndex].asByteArray(),
-            weights.wvLayered[layerIndex].asByteArray(),
-            weights.woLayered[layerIndex].asByteArray(),
+            weights.wqLayered[layerIndex].deviceArray(),
+            weights.wkLayered[layerIndex].deviceArray(),
+            weights.wvLayered[layerIndex].deviceArray(),
+            weights.woLayered[layerIndex].deviceArray(),
             weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-            weights.w1Layered[layerIndex].asByteArray(),
-            weights.w2Layered[layerIndex].asByteArray(),
-            weights.w3Layered[layerIndex].asByteArray(),
+            weights.w1Layered[layerIndex].deviceArray(),
+            weights.w2Layered[layerIndex].deviceArray(),
+            weights.w3Layered[layerIndex].deviceArray(),
             weights.freq_cis_realFlat.asFloatArray(),
             weights.freq_cis_imagFlat.asFloatArray()
         };
-    }
-
-    /** The QKV projection: packed {@code [q|k|v]} rows into {@code qkvResultBatch}. */
-    protected void qkvProjection(TaskGraph batchPrefillLayer, int layerIndex) {
-        int dim = config.dim();
-        int qDim = config.numberOfHeads() * config.headSize();
-        int kvDim = config.kvDim();
-        projectQ8(
-                batchPrefillLayer,
-                "qkvProj",
-                state.workspace.wrapXbFP16Batch,
-                state.workspace.qkvResultBatch,
-                paddedBatch,
-                dim,
-                weights.wqLayered[layerIndex],
-                weights.wkLayered[layerIndex],
-                weights.wvLayered[layerIndex]);
-    }
-
-    /**
-     * The gate and up projections: packed {@code [gate|up]} rows into {@code gateUpResultBatch}.
-     */
-    protected void gateUpProjection(TaskGraph batchPrefillLayer, int layerIndex) {
-        int dim = config.dim();
-        int hidDim = config.hiddenDim();
-        projectQ8(
-                batchPrefillLayer,
-                "gateUpProj",
-                state.workspace.normedXFFNFP16,
-                state.workspace.gateUpResultBatch,
-                paddedBatch,
-                dim,
-                weights.w1Layered[layerIndex],
-                weights.w3Layered[layerIndex]);
-    }
-
-    /** The down projection's weights. */
-    protected TornadoTensor downWeight(int layerIndex) {
-        return weights.w2Layered[layerIndex];
     }
 
     /**
@@ -527,77 +504,27 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
      * SwiGLU, down, and the residual add. A family with another feed-forward replaces it whole.
      */
     protected void feedForward(TaskGraph batchPrefillLayer, int layerIndex) {
-        int dim = config.dim();
-        int hidDim = config.hiddenDim();
-        // ── FFN Block ──────────────────────────────────────────────────────────
-        // x += woOut is fused into the FFN RMS reduction (drops the woResid task).
-        batchPrefillLayer.task(
-                "batch_ffn_rms",
-                TransformerBatchPrefillKernels::batchedRmsReduceFusedResidual,
-                context,
-                state.workspace.wrapXBatch,
-                state.workspace.woOut,
-                state.workspace.ffnScaleBatch,
-                dim,
-                config.rmsNormEps(),
-                RMS_LOCAL_SIZE);
-
-        batchPrefillLayer.task(
-                "batch_ffn_rms_apply",
-                TransformerBatchPrefillKernels::batchedFFNRmsApplyFP16,
-                context,
-                state.workspace.normedXFFNFP16,
-                state.workspace.wrapXBatch,
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                state.workspace.ffnScaleBatch,
-                dim);
-
-        // W1 and W3 in ONE tensor-core launch → packed [gate|up] rows.
-        gateUpProjection(batchPrefillLayer, layerIndex);
-
+        LlamaPrefillRegions.Layer layer = regions.get(layerIndex);
+        // x += woOut is fused into the FFN RMS reduction (drops the woResid task); W1 and W3 in
+        // ONE tensor-core launch → packed [gate|up] rows.
+        emit(batchPrefillLayer, layer.feedForwardInput());
         swiglu(batchPrefillLayer, layerIndex);
-        projectQ8(
-                batchPrefillLayer,
-                "w2Proj",
-                state.workspace.wrapHbFP16Batch,
-                state.workspace.w2Out,
-                batchSize,
-                hidDim,
-                downWeight(layerIndex));
+        emit(batchPrefillLayer, layer.down());
         afterDownProjection(batchPrefillLayer, layerIndex);
-        batchPrefillLayer.task(
-                "w2Resid",
-                TransformerBatchPrefillKernels::batchedResidualAddFP32,
-                context,
-                state.workspace.wrapXBatch,
-                state.workspace.w2Out);
+        emit(batchPrefillLayer, layer.residual());
     }
 
-    /** {@link FP16Projections#project}: the weights decoded to FP16, then one FP16 GEMM. */
-    protected void projectQ8(
-            TaskGraph layer,
-            String task,
-            HalfFloatArray a,
-            FloatArray c,
-            int m,
-            int k,
-            TornadoTensor... ws) {
-        projections.project(layer, task, a, c, m, k, ws);
+    /** Adds the tasks of {@code region}'s operations, as the plan split them. */
+    private void emit(TaskGraph batchPrefillLayer, Region region) {
+        plan.emit(batchPrefillLayer, region, operands, state.workspace.weightBindings);
     }
 
-    /** The grids of {@link #feedForward}'s tasks in layer {@code layerIndex}, under its prefix. */
+    /**
+     * The grids of {@link #feedForward}'s own tasks in layer {@code layerIndex}, under its prefix;
+     * the plan registers those of the operations it ran.
+     */
     protected void addFeedForwardGrids(GridScheduler scheduler, String p, int layerIndex) {
-        int dim = config.dim();
-        int hidDim = config.hiddenDim();
-        scheduler.addWorkerGrid(
-                p + "batch_ffn_rms",
-                WorkerGridFactory.genericWorker(batchSize * RMS_LOCAL_SIZE, RMS_LOCAL_SIZE));
-        scheduler.addWorkerGrid(
-                p + "batch_ffn_rms_apply", WorkerGridFactory.genericWorker(batchSize * dim, 256));
-        scheduler.addWorkerGrid(p + "gateUpProj", mmaGrid(paddedBatch, 2 * hidDim));
-        scheduler.addWorkerGrid(p + "swiglu", elementwiseGrid(batchSize * hidDim));
-        scheduler.addWorkerGrid(p + "w2Proj", mmaGrid(paddedBatch, dim));
-        scheduler.addWorkerGrid(p + "w2Resid", elementwiseGrid(batchSize * dim));
+        scheduler.addWorkerGrid(p + "swiglu", elementwiseGrid(batchSize * config.hiddenDim()));
     }
 
     /** Per-layer weights a family adds to the shared projection set, uploaded with it. */
@@ -672,13 +599,6 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         int nHeads = config.numberOfHeads();
         int headSz = config.headSize();
 
-        // Parallel RMS reductions: one 256-thread workgroup per batch token
-        WorkerGrid rmsWorker =
-                WorkerGridFactory.genericWorker(batchSize * RMS_LOCAL_SIZE, RMS_LOCAL_SIZE);
-
-        // RMS apply: B*dim threads, local=256 (dim is always a multiple of 256 for LLaMA)
-        WorkerGrid rmsApplyWorker = WorkerGridFactory.genericWorker(batchSize * dim, 256);
-
         // RoPE+KV cache: B*(dim/2) threads, local=512
         int ropeGlobal = batchSize * (qDim / 2);
         int ropeLocal = Math.min(512, ropeGlobal);
@@ -691,15 +611,8 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         WorkerGrid attnWorker =
                 WorkerGridFactory.genericWorker(batchSize * nHeads * attnLocal, attnLocal);
 
-        // MMA grids
-        WorkerGrid mmaQkvWorker = mmaGrid(paddedBatch, qDim + 2 * kvDim); // fused QKV
-        WorkerGrid mmaDimWorker = mmaGrid(paddedBatch, dim); // woProj, w2Proj
-
         for (int i = 0; i < config.numberOfLayers(); i++) {
             String p = GraphNames.batchPrefillLayer(i) + ".";
-            scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
-            scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApplyWorker);
-            scheduler.addWorkerGrid(p + "qkvProj", mmaQkvWorker);
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
             addFamilyTaskGrids(scheduler, p, i);
             if (tcAttention != null) {
@@ -707,10 +620,9 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             } else {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }
-            scheduler.addWorkerGrid(p + "woProj", mmaDimWorker);
             addFeedForwardGrids(scheduler, p, i);
         }
-        projections.addGrids(scheduler);
+        plan.addGrids(scheduler);
     }
 
     public List<ImmutableTaskGraph> getLayerImmutableTaskGraphs() {

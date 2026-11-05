@@ -30,7 +30,7 @@ After adding or editing files here, restart Claude Code from the repository root
 
 | Skill | Use For |
 |---|---|
-| `build-tornado` | Building a TornadoVM SDK (7.3 or newer) for the chosen JDK line and backend |
+| `build-tornado` | Building a TornadoVM SDK (8.0 or newer) for the chosen JDK line and backend |
 | `build-n-run-engine` | Building jitllm with Maven and running it on an accelerator |
 | `jitllm-nsys-analysis` | Nsight Systems timeline on CUDA: generated kernels, launch overhead, sync, transfers, GPU idle |
 | `jitllm-ncu-analysis` | Nsight Compute analysis of one already-identified hot CUDA kernel |

@@ -225,9 +225,7 @@ public class Qwen3FP16FFNLayers
             gridScheduler.addWorkerGrid(p + reductionVariant("attn_output_proj"), matmul1Worker);
             // === FFN Block ===
             gridScheduler.addWorkerGrid(p + "ffn_rms_reduce", rmsReduceWorker);
-            if (shouldUseFinalNormalization()) {
-                gridScheduler.addWorkerGrid(p + "ffn_rms_finalize", rmsNormWorker);
-            }
+            addRmsFinalizeWorkers(gridScheduler, p);
             gridScheduler.addWorkerGrid(
                     p + reductionVariant("rms_ffn_gate_up"), fusedFFNW1W3Worker);
             gridScheduler.addWorkerGrid(p + reductionVariant("ffn_down_proj"), projectionTwoWorker);

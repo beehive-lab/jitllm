@@ -1,6 +1,5 @@
 package org.beehive.jitllm.backend.tornado.plan.components.q4_0;
 
-import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
@@ -11,7 +10,6 @@ import org.beehive.jitllm.backend.tornado.layers.llama.LlamaQ4_0LayersBatchPrefi
 import org.beehive.jitllm.backend.tornado.layers.type.q4_0.LlamaQ4_0FFNLayers;
 import org.beehive.jitllm.backend.tornado.layers.type.q4_0.decode.LlamaQ4_0FFNLayersDecode;
 import org.beehive.jitllm.backend.tornado.layers.type.q4_0.prefill.LlamaQ4_0LayersBatchPrefillMMA;
-import org.beehive.jitllm.backend.tornado.layers.type.q4_0.prefill.LlamaQ4_0LayersBatchPrefillNative;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LogitsQ8_0Layer;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode.LogitsQ8_0LayerDecode;
 import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForwardPlanComponents;
@@ -125,18 +123,9 @@ public class LlamaQ4_0PlanComponents
     @Override
     public BatchPrefillTransformerLayerTaskGraphs batchPrefillTransformerLayers(
             int batchSize, int firstLayer, int endLayer) {
-        // The whole model: the projections decoded to FP16, then the tensor-core GEMM (cuBLAS
-        // under native libraries). A pipeline stage keeps the int8/cuBLAS layers, which build any
-        // range of layers.
-        if (firstLayer == 0 && endLayer == config.numberOfLayers()) {
-            return new LlamaQ4_0LayersBatchPrefillMMA(state, weights, config, batchSize);
-        }
-        if (!NativePrefillSupport.nativeProjections(state.executionPolicy())) {
-            throw new UnsupportedOperationException(
-                    "the Llama Q4_0 batched prefill of a pipeline stage runs its projections"
-                            + " through cuBLAS: add --with-native-libraries");
-        }
-        return new LlamaQ4_0LayersBatchPrefillNative(
+        // The projections decoded to FP16, then the tensor-core GEMM (cuBLAS under native
+        // libraries), for the whole model or one pipeline stage's layers.
+        return new LlamaQ4_0LayersBatchPrefillMMA(
                 state, weights, config, batchSize, firstLayer, endLayer);
     }
 

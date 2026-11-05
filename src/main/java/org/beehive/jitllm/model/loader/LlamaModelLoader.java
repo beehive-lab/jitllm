@@ -191,23 +191,29 @@ public class LlamaModelLoader extends AbstractModelLoader<Llama, LlamaConfigurat
 
     /**
      * What a file that does not run the Q4_0 layers reports: F16 or Q8_0 when its projections all
-     * are, and otherwise the first projection type that is neither Q8_0 nor Q4_0, so that the Q8_0
-     * layers, which read each tensor by its type, are the ones that run it.
+     * are, and otherwise the first projection type that is neither Q8_0, Q4_0 nor F16, so that the
+     * Q8_0 layers, which read each tensor by its type, are the ones that run it. F16 beside Q8_0 (a
+     * UD-Q8_K_XL file) reports Q8_0, as {@link ModelLoader#keptType} does.
      *
      * @throws ModelLoadException for a file mixing only Q4_0 and Q8_0 projections, which no
      *     llama.cpp recipe writes and no Llama plan reads
      */
     private static DataType q8_0LayersType(TornadoTensor[]... projections) {
         boolean q4_0 = false;
+        boolean allF16 = true;
         for (TornadoTensor[] layers : projections) {
             for (TornadoTensor w : layers) {
                 DataType type = w.dataType();
+                allF16 &= type == DataType.F16;
                 if (type == DataType.Q4_0) {
                     q4_0 = true;
-                } else if (type != DataType.Q8_0) {
+                } else if (type != DataType.Q8_0 && type != DataType.F16) {
                     return type;
                 }
             }
+        }
+        if (allF16) {
+            return DataType.F16;
         }
         if (q4_0) {
             throw new ModelLoadException(

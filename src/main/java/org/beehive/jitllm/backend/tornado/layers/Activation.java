@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.layers;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
@@ -28,20 +29,33 @@ public class Activation extends AbstractLayer implements ActivationTaskGraph {
     public static boolean keptEmbedding(DataType embedding) {
         return embedding == DataType.Q4_0
                 || embedding == DataType.Q4_1
+                || embedding == DataType.Q5_0
                 || embedding == DataType.Q4_K
                 || embedding == DataType.Q5_K
                 || embedding == DataType.Q6_K;
     }
 
-    /** The device decode of one staged embedding row of a {@link #keptEmbedding} type into FP32. */
+    /**
+     * Whether the staged embedding row is decoded from bytes by {@link #embeddingRowDecode}: a
+     * {@link #keptEmbedding} type, or F16 staged in a Q8_0 model's byte buffer, as a UD-Q8_K_XL
+     * file's embeddings are.
+     */
+    public static boolean stagedAsBytes(DataType embedding, Object embeddingX) {
+        return keptEmbedding(embedding)
+                || (embedding == DataType.F16 && embeddingX instanceof ByteArray);
+    }
+
+    /** The device decode of one staged embedding row of a {@link #stagedAsBytes} type into FP32. */
     public static TornadoFunctions.Task3<KernelContext, ByteArray, FloatArray> embeddingRowDecode(
             DataType embedding) {
         return switch (embedding) {
             case Q4_0 -> TransformerComputeKernels::convertQ4_0toFP32;
             case Q4_1 -> TransformerComputeKernels::convertQ4_1toFP32;
+            case Q5_0 -> TransformerComputeKernels::convertQ5_0toFP32;
             case Q4_K -> TransformerComputeKernels::convertQ4_KtoFP32;
             case Q5_K -> TransformerComputeKernels::convertQ5_KtoFP32;
             case Q6_K -> TransformerComputeKernels::convertQ6_KtoFP32;
+            case F16 -> TransformerComputeKernels::convertFP16BytesToFP32;
             default ->
                     throw new IllegalArgumentException(
                             "no device row decode for a " + embedding + " embedding");
@@ -69,7 +83,8 @@ public class Activation extends AbstractLayer implements ActivationTaskGraph {
     protected TaskGraph setupActivationTaskGraph(String name) {
         DataType embedding =
                 weights instanceof TornadoWeights t ? t.getTokenEmbeddingTable().dataType() : null;
-        if (keptEmbedding(embedding)) {
+        TornadoWorkspaces.stagingHolds(state.workspace, embedding, config.dim());
+        if (stagedAsBytes(embedding, state.workspace.embeddingX)) {
             return new TaskGraph(name)
                     .transferToDevice(DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX)
                     .task(

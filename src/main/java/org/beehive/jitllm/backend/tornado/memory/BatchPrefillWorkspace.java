@@ -9,27 +9,41 @@ package org.beehive.jitllm.backend.tornado.memory;
  * <p>Sized by the layer class that allocates it, from the same arithmetic its constructor uses, so
  * the prediction and the plan cannot drift apart.
  *
- * @param decodedWeights the projection weights a resident copy would hold, 0 for a family that
- *     decodes none
+ * @param residentContiguousSize how many weights the resident contiguous copies would hold, 0 for a
+ *     family with no choice between kept and refilled copies
  * @param residentBytes the total with every projection kept decoded
  * @param perChunkBytes the total with one per-chunk scratch instead
  */
-public record BatchPrefillWorkspace(long decodedWeights, long residentBytes, long perChunkBytes) {
+public record BatchPrefillWorkspace(
+        long residentContiguousSize, long residentBytes, long perChunkBytes) {
 
     public BatchPrefillWorkspace {
-        if (decodedWeights < 0 || residentBytes < 0 || perChunkBytes < 0) {
+        if (residentContiguousSize < 0 || residentBytes < 0 || perChunkBytes < 0) {
             throw new IllegalArgumentException("workspace sizes cannot be negative");
         }
     }
 
-    /** A family that decodes no projections: the same buffers either way. */
-    public static BatchPrefillWorkspace fixed(long bytes) {
+    /** A family with no choice between kept and refilled copies: the same buffers either way. */
+    public static BatchPrefillWorkspace withoutResidencyChoice(long bytes) {
         return new BatchPrefillWorkspace(0, bytes, bytes);
     }
 
-    /** Whether the family decodes projections, so residency is a choice at all. */
-    public boolean decodesProjections() {
-        return decodedWeights > 0;
+    /** The sum of this workspace and {@code other}. */
+    public BatchPrefillWorkspace plus(BatchPrefillWorkspace other) {
+        return new BatchPrefillWorkspace(
+                residentContiguousSize + other.residentContiguousSize,
+                residentBytes + other.residentBytes,
+                perChunkBytes + other.perChunkBytes);
+    }
+
+    /** This workspace plus {@code bytes} that are the same whether decoded weights stay or not. */
+    public BatchPrefillWorkspace plus(long bytes) {
+        return plus(withoutResidencyChoice(bytes));
+    }
+
+    /** Whether the family can either keep its projection copies or refill them per chunk. */
+    public boolean hasResidencyChoice() {
+        return residentContiguousSize > 0;
     }
 
     /** The bytes for the given residency. */
