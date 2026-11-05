@@ -17,9 +17,7 @@ public final class CublasDequantizingMatMul extends DequantizingMatMul {
 
     @Override
     public boolean accepts(Step step, Target target) {
-        return target.policy().nativeLibraries()
-                && tensorCoresOverDecoded(step, target)
-                && NativePrefillSupport.cublasAvailable();
+        return target.cublas() && tensorCoresOverDecoded(step, target);
     }
 
     @Override

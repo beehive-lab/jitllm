@@ -20,10 +20,10 @@ import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
  *
  * <p>On by default where they are implemented and installed ({@link #defaultFor}); everywhere else
  * the JIT kernels run. On CUDA the native path replaces batched-prefill projections with cuBLAS
- * GEMMs over stacked weight copies (and the first chunk's attention with cuDNN where it is usable),
- * which costs a second copy of those projections on the device — for Qwen3-8B F16, 8.6 GB beside
- * 13.2 GB of weights. On Metal it runs the batched prefill's attention and projections on Apple MLX
- * ({@link MlxPrefill}). {@code --no-native-libraries} keeps the JIT kernels.
+ * GEMMs over contiguous weight copies (and the first chunk's attention with cuDNN where it is
+ * usable), which costs device memory beside the weights. On Metal it runs the batched prefill's
+ * attention and projections on Apple MLX ({@link MlxPrefill}). {@code --no-native-libraries} keeps
+ * the JIT kernels.
  *
  * <p>Which families and weights have a path on which backend is each provider's answer ({@code
  * TornadoPlanProvider.nativeLibraryWeights}); nothing here lists them.

@@ -4,9 +4,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.function.BiFunction;
 import org.beehive.jitllm.backend.tornado.ops.Region;
 import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.program.op.Attention;
 import org.beehive.jitllm.program.op.MatMul;
 import org.beehive.jitllm.program.op.OperandRef;
 import org.beehive.jitllm.program.op.Operation;
@@ -226,6 +228,34 @@ public final class LlamaPrefillRegions {
      * its residual add; the feed-forward block).
      */
     public record Whole(Region beforeAttention, Region afterAttention) {}
+
+    /**
+     * Every layer's attention, one region each, between the two {@link Whole} regions: from q, k
+     * and v (or the fused q|k|v) into {@code attn}.
+     */
+    public static List<Region> attention(Configuration config, int tokens, boolean fused) {
+        List<Region> regions = new ArrayList<>(config.numberOfLayers());
+        for (int i = 0; i < config.numberOfLayers(); i++) {
+            regions.add(
+                    new Region(
+                            i,
+                            "attention",
+                            tokens,
+                            List.of(
+                                    new Attention(
+                                            a(fused ? "qkv" : "q"),
+                                            a(fused ? "qkv" : "k"),
+                                            a(fused ? "qkv" : "v"),
+                                            a("attn"),
+                                            config.numberOfHeads(),
+                                            config.numberOfKeyValueHeads(),
+                                            config.headSize(),
+                                            (float) (1.0 / Math.sqrt(config.headSize())),
+                                            OptionalInt.empty(),
+                                            DataType.F32))));
+        }
+        return regions;
+    }
 
     /** Every layer's operations as {@link Whole} layers; the arguments as {@link #of}. */
     public static List<Whole> whole(
