@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -33,6 +34,14 @@ public final class PlanDispatchEvidence {
 
     private static final Pattern ATTENTION_OUTPUT =
             Pattern.compile("^batchLayer_(\\d+)\\.attn_output_proj$");
+
+    /**
+     * The combine pass of a decode layer's split-KV attention: {@code layer_<g>.[l<n>_]
+     * attention_combine}, decode layers being grouped several to a graph (see {@link
+     * #QWEN35_DECODE_ATTENTION}).
+     */
+    private static final Pattern QWEN35_DECODE_ATTENTION_COMBINE =
+            Pattern.compile("^layer_\\d+\\.(?:l\\d+_)?attention_combine$");
 
     private PlanDispatchEvidence() {}
 
@@ -129,11 +138,13 @@ public final class PlanDispatchEvidence {
     }
 
     /**
-     * Asserts that every batched attention-output projection in {@code scheduler} runs as the
-     * dequantize-then-GEMM pair: its {@code _dequant} task present with one lane per weight, and
-     * the projection on the FP16 GEMM's two-dimensional grid rather than the direct kernel's.
+     * Asserts that every batched attention-output projection in {@code scheduler} runs as a
+     * tensor-core GEMM over the whole chunk: on a device with int8 tensor cores, the int8 GEMM over
+     * the Q4_0 blocks where they lie (its input quantized first, no decode task); otherwise the
+     * dequantize-then-GEMM pair, its {@code _dequant} task present with one lane per weight and the
+     * projection on the FP16 GEMM's two-dimensional grid rather than the direct kernel's.
      */
-    public static void assertQwen35AttentionOutputOnDequantGemm(
+    public static void assertQwen35AttentionOutputOnGemm(
             GridScheduler scheduler, int batchSize, int dim, int attnDim) {
         assertNotNull("no grid scheduler for the plan this run built", scheduler);
         List<Integer> layers = attentionLayers(scheduler);
@@ -141,7 +152,15 @@ public final class PlanDispatchEvidence {
         for (int layer : layers) {
             String prefix = "batchLayer_" + layer + ".";
             WorkerGrid dequant = scheduler.get(prefix + "attn_output_proj_dequant");
-            assertNotNull("layer " + layer + " has no attn_output_proj_dequant task", dequant);
+            if (dequant == null) {
+                assertInt8GemmInPlace(
+                        scheduler,
+                        prefix + "attn_output_proj",
+                        prefix + "attn_output_q8",
+                        batchSize,
+                        dim);
+                continue;
+            }
             // The Q4_0 decoder takes one lane per packed byte: half the elements; the int8
             // investigation's decoder a lane per word of four.
             long attnLanes = dequant.getGlobalWork()[0];
@@ -195,17 +214,24 @@ public final class PlanDispatchEvidence {
     }
 
     /**
-     * Asserts that every batched ffn_down projection in {@code scheduler} — the Q4_1 blocks and the
-     * Q4_0 ones alike — runs as the dequantize-then-GEMM pair.
+     * Asserts that every batched ffn_down projection in {@code scheduler} runs as a tensor-core
+     * GEMM over the whole chunk: the Q4_1 blocks as the dequantize-then-GEMM pair, and the Q4_0
+     * ones as that pair too or, on a device with int8 tensor cores, as the int8 GEMM over the
+     * blocks where they lie.
      */
-    public static void assertQwen35FfnDownOnDequantGemm(
+    public static void assertQwen35FfnDownOnGemm(
             GridScheduler scheduler, int batchSize, int dim, int hiddenDim) {
         assertNotNull("no grid scheduler for the plan this run built", scheduler);
         int found = 0;
         for (String task : new TreeSet<>(scheduler.keySet())) {
             if (task.matches("batchLayer_\\d+\\.ffn_down_proj")) {
                 WorkerGrid dequant = scheduler.get(task + "_dequant");
-                assertNotNull(task + " has no dequantization task", dequant);
+                if (dequant == null) {
+                    String prefix = task.substring(0, task.indexOf('.') + 1);
+                    assertInt8GemmInPlace(scheduler, task, prefix + "ffn_down_q8", batchSize, dim);
+                    found++;
+                    continue;
+                }
                 // Both decoders take a lane per packed byte (the int8 investigation's a lane
                 // per four); assertQwen35DequantGemmPairs pins the kernel names.
                 long lanes = dequant.getGlobalWork()[0];
@@ -222,6 +248,42 @@ public final class PlanDispatchEvidence {
             }
         }
         assertTrue("no batched ffn_down projection in this plan", found > 0);
+    }
+
+    /**
+     * Asserts {@code task} is the int8 GEMM that reads its Q4_0 weight where it lies: no decode
+     * task, the quantization of its input ({@code quantizeTask}) present, and its own worker —
+     * {@code (batchSize / 128)} blocks of {@link Int8GemmKernels#Q8_GEMM_THREADS} lanes by {@code n
+     * / 128} column tiles once per K split. Only a device with int8 tensor cores builds it.
+     */
+    private static void assertInt8GemmInPlace(
+            GridScheduler scheduler, String task, String quantizeTask, int batchSize, int n) {
+        assertTrue(
+                task
+                        + " has no dequantization task, and this device has no int8 tensor cores to"
+                        + " read the weight in place",
+                TensorCoreSupport.isInt8MmaCapable());
+        assertNotNull(
+                task + " reads int8 activations nothing quantized: no " + quantizeTask,
+                scheduler.get(quantizeTask));
+        WorkerGrid gemm = scheduler.get(task);
+        assertNotNull(task + " has no grid", gemm);
+        long threads = Int8GemmKernels.Q8_GEMM_THREADS;
+        assertEquals(
+                task + " int8 GEMM rows of work",
+                (batchSize / 128) * threads,
+                gemm.getGlobalWork()[0]);
+        long columnTiles = n / 128L;
+        long columns = gemm.getGlobalWork()[1];
+        assertTrue(
+                task
+                        + " int8 GEMM column work "
+                        + columns
+                        + " is not "
+                        + columnTiles
+                        + " tiles once per split",
+                columns >= columnTiles && columns % columnTiles == 0);
+        assertEquals(task + " int8 GEMM local", threads, gemm.getLocalWork()[0]);
     }
 
     /**
@@ -315,18 +377,16 @@ public final class PlanDispatchEvidence {
             TornadoVMMasterPlan plan, GridScheduler scheduler) {
         assertNotNull("no grid scheduler for the plan this run built", scheduler);
         // A pair's GEMM is the tiled-B GEMM with one of its epilogues: a store (gate, k, v), the
-        // residual add (attention output, ffn_down, ssm_out) or SwiGLU (up).
+        // residual add (attention output, ffn_down, ssm_out) or SwiGLU (up). On a device with
+        // int8 tensor cores the Q4_0 projections are int8 GEMMs over the blocks where they lie,
+        // which have no decoder and so are not pairs at all.
         java.util.Set<String> allowed =
                 java.util.Set.of(
                         "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledB",
                         "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledBResidual",
                         "dequantizeQ4_0ToFP16TiledPairs+gemmMMATiledBSwiGLU",
                         "dequantizeQ4_1ToFP16TiledPairs+gemmMMATiledBResidual",
-                        "dequantizeQ5_KToFP16TiledPairs+gemmMMATiledBResidual",
-                        // The int8 pair (Q4_0 projections on a tensor-core device).
-                        "decodeQ4_0ToInt8Tiled+gemmInt8BlockScaled",
-                        "decodeQ4_0ToInt8Tiled+gemmInt8BlockScaledResidual",
-                        "decodeQ4_0ToInt8Tiled+gemmInt8BlockScaledSwiGLU");
+                        "dequantizeQ5_KToFP16TiledPairs+gemmMMATiledBResidual");
         java.util.Map<String, Integer> seen = new java.util.TreeMap<>();
         java.util.Set<String> tasks = new TreeSet<>();
         for (String key : scheduler.keySet()) {
@@ -454,9 +514,11 @@ public final class PlanDispatchEvidence {
     }
 
     /**
-     * Asserts the batched Q4_0 key and value projections' dispatch: on the pair (decoder task, GEMM
-     * grid of {@code batchSize / 128 * 256} by {@code kvDim / 128}, kernels by name) when {@code
-     * pair}, else on the direct kernel with its grid and no decoder task.
+     * Asserts the batched Q4_0 key and value projections' dispatch. When {@code pair}: on a device
+     * with int8 tensor cores, the int8 GEMM over the blocks where they lie (no decoder task, its
+     * own worker); elsewhere the pair (decoder task, GEMM grid of {@code batchSize / 128 * 256} by
+     * {@code kvDim / 128}). Otherwise on the direct kernel with its grid and no decoder task, or
+     * the packed int8 GEMM where the weights were packed, which have no other kernel.
      */
     public static void assertQwen35KvProjectionDispatch(
             TornadoVMMasterPlan plan,
@@ -474,7 +536,15 @@ public final class PlanDispatchEvidence {
                 found++;
                 WorkerGrid grid = scheduler.get(key);
                 WorkerGrid dequant = scheduler.get(key + "_dequant");
-                if (pair) {
+                boolean int8 = TensorCoreSupport.isInt8MmaCapable();
+                if (pair && int8) {
+                    assertTrue(
+                            key + " decodes a weight the int8 GEMM reads in place",
+                            dequant == null);
+                    String prefix = key.substring(0, key.indexOf('.') + 1);
+                    assertInt8GemmInPlace(
+                            scheduler, key, prefix + "attn_rms_apply_q8", batchSize, kvDim);
+                } else if (pair) {
                     assertNotNull(key + " has no decoder task", dequant);
                     long kvLanes = dequant.getGlobalWork()[0];
                     assertTrue(
@@ -488,21 +558,27 @@ public final class PlanDispatchEvidence {
                     assertEquals(key + " GEMM column tiles", kvDim / 128L, grid.getGlobalWork()[1]);
                 } else {
                     assertTrue(key + " has a decoder task", dequant == null);
-                    assertEquals(key + " direct local", 32L, grid.getLocalWork()[0]);
                 }
             }
             assertTrue("no batched " + task + " in this plan", found > 0);
             java.util.Set<String> kernels = batchedTaskKernels(plan, task);
-            assertEquals(
-                    task + " kernel",
+            java.util.Set<String> expected =
                     pair
-                            ? java.util.Set.of(
-                                    org.beehive.jitllm.backend.tornado.TensorCoreSupport
-                                                    .isInt8MmaCapable()
-                                            ? "gemmInt8BlockScaled"
-                                            : "gemmMMATiledB")
-                            : java.util.Set.of("projectionMMAQ4_0Prefetch"),
-                    kernels);
+                            ? (TensorCoreSupport.isInt8MmaCapable()
+                                    ? java.util.Set.of("gemmInt8Q4_0", "gemmInt8Q4_0Packed")
+                                    : java.util.Set.of("gemmMMATiledB"))
+                            : java.util.Set.of("projectionMMAQ4_0Prefetch", "gemmInt8Q4_0Packed");
+            assertTrue(
+                    task + " kernels " + kernels + ", expected one of " + expected,
+                    kernels.size() == 1 && expected.containsAll(kernels));
+            if (!pair && kernels.contains("projectionMMAQ4_0Prefetch")) {
+                for (String key : new TreeSet<>(scheduler.keySet())) {
+                    if (key.matches("batchLayer_\\d+\\." + task)) {
+                        assertEquals(
+                                key + " direct local", 32L, scheduler.get(key).getLocalWork()[0]);
+                    }
+                }
+            }
         }
     }
 
@@ -574,9 +650,14 @@ public final class PlanDispatchEvidence {
         assertNotNull(
                 "no grid scheduler for the plan this run built, so its dispatch cannot be checked",
                 scheduler);
-        long attention = scheduler.keySet().stream().filter(t -> t.endsWith(".attention")).count();
+        long attention =
+                scheduler.keySet().stream()
+                        .filter(t -> QWEN35_DECODE_ATTENTION.matcher(t).find())
+                        .count();
         long combine =
-                scheduler.keySet().stream().filter(t -> t.endsWith(".attention_combine")).count();
+                scheduler.keySet().stream()
+                        .filter(t -> QWEN35_DECODE_ATTENTION_COMBINE.matcher(t).find())
+                        .count();
         assertTrue("this plan has no attention task at all", attention > 0);
         assertEquals("the per-head kernel has no combine", 0, combine);
     }
@@ -588,9 +669,9 @@ public final class PlanDispatchEvidence {
         List<String> attention = new ArrayList<>();
         List<String> combine = new ArrayList<>();
         for (String task : new TreeSet<>(scheduler.keySet())) {
-            if (task.endsWith(".attention")) {
+            if (QWEN35_DECODE_ATTENTION.matcher(task).find()) {
                 attention.add(task);
-            } else if (task.endsWith(".attention_combine")) {
+            } else if (QWEN35_DECODE_ATTENTION_COMBINE.matcher(task).find()) {
                 combine.add(task);
             }
         }

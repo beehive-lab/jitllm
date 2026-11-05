@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.PlanDispatchEvidence;
 import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
+import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.beehive.jitllm.inference.sampler.Sampler;
 import org.beehive.jitllm.inference.state.State;
@@ -226,13 +227,13 @@ public class Qwen35DequantGemmLifecycleAccelTest {
                 pairPlan.freeTornadoExecutionPlan();
             }
             var qwen = (org.beehive.jitllm.model.qwen35.Qwen35Configuration) model.configuration();
-            PlanDispatchEvidence.assertQwen35AttentionOutputOnDequantGemm(
+            PlanDispatchEvidence.assertQwen35AttentionOutputOnGemm(
                     pairA.scheduler(), WIDTH, qwen.dim(), qwen.attentionOutputInputDim());
             PlanDispatchEvidence.assertQwen35SsmOutOnDequantGemm(
                     pairA.scheduler(), WIDTH, qwen.dim(), qwen.deltaNetValueDim());
             PlanDispatchEvidence.assertQwen35BatchDeltaRuleWarp(
                     pairA.scheduler(), qwen.numberOfValueHeads(), qwen.headValueDim());
-            PlanDispatchEvidence.assertQwen35FfnDownOnDequantGemm(
+            PlanDispatchEvidence.assertQwen35FfnDownOnGemm(
                     pairA.scheduler(), WIDTH, qwen.dim(), qwen.hiddenDim());
             assertEquals(
                     "the batched alpha/beta projections this plan compiled",
@@ -252,11 +253,9 @@ public class Qwen35DequantGemmLifecycleAccelTest {
             assertEquals(
                     "the pair combinations in this plan: " + dequantPairs,
                     INT8
-                            // The int8 investigation replaces the three Q4_0 pairs.
+                            // The Q4_0 projections are int8 GEMMs over the blocks where they lie,
+                            // with no decoder: only the Q4_1 and Q5_K pairs remain.
                             ? java.util.Set.of(
-                                    "decodeQ4_0ToInt8Tiled+gemmInt8BlockScaled",
-                                    "decodeQ4_0ToInt8Tiled+gemmInt8BlockScaledResidual",
-                                    "decodeQ4_0ToInt8Tiled+gemmInt8BlockScaledSwiGLU",
                                     "dequantizeQ4_1ToFP16TiledPairs+gemmMMATiledBResidual",
                                     "dequantizeQ5_KToFP16TiledPairs+gemmMMATiledBResidual")
                             : java.util.Set.of(
@@ -398,6 +397,9 @@ public class Qwen35DequantGemmLifecycleAccelTest {
         command.add("-Djitllm.qwen35.tensorCores=true");
         command.add("-Djitllm.kvcache.fp16=true");
         command.add("-Djitllm.cudaGraphs=true");
+        // Unpacked Q4_0 weights: a packed weight has only the int8 GEMM, so the direct FP16
+        // kernels could not be built for it.
+        command.add("-D" + PackedWeights.Q4_PROPERTY + "=false");
         command.add("-cp");
         command.add(System.getProperty("java.class.path"));
         command.add(Qwen35DequantGemmLifecycleAccelTest.class.getName());
@@ -422,7 +424,8 @@ public class Qwen35DequantGemmLifecycleAccelTest {
         Model model = ModelLoader.loadModel(Path.of(args[0]), CONTEXT, true, true);
         List<Integer> promptA = encode(model, PROMPT_A);
         State directState = State.withPrefillBatchSize(WIDTH, model::createNewState);
-        // The test-only selection: no scratch, so the dispatch keeps the direct kernels.
+        // The test-only selection: no scratch, so the dispatch keeps the direct kernels (and the
+        // weights unpacked, set on this JVM's command line, so they have direct kernels at all).
         directState.workspace.wrapDequantScratchFP16 = null;
         TornadoVMMasterPlan directPlan =
                 TornadoVMMasterPlan.initializeTornadoVMPlan(directState, model);

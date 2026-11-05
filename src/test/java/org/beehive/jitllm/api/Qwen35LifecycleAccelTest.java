@@ -9,6 +9,7 @@ import static org.junit.Assume.assumeTrue;
 import java.nio.file.Path;
 import org.beehive.jitllm.golden.GoldenFixture;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 // @formatter:off
@@ -105,7 +106,15 @@ public class Qwen35LifecycleAccelTest {
     }
 
     private static ModelOptions options() {
-        return ModelOptions.builder().contextLength(CONTEXT).build();
+        // The single-token plan, named: batched prefill is the GPU default, and the batched
+        // lifecycle has its own test (Qwen35BatchedLifecycleAccelTest).
+        return ModelOptions.builder()
+                .contextLength(CONTEXT)
+                .executionPolicy(
+                        ExecutionPolicy.builder()
+                                .phaseStrategy(ExecutionPolicy.PhaseStrategy.SINGLE_TOKEN)
+                                .build())
+                .build();
     }
 
     private static void restore(String previous) {
