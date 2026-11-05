@@ -1961,7 +1961,8 @@ public class Qwen35BatchPrefillLayers
                 "attn_rms_reduce",
                 "attn_rms_apply",
                 state.workspace.attnScaleBatch,
-                require(weights.rms_att_weightLayered, layerIndex, "attn_norm"));
+                require(weights.rms_att_weightLayered, layerIndex, "attn_norm"),
+                normedNeedsQuantizing(layerIndex, false));
 
         if (config.isRecurrentLayer(layerIndex)) {
             deltaNetBranch(layer, layerIndex);
@@ -1975,7 +1976,8 @@ public class Qwen35BatchPrefillLayers
                 "ffn_rms_reduce",
                 "ffn_rms_apply",
                 state.workspace.ffnScaleBatch,
-                require(weights.rms_ffn_weightLayered, layerIndex, "post_attention_norm"));
+                require(weights.rms_ffn_weightLayered, layerIndex, "post_attention_norm"),
+                normedNeedsQuantizing(layerIndex, true));
 
         if (feedForward != null) {
             feedForward.appendTasks(layer, context, layerIndex);
@@ -2162,7 +2164,8 @@ public class Qwen35BatchPrefillLayers
             String reduce,
             String apply,
             FloatArray scaleBatch,
-            TornadoTensor weight) {
+            TornadoTensor weight,
+            boolean quantize) {
         if (groupRmsEligible(config.dim())) {
             layer.task(
                     reduce,
@@ -2213,14 +2216,41 @@ public class Qwen35BatchPrefillLayers
             }
         }
         if (int8Quantizes(config.dim())) {
-            // The normed chunk quantized once for every Q4_0 projection that reads it.
-            quantizeActivation(
-                    layer,
-                    layerIndex,
-                    apply + "_q8",
-                    state.workspace.wrapNormedBatch,
-                    config.dim());
+            if (quantize) {
+                // The normed chunk quantized once for every Q4_0 projection that reads it.
+                quantizeActivation(
+                        layer,
+                        layerIndex,
+                        apply + "_q8",
+                        state.workspace.wrapNormedBatch,
+                        config.dim());
+            } else {
+                // The apply rewrote the normed chunk, so the scratch no longer holds it.
+                quantizedInput = null;
+            }
         }
+    }
+
+    /**
+     * Whether a norm's chunk must be quantized: the feed-forward's norm if {@code ffn}, otherwise
+     * the mixer's. Not when every projection reading the chunk is F16, because those read its FP16
+     * or FP32 form. Example: Qwen3.5-0.8B F16, where no task of a layer reads the int8 scratch. A
+     * family's own feed-forward reads the quantized chunk whatever the dense weights are.
+     */
+    private boolean normedNeedsQuantizing(int layer, boolean ffn) {
+        if (ffn && feedForward != null) {
+            return true;
+        }
+        for (Qwen35PrefillRegions.Projection p : projections) {
+            TornadoTensor w = p.tensor(layer);
+            if (p.normedInput()
+                    && p.task().startsWith("ffn_") == ffn
+                    && w != null
+                    && w.dataType() != DataType.F16) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void attentionBranch(TaskGraph layer, int layerIndex) {
