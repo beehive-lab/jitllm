@@ -79,7 +79,16 @@ public final class LocalModels {
                         ? deviceDefault(model, modelFile, contextLength, options)
                         : options.executionPolicy();
         if (gpu) {
-            policy = ExecutionPolicy.from(policy).decodedProjections(decodedProjections).build();
+            // Resident or per chunk is decided for the policy the session runs. The device's
+            // default can turn native libraries on after the check above, and cuBLAS's copies of
+            // F16 weights exist only then.
+            policy =
+                    policy.equals(options.executionPolicy())
+                            ? ExecutionPolicy.from(policy)
+                                    .decodedProjections(decodedProjections)
+                                    .build()
+                            : MemoryPreflight.resolveDecodedProjections(
+                                    modelFile, contextLength, options, policy);
         }
         return new DelegatingModel(
                 model,
@@ -192,6 +201,35 @@ public final class LocalModels {
         Objects.requireNonNull(options, "options");
         int contextLength = options.contextLength() > 0 ? options.contextLength() : -1;
         return MemoryPreflight.plan(modelFile, contextLength, options);
+    }
+
+    /**
+     * Whether {@code policy} is predicted to fit the configured memory budget for this file: the
+     * check a load makes before it takes the device's default. With no budget set, every policy
+     * fits.
+     */
+    @Experimental
+    public static boolean fitsMemoryBudget(
+            Path modelFile, ModelOptions options, ExecutionPolicy policy) {
+        Objects.requireNonNull(modelFile, "modelFile");
+        Objects.requireNonNull(options, "options");
+        int contextLength = options.contextLength() > 0 ? options.contextLength() : -1;
+        return MemoryPreflight.fits(modelFile, contextLength, options, policy);
+    }
+
+    /**
+     * {@code policy} with its projection copies settled as a load settles them: kept for the whole
+     * session where they fit the budget, one shared scratch refilled per chunk where they do not.
+     *
+     * @throws InsufficientDeviceMemoryException when even the scratch does not fit
+     */
+    @Experimental
+    public static ExecutionPolicy resolveDecodedProjections(
+            Path modelFile, ModelOptions options, ExecutionPolicy policy) {
+        Objects.requireNonNull(modelFile, "modelFile");
+        Objects.requireNonNull(options, "options");
+        int contextLength = options.contextLength() > 0 ? options.contextLength() : -1;
+        return MemoryPreflight.resolveDecodedProjections(modelFile, contextLength, options, policy);
     }
 
     /** Preflights with the model file's own settings. */

@@ -72,7 +72,7 @@ public final class TornadoBatchPrefillPass {
         // zero and the padded rows are defined.
         //
         // So a chunk past position 0 goes to the fallback family instead: the same layer
-        // pipeline, the same native projections over the same stacked weights, with the batched
+        // pipeline, the same native projections over the same weight copies, with the batched
         // JIT paged attention that takes an arbitrary start position. It binds every buffer from
         // the primary family, so it costs graphs and no memory, and it stays batched -- one graph
         // set per chunk, not per token.

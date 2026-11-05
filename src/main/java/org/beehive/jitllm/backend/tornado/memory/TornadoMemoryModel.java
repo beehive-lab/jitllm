@@ -3,7 +3,7 @@ package org.beehive.jitllm.backend.tornado.memory;
 import java.util.ArrayList;
 import java.util.List;
 import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
-import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.plan.layout.TornadoGraphTopology;
 import org.beehive.jitllm.inference.state.State;
@@ -53,8 +53,9 @@ import org.beehive.jitllm.runtime.policy.StorageOptions;
  * this table was first bisected). Its decode graphs now consume the copy the prefill graphs
  * uploaded, so the families that <b>bind</b> weights is one, not two — {@code
  * Configuration.weightBindingFamilies} — and what batched prefill adds is its staging, padded to
- * 128-row tensor-core tiles. A native (library) prefill family still keeps stacked projection
- * copies beside the originals; those are their own component.
+ * 128-row tensor-core tiles. A native (library) prefill family also needs copies of its projection
+ * weights beside the originals, kept for the session or refilled per chunk; they are part of the
+ * batched prefill workspace.
  */
 public final class TornadoMemoryModel {
 
@@ -88,7 +89,7 @@ public final class TornadoMemoryModel {
     // @formatter:on
     private static boolean nativePrefillSelected(ExecutionPolicy policy) {
         return ExecutionMode.of(policy) == ExecutionMode.BATCH_PREFILL_DECODE
-                && NativePrefillSupport.nativeProjections(policy);
+                && Target.of(policy).cublas();
     }
 
     /**
@@ -284,31 +285,22 @@ public final class TornadoMemoryModel {
         //   decode layer graphs      0.1 -> 560.1 MiB   (+560.0, five weights x 28 layers)
         //   fallback family         absent -> 0.0 MiB   (three carriers, nothing uploaded)
         //
-        // The stacked copies do not show up as growth in the prefill family because they displace
+        // Kept copies do not show up as growth in the prefill family because they displace
         // exactly the five originals it stopped reading. Those five reappear in the decode family,
         // which now uploads them itself -- so the cost of the native path is one extra copy of the
-        // projection weights, plus the staging, and that is what these two components describe.
+        // projection weights, plus the staging. The copies are the family's batched-prefill
+        // workspace (kept for the session, or one scratch refilled per chunk); the staging is here.
         boolean nativePrefill = nativePrefillSelected(policy);
-        long stackedPerLayer = config.nativeStackedProjectionBytesPerLayer();
-        if (nativePrefill && stackedPerLayer > 0) {
+        long staging =
+                nativePrefill ? config.nativeAttentionStagingBytes(policy.prefillBatchSize()) : 0;
+        if (staging > 0) {
             components.add(
                     new MemoryComponent(
-                            "stacked projection weights (native prefill)",
-                            BufferClass.WEIGHTS_PER_LAYER,
-                            stackedPerLayer * config.numberOfLayers(),
+                            "fused attention staging (native prefill)",
+                            BufferClass.BATCH_STAGING,
+                            staging,
                             1,
-                            // Two stacked arrays per layer, each its own device buffer.
-                            2L * config.numberOfLayers() * header));
-            long staging = config.nativeAttentionStagingBytes(policy.prefillBatchSize());
-            if (staging > 0) {
-                components.add(
-                        new MemoryComponent(
-                                "fused attention staging (native prefill)",
-                                BufferClass.BATCH_STAGING,
-                                staging,
-                                1,
-                                4 * header));
-            }
+                            4 * header));
         }
 
         // ── control and result carriers ──────────────────────────────────────
@@ -349,7 +341,7 @@ public final class TornadoMemoryModel {
             BatchPrefillWorkspace ws = workspace.get();
             components.add(
                     new MemoryComponent(
-                            ws.decodesProjections()
+                            ws.hasResidencyChoice()
                                     ? (resident
                                             ? "batched prefill workspace (decoded projections"
                                                     + " resident)"
@@ -400,7 +392,7 @@ public final class TornadoMemoryModel {
                         + "; kv "
                         + (keyValue.fp16() ? "FP16" : "FP32")
                         + keyValueAssumption(keyValue)
-                        + (nativePrefill && stackedPerLayer > 0 ? "; native prefill" : "")
+                        + (staging > 0 ? "; native prefill" : "")
                         + "; native-array header "
                         + header
                         + " B");
@@ -507,10 +499,10 @@ public final class TornadoMemoryModel {
             long others,
             long configuredBudgetBytes,
             int sessions) {
-        if (!workspace.decodesProjections()) {
+        if (!workspace.hasResidencyChoice()) {
             return false;
         }
-        boolean allowed = FP16Projections.resident(policy, workspace.decodedWeights());
+        boolean allowed = FP16Projections.resident(policy, workspace.residentContiguousSize());
         if (!allowed || policy.decodedProjections() != ExecutionPolicy.DecodedProjections.BACKEND) {
             return allowed;
         }

@@ -285,10 +285,10 @@ public record Qwen35Configuration(
         // The tensor-core attention's FP16 staging, per (16-query tile, head).
         bytes += 2L * attentionStageHalves(batchSize, numberOfHeads());
         // The dequantize-then-GEMM scratch: one FP16 copy of the largest projection matrix that
-        // takes the pair (gate/up and the Q4_1 ffn_down; the Q5_K ssm_out shares it), at the widths
-        // that take that path.
+        // can take the pair, at the widths that take that path. Counted at its widest, whatever
+        // the weight types: a K-quant file grows it past gate/up.
         if (dequantGemmWidth(batchSize)) {
-            bytes += 2L * hiddenDim() * dim();
+            bytes += 2L * dequantScratchHalves();
             // The int8 pair's scratch beside it: the chunk's activations as bytes with a scale
             // per 32, and one decoded matrix with its FP32 block scales.
             bytes += (long) (batchSize * hiddenDim() * (1 + 4 / 32.0));
@@ -345,5 +345,30 @@ public record Qwen35Configuration(
      */
     public static boolean dequantGemmWidth(int batchSize) {
         return batchSize > 0 && batchSize % DEQUANT_GEMM_ROWS == 0;
+    }
+
+    /**
+     * FP16 halves of the dequantize-then-GEMM scratch at its widest: the largest projection the
+     * pair can take, and at least gate/up. The K-quant pairs need 128-row tiles and whole
+     * 256-weight super-blocks. Example: Qwen3.5-0.8B's 6,144 x 1,024 qkv against its 3,584 x 1,024
+     * gate/up.
+     */
+    public long dequantScratchHalves() {
+        int[][] shapes = {
+            {queryGateDim(), dim()},
+            {kvDim(), dim()},
+            {dim(), attentionOutputInputDim()},
+            {dim(), hiddenDim()},
+            {deltaNetConvDim(), dim()},
+            {deltaNetValueDim(), dim()},
+            {dim(), deltaNetValueDim()}
+        };
+        long widest = (long) hiddenDim() * dim();
+        for (int[] shape : shapes) {
+            if (shape[0] % DEQUANT_GEMM_ROWS == 0 && shape[1] % 256 == 0) {
+                widest = Math.max(widest, (long) shape[0] * shape[1]);
+            }
+        }
+        return widest;
     }
 }

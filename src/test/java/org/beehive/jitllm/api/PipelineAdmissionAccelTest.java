@@ -84,9 +84,6 @@ public class PipelineAdmissionAccelTest {
         // Llama Q8_0 has no batched stage layers, with one stage as with two.
         assertRefusedAtLoad(
                 locate(Fixture.LLAMA_3_2_1B_Q8_0), BATCHED, "0:0", "--batch-prefill-size");
-        // Llama Q4_0 stages that hold part of the model run their projections through cuBLAS.
-        assertRefusedAtLoad(
-                locate(Fixture.LLAMA_3_2_1B_Q4_0), BATCHED, "0:0,0:0", "--with-native-libraries");
     }
 
     private static void assertRefusedAtLoad(

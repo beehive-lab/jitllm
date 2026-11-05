@@ -184,7 +184,7 @@ public final class TornadoWorkspace {
     public FloatArray branchScaleBatch;
     public FloatArray attnScoresBatch;
     public FloatArray splitKPartialBatch;
-    public HalfFloatArray weightsF16Scratch;
+    public HalfFloatArray contiguousF16WeightsScratch;
     // Gemma 4 tensor-core prefill attention: the unnormalized FP32 output before it is narrowed,
     // and each workgroup's FP16 probability tile.
     public FloatArray attnOutF32Batch;
