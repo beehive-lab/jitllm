@@ -81,6 +81,49 @@ public final class FloatArrayUtils {
         return array;
     }
 
+    /** {@link #divideInPlace(FloatArray, int, int, float)} over a heap copy of the scores. */
+    public static float[] divideInPlace(float[] array, int start, int end, float value) {
+        for (int i = start; i < end; i++) {
+            array[i] = array[i] / value;
+        }
+        return array;
+    }
+
+    /**
+     * {@link #softmaxInPlace(FloatArray, int, int)} over a heap copy of the scores: the same
+     * operations in the same order, so the probabilities are bit-for-bit those of the device array.
+     */
+    public static float[] softmaxInPlace(float[] array, int start, int end) {
+        float maxVal = Float.NEGATIVE_INFINITY;
+        for (int i = start; i < end; i++) {
+            if (array[i] > maxVal) {
+                maxVal = array[i];
+            }
+        }
+        float sum = 0.0f;
+        for (int i = start; i < end; i++) {
+            float exp;
+            if (TornadoVMSupport.isTornadoVMEnabled()) {
+                exp = TornadoMath.exp(array[i] - maxVal);
+            } else {
+                exp = (float) Math.exp(array[i] - maxVal);
+            }
+            array[i] = exp;
+            sum += exp;
+        }
+        if (sum == 0.0f) {
+            float value = 1.0f / (end - start);
+            for (int i = start; i < end; i++) {
+                array[i] = value;
+            }
+        } else {
+            for (int i = start; i < end; i++) {
+                array[i] = array[i] / sum;
+            }
+        }
+        return array;
+    }
+
     /**
      * Helper class to check if TornadoVM is enabled. This allows us to decide whether to use
      * TornadoMath or standard Math.
