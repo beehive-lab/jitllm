@@ -1,6 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill;
 
-import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -19,18 +19,15 @@ import org.beehive.jitllm.backend.tornado.layers.MlxPrefillAttention;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
 import org.beehive.jitllm.backend.tornado.layers.QuantizedBatchProjections;
 import org.beehive.jitllm.backend.tornado.layers.Qwen3PrefillRegions;
-import org.beehive.jitllm.backend.tornado.ops.Fusion;
 import org.beehive.jitllm.backend.tornado.ops.Implementation;
-import org.beehive.jitllm.backend.tornado.ops.Instance;
 import org.beehive.jitllm.backend.tornado.ops.Operands;
 import org.beehive.jitllm.backend.tornado.ops.Region;
-import org.beehive.jitllm.backend.tornado.ops.Step;
 import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
+import org.beehive.jitllm.backend.tornado.ops.jit.LayerKernels;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxAttention;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxMatMul;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
-import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
-import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -38,11 +35,8 @@ import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
-import org.beehive.jitllm.program.op.MatMul;
-import org.beehive.jitllm.program.op.OperationKind;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.tensor.DataType;
-import org.beehive.jitllm.runtime.tensor.TensorRole;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -58,7 +52,8 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
  * Mirrors {@link Qwen3FP16LayersBatchPrefill} but uses Q8_0 weights (ByteArray) and FP32 attention
  * normalization path.
  */
-public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayerTaskGraphs {
+public class Qwen3Q8_0LayersBatchPrefill
+        implements BatchPrefillTransformerLayerTaskGraphs, LayerKernels.Tasks {
 
     @Override
     public String describeProjections() {
@@ -101,6 +96,9 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
     /** Each layer's operations before and after attention. */
     private final List<Qwen3PrefillRegions.Layer> regions;
+
+    /** Each layer's attention, between its regions before and after attention. */
+    private final List<Region> attention;
 
     /** Runs those operations: on MLX where it runs, otherwise on the JIT kernels. */
     private final WorkPlan plan;
@@ -156,11 +154,16 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         batchSize,
                         batchSize,
                         (role, layer) -> weights.tensor(role, layer).dataType());
-        List<Region> all = Qwen3PrefillRegions.all(regions);
+        this.attention = Qwen3PrefillRegions.attention(config, batchSize);
+        List<Region> all = new ArrayList<>(Qwen3PrefillRegions.all(regions));
+        all.addAll(attention);
         List<Implementation> candidates =
                 mlxProjections != null
-                        ? List.of(new MlxMatMul(mlxProjections), new JitKernels())
-                        : List.of(new JitKernels());
+                        ? List.of(
+                                new MlxMatMul(mlxProjections),
+                                new MlxAttention(mlxAttention),
+                                new LayerKernels(this))
+                        : List.of(new LayerKernels(this));
         this.plan =
                 WorkPlan.of(
                         all,
@@ -350,9 +353,31 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
         // Reuses batchedFlashAttention; passes qDim as the 'dim' stride (valid: qDim==dim
         // typically).
+        plan.emit(layer, attention.get(layerIndex), operands, state.workspace.weightBindings);
+
+        // Output projection, residual add, RMS norm, gate|up, SwiGLU, down, residual add.
+        plan.emit(
+                layer,
+                regions.get(layerIndex).afterAttention(),
+                operands,
+                state.workspace.weightBindings);
+
+        layer.persistOnDevice(state.workspace.wrapXBatch, keyCache(), valueCache());
         if (mlxAttention != null) {
-            mlxAttention.attention(layer, "batch_attention", layerIndex);
-        } else if (useFp16KVCache()) {
+            mlxAttention.persist(layer);
+        }
+        if (mlxProjections != null) {
+            mlxProjections.persist(layer);
+        }
+
+        return layer;
+    }
+
+    // @formatter:on
+
+    @Override
+    public void attention(TaskGraph layer, int layerIndex) {
+        if (useFp16KVCache()) {
             layer.task(
                     "batch_attention",
                     simdgroupAttention()
@@ -408,26 +433,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.kvBlockStride,
                     qDim);
         }
-
-        // Output projection, residual add, RMS norm, gate|up, SwiGLU, down, residual add.
-        plan.emit(
-                layer,
-                regions.get(layerIndex).afterAttention(),
-                operands,
-                state.workspace.weightBindings);
-
-        layer.persistOnDevice(state.workspace.wrapXBatch, keyCache(), valueCache());
-        if (mlxAttention != null) {
-            mlxAttention.persist(layer);
-        }
-        if (mlxProjections != null) {
-            mlxProjections.persist(layer);
-        }
-
-        return layer;
     }
-
-    // @formatter:on
 
     public void updateGridScheduler(GridScheduler scheduler) {
         WorkerGrid qkRmsNormWorker =
@@ -466,9 +472,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
             String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_qk_rmsnorm", qkRmsNormWorker);
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
-            if (mlxAttention != null) {
-                mlxAttention.addGrids(scheduler, p, "batch_attention");
-            } else {
+            if (!plan.runs(attention.get(i), "MLX")) {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }
         }
@@ -487,115 +491,9 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         return context;
     }
 
-    /**
-     * The JIT kernels of this prefill. For a Q8_0 layer the kernels merge the steps around the
-     * GEMM: RMS apply, gate|up and SwiGLU in one kernel, and each residual add into its GEMM. A
-     * layer with other types ({@link #nativeLayer}) runs one kernel per weight type ({@link
-     * QuantizedBatchProjections}).
-     */
-    private final class JitKernels implements Implementation {
-
-        private final Fusion attentionInput =
-                Fusion.of(
-                                "RMS norm + q|k|v",
-                                OperationKind.RMS_NORM,
-                                OperationKind.MAT_MUL,
-                                OperationKind.MAT_MUL,
-                                OperationKind.MAT_MUL)
-                        .when(Fusion::sameInput);
-
-        private final Fusion gateUp =
-                Fusion.of(
-                        "RMS norm + gate|up + SwiGLU",
-                        OperationKind.RMS_NORM,
-                        OperationKind.MAT_MUL,
-                        OperationKind.MAT_MUL,
-                        OperationKind.SWIGLU);
-
-        private final Fusion projectionAdd =
-                Fusion.of(
-                        "projection + residual add",
-                        OperationKind.MAT_MUL,
-                        OperationKind.RESIDUAL_ADD);
-
-        @Override
-        public String library() {
-            return "none";
-        }
-
-        @Override
-        public List<Fusion> fusions() {
-            return List.of(attentionInput, gateUp, projectionAdd);
-        }
-
-        @Override
-        public boolean accepts(Step step, Target target) {
-            return true;
-        }
-
-        @Override
-        public Instance create(
-                List<Step> steps,
-                Target target,
-                KernelContext kernelContext,
-                WeightPrepacking prepacking) {
-            return new Instance() {
-
-                /** The layers whose graphs got tasks, by graph name. */
-                private final Map<String, Integer> layers = new LinkedHashMap<>();
-
-                @Override
-                public void emit(
-                        TaskGraph graph, Step step, Operands operands, WeightBindings bindings) {
-                    int i = step.layer();
-                    layers.put(graph.getTaskGraphName(), i);
-                    String name = graph.getTaskGraphName();
-                    if (step.fusion() == attentionInput) {
-                        attentionInput(graph, i);
-                        for (Object w :
-                                new Object[] {
-                                    weights.rms_att_weightLayered[i].asFloatArray(),
-                                    weights.wqLayered[i].deviceArray(),
-                                    weights.wkLayered[i].deviceArray(),
-                                    weights.wvLayered[i].deviceArray()
-                                }) {
-                            bindings.record(w, name);
-                        }
-                    } else if (step.fusion() == gateUp) {
-                        feedForwardUp(graph, i);
-                        for (Object w :
-                                new Object[] {
-                                    weights.rms_ffn_weightLayered[i].asFloatArray(),
-                                    weights.w1Layered[i].deviceArray(),
-                                    weights.w3Layered[i].deviceArray()
-                                }) {
-                            bindings.record(w, name);
-                        }
-                    } else if (step.fusion() == projectionAdd) {
-                        MatMul m = step.first(MatMul.class);
-                        if (m.weight().role() == TensorRole.ATTENTION_OUTPUT) {
-                            attentionOutput(graph, i);
-                            bindings.record(weights.woLayered[i].deviceArray(), name);
-                        } else {
-                            feedForwardDown(graph, i);
-                            bindings.record(weights.w2Layered[i].deviceArray(), name);
-                        }
-                    } else {
-                        throw new IllegalArgumentException(
-                                "not a fusion of the JIT kernels: " + step.fusion());
-                    }
-                }
-
-                @Override
-                public void addGrids(GridScheduler scheduler) {
-                    layers.forEach((graph, i) -> jitGrids(scheduler, graph + ".", i));
-                }
-            };
-        }
-    }
-
     /** RMS norm into wrapXbBatch (FP32), then q, k and v: one Q8_0 kernel, or one per type. */
-    private void attentionInput(TaskGraph layer, int layerIndex) {
+    @Override
+    public void attentionInput(TaskGraph layer, int layerIndex) {
         int dim = config.dim();
         layer.task(
                 "batch_attn_rms",
@@ -676,7 +574,8 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
     }
 
     /** The output projection with the residual add in the same kernel. */
-    private void attentionOutput(TaskGraph layer, int layerIndex) {
+    @Override
+    public void attentionOutput(TaskGraph layer, int layerIndex) {
         int dim = config.dim();
         if (nativeLayer(layerIndex)) {
             batchProjections()
@@ -712,7 +611,8 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
     }
 
     /** RMS norm, gate|up and SwiGLU: one Q8_0 kernel, or the per-type kernels. */
-    private void feedForwardUp(TaskGraph layer, int layerIndex) {
+    @Override
+    public void feedForwardUp(TaskGraph layer, int layerIndex) {
         int dim = config.dim();
         int hidDim = config.hiddenDim();
         layer.task(
@@ -758,7 +658,8 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
     }
 
     /** The down projection with the residual add in the same kernel. */
-    private void feedForwardDown(TaskGraph layer, int layerIndex) {
+    @Override
+    public void feedForwardDown(TaskGraph layer, int layerIndex) {
         int dim = config.dim();
         int hidDim = config.hiddenDim();
         if (nativeLayer(layerIndex)) {
@@ -795,7 +696,8 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
     }
 
     /** The grids of the JIT kernels' tasks in layer {@code i}'s graph ({@code p} is its prefix). */
-    private void jitGrids(GridScheduler scheduler, String p, int i) {
+    @Override
+    public void addGrids(GridScheduler scheduler, String p, int i) {
         int dim = config.dim();
         int hidDim = config.hiddenDim();
 

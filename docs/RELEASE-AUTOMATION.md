@@ -44,7 +44,7 @@ nothing runs twice.
 2. Click **Run workflow**
 3. Enter:
    - `version`: the new version, `X.Y.Z` (e.g. `2.0.1`)
-   - `tornadovm_release`: the published TornadoVM release this release depends on (e.g. `7.3.1`);
+   - `tornadovm_release`: the published TornadoVM release this release depends on (e.g. `8.0.0`);
      it must be on Maven Central, and the workflow compiles against it on JDK 21 and 25 before
      opening the PR
    - `previous_version`: the last release (e.g. `2.0.0`), used to collect the merged PRs for the

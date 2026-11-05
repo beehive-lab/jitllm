@@ -8,13 +8,13 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Random;
 import org.beehive.jitllm.Options;
-import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
 import org.beehive.jitllm.golden.GoldenFixture;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.beehive.jitllm.inference.Logits;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 // @formatter:off
@@ -85,11 +85,11 @@ public class NativePrefillNumericalAccelTest {
 
         String previousGpu = System.getProperty(GPU_PROPERTY);
         String previousKv = System.getProperty(KV_FP16_PROPERTY);
-        String previousNative = System.getProperty(NativePrefillSupport.PROPERTY);
+        String previousNative = System.getProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY);
         System.setProperty(GPU_PROPERTY, "true");
         System.setProperty(KV_FP16_PROPERTY, "true");
         try {
-            System.setProperty(NativePrefillSupport.PROPERTY, "true");
+            System.setProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, "true");
             Run candidate = run(model, batch, len1, len2, context);
             assumeTrue(
                     "this host does not select the native prefill path, so there is nothing to"
@@ -97,7 +97,7 @@ public class NativePrefillNumericalAccelTest {
                             + candidate.evidence().describe(),
                     candidate.evidence().nativeProjections());
 
-            System.setProperty(NativePrefillSupport.PROPERTY, "false");
+            System.setProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, "false");
             Run reference = run(model, batch, len1, len2, context);
 
             assertTrue(
@@ -116,7 +116,7 @@ public class NativePrefillNumericalAccelTest {
 
             assertAgrees(label, reference, candidate);
         } finally {
-            restore(NativePrefillSupport.PROPERTY, previousNative);
+            restore(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, previousNative);
             restore(KV_FP16_PROPERTY, previousKv);
             restore(GPU_PROPERTY, previousGpu);
         }

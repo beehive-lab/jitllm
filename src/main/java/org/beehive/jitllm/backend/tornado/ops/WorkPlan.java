@@ -118,7 +118,7 @@ public final class WorkPlan {
     /** The device memory {@link #of} would allocate for {@code regions}, without allocating it. */
     public static BatchPrefillWorkspace needs(
             List<Region> regions, List<Implementation> candidates, Target target) {
-        BatchPrefillWorkspace total = BatchPrefillWorkspace.fixed(0);
+        BatchPrefillWorkspace total = BatchPrefillWorkspace.withoutResidencyChoice(0);
         for (var entry : byImplementation(splitAll(regions, candidates, target)).entrySet()) {
             total = total.plus(entry.getKey().needs(entry.getValue(), target));
         }
@@ -156,6 +156,20 @@ public final class WorkPlan {
     /** Adds the worker grids of every task this plan added. */
     public void addGrids(GridScheduler scheduler) {
         instances.values().forEach(instance -> instance.addGrids(scheduler));
+    }
+
+    /** Whether a step of {@code region} runs on {@code library}, for example {@code "cuBLAS"}. */
+    public boolean runs(Region region, String library) {
+        List<Chosen> chosen = steps.get(region);
+        if (chosen == null) {
+            throw new IllegalArgumentException("not a region of this plan: " + region.name());
+        }
+        for (Chosen c : chosen) {
+            if (library.equals(c.implementation().library())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The vendor libraries used, for example {@code "cuBLAS"}, or {@code "none"}. */

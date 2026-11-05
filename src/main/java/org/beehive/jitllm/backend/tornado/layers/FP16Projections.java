@@ -26,9 +26,32 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 // @formatter:off
 /**
- * The projections of a tensor-core batched prefill as FP16 GEMMs over one buffer per GEMM: each
- * weight decoded (Q8_0) or copied (F16) into it after the one before, then one GEMM over all of
- * them. Copying is what lets the F16 Q, K and V, or gate and up, go through cuBLAS as one call.
+ * The projections of a tensor-core batched prefill as FP16 GEMMs over one contiguous buffer per
+ * GEMM: each weight decoded (Q8_0) or copied (F16) into it after the one before, then one GEMM over
+ * all of them. cuBLAS multiplies one matrix per call, and this buffer is what lets the F16 Q, K and
+ * V, or gate and up, go through it as one call:
+ *
+ * <pre>
+ *   Model weights: 3 arrays               Contiguous buffer: 1 array
+ *
+ *   wq  +------------+                    +------------+  row 0
+ *       | qDim rows  |                    | wq rows    |
+ *       +------------+                    +------------+  row qDim
+ *                                         | wk rows    |
+ *   wk  +------------+                    +------------+  row qDim + kvDim
+ *       | kvDim rows |                    | wv rows    |
+ *       +------------+                    +------------+  row qDim + 2 * kvDim
+ *
+ *   wv  +------------+
+ *       | kvDim rows |
+ *       +------------+
+ *
+ *   One GEMM over the buffer fills each batch row with all three results, side by side:
+ *
+ *       +-------------+-------------+-------------+
+ *       | q (qDim)    | k (kvDim)   | v (kvDim)   |
+ *       +-------------+-------------+-------------+
+ * </pre>
  *
  * <p>The Q8_0 GEMM decodes every weight again for every 128-row tile of the batch, inside its inner
  * loop. Decoding once per chunk costs one pass over the weights and runs the GEMM at the FP16 rate.
@@ -40,8 +63,8 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * depth.
  *
  * <p>When the decoded weights of the whole model fit in {@link #RESIDENT_BYTES}, each projection
- * keeps its own FP16 copy instead, decoded on the first chunk only: a small model's decode costs a
- * sixth of its prefill, and its FP16 weights are a few gigabytes.
+ * keeps its own contiguous FP16 copy instead, decoded on the first chunk only: a small model's
+ * decode costs a sixth of its prefill, and its FP16 weights are a few gigabytes.
  */
 // @formatter:on
 public final class FP16Projections {
@@ -88,7 +111,7 @@ public final class FP16Projections {
 
     private final KernelContext context;
     private final WeightPrepacking prepacking;
-    private final HalfFloatArray scratch;
+    private final HalfFloatArray contiguousScratch;
     private final SplitKGemm gemm;
     private final Map<String, Integer> decodeTasks = new LinkedHashMap<>();
     private final java.util.List<String> markTasks = new java.util.ArrayList<>();
@@ -118,13 +141,13 @@ public final class FP16Projections {
         // One flag per resident projection, and a last one never set for the per-chunk decodes.
         this.decoded = new IntArray(projectionCalls + 1);
         this.neverDecoded = projectionCalls;
-        this.scratch = new HalfFloatArray(resident ? 1 : Math.toIntExact(widest));
+        this.contiguousScratch = new HalfFloatArray(resident ? 1 : Math.toIntExact(widest));
         this.gemm = new SplitKGemm(context, rows, widestSplit, nativeGemm);
     }
 
     /** The buffers, which every layer graph transfers or consumes with its intermediates. */
     public Object[] buffers() {
-        return new Object[] {scratch, gemm.partial(), decoded};
+        return new Object[] {contiguousScratch, gemm.partial(), decoded};
     }
 
     // @formatter:off
@@ -143,7 +166,7 @@ public final class FP16Projections {
             int m,
             int k,
             TornadoTensor... ws) {
-        HalfFloatArray b = scratch;
+        HalfFloatArray b = contiguousScratch;
         int flag = 0;
         if (resident) {
             long total = 0;
