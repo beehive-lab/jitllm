@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.llama;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -21,6 +22,7 @@ import org.beehive.jitllm.backend.tornado.ops.Region;
 import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
 import org.beehive.jitllm.backend.tornado.ops.jit.LayerKernels;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxAttention;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxMatMul;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
@@ -76,6 +78,9 @@ public class LlamaQ4_0LayersBatchPrefill
     /** Each layer's operations before and after attention. */
     private final List<LlamaPrefillRegions.Whole> regions;
 
+    /** Each layer's attention, between its regions before and after attention. */
+    private final List<Region> attention;
+
     /** Runs those operations: on MLX where it runs, otherwise on the JIT kernels. */
     private final WorkPlan plan;
 
@@ -124,10 +129,15 @@ public class LlamaQ4_0LayersBatchPrefill
                         batchSize,
                         false,
                         (role, layer) -> weights.tensor(role, layer).dataType());
-        List<Region> all = LlamaPrefillRegions.allWhole(regions);
+        this.attention = LlamaPrefillRegions.attention(config, batchSize, false);
+        List<Region> all = new ArrayList<>(LlamaPrefillRegions.allWhole(regions));
+        all.addAll(attention);
         List<Implementation> candidates =
                 mlxProjections != null
-                        ? List.of(new MlxMatMul(mlxProjections), new LayerKernels(this))
+                        ? List.of(
+                                new MlxMatMul(mlxProjections),
+                                new MlxAttention(mlxAttention),
+                                new LayerKernels(this))
                         : List.of(new LayerKernels(this));
         this.plan =
                 WorkPlan.of(
@@ -295,9 +305,137 @@ public class LlamaQ4_0LayersBatchPrefill
         }
 
         // Overwrites wrapXbBatch with attention output
+        plan.emit(layer, attention.get(layerIndex), operands, state.workspace.weightBindings);
+
+        // Output projection, residual add, RMS norm, gate|up, SwiGLU, down, residual add.
+        plan.emit(
+                layer,
+                regions.get(layerIndex).afterAttention(),
+                operands,
+                state.workspace.weightBindings);
+
+        layer.persistOnDevice(state.workspace.wrapXBatch, keyCache(), valueCache());
         if (mlxAttention != null) {
-            mlxAttention.attention(layer, "batch_attention", layerIndex);
-        } else if (useFp16KVCache()) {
+            mlxAttention.persist(layer);
+        }
+        if (mlxProjections != null) {
+            mlxProjections.persist(layer);
+        }
+
+        return layer;
+    }
+
+    // @formatter:on
+
+    /** RMS norm, then q, k and v. */
+    @Override
+    public void attentionInput(TaskGraph layer, int layerIndex) {
+        int dim = config.dim();
+        int kvDim = config.kvDim();
+        layer.task(
+                "batch_attn_rms",
+                TransformerBatchPrefillKernels::batchedRmsReduce,
+                context,
+                state.workspace.wrapXBatch,
+                state.workspace.attnScaleBatch,
+                dim,
+                config.rmsNormEps());
+
+        // Writes FP32 normalized xb into wrapXbBatch (reused later by flash attention)
+        layer.task(
+                "batch_attn_rms_apply",
+                TransformerBatchPrefillKernels::batchedRmsApplyFP32,
+                context,
+                state.workspace.wrapXbBatch,
+                state.workspace.wrapXBatch,
+                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                state.workspace.attnScaleBatch,
+                dim);
+
+        layer.task(
+                "batch_qkv",
+                TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ4_0,
+                context,
+                state.workspace.wrapXbBatch,
+                state.workspace.wrapQBatch,
+                state.workspace.wrapKBatch,
+                state.workspace.wrapVBatch,
+                weights.wqLayered[layerIndex].asByteArray(),
+                weights.wkLayered[layerIndex].asByteArray(),
+                weights.wvLayered[layerIndex].asByteArray(),
+                dim,
+                dim,
+                kvDim,
+                batchSize);
+    }
+
+    /** The output projection with the residual add. */
+    @Override
+    public void attentionOutput(TaskGraph layer, int layerIndex) {
+        int dim = config.dim();
+        layer.task(
+                "batch_attn_out",
+                TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_0WithResidual,
+                context,
+                state.workspace.wrapXbBatch,
+                state.workspace.wrapXBatch,
+                weights.woLayered[layerIndex].asByteArray(),
+                dim,
+                dim,
+                batchSize);
+    }
+
+    /** RMS norm, gate|up and SwiGLU. */
+    @Override
+    public void feedForwardUp(TaskGraph layer, int layerIndex) {
+        int dim = config.dim();
+        int hidDim = config.hiddenDim();
+        layer.task(
+                "batch_ffn_rms",
+                TransformerBatchPrefillKernels::batchedFFNRmsReduce,
+                context,
+                state.workspace.wrapXBatch,
+                state.workspace.ffnScaleBatch,
+                dim,
+                config.rmsNormEps());
+
+        layer.task(
+                "batch_ffn_gate_up",
+                TransformerBatchPrefillSimdgroupKernels::batchedGemmRmsNormFFNGateUpQ4_0,
+                context,
+                state.workspace.wrapXBatch,
+                state.workspace.wrapHbBatch,
+                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                state.workspace.ffnScaleBatch,
+                weights.w1Layered[layerIndex].asByteArray(),
+                weights.w3Layered[layerIndex].asByteArray(),
+                dim,
+                hidDim,
+                batchSize);
+    }
+
+    /** The down projection with the residual add. */
+    @Override
+    public void feedForwardDown(TaskGraph layer, int layerIndex) {
+        int dim = config.dim();
+        int hidDim = config.hiddenDim();
+        layer.task(
+                "batch_ffn_down",
+                TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_0WithResidual,
+                context,
+                state.workspace.wrapHbBatch,
+                state.workspace.wrapXBatch,
+                weights.w2Layered[layerIndex].asByteArray(),
+                hidDim,
+                dim,
+                batchSize);
+    }
+
+    @Override
+    public void attention(TaskGraph layer, int layerIndex) {
+        int dim = config.dim();
+        int kvDim = config.kvDim();
+        if (useFp16KVCache()) {
             if (simdgroupAttention()) {
                 if (headSize() == 64) {
                     layer.task(
@@ -464,129 +602,6 @@ public class LlamaQ4_0LayersBatchPrefill
                         dim);
             }
         }
-
-        // Output projection, residual add, RMS norm, gate|up, SwiGLU, down, residual add.
-        plan.emit(
-                layer,
-                regions.get(layerIndex).afterAttention(),
-                operands,
-                state.workspace.weightBindings);
-
-        layer.persistOnDevice(state.workspace.wrapXBatch, keyCache(), valueCache());
-        if (mlxAttention != null) {
-            mlxAttention.persist(layer);
-        }
-        if (mlxProjections != null) {
-            mlxProjections.persist(layer);
-        }
-
-        return layer;
-    }
-
-    // @formatter:on
-
-    /** RMS norm, then q, k and v. */
-    @Override
-    public void attentionInput(TaskGraph layer, int layerIndex) {
-        int dim = config.dim();
-        int kvDim = config.kvDim();
-        layer.task(
-                "batch_attn_rms",
-                TransformerBatchPrefillKernels::batchedRmsReduce,
-                context,
-                state.workspace.wrapXBatch,
-                state.workspace.attnScaleBatch,
-                dim,
-                config.rmsNormEps());
-
-        // Writes FP32 normalized xb into wrapXbBatch (reused later by flash attention)
-        layer.task(
-                "batch_attn_rms_apply",
-                TransformerBatchPrefillKernels::batchedRmsApplyFP32,
-                context,
-                state.workspace.wrapXbBatch,
-                state.workspace.wrapXBatch,
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                state.workspace.attnScaleBatch,
-                dim);
-
-        layer.task(
-                "batch_qkv",
-                TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ4_0,
-                context,
-                state.workspace.wrapXbBatch,
-                state.workspace.wrapQBatch,
-                state.workspace.wrapKBatch,
-                state.workspace.wrapVBatch,
-                weights.wqLayered[layerIndex].asByteArray(),
-                weights.wkLayered[layerIndex].asByteArray(),
-                weights.wvLayered[layerIndex].asByteArray(),
-                dim,
-                dim,
-                kvDim,
-                batchSize);
-    }
-
-    /** The output projection with the residual add. */
-    @Override
-    public void attentionOutput(TaskGraph layer, int layerIndex) {
-        int dim = config.dim();
-        layer.task(
-                "batch_attn_out",
-                TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_0WithResidual,
-                context,
-                state.workspace.wrapXbBatch,
-                state.workspace.wrapXBatch,
-                weights.woLayered[layerIndex].asByteArray(),
-                dim,
-                dim,
-                batchSize);
-    }
-
-    /** RMS norm, gate|up and SwiGLU. */
-    @Override
-    public void feedForwardUp(TaskGraph layer, int layerIndex) {
-        int dim = config.dim();
-        int hidDim = config.hiddenDim();
-        layer.task(
-                "batch_ffn_rms",
-                TransformerBatchPrefillKernels::batchedFFNRmsReduce,
-                context,
-                state.workspace.wrapXBatch,
-                state.workspace.ffnScaleBatch,
-                dim,
-                config.rmsNormEps());
-
-        layer.task(
-                "batch_ffn_gate_up",
-                TransformerBatchPrefillSimdgroupKernels::batchedGemmRmsNormFFNGateUpQ4_0,
-                context,
-                state.workspace.wrapXBatch,
-                state.workspace.wrapHbBatch,
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                state.workspace.ffnScaleBatch,
-                weights.w1Layered[layerIndex].asByteArray(),
-                weights.w3Layered[layerIndex].asByteArray(),
-                dim,
-                hidDim,
-                batchSize);
-    }
-
-    /** The down projection with the residual add. */
-    @Override
-    public void feedForwardDown(TaskGraph layer, int layerIndex) {
-        int dim = config.dim();
-        int hidDim = config.hiddenDim();
-        layer.task(
-                "batch_ffn_down",
-                TransformerBatchPrefillSimdgroupKernels::batchedGemmQ4_0WithResidual,
-                context,
-                state.workspace.wrapHbBatch,
-                state.workspace.wrapXBatch,
-                weights.w2Layered[layerIndex].asByteArray(),
-                hidDim,
-                dim,
-                batchSize);
     }
 
     public void updateGridScheduler(GridScheduler scheduler) {
@@ -611,9 +626,7 @@ public class LlamaQ4_0LayersBatchPrefill
         for (int i = 0; i < config.numberOfLayers(); i++) {
             String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
-            if (mlxAttention != null) {
-                mlxAttention.addGrids(scheduler, p, "batch_attention");
-            } else {
+            if (!plan.runs(attention.get(i), "MLX")) {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }
         }

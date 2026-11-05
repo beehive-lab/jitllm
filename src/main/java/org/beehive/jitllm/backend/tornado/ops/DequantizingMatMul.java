@@ -25,12 +25,12 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 /**
  * The batched prefill on a tensor-core GPU for quantized weights decoded one projection at a time:
- * each weight of a projection is decoded into one FP16 scratch, end to end, then one GEMM ({@link
- * SplitKGemm}) multiplies the scratch. The weights stay quantized between chunks, at the cost of a
- * scratch the size of the widest projection and a decode pass per projection per chunk. The
- * subclass picks the GEMM: cuBLAS or the JIT one.
+ * each weight of a projection is decoded into one contiguous FP16 scratch, end to end, then one
+ * GEMM ({@link SplitKGemm}) multiplies the scratch. The weights stay quantized between chunks, at
+ * the cost of a scratch the size of the widest projection and a decode pass per projection per
+ * chunk. The subclass picks the GEMM: cuBLAS or the JIT one.
  *
- * <p>Example: Llama Q4_0 and Devstral Q4_K_M on CUDA. Q, K and V are decoded side by side ({@code
+ * <p>Example: Llama Q4_0 and Devstral Q4_K_M on CUDA. Q, K and V are decoded contiguously ({@code
  * qDecode}, {@code kDecode}, {@code vDecode}), then {@code qkvProj} writes the packed rows.
  */
 public abstract class DequantizingMatMul implements Implementation {
@@ -65,7 +65,7 @@ public abstract class DequantizingMatMul implements Implementation {
     @Override
     public BatchPrefillWorkspace needs(List<Step> steps, Target target) {
         Sizes s = Sizes.of(steps);
-        return BatchPrefillWorkspace.fixed(
+        return BatchPrefillWorkspace.withoutResidencyChoice(
                 SplitKGemm.bytes(s.rows, s.widestSplit, nativeGemm()) + 2L * s.widest);
     }
 
@@ -101,7 +101,7 @@ public abstract class DequantizingMatMul implements Implementation {
 
         private final WeightPrepacking prepacking;
         private final SplitKGemm splitK;
-        private final HalfFloatArray scratch;
+        private final HalfFloatArray contiguousScratch;
 
         /** The decode tasks added, by graph-qualified name, with their element counts. */
         private final Map<String, Integer> decodes = new LinkedHashMap<>();
@@ -110,16 +110,16 @@ public abstract class DequantizingMatMul implements Implementation {
                 KernelContext context,
                 WeightPrepacking prepacking,
                 SplitKGemm splitK,
-                HalfFloatArray scratch) {
+                HalfFloatArray contiguousScratch) {
             super(context);
             this.prepacking = prepacking;
             this.splitK = splitK;
-            this.scratch = scratch;
+            this.contiguousScratch = contiguousScratch;
         }
 
         @Override
         public Object[] buffers() {
-            return new Object[] {splitK.partial(), scratch};
+            return new Object[] {splitK.partial(), contiguousScratch};
         }
 
         @Override
@@ -142,7 +142,7 @@ public abstract class DequantizingMatMul implements Implementation {
                     graph,
                     task,
                     (HalfFloatArray) operands.activation(first.input()),
-                    scratch,
+                    contiguousScratch,
                     (FloatArray) operands.activation(first.output()),
                     first.batchSize(),
                     step.outputWidth(),
@@ -159,7 +159,7 @@ public abstract class DequantizingMatMul implements Implementation {
                         TransformerComputeKernelsQ4_0::dequantizeQ4_0PackedToFP16,
                         context,
                         w.asByteArray(),
-                        scratch,
+                        contiguousScratch,
                         at,
                         n,
                         Math.toIntExact(w.shape().dimension(0)));
@@ -172,7 +172,7 @@ public abstract class DequantizingMatMul implements Implementation {
                                 TransformerComputeKernelsQ4_0::dequantizeQ4_0ToFP16,
                                 context,
                                 w.asByteArray(),
-                                scratch,
+                                contiguousScratch,
                                 at,
                                 n);
                 case Q4_1 ->
@@ -181,7 +181,7 @@ public abstract class DequantizingMatMul implements Implementation {
                                 TransformerComputeKernelsQ4_0::dequantizeQ4_1ToFP16,
                                 context,
                                 w.asByteArray(),
-                                scratch,
+                                contiguousScratch,
                                 at,
                                 n);
                 case Q4_K ->
@@ -190,7 +190,7 @@ public abstract class DequantizingMatMul implements Implementation {
                                 TransformerComputeKernelsQ4_K::dequantizeQ4_KToFP16,
                                 context,
                                 w.asByteArray(),
-                                scratch,
+                                contiguousScratch,
                                 at,
                                 n);
                 case Q6_K ->
@@ -199,7 +199,7 @@ public abstract class DequantizingMatMul implements Implementation {
                                 TransformerComputeKernelsQ6_K::dequantizeQ6_KToFP16,
                                 context,
                                 w.asByteArray(),
-                                scratch,
+                                contiguousScratch,
                                 at,
                                 n);
                 default ->

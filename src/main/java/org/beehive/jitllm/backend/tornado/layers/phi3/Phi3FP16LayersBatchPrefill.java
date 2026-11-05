@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.phi3;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -21,6 +22,7 @@ import org.beehive.jitllm.backend.tornado.ops.Region;
 import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
 import org.beehive.jitllm.backend.tornado.ops.jit.LayerKernels;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxAttention;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxMatMul;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -79,6 +81,9 @@ public class Phi3FP16LayersBatchPrefill
     /** Each layer's operations before and after attention. */
     private final List<LlamaPrefillRegions.Whole> regions;
 
+    /** Each layer's attention, between its regions before and after attention. */
+    private final List<Region> attention;
+
     /** Runs those operations: on MLX where it runs, otherwise on the JIT kernels. */
     private final WorkPlan plan;
 
@@ -126,10 +131,15 @@ public class Phi3FP16LayersBatchPrefill
                         batchSize,
                         true,
                         (role, layer) -> weights.tensor(role, layer).dataType());
-        List<Region> all = LlamaPrefillRegions.allWhole(regions);
+        this.attention = LlamaPrefillRegions.attention(config, batchSize, true);
+        List<Region> all = new ArrayList<>(LlamaPrefillRegions.allWhole(regions));
+        all.addAll(attention);
         List<Implementation> candidates =
                 mlxProjections != null
-                        ? List.of(new MlxMatMul(mlxProjections), new LayerKernels(this))
+                        ? List.of(
+                                new MlxMatMul(mlxProjections),
+                                new MlxAttention(mlxAttention),
+                                new LayerKernels(this))
                         : List.of(new LayerKernels(this));
         this.plan =
                 WorkPlan.of(
@@ -268,11 +278,7 @@ public class Phi3FP16LayersBatchPrefill
                     state.kvBlockStride,
                     dim);
         }
-        if (mlxAttention != null) {
-            mlxAttention.attention(layer, "batch_attention", layerIndex);
-        } else {
-            addAttention(layer, layerIndex);
-        }
+        plan.emit(layer, attention.get(layerIndex), operands, state.workspace.weightBindings);
         // Output projection, residual add, RMS norm, gate|up, SwiGLU, down, residual add.
         plan.emit(
                 layer,
@@ -522,6 +528,11 @@ public class Phi3FP16LayersBatchPrefill
                 batchSize);
     }
 
+    @Override
+    public void attention(TaskGraph layer, int layerIndex) {
+        addAttention(layer, layerIndex);
+    }
+
     public void updateGridScheduler(GridScheduler scheduler) {
         int dim = config.dim();
         int ropeGlobal = batchSize * (dim / 2);
@@ -539,9 +550,7 @@ public class Phi3FP16LayersBatchPrefill
         for (int i = 0; i < config.numberOfLayers(); i++) {
             String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
-            if (mlxAttention != null) {
-                mlxAttention.addGrids(scheduler, p, "batch_attention");
-            } else {
+            if (!plan.runs(attention.get(i), "MLX")) {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }
         }

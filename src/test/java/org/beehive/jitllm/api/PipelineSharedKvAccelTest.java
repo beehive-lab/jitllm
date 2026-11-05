@@ -44,8 +44,15 @@ public class PipelineSharedKvAccelTest {
 
     @Test
     public void sessionsOfASharedPoolMatchAPrivateCacheOnTwoStages() throws Exception {
-        // A later stage of Llama Q4_0 batched prefill runs its projections through cuBLAS.
+        // A later stage of Llama Q4_0 batched prefill, its projections on cuBLAS.
         sessionsMatch("0:0,0:0", true);
+    }
+
+    @Test
+    public void sessionsOfASharedPoolMatchAPrivateCacheOnTwoStagesWithoutNativeLibraries()
+            throws Exception {
+        // The same stages on the JIT tensor-core GEMM.
+        sessionsMatch("0:0,0:0", false);
     }
 
     private static void sessionsMatch(String devices, boolean nativeLibraries) throws Exception {

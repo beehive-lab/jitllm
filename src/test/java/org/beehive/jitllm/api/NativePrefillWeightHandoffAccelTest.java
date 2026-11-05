@@ -6,6 +6,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
+import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
 import org.beehive.jitllm.golden.GoldenFixture;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
@@ -16,12 +17,12 @@ import org.junit.Test;
  * The native prefill path must not change what the model generates.
  *
  * <p>Turning it on replaces the batch-prefill {@code qkvProj} and {@code gateUpProj} MMA kernels
- * with single cuBLAS GEMMs over stacked {@code [q|k|v]} and {@code [gate|up]} weights. That leaves
- * {@code wq}, {@code wk}, {@code wv}, {@code w1} and {@code w3} as arguments to <b>no task</b> in
- * {@code batchPrefillLayer_<i>}. The decode layer graphs bind their weights from that graph, and
- * TornadoVM builds a graph out of its tasks' argument lists — so a weight the producer declares in
- * {@code transferToDevice} but hands to no task is never allocated there, never uploaded, and the
- * consumer binds a buffer nothing ever wrote. It reads zeros. Nothing throws.
+ * with single cuBLAS GEMMs over contiguous {@code [q|k|v]} and {@code [gate|up]} copies. That
+ * leaves {@code wq}, {@code wk}, {@code wv}, {@code w1} and {@code w3} as arguments to <b>no
+ * task</b> in {@code batchPrefillLayer_<i>}. The decode layer graphs bind their weights from that
+ * graph, and TornadoVM builds a graph out of its tasks' argument lists — so a weight the producer
+ * declares in {@code transferToDevice} but hands to no task is never allocated there, never
+ * uploaded, and the consumer binds a buffer nothing ever wrote. It reads zeros. Nothing throws.
  *
  * <p>That is not hypothetical. It is how this path failed twice:
  *
@@ -31,16 +32,17 @@ import org.junit.Test;
  *   <li><b>then QKV,</b> the same failure with three weights instead of two.
  * </ul>
  *
- * <p>Both are fixed by {@code Qwen3FP16FFNLayersDecode.weightsNotProvidedBySource}, which takes
- * ownership of exactly those five. This test is what proves it still does. Two things it
- * deliberately does <b>not</b> do, because both were tried and neither works:
+ * <p>Both are fixed by {@code Qwen3FP16LayersBatchPrefillMMA}, which records exactly those five as
+ * replaced ({@code WeightBindings.recordReplaced}), so the decode graphs upload them. This test is
+ * what proves it still does. Two things it deliberately does <b>not</b> do, because both were tried
+ * and neither works:
  *
  * <ul>
  *   <li>Inspect the source for weights that reach no task. The gate/up defect kept the JIT task in
  *       an {@code else} branch, so the reference was still there to find.
- *   <li>Compare total bytes copied to the device. The defect substituted 336 MiB of stacked weights
- *       for the 336 MiB of {@code w1}/{@code w3} it stopped uploading; the totals matched to within
- *       12 MiB.
+ *   <li>Compare total bytes copied to the device. The defect substituted 336 MiB of contiguous
+ *       copies for the 336 MiB of {@code w1}/{@code w3} it stopped uploading; the totals matched to
+ *       within 12 MiB.
  * </ul>
  *
  * <p>The two configurations run numerically different kernels, so this asserts token-level
@@ -91,12 +93,12 @@ public class NativePrefillWeightHandoffAccelTest {
                                             .fromSystemProperties(),
                                     true,
                                     PROBE_SHAPE),
-                    NativePrefillSupport.nativeProjections(ExecutionPolicy.fromSystemProperties()));
+                    Target.of(ExecutionPolicy.fromSystemProperties()).cublas());
             System.setProperty(NATIVE_PROPERTY, "false");
             assertFalse(
                     "the off-switch did not switch anything off, so both halves of this"
                             + " comparison would run the same path and prove nothing",
-                    NativePrefillSupport.nativeProjections(ExecutionPolicy.fromSystemProperties()));
+                    Target.of(ExecutionPolicy.fromSystemProperties()).cublas());
 
             String jit = generate(model, false);
             String nativePrefill = generate(model, true);
@@ -106,7 +108,7 @@ public class NativePrefillWeightHandoffAccelTest {
                     "the native prefill path changed what the model decodes; the usual cause is the"
                             + " batch-prefill graph no longer uploading wq/wk/wv/w1/w3, which the"
                             + " decode graphs consume from it — see"
-                            + " Qwen3FP16FFNLayersDecode.weightsNotProvidedBySource",
+                            + " WeightBindings.recordReplaced in Qwen3FP16LayersBatchPrefillMMA",
                     jit,
                     nativePrefill);
         } finally {

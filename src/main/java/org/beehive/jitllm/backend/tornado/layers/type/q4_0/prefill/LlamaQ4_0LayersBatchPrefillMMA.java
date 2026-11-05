@@ -11,14 +11,28 @@ import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import uk.ac.manchester.tornado.api.TaskGraph;
 
 /**
- * Llama's Q4_0 batched prefill on the tensor cores without native libraries: each Q4_0 projection
- * decoded into FP16 before its GEMM.
+ * Llama's Q4_0 batched prefill on the tensor cores: each Q4_0 projection decoded into FP16 before
+ * its GEMM, cuBLAS's under native libraries and the JIT one otherwise. Builds the whole model or
+ * one pipeline stage's layers.
  */
 public class LlamaQ4_0LayersBatchPrefillMMA extends LlamaFP16LayersBatchPrefillMMA {
 
     public LlamaQ4_0LayersBatchPrefillMMA(
             State state, LlamaTornadoWeights weights, LlamaConfiguration config, int batchSize) {
         super(state, weights, config, batchSize);
+    }
+
+    /**
+     * The layers {@code [firstLayer, endLayer)} only: one stage of a model split across devices.
+     */
+    public LlamaQ4_0LayersBatchPrefillMMA(
+            State state,
+            LlamaTornadoWeights weights,
+            LlamaConfiguration config,
+            int batchSize,
+            int firstLayer,
+            int endLayer) {
+        super(state, weights, config, batchSize, firstLayer, endLayer);
     }
 
     /**
