@@ -14,8 +14,16 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgro
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
-import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.ops.LayerProjections;
+import org.beehive.jitllm.backend.tornado.ops.Operands;
+import org.beehive.jitllm.backend.tornado.ops.Region;
+import org.beehive.jitllm.backend.tornado.ops.Step;
+import org.beehive.jitllm.backend.tornado.ops.Target;
+import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
+import org.beehive.jitllm.backend.tornado.ops.jit.JitLayerProjections;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.CublasLayerProjections;
 import org.beehive.jitllm.backend.tornado.plan.FusedOperandSupport;
+import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -24,6 +32,7 @@ import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.Qwen35State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
 import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.program.op.MatMul;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -55,11 +64,12 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * batched plan holds both families at once, and the decode ones consume what these produced.
  */
 // @formatter:on
-public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTaskGraphs {
+public class Qwen35BatchPrefillLayers
+        implements BatchPrefillTransformerLayerTaskGraphs, LayerProjections.Tasks {
 
     @Override
     public String describeNativeLibraries() {
-        return NativePrefillSupport.nativeProjections(state.executionPolicy()) ? "cuBLAS" : "none";
+        return plan.libraries();
     }
 
     @Override
@@ -67,7 +77,8 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         if (q8DirectGemms.isEmpty()
                 && dequantTasks.isEmpty()
                 && mmaTasks.isEmpty()
-                && q8DequantTasks.isEmpty()) {
+                && q8DequantTasks.isEmpty()
+                && f16Gemms == 0) {
             return "JIT kernels (no tensor-core MMA at width " + batchSize + ")";
         }
         return "tensor-core projections: "
@@ -77,7 +88,8 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 + " dequantized FP16 / "
                 + mmaTasks.size()
                 + " direct FP16"
-                + (q8DequantTasks.isEmpty() ? "" : " / " + q8DequantTasks.size() + " cuBLAS TF32");
+                + (q8DequantTasks.isEmpty() ? "" : " / " + q8DequantTasks.size() + " cuBLAS TF32")
+                + (f16Gemms == 0 ? "" : " / " + f16Gemms + " F16 in place");
     }
 
     // @formatter:off
@@ -127,6 +139,17 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     private final java.util.Map<String, Integer> q8DequantTasks = new java.util.LinkedHashMap<>();
 
     private final KernelContext context = new KernelContext();
+
+    /** Every projection a layer can have, and each one's region by qualified task name. */
+    private final List<Qwen35PrefillRegions.Projection> projections;
+
+    private final java.util.Map<String, Region> projectionRegions = new java.util.HashMap<>();
+
+    /** Which of cuBLAS and the JIT kernels runs each projection. */
+    private final WorkPlan plan;
+
+    /** The plan's record of the weights its steps read, which this class does not need. */
+    private final WeightBindings bindings = new WeightBindings();
 
     private final List<ImmutableTaskGraph> graphs;
     private String lastLayerTaskGraphID;
@@ -633,9 +656,114 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 && Qwen35Configuration.dequantGemmWidth(batchSize)
                 && outputs % GEMM_TILE == 0
                 && inputs % 256 == 0
-                && (xBatch == state.workspace.wrapNormedBatch
-                        || (long) batchSize * inputs
-                                <= state.workspace.wrapHbFP16BatchMMA.getSize());
+                && fp16Readable(xBatch, inputs);
+    }
+
+    /**
+     * Whether {@link #fp16Input} can give {@code x} of {@code inputs} columns in FP16: the normed
+     * chunk has its copy, any other input fits {@code wrapHbFP16BatchMMA}.
+     */
+    private boolean fp16Readable(FloatArray xBatch, int inputs) {
+        return xBatch == state.workspace.wrapNormedBatch
+                || (long) batchSize * inputs <= state.workspace.wrapHbFP16BatchMMA.getSize();
+    }
+
+    /**
+     * {@code x} in FP16 for a tensor-core projection: the normed chunk's copy, or converted into
+     * {@code wrapHbFP16BatchMMA}, which nothing reads between here and the GEMM.
+     */
+    private HalfFloatArray fp16Input(
+            TaskGraph graph, int layer, String task, FloatArray xBatch, int inputs) {
+        if (xBatch == state.workspace.wrapNormedBatch) {
+            return state.workspace.wrapNormedFP16Batch;
+        }
+        // Named as the Q4_0 paths name their conversion: attn_output_fp16, ffn_down_fp16.
+        String convert = task.replace("_proj", "_fp16");
+        fp16Converts.put(GraphNames.batchLayer(layer) + "." + convert, batchSize * inputs);
+        graph.task(
+                convert,
+                Qwen35MMAKernels::convertToFP16,
+                context,
+                xBatch,
+                state.workspace.wrapHbFP16BatchMMA);
+        return state.workspace.wrapHbFP16BatchMMA;
+    }
+
+    /**
+     * Whether the F16 projection {@code w} of {@code outputs} over {@code inputs} runs on the
+     * tensor cores, reading the weights where they are: on cuBLAS at any shape, on the JIT {@code
+     * gemmMMA} where the chunk and the outputs fill its 128 x 128 tiles. Example: Qwen3.5-0.8B F16,
+     * whose projections otherwise run the scalar tiled FP16 GEMM; its 16-output ssm_alpha and
+     * ssm_beta take cuBLAS only.
+     */
+    private boolean f16Gemm(
+            TornadoTensor w, FloatArray xBatch, int outputs, int inputs, boolean cublas) {
+        if (w.dataType() != DataType.F16
+                || !TENSOR_CORES
+                || !TensorCoreSupport.isTensorCoreCapableBackend()
+                || !fp16Readable(xBatch, inputs)) {
+            return false;
+        }
+        return cublas
+                || (mmaEligible(inputs, outputs)
+                        && Qwen35Configuration.dequantGemmWidth(batchSize)
+                        && outputs % GEMM_TILE == 0
+                        && inputs % 16 == 0);
+    }
+
+    /**
+     * {@code out (+)= w . x} for an F16 {@code w} on the tensor cores: {@code x} in FP16, then one
+     * GEMM over the weights where they are. cuBLAS adds into {@code out} itself; the JIT {@code
+     * gemmMMA} stores, so a residual projection, which adds into {@code wrapXBatch}, adds in a pass
+     * of its own.
+     */
+    private void f16Projection(
+            TaskGraph graph,
+            int layer,
+            String task,
+            TornadoTensor w,
+            FloatArray xBatch,
+            FloatArray outBatch,
+            int inputs,
+            int outputs,
+            boolean residual,
+            boolean cublas) {
+        HalfFloatArray a = fp16Input(graph, layer, task, xBatch, inputs);
+        HalfFloatArray b = w.asHalfFloatArray();
+        f16Gemms++;
+        if (cublas) {
+            graph.libraryTask(
+                    task,
+                    uk.ac.manchester.tornado.cublas.CuBlas::cublasGemmExFP16FP32,
+                    1,
+                    0,
+                    outputs,
+                    batchSize,
+                    inputs,
+                    1.0f,
+                    b,
+                    inputs,
+                    a,
+                    inputs,
+                    residual ? 1.0f : 0.0f,
+                    outBatch,
+                    outputs);
+            return;
+        }
+        gemmTasks.put(GraphNames.batchLayer(layer) + "." + task, outputs);
+        graph.task(
+                task,
+                TransformerBatchPrefillKernels::gemmMMA,
+                context,
+                a,
+                b,
+                residual ? state.workspace.wrapFFNDownBatch : outBatch,
+                batchSize,
+                outputs,
+                inputs);
+        if (residual) {
+            residualPass(graph, layer, task.replace("_proj", "_residual"));
+        }
     }
 
     /**
@@ -655,14 +783,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             int outputs,
             boolean residual) {
         String qualified = GraphNames.batchLayer(layer) + "." + task;
-        HalfFloatArray a = state.workspace.wrapNormedFP16Batch;
-        if (xBatch != state.workspace.wrapNormedBatch) {
-            // Named as the Q4_0 paths name their conversion: attn_output_fp16, ffn_down_fp16.
-            String convert = task.replace("_proj", "_fp16");
-            a = state.workspace.wrapHbFP16BatchMMA;
-            fp16Converts.put(GraphNames.batchLayer(layer) + "." + convert, batchSize * inputs);
-            graph.task(convert, Qwen35MMAKernels::convertToFP16, context, xBatch, a);
-        }
+        HalfFloatArray a = fp16Input(graph, layer, task, xBatch, inputs);
         int elements = outputs * inputs;
         dequantTasks.put(
                 qualified + "_dequant", Math.min(elements, Qwen35MMAKernels.TILED_DECODE_LANES));
@@ -694,6 +815,9 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 residual ? Epilogue.RESIDUAL : Epilogue.STORE);
     }
 
+    /** The F16 projections on the tensor cores, for {@link #describeDispatch}. */
+    private int f16Gemms;
+
     /** The FP32 inputs converted to FP16 for a K-quant pair, with their element counts. */
     private final java.util.Map<String, Integer> fp16Converts = new java.util.LinkedHashMap<>();
 
@@ -712,30 +836,12 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         if (state.workspace.wrapDequantScratchFP16 == null) {
             return;
         }
-        int dim = config.dim();
-        Object[][] projections = {
-            {weights.wqLayered, config.queryGateDim(), dim},
-            {weights.wkLayered, config.kvDim(), dim},
-            {weights.wvLayered, config.kvDim(), dim},
-            {weights.woLayered, dim, config.attentionOutputInputDim()},
-            {weights.w1Layered, config.hiddenDim(), dim},
-            {weights.w3Layered, config.hiddenDim(), dim},
-            {weights.w2Layered, dim, config.hiddenDim()},
-            {weights.ssmQkv, config.deltaNetConvDim(), dim},
-            {weights.ssmGate, config.deltaNetValueDim(), dim},
-            {weights.ssmOut, dim, config.deltaNetValueDim()}
-        };
         long halves = 0;
-        for (Object[] projection : projections) {
-            TornadoTensor[] tensors = (TornadoTensor[]) projection[0];
-            int outputs = (Integer) projection[1];
-            int inputs = (Integer) projection[2];
+        for (Qwen35PrefillRegions.Projection p : projections) {
             for (int layer = firstLayer; layer < endLayer; layer++) {
-                if (tensors != null
-                        && layer < tensors.length
-                        && tensors[layer] != null
-                        && kQuantPair(tensors[layer], null, outputs, inputs)) {
-                    halves = Math.max(halves, (long) outputs * inputs);
+                TornadoTensor tensor = p.tensor(layer);
+                if (tensor != null && kQuantPair(tensor, null, p.outputs(), p.inputs())) {
+                    halves = Math.max(halves, (long) p.outputs() * p.inputs());
                 }
             }
         }
@@ -811,6 +917,24 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         this.batchSize = batchSize;
         this.firstLayer = firstLayer;
         this.endLayer = endLayer;
+        this.projections = Qwen35PrefillRegions.projections(config, weights);
+        List<Region> regions = new ArrayList<>();
+        for (int layer = firstLayer; layer < endLayer; layer++) {
+            for (Qwen35PrefillRegions.Projection p : projections) {
+                if (p.tensor(layer) != null) {
+                    Region region = Qwen35PrefillRegions.region(p, layer, batchSize);
+                    regions.add(region);
+                    projectionRegions.put(GraphNames.batchLayer(layer) + "." + p.task(), region);
+                }
+            }
+        }
+        this.plan =
+                WorkPlan.of(
+                        regions,
+                        List.of(new CublasLayerProjections(this), new JitLayerProjections(this)),
+                        Target.of(state.executionPolicy()),
+                        context,
+                        state.workspace.prepacking);
         allocateQ8Scratch();
         allocateKQuantScratch();
         if (feedForward != null && !int8Quantizes(config.dim())) {
@@ -831,55 +955,38 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     // @formatter:off
     /**
      * The scratch buffers this range's Q8_0 projections need: the partial sums of the int8 GEMMs
-     * split along K ({@link #gemmSplits}), sized for the largest; and, when native libraries are
-     * on, the FP32 scratch for the projections that do not tile for the int8 GEMM, sized for the
-     * largest of them. Every projection uses each in turn, so one of each is enough. Without native
-     * libraries the untiled projections take the warp kernel and need no scratch.
+     * split along K ({@link #gemmSplits}), sized for the largest; and the FP32 scratch for the
+     * projections the plan runs on cuBLAS TF32 (those the int8 GEMM does not tile), sized for the
+     * largest of them. Every projection uses each in turn, so one of each is enough. On the JIT
+     * kernels the untiled projections take the warp kernel and need no scratch.
      */
     // @formatter:on
     private void allocateQ8Scratch() {
-        boolean nativeLibraries = NativePrefillSupport.nativeProjections(state.executionPolicy());
-        int dim = config.dim();
-        // Each projection's tensors with its (outputs, inputs).
-        Object[][] projections = {
-            {weights.wqLayered, config.queryGateDim(), dim},
-            {weights.wkLayered, config.kvDim(), dim},
-            {weights.wvLayered, config.kvDim(), dim},
-            {weights.woLayered, dim, config.attentionOutputInputDim()},
-            {weights.w1Layered, config.hiddenDim(), dim},
-            {weights.w3Layered, config.hiddenDim(), dim},
-            {weights.w2Layered, dim, config.hiddenDim()},
-            {weights.ssmQkv, config.deltaNetConvDim(), dim},
-            {weights.ssmGate, config.deltaNetValueDim(), dim},
-            {weights.ssmAlpha, config.numberOfValueHeads(), dim},
-            {weights.ssmBeta, config.numberOfValueHeads(), dim},
-            {weights.ssmOut, dim, config.deltaNetValueDim()}
-        };
         long widest = 0;
         long partials = 0;
-        for (Object[] projection : projections) {
-            TornadoTensor[] tensors = (TornadoTensor[]) projection[0];
-            int outputs = (Integer) projection[1];
-            int inputs = (Integer) projection[2];
+        for (Qwen35PrefillRegions.Projection p : projections) {
+            int outputs = p.outputs();
+            int inputs = p.inputs();
             for (int layer = firstLayer; layer < endLayer; layer++) {
-                if (tensors != null
-                        && layer < tensors.length
-                        && tensors[layer] != null
-                        && (tensors[layer].dataType() == DataType.Q8_0
-                                || tensors[layer].dataType() == DataType.Q4_0)) {
+                TornadoTensor tensor = p.tensor(layer);
+                if (tensor != null
+                        && (tensor.dataType() == DataType.Q8_0
+                                || tensor.dataType() == DataType.Q4_0)) {
                     boolean eligible =
-                            tensors[layer].dataType() == DataType.Q8_0
+                            tensor.dataType() == DataType.Q8_0
                                     ? q8Int8Eligible("", outputs, inputs)
                                     : int8Eligible(outputs, inputs)
-                                            || (state.workspace.prepacking.prepackedQ4(
-                                                            tensors[layer])
+                                            || (state.workspace.prepacking.prepackedQ4(tensor)
                                                     && prepackedQ4Eligible("", outputs, inputs));
                     if (eligible) {
                         int splits = gemmSplits(outputs, inputs);
                         if (splits > 1) {
                             partials = Math.max(partials, (long) splits * batchSize * outputs);
                         }
-                    } else if (nativeLibraries) {
+                    }
+                    if (plan.runs(
+                            projectionRegions.get(GraphNames.batchLayer(layer) + "." + p.task()),
+                            "cuBLAS")) {
                         widest = Math.max(widest, (long) outputs * inputs);
                     }
                 }
@@ -1000,7 +1107,8 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
     }
 
     /**
-     * {@code out[b] = w · x[b]}, or {@code +=}, by the representation {@code w} is in.
+     * {@code out[b] = w · x[b]}, or {@code +=}, through the plan, which picks cuBLAS or the JIT
+     * kernels for this projection; the plan calls {@link #project} back.
      *
      * <p>The batched counterpart of the single-token dispatch, and refused the same way: a
      * representation with no batched kernel is named rather than converted.
@@ -1016,9 +1124,91 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             int n,
             int d,
             boolean residual) {
+        Region region = projectionRegions.get(GraphNames.batchLayer(layer) + "." + task);
+        MatMul m = region == null ? null : (MatMul) region.ops().get(0);
+        if (m == null
+                || m.columns() != n
+                || m.rows() != d
+                || m.dataType() != w.dataType()
+                || (region.ops().size() == 2) != residual
+                || (m.input().name().equals(Qwen35PrefillRegions.NORMED)
+                        != (xBatch == state.workspace.wrapNormedBatch))) {
+            throw new IllegalStateException(
+                    "qwen35 batch-prefill layer "
+                            + layer
+                            + " task '"
+                            + task
+                            + "' does not match its region "
+                            + region);
+        }
+        plan.emit(graph, region, Qwen35PrefillRegions.operands(xBatch, outBatch, w), bindings);
+    }
+
+    /**
+     * Whether {@code step}'s projection has a cuBLAS form: a Q8_0 one the int8 GEMM does not tile,
+     * or an F16 one on the tensor cores.
+     */
+    @Override
+    public boolean cublasForm(Step step) {
+        MatMul m = step.first(MatMul.class);
+        return switch (m.dataType()) {
+            case Q8_0 -> !q8Int8Eligible(taskOf(m), m.rows(), m.columns());
+            case F16 ->
+                    TENSOR_CORES
+                            && TensorCoreSupport.isTensorCoreCapableBackend()
+                            && (m.input().name().equals(Qwen35PrefillRegions.NORMED)
+                                    || (long) batchSize * m.columns()
+                                            <= state.workspace.wrapHbFP16BatchMMA.getSize());
+            default -> false;
+        };
+    }
+
+    @Override
+    public void project(TaskGraph graph, Step step, Operands operands, boolean cublas) {
+        MatMul m = step.first(MatMul.class);
+        projection(
+                graph,
+                step.layer(),
+                taskOf(m),
+                m.weight().name(),
+                operands.weight(m.weight(), step.layer()),
+                (FloatArray) operands.activation(m.input()),
+                (FloatArray) operands.activation(m.output()),
+                m.columns(),
+                m.rows(),
+                step.fusion() == LayerProjections.PROJECTION_ADD,
+                cublas);
+    }
+
+    /** The task of the projection that {@code m} is. */
+    private String taskOf(MatMul m) {
+        for (Qwen35PrefillRegions.Projection p : projections) {
+            if (p.name().equals(m.weight().name())) {
+                return p.task();
+            }
+        }
+        throw new IllegalArgumentException("not a qwen35 projection: " + m.weight().name());
+    }
+
+    /**
+     * {@code out[b] = w · x[b]}, or {@code +=}, by the representation {@code w} is in: on cuBLAS
+     * when the plan picked it, which it does only for a representation with a cuBLAS form.
+     */
+    private void projection(
+            TaskGraph graph,
+            int layer,
+            String task,
+            String role,
+            TornadoTensor w,
+            FloatArray xBatch,
+            FloatArray outBatch,
+            int n,
+            int d,
+            boolean residual,
+            boolean cublas) {
         requireWholeBlocks(layer, task, role, w.dataType(), n);
         if (w.dataType() == DataType.Q8_0) {
-            q8Projection(graph, layer, task, w, xBatch, outBatch, n, d, residual);
+            q8Projection(graph, layer, task, w, xBatch, outBatch, n, d, residual, cublas);
             return;
         }
         if (simdgroupGemm(n) && sharedOnMetal(w)) {
@@ -1029,6 +1219,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         }
         if (kQuantPair(w, xBatch, d, n)) {
             kQuantProjection(graph, layer, task, w, xBatch, outBatch, n, d, residual);
+            return;
+        }
+        if (f16Gemm(w, xBatch, d, n, cublas)) {
+            f16Projection(graph, layer, task, w, xBatch, outBatch, n, d, residual, cublas);
             return;
         }
         switch (w.dataType()) {
@@ -1358,7 +1552,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
      *       matrices, the Q8_0 blocks dequantized to float as they are staged — the residual form
      *       adds into {@code out}, and the stored form is the Q/K/V kernel with its key/value width
      *       zero, so every tile lies in its first output (which needs {@code d % 64 == 0});
-     *   <li>where the shape does not tile, and native libraries are on: the weight decoded to FP32
+     *   <li>where the shape does not tile and the plan picked cuBLAS: the weight decoded to FP32
      *       and one cuBLAS TF32 GEMM ({@code C = op_T(W) · X} in cuBLAS's column-major terms);
      *   <li>otherwise a warp per output.
      * </ul>
@@ -1373,7 +1567,8 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             FloatArray outBatch,
             int n,
             int d,
-            boolean residual) {
+            boolean residual,
+            boolean cublas) {
         String qualified = GraphNames.batchLayer(layer) + "." + task;
         if (q8Int8Eligible(task, d, n)) {
             quantizeInput(graph, layer, task, xBatch, n);
@@ -1433,7 +1628,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
             return;
         }
         FloatArray scratch = state.workspace.wrapDequantScratchF32;
-        if (scratch == null) {
+        if (!cublas) {
             warpMatVecTasks.put(qualified, d);
             graph.task(
                     task,
@@ -1447,6 +1642,10 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                     batchSize,
                     residual ? 1 : 0);
             return;
+        }
+        if (scratch == null) {
+            throw new IllegalStateException(
+                    "qwen35 batch-prefill task '" + qualified + "' has no FP32 scratch for cuBLAS");
         }
         q8DequantTasks.put(qualified + "_dequant", n * d);
         graph.task(
@@ -1570,20 +1769,22 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 return;
             }
             // Gate and up as two projections into their own buffers, then SwiGLU.
-            q8Projection(
+            matVecBatch(
                     graph,
                     layer,
                     "ffn_gate_proj",
+                    "ffn_gate",
                     gate,
                     xBatch,
                     state.workspace.wrapGateBatch,
                     config.dim(),
                     config.hiddenDim(),
                     false);
-            q8Projection(
+            matVecBatch(
                     graph,
                     layer,
                     "ffn_up_proj",
+                    "ffn_up",
                     up,
                     xBatch,
                     state.workspace.wrapUpBatch,
@@ -3138,7 +3339,7 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
         long int8 = q8DirectGemms.size();
         long fp16Pairs = dequantTasks.size();
         long direct = mmaTasks.size();
-        if (int8 == 0 && fp16Pairs == 0 && direct == 0) {
+        if (int8 == 0 && fp16Pairs == 0 && direct == 0 && f16Gemms == 0) {
             return "scalar kernels (no tensor-core path at width " + batchSize + ")";
         }
         return "width "
@@ -3149,7 +3350,9 @@ public class Qwen35BatchPrefillLayers implements BatchPrefillTransformerLayerTas
                 + fp16Pairs
                 + " on the FP16 dequantize-then-GEMM pair, "
                 + direct
-                + " on the direct FP16 MMA kernels; tensor cores "
+                + " on the direct FP16 MMA kernels, "
+                + f16Gemms
+                + " F16 projections in place; tensor cores "
                 + (TENSOR_CORES && TensorCoreSupport.isTensorCoreCapableBackend()
                         ? "enabled"
                         : "disabled")

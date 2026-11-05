@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -23,6 +24,7 @@ import org.beehive.jitllm.backend.tornado.ops.Region;
 import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
 import org.beehive.jitllm.backend.tornado.ops.jit.LayerKernels;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxAttention;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxMatMul;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
@@ -93,6 +95,9 @@ public class Qwen3Q8_0LayersBatchPrefill
     /** Each layer's operations before and after attention. */
     private final List<Qwen3PrefillRegions.Layer> regions;
 
+    /** Each layer's attention, between its regions before and after attention. */
+    private final List<Region> attention;
+
     /** Runs those operations: on MLX where it runs, otherwise on the JIT kernels. */
     private final WorkPlan plan;
 
@@ -147,10 +152,15 @@ public class Qwen3Q8_0LayersBatchPrefill
                         batchSize,
                         batchSize,
                         (role, layer) -> weights.tensor(role, layer).dataType());
-        List<Region> all = Qwen3PrefillRegions.all(regions);
+        this.attention = Qwen3PrefillRegions.attention(config, batchSize);
+        List<Region> all = new ArrayList<>(Qwen3PrefillRegions.all(regions));
+        all.addAll(attention);
         List<Implementation> candidates =
                 mlxProjections != null
-                        ? List.of(new MlxMatMul(mlxProjections), new LayerKernels(this))
+                        ? List.of(
+                                new MlxMatMul(mlxProjections),
+                                new MlxAttention(mlxAttention),
+                                new LayerKernels(this))
                         : List.of(new LayerKernels(this));
         this.plan =
                 WorkPlan.of(
@@ -339,9 +349,31 @@ public class Qwen3Q8_0LayersBatchPrefill
 
         // Reuses batchedFlashAttention; passes qDim as the 'dim' stride (valid: qDim==dim
         // typically).
+        plan.emit(layer, attention.get(layerIndex), operands, state.workspace.weightBindings);
+
+        // Output projection, residual add, RMS norm, gate|up, SwiGLU, down, residual add.
+        plan.emit(
+                layer,
+                regions.get(layerIndex).afterAttention(),
+                operands,
+                state.workspace.weightBindings);
+
+        layer.persistOnDevice(state.workspace.wrapXBatch, keyCache(), valueCache());
         if (mlxAttention != null) {
-            mlxAttention.attention(layer, "batch_attention", layerIndex);
-        } else if (useFp16KVCache()) {
+            mlxAttention.persist(layer);
+        }
+        if (mlxProjections != null) {
+            mlxProjections.persist(layer);
+        }
+
+        return layer;
+    }
+
+    // @formatter:on
+
+    @Override
+    public void attention(TaskGraph layer, int layerIndex) {
+        if (useFp16KVCache()) {
             layer.task(
                     "batch_attention",
                     simdgroupAttention()
@@ -397,26 +429,7 @@ public class Qwen3Q8_0LayersBatchPrefill
                     state.kvBlockStride,
                     qDim);
         }
-
-        // Output projection, residual add, RMS norm, gate|up, SwiGLU, down, residual add.
-        plan.emit(
-                layer,
-                regions.get(layerIndex).afterAttention(),
-                operands,
-                state.workspace.weightBindings);
-
-        layer.persistOnDevice(state.workspace.wrapXBatch, keyCache(), valueCache());
-        if (mlxAttention != null) {
-            mlxAttention.persist(layer);
-        }
-        if (mlxProjections != null) {
-            mlxProjections.persist(layer);
-        }
-
-        return layer;
     }
-
-    // @formatter:on
 
     public void updateGridScheduler(GridScheduler scheduler) {
         WorkerGrid qkRmsNormWorker =
@@ -451,9 +464,7 @@ public class Qwen3Q8_0LayersBatchPrefill
             String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_qk_rmsnorm", qkRmsNormWorker);
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
-            if (mlxAttention != null) {
-                mlxAttention.addGrids(scheduler, p, "batch_attention");
-            } else {
+            if (!plan.runs(attention.get(i), "MLX")) {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }
         }
