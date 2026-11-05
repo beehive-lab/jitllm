@@ -121,9 +121,11 @@ public final class Allowlists {
                     "org.beehive.jitllm.tensor.standard.FP32FloatTensor",
                     "org.beehive.jitllm.tensor.standard.Q4_0FloatTensor",
                     "org.beehive.jitllm.tensor.standard.Q4_1FloatTensor",
+                    "org.beehive.jitllm.tensor.standard.Q5_0FloatTensor",
                     "org.beehive.jitllm.tensor.standard.Q4_KFloatTensor",
                     "org.beehive.jitllm.tensor.standard.Q5_KFloatTensor",
                     "org.beehive.jitllm.tensor.standard.Q6_KFloatTensor",
+                    "org.beehive.jitllm.tensor.standard.IQ4_XSFloatTensor",
                     "org.beehive.jitllm.tensor.standard.Q8_0FloatTensor",
                     "org.beehive.jitllm.backend.tornado.tensor.TornadoTensor",
                     "org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor",
@@ -131,9 +133,11 @@ public final class Allowlists {
                     "org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor",
                     "org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor",
                     "org.beehive.jitllm.backend.tornado.tensor.Q4_1TornadoTensor",
+                    "org.beehive.jitllm.backend.tornado.tensor.Q5_0TornadoTensor",
                     "org.beehive.jitllm.backend.tornado.tensor.Q4_KTornadoTensor",
                     "org.beehive.jitllm.backend.tornado.tensor.Q5_KTornadoTensor",
-                    "org.beehive.jitllm.backend.tornado.tensor.Q6_KTornadoTensor");
+                    "org.beehive.jitllm.backend.tornado.tensor.Q6_KTornadoTensor",
+                    "org.beehive.jitllm.backend.tornado.tensor.IQ4_XSTornadoTensor");
 
     // Rule 7 and Rule 11 have no allowlist: they pass on today's code (policy item 4).
 

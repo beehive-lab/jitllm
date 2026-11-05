@@ -2,6 +2,7 @@ package org.beehive.jitllm.inference.weights.tornado;
 
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.TensorRole;
 
 public class Phi3TornadoWeights extends TornadoWeights {
 
@@ -49,6 +50,30 @@ public class Phi3TornadoWeights extends TornadoWeights {
         this.wqkvLayered = wqkvLayered;
         this.wDownLayered = wDownLayered;
         this.wUpLayered = wUpLayered;
+    }
+
+    /**
+     * Phi-3's fused q|k|v and gate|up weights and its down projection, by role; the rest as any.
+     */
+    @Override
+    public TornadoTensor tensor(TensorRole role, int layer) {
+        return switch (role) {
+            case ATTENTION_QKV -> wqkvLayered[layer];
+            case FFN_GATE_UP -> wUpLayered[layer];
+            case FFN_DOWN -> wDownLayered[layer];
+            default -> super.tensor(role, layer);
+        };
+    }
+
+    /** The fused q|k|v and gate|up projections, the output and the down projection. */
+    @Override
+    public java.util.List<TornadoTensor[]> projections() {
+        java.util.List<TornadoTensor[]> projections =
+                new java.util.ArrayList<>(super.projections());
+        projections.add(wqkvLayered);
+        projections.add(wUpLayered);
+        projections.add(wDownLayered);
+        return projections;
     }
     // @formatter:on
 }

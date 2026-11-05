@@ -34,7 +34,7 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * norm writes FP16, and the residual add reads FP16.
  *
  * <p>Its fusion table: RMS norm with q, k and v; the output projection with its residual add; and
- * the whole feed-forward block.
+ * the whole feed-forward block; the first and last also over Phi-3's fused weights.
  */
 public final class MlxMatMul implements Implementation {
 
@@ -59,7 +59,28 @@ public final class MlxMatMul implements Implementation {
                     MAT_MUL,
                     RESIDUAL_ADD);
 
-    private static final List<Fusion> FUSIONS = List.of(FEED_FORWARD, ATTENTION_INPUT, OUTPUT);
+    /** The same steps over Phi-3's fused q|k|v and gate|up weights. */
+    static final Fusion ATTENTION_INPUT_FUSED =
+            Fusion.of("RMS norm + q|k|v", RMS_NORM, MAT_MUL)
+                    .when(ops -> ((MatMul) ops.get(1)).weight().role() == TensorRole.ATTENTION_QKV);
+
+    static final Fusion FEED_FORWARD_FUSED =
+            Fusion.of(
+                            "RMS norm + gate|up + SwiGLU + down + residual add",
+                            RMS_NORM,
+                            MAT_MUL,
+                            SWIGLU,
+                            MAT_MUL,
+                            RESIDUAL_ADD)
+                    .when(ops -> ((MatMul) ops.get(1)).weight().role() == TensorRole.FFN_GATE_UP);
+
+    private static final List<Fusion> FUSIONS =
+            List.of(
+                    FEED_FORWARD,
+                    ATTENTION_INPUT,
+                    OUTPUT,
+                    FEED_FORWARD_FUSED,
+                    ATTENTION_INPUT_FUSED);
 
     private final MlxPrefillProjections projections;
 
@@ -95,12 +116,12 @@ public final class MlxMatMul implements Implementation {
             public void emit(
                     TaskGraph graph, Step step, Operands operands, WeightBindings bindings) {
                 graphs.put(graph.getTaskGraphName(), step.tokens());
-                if (step.fusion() == ATTENTION_INPUT) {
+                if (step.fusion() == ATTENTION_INPUT || step.fusion() == ATTENTION_INPUT_FUSED) {
                     reduce(graph, "batch_attn_rms", step, operands, bindings, true);
                     projections.qkv(graph, step.layer());
                 } else if (step.fusion() == OUTPUT) {
                     projections.attentionOutput(graph, step.layer());
-                } else if (step.fusion() == FEED_FORWARD) {
+                } else if (step.fusion() == FEED_FORWARD || step.fusion() == FEED_FORWARD_FUSED) {
                     reduce(graph, "batch_ffn_rms", step, operands, bindings, false);
                     projections.ffn(graph, step.layer());
                 } else {

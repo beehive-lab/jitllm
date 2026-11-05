@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.plan;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
+import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.plan.components.Qwen35PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.inference.state.Qwen35State;
@@ -17,10 +18,9 @@ import org.beehive.jitllm.runtime.tensor.DataType;
 /**
  * The {@code qwen35} plan components — single-token decode, and a mixed model underneath.
  *
- * <p>{@link #supportedDataTypes()} is admission: the representation the model <b>reports</b>, which
- * for this family is the one its trunk projections share. Q4_0 is what the 27B holds, and it is
- * what the loader insists the projections agree on. Its layer, activation and logits graphs decode
- * five representations <b>per tensor</b>, each kept as the file stores it.
+ * <p>{@link #supportedDataTypes()} is admission: the representation the model <b>reports</b> for
+ * its trunk projections. The layer, activation and logits graphs read each tensor <b>by its own
+ * type</b>, as the file stores it, so a K-quant mix (Q4_K_M) runs as a uniform file does.
  *
  * <p>All three modes. Sequential prefill is the same layer computation with the logits graph
  * skipped; batched prefill has its own layer graphs, because a chunk of prompt tokens is not a
@@ -38,8 +38,7 @@ public final class Qwen35PlanProvider implements TornadoPlanProvider {
 
     @Override
     public Set<DataType> supportedDataTypes() {
-        // Q8_0: the decode layers read it directly, and the batched prefill decodes it for cuBLAS.
-        return Set.of(DataType.Q4_0, DataType.Q8_0);
+        return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
     }
 
     /** Every qwen35 path reads its Q8_0 and Q4_0 projections prepacked. */
@@ -108,18 +107,16 @@ public final class Qwen35PlanProvider implements TornadoPlanProvider {
 
     @Override
     public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
-        return c.weights() == DataType.Q4_0 || c.weights() == DataType.Q8_0
-                ? Optional.empty()
-                : Optional.of("the qwen35 " + c.weights() + " layers are not verified on Metal");
+        return Optional.empty();
     }
 
     @Override
     public boolean metalBatchedPrefillDefault(DataType weights) {
-        return weights == DataType.F16 || weights == DataType.Q8_0 || weights == DataType.Q4_0;
+        return true;
     }
 
     @Override
     public Set<DataType> nativeLibraryWeights(BackendId backend) {
-        return BackendId.CUDA.equals(backend) ? Set.of(DataType.Q8_0) : Set.of();
+        return BackendId.CUDA.equals(backend) ? Set.of(DataType.Q8_0, DataType.F16) : Set.of();
     }
 }

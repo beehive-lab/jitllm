@@ -2,9 +2,11 @@ package org.beehive.jitllm.backend.tornado.layers;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsIQ4_XS;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -14,6 +16,7 @@ import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
+import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 // @formatter:off
@@ -81,6 +84,29 @@ public final class QuantizedBatchProjections {
             boolean residual) {
         DataType type = w.dataType();
         if (type == DataType.Q8_0) {
+            if (!residual && simdgroup && d % 64 == 0) {
+                // The q|k|v GEMM with one matrix and no key/value rows is the plain GEMM, as
+                // Qwen3.5's prefill uses it; its tiles are the residual GEMM's, so the grid is too.
+                ByteArray weight = w.asByteArray();
+                layer.task(
+                        name,
+                        halfTiles(d, 64)
+                                ? TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8HalfTiles
+                                : TransformerBatchPrefillSimdgroupKernels::batchedGemmQKVQ8,
+                        context,
+                        x,
+                        out,
+                        out,
+                        out,
+                        weight,
+                        weight,
+                        weight,
+                        n,
+                        d,
+                        0,
+                        batchSize);
+                return;
+            }
             if (!residual) {
                 throw new IllegalStateException(
                         "no batched Q8_0 projection that overwrites its output, for task " + name);
@@ -103,8 +129,38 @@ public final class QuantizedBatchProjections {
                     n,
                     d,
                     simdgroup || tiledQ8 ? batchSize : matVecLocal);
+        } else if (type == DataType.F16) {
+            if (!simdgroup) {
+                // The tiled FP16 GEMMs: 64 x 64 tiles, 256 threads, as the Q8_0 ones.
+                layer.task(
+                        name,
+                        residual
+                                ? TransformerBatchPrefillKernels::batchedGemmFP16WithResidual
+                                : TransformerBatchPrefillKernels::batchedGemmFP16,
+                        context,
+                        x,
+                        out,
+                        w.asHalfFloatArray(),
+                        n,
+                        d,
+                        batchSize);
+                return;
+            }
+            layer.task(
+                    name,
+                    residual
+                            ? TransformerBatchPrefillSimdgroupKernels
+                                    ::batchedGemmF16WithResidualHalfTiles
+                            : TransformerBatchPrefillSimdgroupKernels::batchedGemmF16HalfTiles,
+                    context,
+                    x,
+                    out,
+                    w.asHalfFloatArray(),
+                    n,
+                    d,
+                    batchSize);
         } else if (simdgroup) {
-            boolean half = halfTiles(d, 64);
+            boolean half = halfTiles(type, d, 64);
             layer.task(
                     name,
                     half && residual
@@ -115,6 +171,12 @@ public final class QuantizedBatchProjections {
                                 case Q4_1 ->
                                         TransformerBatchPrefillSimdgroupKernels
                                                 ::batchedGemmQ4_1WithResidualHalfTiles;
+                                case Q5_0 ->
+                                        TransformerBatchPrefillSimdgroupKernels
+                                                ::batchedGemmQ5_0WithResidualHalfTiles;
+                                case IQ4_XS ->
+                                        TransformerBatchPrefillSimdgroupKernels
+                                                ::batchedGemmIQ4_XSWithResidualHalfTiles;
                                 case Q4_K ->
                                         TransformerBatchPrefillSimdgroupKernels
                                                 ::batchedGemmQ4_KWithResidualHalfTiles;
@@ -133,6 +195,12 @@ public final class QuantizedBatchProjections {
                                         case Q4_1 ->
                                                 TransformerBatchPrefillSimdgroupKernels
                                                         ::batchedGemmQ4_1HalfTiles;
+                                        case Q5_0 ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmQ5_0HalfTiles;
+                                        case IQ4_XS ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmIQ4_XSHalfTiles;
                                         case Q4_K ->
                                                 TransformerBatchPrefillSimdgroupKernels
                                                         ::batchedGemmQ4_KHalfTiles;
@@ -196,6 +264,12 @@ public final class QuantizedBatchProjections {
                                 case Q4_1 ->
                                         TransformerComputeKernelsQ4_1
                                                 ::matrixVectorTiledBatchWithResidualQ4_1;
+                                case Q5_0 ->
+                                        TransformerComputeKernelsQ5_0
+                                                ::matrixVectorTiledBatchWithResidualQ5_0;
+                                case IQ4_XS ->
+                                        TransformerComputeKernelsIQ4_XS
+                                                ::matrixVectorTiledBatchWithResidualIQ4_XS;
                                 case Q4_K ->
                                         TransformerComputeKernelsQ4_K
                                                 ::matrixVectorTiledBatchWithResidualQ4_K;
@@ -211,6 +285,11 @@ public final class QuantizedBatchProjections {
                                         TransformerComputeKernelsQ4_0::matrixVectorTiledBatchQ4_0;
                                 case Q4_1 ->
                                         TransformerComputeKernelsQ4_1::matrixVectorTiledBatchQ4_1;
+                                case Q5_0 ->
+                                        TransformerComputeKernelsQ5_0::matrixVectorTiledBatchQ5_0;
+                                case IQ4_XS ->
+                                        TransformerComputeKernelsIQ4_XS
+                                                ::matrixVectorTiledBatchIQ4_XS;
                                 case Q4_K ->
                                         TransformerComputeKernelsQ4_K::matrixVectorTiledBatchQ4_K;
                                 case Q5_K ->
@@ -256,6 +335,23 @@ public final class QuantizedBatchProjections {
             int hidDim) {
         DataType type = w1.dataType();
         boolean fused = fusedGateUp(w1, w3);
+        if (fused && simdgroup && type == DataType.F16) {
+            layer.task(
+                    "batch_ffn_gate_up",
+                    TransformerBatchPrefillSimdgroupKernels
+                            ::batchedGemmRmsNormFFNGateUpF16HalfTiles,
+                    context,
+                    ws.wrapXBatch,
+                    ws.wrapHbBatch,
+                    rmsWeights,
+                    ws.ffnScaleBatch,
+                    w1.asHalfFloatArray(),
+                    w3.asHalfFloatArray(),
+                    dim,
+                    hidDim,
+                    batchSize);
+            return;
+        }
         if (fused && (simdgroup || type == DataType.Q8_0)) {
             layer.task(
                     "batch_ffn_gate_up",
@@ -271,7 +367,7 @@ public final class QuantizedBatchProjections {
                                                     ::batchedGemmRmsNormFFNGateUpQ8
                                             : TransformerBatchPrefillKernels
                                                     ::batchedFusedRmsNormFFNGateUpQ8)
-                            : halfTiles(hidDim, 32)
+                            : halfTiles(type, hidDim, 32)
                                     ? switch (type) {
                                         case Q4_0 ->
                                                 TransformerBatchPrefillSimdgroupKernels
@@ -279,6 +375,12 @@ public final class QuantizedBatchProjections {
                                         case Q4_1 ->
                                                 TransformerBatchPrefillSimdgroupKernels
                                                         ::batchedGemmRmsNormFFNGateUpQ4_1HalfTiles;
+                                        case Q5_0 ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpQ5_0HalfTiles;
+                                        case IQ4_XS ->
+                                                TransformerBatchPrefillSimdgroupKernels
+                                                        ::batchedGemmRmsNormFFNGateUpIQ4_XSHalfTiles;
                                         case Q4_K ->
                                                 TransformerBatchPrefillSimdgroupKernels
                                                         ::batchedGemmRmsNormFFNGateUpQ4_KHalfTiles;
@@ -360,7 +462,9 @@ public final class QuantizedBatchProjections {
      * hidDim} outputs: 32 gate and 32 up rows per workgroup.
      */
     public WorkerGrid gateUpWorker(TornadoTensor w1, int hidDim) {
-        int threads = TransformerBatchPrefillSimdgroupKernels.threads(halfTiles(hidDim, 32));
+        int threads =
+                TransformerBatchPrefillSimdgroupKernels.threads(
+                        halfTiles(w1.dataType(), hidDim, 32));
         return WorkerGridFactory.genericWorker(
                 ((hidDim + 31) / 32) * ((batchSize + 63) / 64) * threads, threads);
     }
@@ -380,14 +484,20 @@ public final class QuantizedBatchProjections {
                     : WorkerGridFactory.genericWorker(batchSize * rows * matVecLocal, matVecLocal);
         }
         if (simdgroup) {
-            int threads = TransformerBatchPrefillSimdgroupKernels.threads(halfTiles(rows, 64));
+            int threads =
+                    TransformerBatchPrefillSimdgroupKernels.threads(halfTiles(type, rows, 64));
             return WorkerGridFactory.genericWorker(
                     ((rows + 63) / 64) * batchTiles * threads, threads);
+        }
+        if (type == DataType.F16) {
+            return WorkerGridFactory.genericWorker(((rows + 63) / 64) * batchTiles * 256, 256);
         }
         int rowTile =
                 switch (type) {
                     case Q4_0 -> TransformerComputeKernelsQ4_0.rowTile();
                     case Q4_1 -> TransformerComputeKernelsQ4_1.rowTile();
+                    case Q5_0 -> TransformerComputeKernelsQ5_0.rowTile();
+                    case IQ4_XS -> TransformerComputeKernelsIQ4_XS.rowTile();
                     case Q4_K -> TransformerComputeKernelsQ4_K.rowTile();
                     case Q5_K -> TransformerComputeKernelsQ5_K.rowTile();
                     default -> TransformerComputeKernelsQ6_K.rowTile();
@@ -396,6 +506,8 @@ public final class QuantizedBatchProjections {
                 switch (type) {
                     case Q4_0 -> TransformerComputeKernelsQ4_0.colTile();
                     case Q4_1 -> TransformerComputeKernelsQ4_1.colTile();
+                    case Q5_0 -> TransformerComputeKernelsQ5_0.colTile();
+                    case IQ4_XS -> TransformerComputeKernelsIQ4_XS.colTile();
                     case Q4_K -> TransformerComputeKernelsQ4_K.colTile();
                     case Q5_K -> TransformerComputeKernelsQ5_K.colTile();
                     default -> TransformerComputeKernelsQ6_K.colTile();
@@ -410,6 +522,15 @@ public final class QuantizedBatchProjections {
      * runs a {@code ...HalfTiles} kernel; see {@link
      * TransformerBatchPrefillSimdgroupKernels#halfTiles}.
      */
+    private boolean halfTiles(DataType type, int outputs, int rowsPerTile) {
+        // Q5_0, IQ4_XS and F16 have no FP32-tile form, so they take the FP16-tile kernel at every
+        // size.
+        return type == DataType.Q5_0
+                || type == DataType.IQ4_XS
+                || type == DataType.F16
+                || halfTiles(outputs, rowsPerTile);
+    }
+
     private boolean halfTiles(int outputs, int rowsPerTile) {
         return TransformerBatchPrefillSimdgroupKernels.halfTiles(
                 (outputs + rowsPerTile - 1) / rowsPerTile, batchSize);

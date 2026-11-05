@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.granite.GraniteConfiguration;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -62,12 +63,16 @@ public class GraniteBatchDecodeActivation implements ActivationTaskGraph {
             State state, GraniteConfiguration config, String lastBatchLayerId, DataType embedding) {
         this.dim = config.dim();
         this.embeddingScale = config.embeddingScale();
-        this.kept = Activation.keptEmbedding(embedding);
+        TornadoWorkspaces.stagingHolds(state.workspace, embedding, dim);
+        this.kept = Activation.stagedAsBytes(embedding, state.workspace.embeddingX);
         KernelContext ctx = new KernelContext();
         this.itg = buildGraph(ctx, state, lastBatchLayerId, embedding).snapshot();
     }
 
-    /** Whether the row is decoded by its own type, then multiplied by its own task. */
+    /**
+     * Whether the row is decoded from bytes by its own type, then multiplied by its own task: a
+     * kept type, or F16 staged in a Q8_0 model's byte buffer (an F16-mixed file).
+     */
     private final boolean kept;
 
     // @formatter:off
