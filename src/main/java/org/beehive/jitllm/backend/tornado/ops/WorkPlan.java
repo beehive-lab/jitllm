@@ -118,7 +118,7 @@ public final class WorkPlan {
     /** The device memory {@link #of} would allocate for {@code regions}, without allocating it. */
     public static BatchPrefillWorkspace needs(
             List<Region> regions, List<Implementation> candidates, Target target) {
-        BatchPrefillWorkspace total = BatchPrefillWorkspace.fixed(0);
+        BatchPrefillWorkspace total = BatchPrefillWorkspace.withoutResidencyChoice(0);
         for (var entry : byImplementation(splitAll(regions, candidates, target)).entrySet()) {
             total = total.plus(entry.getKey().needs(entry.getValue(), target));
         }

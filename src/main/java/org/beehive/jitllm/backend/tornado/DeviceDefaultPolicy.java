@@ -40,8 +40,8 @@ public final class DeviceDefaultPolicy {
 
     /**
      * {@link #resolve(Model, ExecutionPolicy, boolean, boolean, StorageOptions)}, skipping a
-     * candidate {@code fits} says the device memory cannot hold: Qwen3-8B F16 on a 24 GB GPU then
-     * runs batched on the JIT kernels rather than running out of memory on cuBLAS's stacked copies.
+     * candidate {@code fits} says the memory budget cannot hold: the model then runs batched on the
+     * JIT kernels rather than running out of memory on the native libraries' copies.
      */
     public static ExecutionPolicy resolve(
             Model model,

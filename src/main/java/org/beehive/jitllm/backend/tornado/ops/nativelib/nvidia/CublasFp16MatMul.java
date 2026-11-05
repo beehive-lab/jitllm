@@ -20,9 +20,7 @@ public final class CublasFp16MatMul extends Fp16MatMul {
 
     @Override
     public boolean accepts(Step step, Target target) {
-        return target.policy().nativeLibraries()
-                && tensorCoresOverF16(step, target)
-                && NativePrefillSupport.cublasAvailable();
+        return target.cublas() && tensorCoresOverF16(step, target);
     }
 
     @Override

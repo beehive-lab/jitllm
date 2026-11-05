@@ -206,8 +206,8 @@ public class Gemma4BatchPrefillLayers
     // @formatter:off
     /**
      * Whether the plan runs the projections on cuBLAS: each layer's projections decoded to FP16
-     * row-major matrices, several tensors stacked into one matrix (query, key and value; gate and
-     * up) so one GEMM computes them side by side. Otherwise the JIT kernels run them.
+     * row-major matrices, several tensors copied into one contiguous matrix (query, key and value;
+     * gate and up) so one GEMM computes them side by side. Otherwise the JIT kernels run them.
      */
     // @formatter:on
     private final boolean nativeProjections;
@@ -265,8 +265,8 @@ public class Gemma4BatchPrefillLayers
     /**
      * With native libraries ({@code --with-native-libraries}) on Metal: the query/key/value,
      * output, gate/up and down projections as MLX GEMMs over each layer's weights in MLX's form
-     * ({@link MlxPrefill#projections()}), query, key and value stacked into one matrix and gate and
-     * up into another; otherwise {@code null}. Attention, the norms and the per-layer-embedding
+     * ({@link MlxPrefill#projections()}), query, key and value contiguous in one matrix and gate
+     * and up in another; otherwise {@code null}. Attention, the norms and the per-layer-embedding
      * GEMMs stay on the Metal kernels.
      */
     // @formatter:on
@@ -842,7 +842,7 @@ public class Gemma4BatchPrefillLayers
                             Gemma4BatchPrefillKernels::dequantizeQ8ToFP16,
                             context,
                             w.asByteArray(),
-                            state.workspace.weightsF16Scratch,
+                            state.workspace.contiguousF16WeightsScratch,
                             destOffset);
             case Q4_0 ->
                     layer.task(
@@ -850,7 +850,7 @@ public class Gemma4BatchPrefillLayers
                             Gemma4BatchPrefillKernels::dequantizeQ4_0ToFP16,
                             context,
                             w.asByteArray(),
-                            state.workspace.weightsF16Scratch,
+                            state.workspace.contiguousF16WeightsScratch,
                             destOffset);
             case Q4_1 ->
                     layer.task(
@@ -858,7 +858,7 @@ public class Gemma4BatchPrefillLayers
                             Gemma4BatchPrefillKernels::dequantizeQ4_1ToFP16,
                             context,
                             w.asByteArray(),
-                            state.workspace.weightsF16Scratch,
+                            state.workspace.contiguousF16WeightsScratch,
                             destOffset);
             case Q4_K, Q5_K, Q6_K ->
                     layer.task(
@@ -870,7 +870,7 @@ public class Gemma4BatchPrefillLayers
                             },
                             context,
                             w.asByteArray(),
-                            state.workspace.weightsF16Scratch,
+                            state.workspace.contiguousF16WeightsScratch,
                             destOffset,
                             // Elements: 256 to a super-block of 144, 176 or 210 bytes.
                             w.asByteArray().getSize()
@@ -886,7 +886,7 @@ public class Gemma4BatchPrefillLayers
                             Gemma4BatchPrefillKernels::copyF16,
                             context,
                             w.asHalfFloatArray(),
-                            state.workspace.weightsF16Scratch,
+                            state.workspace.contiguousF16WeightsScratch,
                             destOffset,
                             w.asHalfFloatArray().getSize());
             default ->
@@ -973,6 +973,19 @@ public class Gemma4BatchPrefillLayers
                             }
                             : new TornadoTensor[] {weights.wqLayered[l]};
             String name = "blk." + l;
+            // MLX reads its own form of every projection, so the decode graphs upload them.
+            for (TornadoTensor t : qkv) {
+                state.workspace.weightBindings.recordReplaced(t);
+            }
+            for (TornadoTensor t :
+                    new TornadoTensor[] {
+                        weights.woLayered[l],
+                        weights.w1Layered[l],
+                        weights.w3Layered[l],
+                        weights.w2Layered[l]
+                    }) {
+                state.workspace.weightBindings.recordReplaced(t);
+            }
             mlxQkv[l] = MlxPrefillProjections.matrix(form, requireMlx(name + ".attn_qkv", qkv));
             mlxWo[l] =
                     MlxPrefillProjections.matrix(
@@ -1037,8 +1050,8 @@ public class Gemma4BatchPrefillLayers
     }
 
     /**
-     * The stacked query/key/value GEMM on MLX into the packed {@code [q|k|v]} rows the head norms
-     * and the rotation read, in FP32.
+     * The GEMM over contiguous query, key and value on MLX into the packed {@code [q|k|v]} rows the
+     * head norms and the rotation read, in FP32.
      */
     private void mlxQkvProjection(TaskGraph layer, int layerIndex, int stride) {
         MlxPrefillProjections.gemm(
@@ -1303,7 +1316,7 @@ public class Gemma4BatchPrefillLayers
                     state.workspace.attnOutFP16,
                     state.workspace.attnScoresBatch,
                     state.workspace.splitKPartialBatch,
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.woOut,
                     state.workspace.normedXFFNFP16,
                     state.workspace.gateUpResultBatch,
@@ -1359,7 +1372,7 @@ public class Gemma4BatchPrefillLayers
                     state.workspace.attnOutFP16,
                     state.workspace.attnScoresBatch,
                     state.workspace.splitKPartialBatch,
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.woOut,
                     state.workspace.normedXFFNFP16,
                     state.workspace.gateUpResultBatch,
@@ -2099,7 +2112,7 @@ public class Gemma4BatchPrefillLayers
                 nativeGemm(
                         layer,
                         "qkvProj",
-                        state.workspace.weightsF16Scratch,
+                        state.workspace.contiguousF16WeightsScratch,
                         state.workspace.wrapXbFP16Batch,
                         state.workspace.qkvResultBatch,
                         qDim + 2 * kvDim,
@@ -2116,7 +2129,7 @@ public class Gemma4BatchPrefillLayers
                         TransformerBatchPrefillKernels::gemmMMA,
                         context,
                         state.workspace.wrapXbFP16Batch,
-                        state.workspace.weightsF16Scratch,
+                        state.workspace.contiguousF16WeightsScratch,
                         state.workspace.qkvResultBatch,
                         paddedBatch,
                         qDim + 2 * kvDim,
@@ -2165,7 +2178,7 @@ public class Gemma4BatchPrefillLayers
                 nativeGemm(
                         layer,
                         "qkvProj",
-                        state.workspace.weightsF16Scratch,
+                        state.workspace.contiguousF16WeightsScratch,
                         state.workspace.wrapXbFP16Batch,
                         state.workspace.qkvResultBatch,
                         qDim,
@@ -2188,7 +2201,7 @@ public class Gemma4BatchPrefillLayers
                         TransformerBatchPrefillKernels::gemmMMA,
                         context,
                         state.workspace.wrapXbFP16Batch,
-                        state.workspace.weightsF16Scratch,
+                        state.workspace.contiguousF16WeightsScratch,
                         state.workspace.qkvResultBatch,
                         paddedBatch,
                         qDim,
@@ -2228,7 +2241,7 @@ public class Gemma4BatchPrefillLayers
             nativeGemm(
                     layer,
                     "woProj",
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.attnOutFP16,
                     state.workspace.woOut,
                     dim,
@@ -2240,7 +2253,7 @@ public class Gemma4BatchPrefillLayers
                     Gemma4BatchPrefillKernels::gemmMMASplitK,
                     context,
                     state.workspace.attnOutFP16,
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.splitKPartialBatch,
                     paddedBatch,
                     dim,
@@ -2341,7 +2354,7 @@ public class Gemma4BatchPrefillLayers
             nativeGemm(
                     layer,
                     "gateUpProj",
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.normedXFFNFP16,
                     state.workspace.gateUpResultBatch,
                     2 * ffnLen,
@@ -2358,7 +2371,7 @@ public class Gemma4BatchPrefillLayers
                     TransformerBatchPrefillKernels::gemmMMA,
                     context,
                     state.workspace.normedXFFNFP16,
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.gateUpResultBatch,
                     paddedBatch,
                     2 * ffnLen,
@@ -2409,7 +2422,7 @@ public class Gemma4BatchPrefillLayers
             nativeGemm(
                     layer,
                     "w2Proj",
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.wrapHbFP16Batch,
                     state.workspace.w2Out,
                     dim,
@@ -2421,7 +2434,7 @@ public class Gemma4BatchPrefillLayers
                     Gemma4BatchPrefillKernels::gemmMMASplitK,
                     context,
                     state.workspace.wrapHbFP16Batch,
-                    state.workspace.weightsF16Scratch,
+                    state.workspace.contiguousF16WeightsScratch,
                     state.workspace.splitKPartialBatch,
                     paddedBatch,
                     dim,

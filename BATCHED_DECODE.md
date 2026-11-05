@@ -300,7 +300,7 @@ sets `deviceSample` to `false`.
 
 ### Build
 
-You need a TornadoVM SDK with the **CUDA backend**, version **7.3 or newer**, at
+You need a TornadoVM SDK with the **CUDA backend**, version **8.0 or newer**, at
 `TORNADOVM_HOME` (its JDK line must match the JDK you build with; see the README), and an NVIDIA
 GPU with tensor cores. Then:
 

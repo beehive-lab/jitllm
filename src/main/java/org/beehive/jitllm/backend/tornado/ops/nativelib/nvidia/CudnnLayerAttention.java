@@ -3,7 +3,6 @@ package org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia;
 import org.beehive.jitllm.backend.tornado.ops.LayerAttention;
 import org.beehive.jitllm.backend.tornado.ops.Step;
 import org.beehive.jitllm.backend.tornado.ops.Target;
-import org.beehive.jitllm.runtime.backend.DeviceCapability;
 
 /**
  * {@link LayerAttention} on cuDNN's fused attention: the layers the layer class has a cuDNN form
@@ -26,9 +25,7 @@ public final class CudnnLayerAttention extends LayerAttention {
 
     @Override
     public boolean accepts(Step step, Target target) {
-        return target.policy().nativeLibraries()
-                && target.supports(DeviceCapability.TENSOR_CORE_MMA)
-                && tasks.cudnnForm(step);
+        return target.cublas() && tasks.cudnnForm(step);
     }
 
     @Override

@@ -1,7 +1,5 @@
 package org.beehive.jitllm.backend.tornado.layers.type.fp16.decode;
 
-import java.util.ArrayList;
-import java.util.List;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.Qwen3FP16FFNLayers;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.Qwen3FP16LayersBatchPrefillMMA;
@@ -138,33 +136,5 @@ public class Qwen3FP16FFNLayersDecode extends Qwen3FP16FFNLayers {
         // one graph, that graph is named after the first layer of its group and is the one that
         // uploaded this layer's weights.
         return Qwen3FP16LayersBatchPrefillMMA.prefillGraphOwning(layerIndex);
-    }
-
-    /**
-     * Every weight the batch-prefill layer graph declares but hands to no task, so it never uploads
-     * it and this graph must.
-     *
-     * <p>The native projections replace JIT tasks that read the model's own weights with cuBLAS
-     * GEMMs over stacked copies: gate/up takes {@code w1}/{@code w3} out of the graph, QKV takes
-     * {@code wq}/{@code wk}/{@code wv}. All five go together, because the producer decides all four
-     * projections with one answer. The predicate asked here is the producer's own — that is what
-     * keeps the two sides from drifting apart, including the backend gate, since it selects nothing
-     * where the MMA batch-prefill class is not the one being built.
-     *
-     * <p>This graph's own kernels still read all five: {@code rms_ffn_gate_up} reads w1 and w3,
-     * {@code attn_rms_qkv_projection} reads wq, wk and wv.
-     */
-    @Override
-    protected Object[] weightsNotProvidedBySource(int layerIndex) {
-        if (!Qwen3FP16LayersBatchPrefillMMA.nativeProjections(state.executionPolicy())) {
-            return super.weightsNotProvidedBySource(layerIndex);
-        }
-        List<Object> notProvided = new ArrayList<>(5);
-        notProvided.add(weights.wqLayered[layerIndex].asHalfFloatArray());
-        notProvided.add(weights.wkLayered[layerIndex].asHalfFloatArray());
-        notProvided.add(weights.wvLayered[layerIndex].asHalfFloatArray());
-        notProvided.add(weights.w1Layered[layerIndex].asHalfFloatArray());
-        notProvided.add(weights.w3Layered[layerIndex].asHalfFloatArray());
-        return notProvided.toArray();
     }
 }

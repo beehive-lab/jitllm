@@ -90,6 +90,14 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final List<ImmutableTaskGraph> layerITGs;
     private String lastLayerTaskGraphID;
 
+    /**
+     * The layers {@code [firstLayer, endLayer)} this stack builds: all of them, or one pipeline
+     * stage's. A stage's key/value cache holds only its own layers, so they address it from 0.
+     */
+    private final int firstLayer;
+
+    private final int endLayer;
+
     /** The attention as tensor-core GEMMs, or null for the flash-attention kernel. */
     private final TensorCoreBatchAttention tcAttention;
 
@@ -148,6 +156,25 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     public LlamaFP16LayersBatchPrefillMMA(
             State state, TornadoWeights weights, Configuration config, int batchSize) {
+        this(state, weights, config, batchSize, 0, config.numberOfLayers());
+    }
+
+    /**
+     * The layers {@code [firstLayer, endLayer)} only: one stage of a model split across devices.
+     */
+    public LlamaFP16LayersBatchPrefillMMA(
+            State state,
+            TornadoWeights weights,
+            Configuration config,
+            int batchSize,
+            int firstLayer,
+            int endLayer) {
+        if (firstLayer < 0 || endLayer > config.numberOfLayers() || firstLayer >= endLayer) {
+            throw new IllegalArgumentException(
+                    "layer range [" + firstLayer + ", " + endLayer + ") outside the model");
+        }
+        this.firstLayer = firstLayer;
+        this.endLayer = endLayer;
         this.state = state;
         // Resolved once from the session's policy, not read from a class constant.
         this.packedHalf2Attention = state.executionPolicy().packedHalf2Attention();
@@ -214,7 +241,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         weights::tensor,
                         all);
         this.layerITGs =
-                IntStream.range(0, config.numberOfLayers())
+                IntStream.range(firstLayer, endLayer)
                         .mapToObj(this::createBatchPrefillLayerTaskGraph)
                         .map(TaskGraph::snapshot)
                         .toList();
@@ -223,7 +250,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     // @formatter:off
     private TaskGraph createBatchPrefillLayerTaskGraph(int layerIndex) {
         String graphName = GraphNames.batchPrefillLayer(layerIndex);
-        if (layerIndex == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
+        if (layerIndex == endLayer - 1) lastLayerTaskGraphID = graphName;
 
         TaskGraph batchPrefillLayer = new TaskGraph(graphName);
 
@@ -235,7 +262,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         : state.workspace.wrapValueCache;
 
         // ── Data Transfers ─────────────────────────────────────────────────────
-        if (layerIndex == 0) {
+        if (layerIndex == firstLayer) {
             // batchStartPosHolder is set by host before each chunk → EVERY_EXECUTION
             batchPrefillLayer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION, state.workspace.batchStartPosHolder);
@@ -292,7 +319,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             }
         }
 
-        if (layerIndex == 0) {
+        if (layerIndex == firstLayer) {
             // EVERY_EXECUTION, not once: acquiring or releasing a lease rewrites the table,
             // and a stale block index is still a valid index, so a table uploaded once leaves
             // the kernels reading a mapping that no longer exists, silently.
@@ -313,6 +340,8 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         int dim = config.dim();
         int kvDim = config.kvDim();
         int qDim = config.numberOfHeads() * config.headSize();
+        // The layer's slot in this stack's key/value cache.
+        int kvLayer = layerIndex - firstLayer;
 
         atLayerStart(batchPrefillLayer, layerIndex);
 
@@ -336,7 +365,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         ropeTheta(),
                         kvDim,
                         config.headSize(),
-                        layerIndex,
+                        kvLayer,
                         state.workspace.wrapBlockTable,
                         state.kvBlockCfg,
                         state.kvBlockStride,
@@ -355,7 +384,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         weights.freq_cis_imagFlat.asFloatArray(),
                         kvDim,
                         config.headSize(),
-                        layerIndex,
+                        kvLayer,
                         state.workspace.wrapBlockTable,
                         state.kvBlockCfg,
                         state.kvBlockStride,
@@ -363,7 +392,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             }
 
             if (tcAttention != null) {
-                tcAttention.appendTasks(batchPrefillLayer, context, layerIndex);
+                tcAttention.appendTasks(batchPrefillLayer, context, kvLayer);
             } else {
                 batchPrefillLayer.task(
                         "batch_attention",
@@ -382,7 +411,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         config.headSize(),
                         kvDim,
                         config.kvMul(),
-                        layerIndex,
+                        kvLayer,
                         state.workspace.wrapBlockTable,
                         state.kvBlockCfg,
                         state.kvBlockStride,
@@ -401,7 +430,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         ropeTheta(),
                         kvDim,
                         config.headSize(),
-                        layerIndex,
+                        kvLayer,
                         state.workspace.wrapBlockTable,
                         state.kvBlockCfg,
                         state.kvBlockStride,
@@ -419,7 +448,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                         weights.freq_cis_imagFlat.asFloatArray(),
                         kvDim,
                         config.headSize(),
-                        layerIndex,
+                        kvLayer,
                         state.workspace.wrapBlockTable,
                         state.kvBlockCfg,
                         state.kvBlockStride,
@@ -441,7 +470,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     config.headSize(),
                     kvDim,
                     config.kvMul(),
-                    layerIndex,
+                    kvLayer,
                     state.workspace.wrapBlockTable,
                     state.kvBlockCfg,
                     state.kvBlockStride,
@@ -614,7 +643,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         WorkerGrid attnWorker =
                 WorkerGridFactory.genericWorker(batchSize * nHeads * attnLocal, attnLocal);
 
-        for (int i = 0; i < config.numberOfLayers(); i++) {
+        for (int i = firstLayer; i < endLayer; i++) {
             String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
             addFamilyTaskGrids(scheduler, p, i);

@@ -450,7 +450,7 @@ kernel-capture gap above. Nothing here claims a Metal run performed from Linux.
 
 The suite today, counted from the sources (`@Test` methods; Class B is the `*AccelTest`
 classes): 868 Class A tests, and 543 Class B tests in 211 classes. The build needs a TornadoVM
-SDK of 7.3 or newer, and CI builds against TornadoVM's `develop` head.
+SDK of 8.0 or newer, and CI builds against TornadoVM's `develop` head.
 
 The last full recorded run, from September 2026 on an RTX 5090 Laptop with TornadoVM 6.0.0,
 against the suite of that time:
