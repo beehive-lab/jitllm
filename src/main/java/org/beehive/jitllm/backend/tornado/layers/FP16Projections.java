@@ -4,9 +4,11 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsIQ4_XS;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
@@ -24,9 +26,32 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 // @formatter:off
 /**
- * The projections of a tensor-core batched prefill as FP16 GEMMs over one buffer per GEMM: each
- * weight decoded (Q8_0) or copied (F16) into it after the one before, then one GEMM over all of
- * them. Copying is what lets the F16 Q, K and V, or gate and up, go through cuBLAS as one call.
+ * The projections of a tensor-core batched prefill as FP16 GEMMs over one contiguous buffer per
+ * GEMM: each weight decoded (Q8_0) or copied (F16) into it after the one before, then one GEMM over
+ * all of them. cuBLAS multiplies one matrix per call, and this buffer is what lets the F16 Q, K and
+ * V, or gate and up, go through it as one call:
+ *
+ * <pre>
+ *   Model weights: 3 arrays               Contiguous buffer: 1 array
+ *
+ *   wq  +------------+                    +------------+  row 0
+ *       | qDim rows  |                    | wq rows    |
+ *       +------------+                    +------------+  row qDim
+ *                                         | wk rows    |
+ *   wk  +------------+                    +------------+  row qDim + kvDim
+ *       | kvDim rows |                    | wv rows    |
+ *       +------------+                    +------------+  row qDim + 2 * kvDim
+ *
+ *   wv  +------------+
+ *       | kvDim rows |
+ *       +------------+
+ *
+ *   One GEMM over the buffer fills each batch row with all three results, side by side:
+ *
+ *       +-------------+-------------+-------------+
+ *       | q (qDim)    | k (kvDim)   | v (kvDim)   |
+ *       +-------------+-------------+-------------+
+ * </pre>
  *
  * <p>The Q8_0 GEMM decodes every weight again for every 128-row tile of the batch, inside its inner
  * loop. Decoding once per chunk costs one pass over the weights and runs the GEMM at the FP16 rate.
@@ -38,8 +63,8 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * depth.
  *
  * <p>When the decoded weights of the whole model fit in {@link #RESIDENT_BYTES}, each projection
- * keeps its own FP16 copy instead, decoded on the first chunk only: a small model's decode costs a
- * sixth of its prefill, and its FP16 weights are a few gigabytes.
+ * keeps its own contiguous FP16 copy instead, decoded on the first chunk only: a small model's
+ * decode costs a sixth of its prefill, and its FP16 weights are a few gigabytes.
  */
 // @formatter:on
 public final class FP16Projections {
@@ -86,7 +111,7 @@ public final class FP16Projections {
 
     private final KernelContext context;
     private final WeightPrepacking prepacking;
-    private final HalfFloatArray scratch;
+    private final HalfFloatArray contiguousScratch;
     private final SplitKGemm gemm;
     private final Map<String, Integer> decodeTasks = new LinkedHashMap<>();
     private final java.util.List<String> markTasks = new java.util.ArrayList<>();
@@ -116,13 +141,13 @@ public final class FP16Projections {
         // One flag per resident projection, and a last one never set for the per-chunk decodes.
         this.decoded = new IntArray(projectionCalls + 1);
         this.neverDecoded = projectionCalls;
-        this.scratch = new HalfFloatArray(resident ? 1 : Math.toIntExact(widest));
+        this.contiguousScratch = new HalfFloatArray(resident ? 1 : Math.toIntExact(widest));
         this.gemm = new SplitKGemm(context, rows, widestSplit, nativeGemm);
     }
 
     /** The buffers, which every layer graph transfers or consumes with its intermediates. */
     public Object[] buffers() {
-        return new Object[] {scratch, gemm.partial(), decoded};
+        return new Object[] {contiguousScratch, gemm.partial(), decoded};
     }
 
     // @formatter:off
@@ -141,7 +166,7 @@ public final class FP16Projections {
             int m,
             int k,
             TornadoTensor... ws) {
-        HalfFloatArray b = scratch;
+        HalfFloatArray b = contiguousScratch;
         int flag = 0;
         if (resident) {
             long total = 0;
@@ -194,13 +219,16 @@ public final class FP16Projections {
                         decoded,
                         resident ? flag : neverDecoded);
             } else if (decodesOnceOnly(ws[i])) {
-                // Q4_0, Q4_1 and Q5_K have the decode-once form only; a per-chunk decode passes it
-                // the flag that is never set.
+                // Q4_0, Q4_1, Q5_0, Q5_K and IQ4_XS have the decode-once form only; a per-chunk
+                // decode passes it the flag that is never set.
                 layer.task(
                         decode,
                         switch (ws[i].dataType()) {
                             case Q4_0 -> TransformerComputeKernelsQ4_0::dequantizeQ4_0ToFP16Once;
                             case Q4_1 -> TransformerComputeKernelsQ4_1::dequantizeQ4_1ToFP16Once;
+                            case Q5_0 -> TransformerComputeKernelsQ5_0::dequantizeQ5_0ToFP16Once;
+                            case IQ4_XS ->
+                                    TransformerComputeKernelsIQ4_XS::dequantizeIQ4_XSToFP16Once;
                             default -> TransformerComputeKernelsQ5_K::dequantizeQ5_KToFP16Once;
                         },
                         context,
@@ -280,21 +308,27 @@ public final class FP16Projections {
     /** Whether {@code w}'s type has only the decode-once FP16 decoder. */
     private static boolean decodesOnceOnly(TornadoTensor w) {
         DataType type = w.dataType();
-        return type == DataType.Q4_0 || type == DataType.Q4_1 || type == DataType.Q5_K;
+        return type == DataType.Q4_0
+                || type == DataType.Q4_1
+                || type == DataType.Q5_0
+                || type == DataType.Q5_K
+                || type == DataType.IQ4_XS;
     }
 
     /**
-     * Weights in {@code w}: FP16; Q8_0, Q4_0 and Q4_1 at 34, 18 and 20 bytes to 32 weights; Q4_K,
-     * Q5_K and Q6_K at 144, 176 and 210 bytes to 256.
+     * Weights in {@code w}: FP16; Q8_0, Q4_0, Q4_1 and Q5_0 at 34, 18, 20 and 22 bytes to 32
+     * weights; Q4_K, Q5_K, Q6_K and IQ4_XS at 144, 176, 210 and 136 bytes to 256.
      */
     private static long elements(TornadoTensor w) {
         return switch (w.dataType()) {
             case F16 -> w.asHalfFloatArray().getSize();
             case Q4_0 -> (long) w.asByteArray().getSize() / 18 * 32;
             case Q4_1 -> (long) w.asByteArray().getSize() / 20 * 32;
+            case Q5_0 -> (long) w.asByteArray().getSize() / 22 * 32;
             case Q4_K -> (long) w.asByteArray().getSize() / 144 * 256;
             case Q5_K -> (long) w.asByteArray().getSize() / 176 * 256;
             case Q6_K -> (long) w.asByteArray().getSize() / 210 * 256;
+            case IQ4_XS -> (long) w.asByteArray().getSize() / 136 * 256;
             default -> (long) w.asByteArray().getSize() / 34 * 32;
         };
     }
@@ -322,9 +356,11 @@ public final class FP16Projections {
                     switch (ws[i].dataType()) {
                         case Q4_0 -> Qwen35MMAKernels::dequantizeQ4_0ToFP16Tiled;
                         case Q4_1 -> Qwen35MMAKernels::dequantizeQ4_1ToFP16Tiled;
+                        case Q5_0 -> Qwen35MMAKernels::dequantizeQ5_0ToFP16Tiled;
                         case Q4_K -> Qwen35MMAKernels::dequantizeQ4_KToFP16Tiled;
                         case Q5_K -> Qwen35MMAKernels::dequantizeQ5_KToFP16Tiled;
                         case Q6_K -> Qwen35MMAKernels::dequantizeQ6_KToFP16Tiled;
+                        case IQ4_XS -> Qwen35MMAKernels::dequantizeIQ4_XSToFP16Tiled;
                         default -> Qwen35MMAKernels::dequantizeQ8_0ToFP16Tiled;
                     },
                     context,

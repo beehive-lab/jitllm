@@ -79,6 +79,7 @@ public class MistralFP16FFNLayers
             // === FFN Block ===
             tornadoForwardScheduler.addWorkerGrid(
                     GraphNames.layer(i) + ".ffn_rms_reduce", rmsReduceWorker);
+            addRmsFinalizeWorkers(tornadoForwardScheduler, GraphNames.layer(i) + ".");
             tornadoForwardScheduler.addWorkerGrid(
                     GraphNames.layer(i) + ".rms_ffn_gate_up", configHiddenDimRowMajorWorker);
             tornadoForwardScheduler.addWorkerGrid(

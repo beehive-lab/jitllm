@@ -4,6 +4,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
@@ -72,29 +73,30 @@ public final class DevstralPlanProvider implements TornadoPlanProvider {
         return TornadoSupportSets.STANDARD_AND_BATCH;
     }
 
-    /**
-     * The layers write the FP16 cache on the NVIDIA path, single-token and after the tensor-core
-     * batched prefill, which writes it too.
-     */
+    /** The layers write and read the FP16 cache, single-token and after the batched prefill. */
     @Override
     public Optional<String> fp16KeyValueUnsupported(Combination c) {
-        if (!c.nvidiaScheduler()) {
-            return Optional.of("the non-NVIDIA decode layers keep an FP32 cache");
-        }
+        return c.mode() == ExecutionMode.PREFILL_DECODE
+                ? Optional.of("devstral has no sequential prefill/decode plan")
+                : Optional.empty();
+    }
+
+    /** The layers write and read the FP16 cache on Metal too. */
+    @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
         return c.mode() == ExecutionMode.PREFILL_DECODE
                 ? Optional.of("devstral has no sequential prefill/decode plan")
                 : Optional.empty();
     }
 
     /**
-     * The batched prefill runs Llama's tensor-core layers: Q8_0 and F16 directly, Q4_K with each
-     * projection decoded into FP16 first.
+     * The batched prefill runs Llama's layers: the tensor-core ones on CUDA (Q4_K with each
+     * projection decoded into FP16 first), the SIMD-group ones on Metal, each projection read in
+     * its own type.
      */
     @Override
-    public Optional<String> batchPrefillUnsupported(Combination c) {
-        return c.tensorCores()
-                ? Optional.empty()
-                : Optional.of("the devstral batched prefill runs on the CUDA tensor cores");
+    public boolean metalBatchedPrefillDefault(DataType weights) {
+        return true;
     }
 
     @Override
@@ -130,6 +132,9 @@ public final class DevstralPlanProvider implements TornadoPlanProvider {
             int batchSize,
             ExecutionPolicy policy,
             boolean fp16Cache) {
+        if (!TensorCoreSupport.isTensorCoreCapableBackend()) {
+            return Optional.empty();
+        }
         if (weights == DataType.F16) {
             return Optional.of(
                     org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill

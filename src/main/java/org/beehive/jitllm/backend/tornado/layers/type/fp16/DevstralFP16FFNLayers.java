@@ -71,6 +71,7 @@ public class DevstralFP16FFNLayers
                     GraphNames.layer(i) + ".attn_output_proj", configDimRowMajorGlobalWorker);
             tornadoForwardScheduler.addWorkerGrid(
                     GraphNames.layer(i) + ".ffn_rms_reduce", rmsReduceWorker);
+            addRmsFinalizeWorkers(tornadoForwardScheduler, GraphNames.layer(i) + ".");
             tornadoForwardScheduler.addWorkerGrid(
                     GraphNames.layer(i) + ".rms_ffn_gate_up", configHiddenDimRowMajorWorker);
             tornadoForwardScheduler.addWorkerGrid(
@@ -104,7 +105,7 @@ public class DevstralFP16FFNLayers
         };
         String weightSrc = weightSourceGraphName(layerIndex);
         if (weightSrc != null) {
-            unifiedLayer.consumeFromDevice(weightSrc, layerWeights);
+            bindLayerWeights(unifiedLayer, weightSrc, layerIndex, layerWeights);
         } else {
             unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
         }
@@ -332,26 +333,26 @@ public class DevstralFP16FFNLayers
     }
 
     private TaskGraph configureAttention(TaskGraph unifiedLayer, int layerIndex) {
+        if (useFp16KVCache()) {
+            return unifiedLayer.task(
+                    "attention",
+                    TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
+                    context,
+                    state.workspace.wrapQ,
+                    state.workspace.wrapKeyCacheFP16,
+                    state.workspace.wrapValueCacheFP16,
+                    state.workspace.wrapXb,
+                    config.numberOfHeads(),
+                    config.headSize(),
+                    config.kvDim(),
+                    config.kvMul(),
+                    state.workspace.positionHolder,
+                    layerIndex,
+                    state.workspace.wrapBlockTable,
+                    state.kvBlockCfg,
+                    state.kvBlockStride);
+        }
         if (schedulerType == SchedulerType.NVIDIA) {
-            if (useFp16KVCache()) {
-                return unifiedLayer.task(
-                        "attention",
-                        TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
-                        context,
-                        state.workspace.wrapQ,
-                        state.workspace.wrapKeyCacheFP16,
-                        state.workspace.wrapValueCacheFP16,
-                        state.workspace.wrapXb,
-                        config.numberOfHeads(),
-                        config.headSize(),
-                        config.kvDim(),
-                        config.kvMul(),
-                        state.workspace.positionHolder,
-                        layerIndex,
-                        state.workspace.wrapBlockTable,
-                        state.kvBlockCfg,
-                        state.kvBlockStride);
-            }
             return unifiedLayer.task(
                     "attention",
                     TransformerPagedKvKernels::processHeadsFlashAttentionPaged,

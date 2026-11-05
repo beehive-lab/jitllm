@@ -55,7 +55,7 @@ public class Gemma4LogitsQ8_0Layer extends LogitsQ8_0Layer {
                 DataTransferMode.FIRST_EXECUTION,
                 context,
                 state.workspace.wrapLogits,
-                weights.wclsByteArray.asByteArray(),
+                weights.wclsByteArray.deviceArray(),
                 weights.rms_final_weight_as_floatArray);
 
         // === Final RMS Normalization ===

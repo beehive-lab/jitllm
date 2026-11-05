@@ -545,6 +545,7 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
                         layer + "attn_output_proj",
                         packedWorker(config.dim(), weights.woLayered[i], false));
                 tornadoForwardScheduler.addWorkerGrid(layer + "ffn_rms_reduce", rmsReduceWorker);
+                addRmsFinalizeWorkers(tornadoForwardScheduler, layer);
                 tornadoForwardScheduler.addWorkerGrid(
                         layer + "ffn_rms_apply",
                         PackedActivationTasks.quantizeWorker(config.dim()));
@@ -580,6 +581,8 @@ public class LlamaQ4_0FFNLayers extends LlamaQ8_0FFNLayers {
             tornadoForwardScheduler.addWorkerGrid(
                     layerGraphName(i) + "." + layerTaskPrefix(i) + "ffn_rms_reduce",
                     rmsReduceWorker);
+            addRmsFinalizeWorkers(
+                    tornadoForwardScheduler, layerGraphName(i) + "." + layerTaskPrefix(i));
             tornadoForwardScheduler.addWorkerGrid(
                     layerGraphName(i) + "." + layerTaskPrefix(i) + "ffn_rms_apply", rmsNormWorker);
             tornadoForwardScheduler.addWorkerGrid(

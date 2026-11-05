@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.runtime.tensor.DataType;
@@ -73,6 +74,7 @@ public class BatchDecodeActivation implements ActivationTaskGraph {
     public BatchDecodeActivation(
             State state, Configuration config, String lastBatchLayerId, DataType embedding) {
         this.dim = config.dim();
+        TornadoWorkspaces.stagingHolds(state.workspace, embedding, dim);
         KernelContext ctx = new KernelContext();
         this.itg = buildGraph(ctx, state, lastBatchLayerId, embedding).snapshot();
     }
@@ -92,7 +94,7 @@ public class BatchDecodeActivation implements ActivationTaskGraph {
         // The block table travels the same chain as the caches it addresses: the batch-prefill
         // graphs allocate it, this graph passes it through, decode layer 0 consumes it.
         tg.consumeFromDevice(lastBatchLayerId, state.workspace.wrapBlockTable);
-        if (Activation.keptEmbedding(embedding)) {
+        if (Activation.stagedAsBytes(embedding, state.workspace.embeddingX)) {
             tg.task(
                     "updateX",
                     Activation.embeddingRowDecode(embedding),

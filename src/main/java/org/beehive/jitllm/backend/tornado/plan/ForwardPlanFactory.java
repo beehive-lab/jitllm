@@ -128,7 +128,7 @@ public class ForwardPlanFactory {
         // about materialization, true for every architecture, and asking a provider about a dtype
         // that never reaches the device would scatter one answer across ten files.
         switch (quantization) {
-            case F16, Q8_0, Q4_0, Q4_1, Q4_K, Q5_K, Q6_K -> {}
+            case F16, Q8_0, Q4_0, Q4_1, Q5_0, Q4_K, Q5_K, Q6_K, IQ4_XS -> {}
             case F32 -> throw new UnsupportedOperationException("F32 plans not yet implemented");
             case BF16 ->
                     throw new UnsupportedOperationException(

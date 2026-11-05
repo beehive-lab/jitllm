@@ -33,8 +33,9 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  * the next key/value head's rows, so the transposed values carry that much zero padding past the
  * last head.
  *
- * <p>A head exactly 128 wide instead runs {@link TensorCoreAttentionKernels#flashAttentionHead128},
- * which keeps the scores on chip: no scores, probabilities or FP32 output in memory.
+ * <p>A head 64, 96 or 128 wide instead runs {@link
+ * TensorCoreAttentionKernels#flashAttentionHead128} or its 64- and 96-wide forms, which keep the
+ * scores on chip: no scores, probabilities or FP32 output in memory.
  */
 // @formatter:on
 public final class TensorCoreBatchAttention {
@@ -103,7 +104,8 @@ public final class TensorCoreBatchAttention {
         this.keys = TornadoWorkspaces.halfFloats(kvDim * paddedPositions);
         this.valuesT =
                 TornadoWorkspaces.halfFloats(
-                        kvDim * paddedPositions + valuesPad(headSize, paddedPositions));
+                        kvDim * paddedPositions
+                                + (flash ? 0 : valuesPad(headSize, paddedPositions)));
         this.scores = flash ? null : TornadoWorkspaces.floats(scoreRows);
         this.probs = flash ? null : TornadoWorkspaces.halfFloats(scoreRows);
         this.attn = flash ? null : TornadoWorkspaces.floats(rows * heads * wide);
@@ -111,7 +113,7 @@ public final class TensorCoreBatchAttention {
 
     /** Whether a head this wide runs the flash kernel. */
     private static boolean flash(int headSize) {
-        return headSize == 128;
+        return headSize == 64 || headSize == 96 || headSize == 128;
     }
 
     /** The device bytes {@link #TensorCoreBatchAttention} allocates for this shape. */
@@ -316,7 +318,11 @@ public final class TensorCoreBatchAttention {
                 rows * qDim);
         layer.task(
                 tp + "attn_flash",
-                TensorCoreAttentionKernels::flashAttentionHead128,
+                headSize == 64
+                        ? TensorCoreAttentionKernels::flashAttentionHead64
+                        : headSize == 96
+                                ? TensorCoreAttentionKernels::flashAttentionHead96
+                                : TensorCoreAttentionKernels::flashAttentionHead128,
                 context,
                 state.workspace.batchStartPosHolder,
                 queries,

@@ -1,10 +1,11 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill;
 
-import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.IntStream;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
@@ -18,18 +19,15 @@ import org.beehive.jitllm.backend.tornado.layers.MlxPrefillAttention;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
 import org.beehive.jitllm.backend.tornado.layers.QuantizedBatchProjections;
 import org.beehive.jitllm.backend.tornado.layers.Qwen3PrefillRegions;
-import org.beehive.jitllm.backend.tornado.ops.Fusion;
 import org.beehive.jitllm.backend.tornado.ops.Implementation;
-import org.beehive.jitllm.backend.tornado.ops.Instance;
 import org.beehive.jitllm.backend.tornado.ops.Operands;
 import org.beehive.jitllm.backend.tornado.ops.Region;
-import org.beehive.jitllm.backend.tornado.ops.Step;
 import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
+import org.beehive.jitllm.backend.tornado.ops.jit.LayerKernels;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxAttention;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxMatMul;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
-import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
-import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -37,10 +35,8 @@ import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
-import org.beehive.jitllm.program.op.MatMul;
-import org.beehive.jitllm.program.op.OperationKind;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.tensor.DataType;
-import org.beehive.jitllm.runtime.tensor.TensorRole;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -56,7 +52,8 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
  * Mirrors {@link Qwen3FP16LayersBatchPrefill} but uses Q8_0 weights (ByteArray) and FP32 attention
  * normalization path.
  */
-public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayerTaskGraphs {
+public class Qwen3Q8_0LayersBatchPrefill
+        implements BatchPrefillTransformerLayerTaskGraphs, LayerKernels.Tasks {
 
     @Override
     public String describeProjections() {
@@ -100,6 +97,9 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
     /** Each layer's operations before and after attention. */
     private final List<Qwen3PrefillRegions.Layer> regions;
 
+    /** Each layer's attention, between its regions before and after attention. */
+    private final List<Region> attention;
+
     /** Runs those operations: on MLX where it runs, otherwise on the JIT kernels. */
     private final WorkPlan plan;
 
@@ -125,8 +125,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         this.qDim = nEmbdHeadK * config.numberOfHeads();
         this.kvDim = nEmbdHeadV * nHeadKv;
         this.gqa = config.numberOfHeads() / nHeadKv;
-        Optional<MlxPrefill> mlx =
-                MlxPrefill.resolve(state.executionPolicy(), weights.dataType(), config);
+        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state.executionPolicy(), weights, config);
         this.mlxAttention =
                 MlxPrefillAttention.ifPresent(
                         mlx,
@@ -155,11 +154,16 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         batchSize,
                         batchSize,
                         (role, layer) -> weights.tensor(role, layer).dataType());
-        List<Region> all = Qwen3PrefillRegions.all(regions);
+        this.attention = Qwen3PrefillRegions.attention(config, batchSize);
+        List<Region> all = new ArrayList<>(Qwen3PrefillRegions.all(regions));
+        all.addAll(attention);
         List<Implementation> candidates =
                 mlxProjections != null
-                        ? List.of(new MlxMatMul(mlxProjections), new JitKernels())
-                        : List.of(new JitKernels());
+                        ? List.of(
+                                new MlxMatMul(mlxProjections),
+                                new MlxAttention(mlxAttention),
+                                new LayerKernels(this))
+                        : List.of(new LayerKernels(this));
         this.plan =
                 WorkPlan.of(
                         all,
@@ -263,16 +267,16 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         // Per-layer weights (Q8_0 format)
         Object[] layerWeights = {
             weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-            weights.wqLayered[layerIndex].asByteArray(),
-            weights.wkLayered[layerIndex].asByteArray(),
-            weights.wvLayered[layerIndex].asByteArray(),
-            weights.woLayered[layerIndex].asByteArray(),
+            weights.wqLayered[layerIndex].deviceArray(),
+            weights.wkLayered[layerIndex].deviceArray(),
+            weights.wvLayered[layerIndex].deviceArray(),
+            weights.woLayered[layerIndex].deviceArray(),
             weights.rms_att_QNormLayered[layerIndex].asFloatArray(),
             weights.rms_att_KNormLayered[layerIndex].asFloatArray(),
             weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-            weights.w1Layered[layerIndex].asByteArray(),
-            weights.w2Layered[layerIndex].asByteArray(),
-            weights.w3Layered[layerIndex].asByteArray()
+            weights.w1Layered[layerIndex].deviceArray(),
+            weights.w2Layered[layerIndex].deviceArray(),
+            weights.w3Layered[layerIndex].deviceArray()
         };
         layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
         // The q and k norms are read by this graph's own task, so decode reuses them. The plan's
@@ -292,7 +296,9 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
         layer.task(
                 "batch_qk_rmsnorm",
-                Qwen3Kernels::batchedFusedQKRmsNormSimdgroup,
+                simdgroupQkNorm()
+                        ? Qwen3Kernels::batchedFusedQKRmsNormSimdgroup
+                        : Qwen3Kernels::batchedFusedQKRmsNorm,
                 context,
                 state.workspace.wrapQBatch,
                 state.workspace.wrapKBatch,
@@ -347,9 +353,31 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
 
         // Reuses batchedFlashAttention; passes qDim as the 'dim' stride (valid: qDim==dim
         // typically).
+        plan.emit(layer, attention.get(layerIndex), operands, state.workspace.weightBindings);
+
+        // Output projection, residual add, RMS norm, gate|up, SwiGLU, down, residual add.
+        plan.emit(
+                layer,
+                regions.get(layerIndex).afterAttention(),
+                operands,
+                state.workspace.weightBindings);
+
+        layer.persistOnDevice(state.workspace.wrapXBatch, keyCache(), valueCache());
         if (mlxAttention != null) {
-            mlxAttention.attention(layer, "batch_attention", layerIndex);
-        } else if (useFp16KVCache()) {
+            mlxAttention.persist(layer);
+        }
+        if (mlxProjections != null) {
+            mlxProjections.persist(layer);
+        }
+
+        return layer;
+    }
+
+    // @formatter:on
+
+    @Override
+    public void attention(TaskGraph layer, int layerIndex) {
+        if (useFp16KVCache()) {
             layer.task(
                     "batch_attention",
                     simdgroupAttention()
@@ -358,7 +386,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                                             ::batchedFlashAttentionKVFP16PagedHead64
                                     : nEmbdHead == 96
                                             ? TransformerPagedKvBatchPrefillSimdgroupFP16Kernels
-                                                    ::batchedFlashAttentionKVFP16PagedHead96
+                                                    ::batchedFlashAttentionKVFP16PagedHead96Rows8
                                             : TransformerPagedKvBatchPrefillSimdgroupFP16Kernels
                                                     ::batchedFlashAttentionKVFP16PagedHead128Rows8)
                             : TransformerPagedKvBatchPrefillKernels
@@ -405,31 +433,16 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     state.kvBlockStride,
                     qDim);
         }
-
-        // Output projection, residual add, RMS norm, gate|up, SwiGLU, down, residual add.
-        plan.emit(
-                layer,
-                regions.get(layerIndex).afterAttention(),
-                operands,
-                state.workspace.weightBindings);
-
-        layer.persistOnDevice(state.workspace.wrapXBatch, keyCache(), valueCache());
-        if (mlxAttention != null) {
-            mlxAttention.persist(layer);
-        }
-        if (mlxProjections != null) {
-            mlxProjections.persist(layer);
-        }
-
-        return layer;
     }
-
-    // @formatter:on
 
     public void updateGridScheduler(GridScheduler scheduler) {
         WorkerGrid qkRmsNormWorker =
-                WorkerGridFactory.genericWorker(
-                        batchSize * (config.numberOfHeads() + nHeadKv) * 32, 128);
+                simdgroupQkNorm()
+                        ? WorkerGridFactory.genericWorker(
+                                batchSize * (config.numberOfHeads() + nHeadKv) * 32, 128)
+                        : WorkerGridFactory.genericWorker(
+                                batchSize * (config.numberOfHeads() + nHeadKv) * nEmbdHead,
+                                nEmbdHead);
 
         int ropeGlobal = batchSize * (qDim / 2);
         int ropeLocal = Math.min(512, ropeGlobal);
@@ -441,7 +454,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         ? 32 * LaneAttentionPolicy.PREFILL_WARPS_PER_GROUP
                         : WorkerGridFactory.findOptimalLocalSize(nEmbdHead);
         int queryTile =
-                useFp16KVCache() && nEmbdHead == 128
+                useFp16KVCache() && nEmbdHead != 64
                         ? TransformerPagedKvBatchPrefillSimdgroupFP16Kernels.ROWS8_QUERY_TILE
                         : TransformerPagedKvBatchPrefillSimdgroupKernels.QUERY_TILE;
         int attnTiles = (batchSize + queryTile - 1) / queryTile;
@@ -459,9 +472,7 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
             String p = GraphNames.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_qk_rmsnorm", qkRmsNormWorker);
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
-            if (mlxAttention != null) {
-                mlxAttention.addGrids(scheduler, p, "batch_attention");
-            } else {
+            if (!plan.runs(attention.get(i), "MLX")) {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }
         }
@@ -480,115 +491,9 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         return context;
     }
 
-    /**
-     * The JIT kernels of this prefill. For a Q8_0 layer the kernels merge the steps around the
-     * GEMM: RMS apply, gate|up and SwiGLU in one kernel, and each residual add into its GEMM. A
-     * layer with other types ({@link #nativeLayer}) runs one kernel per weight type ({@link
-     * QuantizedBatchProjections}).
-     */
-    private final class JitKernels implements Implementation {
-
-        private final Fusion attentionInput =
-                Fusion.of(
-                                "RMS norm + q|k|v",
-                                OperationKind.RMS_NORM,
-                                OperationKind.MAT_MUL,
-                                OperationKind.MAT_MUL,
-                                OperationKind.MAT_MUL)
-                        .when(Fusion::sameInput);
-
-        private final Fusion gateUp =
-                Fusion.of(
-                        "RMS norm + gate|up + SwiGLU",
-                        OperationKind.RMS_NORM,
-                        OperationKind.MAT_MUL,
-                        OperationKind.MAT_MUL,
-                        OperationKind.SWIGLU);
-
-        private final Fusion projectionAdd =
-                Fusion.of(
-                        "projection + residual add",
-                        OperationKind.MAT_MUL,
-                        OperationKind.RESIDUAL_ADD);
-
-        @Override
-        public String library() {
-            return "none";
-        }
-
-        @Override
-        public List<Fusion> fusions() {
-            return List.of(attentionInput, gateUp, projectionAdd);
-        }
-
-        @Override
-        public boolean accepts(Step step, Target target) {
-            return true;
-        }
-
-        @Override
-        public Instance create(
-                List<Step> steps,
-                Target target,
-                KernelContext kernelContext,
-                WeightPrepacking prepacking) {
-            return new Instance() {
-
-                /** The layers whose graphs got tasks, by graph name. */
-                private final Map<String, Integer> layers = new LinkedHashMap<>();
-
-                @Override
-                public void emit(
-                        TaskGraph graph, Step step, Operands operands, WeightBindings bindings) {
-                    int i = step.layer();
-                    layers.put(graph.getTaskGraphName(), i);
-                    String name = graph.getTaskGraphName();
-                    if (step.fusion() == attentionInput) {
-                        attentionInput(graph, i);
-                        for (Object w :
-                                new Object[] {
-                                    weights.rms_att_weightLayered[i].asFloatArray(),
-                                    weights.wqLayered[i].asByteArray(),
-                                    weights.wkLayered[i].asByteArray(),
-                                    weights.wvLayered[i].asByteArray()
-                                }) {
-                            bindings.record(w, name);
-                        }
-                    } else if (step.fusion() == gateUp) {
-                        feedForwardUp(graph, i);
-                        for (Object w :
-                                new Object[] {
-                                    weights.rms_ffn_weightLayered[i].asFloatArray(),
-                                    weights.w1Layered[i].asByteArray(),
-                                    weights.w3Layered[i].asByteArray()
-                                }) {
-                            bindings.record(w, name);
-                        }
-                    } else if (step.fusion() == projectionAdd) {
-                        MatMul m = step.first(MatMul.class);
-                        if (m.weight().role() == TensorRole.ATTENTION_OUTPUT) {
-                            attentionOutput(graph, i);
-                            bindings.record(weights.woLayered[i].asByteArray(), name);
-                        } else {
-                            feedForwardDown(graph, i);
-                            bindings.record(weights.w2Layered[i].asByteArray(), name);
-                        }
-                    } else {
-                        throw new IllegalArgumentException(
-                                "not a fusion of the JIT kernels: " + step.fusion());
-                    }
-                }
-
-                @Override
-                public void addGrids(GridScheduler scheduler) {
-                    layers.forEach((graph, i) -> jitGrids(scheduler, graph + ".", i));
-                }
-            };
-        }
-    }
-
     /** RMS norm into wrapXbBatch (FP32), then q, k and v: one Q8_0 kernel, or one per type. */
-    private void attentionInput(TaskGraph layer, int layerIndex) {
+    @Override
+    public void attentionInput(TaskGraph layer, int layerIndex) {
         int dim = config.dim();
         layer.task(
                 "batch_attn_rms",
@@ -646,8 +551,11 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     "batch_qkv",
                     tiledQkv()
                             ? (simdgroupGemm()
-                                    ? TransformerBatchPrefillSimdgroupKernels
-                                            ::batchedGemmQKVQ8HalfTiles
+                                    ? (halfTilesQkv()
+                                            ? TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmQKVQ8HalfTiles
+                                            : TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmQKVQ8)
                                     : TransformerBatchPrefillKernels::batchedGemmQKVQ8)
                             : Qwen3Kernels::batchedFusedQKVMatmulQ8_0,
                     context,
@@ -666,7 +574,8 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
     }
 
     /** The output projection with the residual add in the same kernel. */
-    private void attentionOutput(TaskGraph layer, int layerIndex) {
+    @Override
+    public void attentionOutput(TaskGraph layer, int layerIndex) {
         int dim = config.dim();
         if (nativeLayer(layerIndex)) {
             batchProjections()
@@ -684,8 +593,11 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     "batch_attn_out",
                     tiledGemm()
                             ? (simdgroupGemm()
-                                    ? TransformerBatchPrefillSimdgroupKernels
-                                            ::batchedGemmQ8WithResidualHalfTiles
+                                    ? (halfTilesDim()
+                                            ? TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmQ8WithResidualHalfTiles
+                                            : TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmQ8WithResidual)
                                     : TransformerBatchPrefillKernels::batchedGemmQ8WithResidual)
                             : TransformerBatchPrefillKernels::batchedMatVecWithResidualQ8,
                     context,
@@ -699,7 +611,8 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
     }
 
     /** RMS norm, gate|up and SwiGLU: one Q8_0 kernel, or the per-type kernels. */
-    private void feedForwardUp(TaskGraph layer, int layerIndex) {
+    @Override
+    public void feedForwardUp(TaskGraph layer, int layerIndex) {
         int dim = config.dim();
         int hidDim = config.hiddenDim();
         layer.task(
@@ -724,8 +637,11 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     "batch_ffn_gate_up",
                     tiledGemm()
                             ? (simdgroupGemm()
-                                    ? TransformerBatchPrefillSimdgroupKernels
-                                            ::batchedGemmRmsNormFFNGateUpQ8HalfTiles
+                                    ? (halfTilesHid()
+                                            ? TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmRmsNormFFNGateUpQ8HalfTiles
+                                            : TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmRmsNormFFNGateUpQ8)
                                     : TransformerBatchPrefillKernels::batchedGemmRmsNormFFNGateUpQ8)
                             : TransformerBatchPrefillKernels::batchedFusedRmsNormFFNGateUpQ8,
                     context,
@@ -742,7 +658,8 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
     }
 
     /** The down projection with the residual add in the same kernel. */
-    private void feedForwardDown(TaskGraph layer, int layerIndex) {
+    @Override
+    public void feedForwardDown(TaskGraph layer, int layerIndex) {
         int dim = config.dim();
         int hidDim = config.hiddenDim();
         if (nativeLayer(layerIndex)) {
@@ -761,8 +678,11 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                     "batch_ffn_down",
                     tiledGemm()
                             ? (simdgroupGemm()
-                                    ? TransformerBatchPrefillSimdgroupKernels
-                                            ::batchedGemmQ8WithResidualHalfTiles
+                                    ? (halfTilesDim()
+                                            ? TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmQ8WithResidualHalfTiles
+                                            : TransformerBatchPrefillSimdgroupKernels
+                                                    ::batchedGemmQ8WithResidual)
                                     : TransformerBatchPrefillKernels::batchedGemmQ8WithResidual)
                             : TransformerBatchPrefillKernels::batchedMatVecWithResidualQ8,
                     context,
@@ -776,7 +696,8 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
     }
 
     /** The grids of the JIT kernels' tasks in layer {@code i}'s graph ({@code p} is its prefix). */
-    private void jitGrids(GridScheduler scheduler, String p, int i) {
+    @Override
+    public void addGrids(GridScheduler scheduler, String p, int i) {
         int dim = config.dim();
         int hidDim = config.hiddenDim();
 
@@ -788,18 +709,29 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                 WorkerGridFactory.genericWorker(
                         batchSize * qkvRows * LOCAL_WORK_GROUP_SIZE, LOCAL_WORK_GROUP_SIZE);
 
-        int gemmLocal = simdgroupGemm() ? 128 : 256;
+        int dimLocal =
+                simdgroupGemm()
+                        ? TransformerBatchPrefillSimdgroupKernels.threads(halfTilesDim())
+                        : 256;
+        int hidLocal =
+                simdgroupGemm()
+                        ? TransformerBatchPrefillSimdgroupKernels.threads(halfTilesHid())
+                        : 256;
+        int qkvLocal =
+                simdgroupGemm()
+                        ? TransformerBatchPrefillSimdgroupKernels.threads(halfTilesQkv())
+                        : 256;
         int hidTile = simdgroupGemm() ? 32 : 64;
         WorkerGrid gemmDimWorker =
                 WorkerGridFactory.genericWorker(
-                        ((dim + 63) / 64) * ((batchSize + 63) / 64) * gemmLocal, gemmLocal);
+                        ((dim + 63) / 64) * ((batchSize + 63) / 64) * dimLocal, dimLocal);
         WorkerGrid gemmHidWorker =
                 WorkerGridFactory.genericWorker(
-                        ((hidDim + hidTile - 1) / hidTile) * ((batchSize + 63) / 64) * gemmLocal,
-                        gemmLocal);
+                        ((hidDim + hidTile - 1) / hidTile) * ((batchSize + 63) / 64) * hidLocal,
+                        hidLocal);
         WorkerGrid gemmQkvWorker =
                 WorkerGridFactory.genericWorker(
-                        ((qDim + 2 * kvDim) / 64) * ((batchSize + 63) / 64) * gemmLocal, gemmLocal);
+                        ((qDim + 2 * kvDim) / 64) * ((batchSize + 63) / 64) * qkvLocal, qkvLocal);
         WorkerGrid matVecDimWorker =
                 WorkerGridFactory.genericWorker(
                         batchSize * dim * LOCAL_WORK_GROUP_SIZE, LOCAL_WORK_GROUP_SIZE);
@@ -841,11 +773,8 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                         WorkerGridFactory.genericWorker(
                                 (batchSize * hidDim + 255) / 256 * 256, 256));
             } else if (simdgroupGemm()) {
-                int threads = TransformerBatchPrefillSimdgroupKernels.THREADS;
                 scheduler.addWorkerGrid(
-                        p + "batch_ffn_gate_up",
-                        WorkerGridFactory.genericWorker(
-                                ((hidDim + 31) / 32) * ((batchSize + 63) / 64) * threads, threads));
+                        p + "batch_ffn_gate_up", batchProjections().gateUpWorker(w1, hidDim));
             } else if (w1.dataType() == DataType.Q8_0) {
                 scheduler.addWorkerGrid(
                         p + "batch_ffn_gate_up", tiledGemm() ? gemmHidWorker : matVecHidWorker);
@@ -943,6 +872,14 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
                 : state.workspace.wrapValueCache;
     }
 
+    /**
+     * The q/k RMS norm with one SIMD group per token and head. Metal only: OpenCL cannot compile
+     * SIMD-group reductions. Other backends run the tree kernel.
+     */
+    private static boolean simdgroupQkNorm() {
+        return TornadoDevices.current().backend().equals(BackendId.METAL);
+    }
+
     /** The tiled projection kernels; see {@link BatchPrefillGemmPolicy}. */
     private static boolean tiledGemm() {
         return BatchPrefillGemmPolicy.tiled();
@@ -979,5 +916,26 @@ public class Qwen3Q8_0LayersBatchPrefill implements BatchPrefillTransformerLayer
         return useFp16KVCache()
                 ? BatchPrefillGemmPolicy.simdgroupAttention(nEmbdHead)
                 : laneAttention() && BatchPrefillGemmPolicy.simdgroupAttention();
+    }
+
+    /**
+     * Whether the Q8_0 q|k|v GEMM runs the {@code ...HalfTiles} kernel; see {@link
+     * TransformerBatchPrefillSimdgroupKernels#halfTiles}.
+     */
+    private boolean halfTilesQkv() {
+        return TransformerBatchPrefillSimdgroupKernels.halfTiles(
+                (qDim + 2 * kvDim) / 64, batchSize);
+    }
+
+    /** Whether the Q8_0 projections into the model width run the {@code ...HalfTiles} kernels. */
+    private boolean halfTilesDim() {
+        return TransformerBatchPrefillSimdgroupKernels.halfTiles(
+                (config.dim() + 63) / 64, batchSize);
+    }
+
+    /** Whether the Q8_0 gate|up GEMM runs the {@code ...HalfTiles} kernel. */
+    private boolean halfTilesHid() {
+        return TransformerBatchPrefillSimdgroupKernels.halfTiles(
+                (config.hiddenDim() + 31) / 32, batchSize);
     }
 }

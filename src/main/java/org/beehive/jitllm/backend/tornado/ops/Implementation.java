@@ -26,7 +26,7 @@ public interface Implementation {
 
     /** The device memory {@link #create} will allocate for {@code steps}, computed up front. */
     default BatchPrefillWorkspace needs(List<Step> steps, Target target) {
-        return BatchPrefillWorkspace.fixed(0);
+        return BatchPrefillWorkspace.withoutResidencyChoice(0);
     }
 
     /** Allocates what {@code steps} need and returns the object that adds their tasks. */

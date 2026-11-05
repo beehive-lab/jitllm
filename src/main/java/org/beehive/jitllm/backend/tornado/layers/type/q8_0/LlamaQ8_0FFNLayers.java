@@ -739,8 +739,10 @@ public class LlamaQ8_0FFNLayers
             // --- FFN Block ---
             // RMS Normalization
             tornadoForwardScheduler.addWorkerGrid(l + "ffn_rms_reduce", rmsReduceWorker);
+            addRmsFinalizeWorkers(tornadoForwardScheduler, l);
         }
 
+        projections.addGrids(tornadoForwardScheduler);
         return tornadoForwardScheduler;
     }
 

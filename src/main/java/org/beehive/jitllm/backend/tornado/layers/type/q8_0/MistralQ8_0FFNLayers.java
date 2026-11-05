@@ -48,14 +48,14 @@ public class MistralQ8_0FFNLayers
         unifiedLayer.transferToDevice(
                 DataTransferMode.FIRST_EXECUTION,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqLayered[layerIndex].asByteArray(),
-                weights.wkLayered[layerIndex].asByteArray(),
-                weights.wvLayered[layerIndex].asByteArray(),
-                weights.woLayered[layerIndex].asByteArray(),
+                weights.wqLayered[layerIndex].deviceArray(),
+                weights.wkLayered[layerIndex].deviceArray(),
+                weights.wvLayered[layerIndex].deviceArray(),
+                weights.woLayered[layerIndex].deviceArray(),
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.w1Layered[layerIndex].asByteArray(),
-                weights.w2Layered[layerIndex].asByteArray(),
-                weights.w3Layered[layerIndex].asByteArray());
+                weights.w1Layered[layerIndex].deviceArray(),
+                weights.w2Layered[layerIndex].deviceArray(),
+                weights.w3Layered[layerIndex].deviceArray());
         unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
 
         // === Attention Block ===
@@ -366,6 +366,7 @@ public class MistralQ8_0FFNLayers
                     GraphNames.layer(i) + ".attention", parallelAttentionWorker);
             tornadoForwardScheduler.addWorkerGrid(
                     GraphNames.layer(i) + ".ffn_rms_reduce", rmsReduceWorker);
+            addRmsFinalizeWorkers(tornadoForwardScheduler, GraphNames.layer(i) + ".");
             if (nativeLayer(i)) {
                 addNativeWorkerGrids(tornadoForwardScheduler, GraphNames.layer(i) + ".", i);
                 continue;
@@ -382,6 +383,7 @@ public class MistralQ8_0FFNLayers
                     GraphNames.layer(i) + ".ffn_down_proj", configDimRowMajorGlobalWorker);
         }
 
+        projections.addGrids(tornadoForwardScheduler);
         return tornadoForwardScheduler;
     }
 

@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.workspace;
 import org.beehive.jitllm.backend.tornado.kv.TornadoKvStore;
 import org.beehive.jitllm.runtime.kv.KvLease;
 import org.beehive.jitllm.runtime.kv.KvStorage;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
@@ -151,6 +152,19 @@ public final class TornadoWorkspaces {
         int q8BlockBytes = 34;
         int blocksNeeded = (size + blockSize - 1) / blockSize;
         workspace.embeddingX = new ByteArray(blocksNeeded * q8BlockBytes);
+    }
+
+    /**
+     * Makes a Q8_0 model's byte staging row hold an {@code embedding} row of {@code size} values:
+     * F16 needs 2 bytes per value, more than a Q8_0 row, and a UD-Q8_K_XL file keeps its embeddings
+     * in F16 beside Q8_0 layers. Called by the graphs that bind the row, before they bind it.
+     */
+    public static void stagingHolds(TornadoWorkspace workspace, DataType embedding, int size) {
+        if (embedding == DataType.F16
+                && workspace.embeddingX instanceof ByteArray bytes
+                && bytes.getSize() < size * Short.BYTES) {
+            workspace.embeddingX = new ByteArray(size * Short.BYTES);
+        }
     }
 
     /**

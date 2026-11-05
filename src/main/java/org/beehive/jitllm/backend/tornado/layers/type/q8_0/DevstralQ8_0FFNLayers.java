@@ -54,18 +54,18 @@ public class DevstralQ8_0FFNLayers extends DevstralLayerTaskGraphs {
         }
         Object[] layerWeights = {
             weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-            weights.wqLayered[layerIndex].asByteArray(),
-            weights.wkLayered[layerIndex].asByteArray(),
-            weights.wvLayered[layerIndex].asByteArray(),
-            weights.woLayered[layerIndex].asByteArray(),
+            weights.wqLayered[layerIndex].deviceArray(),
+            weights.wkLayered[layerIndex].deviceArray(),
+            weights.wvLayered[layerIndex].deviceArray(),
+            weights.woLayered[layerIndex].deviceArray(),
             weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-            weights.w1Layered[layerIndex].asByteArray(),
-            weights.w2Layered[layerIndex].asByteArray(),
-            weights.w3Layered[layerIndex].asByteArray()
+            weights.w1Layered[layerIndex].deviceArray(),
+            weights.w2Layered[layerIndex].deviceArray(),
+            weights.w3Layered[layerIndex].deviceArray()
         };
         String weightSrc = weightSourceGraphName(layerIndex);
         if (weightSrc != null) {
-            unifiedLayer.consumeFromDevice(weightSrc, layerWeights);
+            bindLayerWeights(unifiedLayer, weightSrc, layerIndex, layerWeights);
         } else {
             unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
         }
@@ -421,6 +421,7 @@ public class DevstralQ8_0FFNLayers extends DevstralLayerTaskGraphs {
                         l + "ffn_down_proj",
                         PackedActivationTasks.projectionWorker(config.dim(), PACKED_LOCAL));
             }
+            projections.addGrids(tornadoForwardScheduler);
             return tornadoForwardScheduler;
         }
 
@@ -456,6 +457,7 @@ public class DevstralQ8_0FFNLayers extends DevstralLayerTaskGraphs {
                     l + "ffn_down_proj", configDimRowMajorGlobalWorker);
         }
 
+        projections.addGrids(tornadoForwardScheduler);
         return tornadoForwardScheduler;
     }
 

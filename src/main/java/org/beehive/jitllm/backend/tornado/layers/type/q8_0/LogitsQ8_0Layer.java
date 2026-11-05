@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_1;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
@@ -56,7 +57,7 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
                 DataTransferMode.FIRST_EXECUTION,
                 context,
                 state.workspace.wrapLogits,
-                weights.wclsByteArray.asByteArray(),
+                weights.wclsByteArray.deviceArray(),
                 weights.rms_final_weight_as_floatArray);
         // === Final RMS Normalization ===
         logits.task(
@@ -243,6 +244,19 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
                             config.dim(),
                             config.vocabularySize(),
                             localSize);
+            case F16 ->
+                    // A UD-Q8_K_XL file: Q8_0 layers, the output projection (tied to the
+                    // embeddings) F16.
+                    logits.task(
+                            "vocab_proj",
+                            TransformerComputeKernelsLayered::matrixVectorGeneric,
+                            context,
+                            state.workspace.wrapX,
+                            state.workspace.wrapLogits,
+                            w.asHalfFloatArray(),
+                            config.dim(),
+                            config.vocabularySize(),
+                            localSize);
             case Q4_0 ->
                     logits.task(
                             "vocab_proj",
@@ -258,6 +272,17 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
                     logits.task(
                             "vocab_proj",
                             TransformerComputeKernelsQ4_1::matrixVectorGenericQ4_1,
+                            context,
+                            state.workspace.wrapX,
+                            state.workspace.wrapLogits,
+                            w.asByteArray(),
+                            config.dim(),
+                            config.vocabularySize(),
+                            localSize);
+            case Q5_0 ->
+                    logits.task(
+                            "vocab_proj",
+                            TransformerComputeKernelsQ5_0::matrixVectorGenericQ5_0,
                             context,
                             state.workspace.wrapX,
                             state.workspace.wrapLogits,
@@ -318,6 +343,10 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
         WorkerGrid vocabWorker = WorkerGridFactory.genericWorker(vocabSizeRowMajor, vocabThreads);
         tornadoForwardScheduler.addWorkerGrid("logits.vocab_proj", vocabWorker);
         tornadoForwardScheduler.addWorkerGrid("logits.rms_reduce", rmsReduceWorker(logitsRMS));
+        if (schedulerType == SchedulerType.NON_NVIDIA) {
+            tornadoForwardScheduler.addWorkerGrid(
+                    "logits.rms_finalize", WorkerGridFactory.createSingleWorker());
+        }
         tornadoForwardScheduler.addWorkerGrid("logits.mapContextLogits", logitsRMS);
         if (deviceSample()) {
             WorkerGrid argmaxWorker = WorkerGridFactory.genericWorker(SAMPLE_LOCAL, SAMPLE_LOCAL);

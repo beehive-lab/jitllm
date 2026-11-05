@@ -16,6 +16,16 @@ public record Phi3Configuration(
         float ropeTheta)
         implements Configuration {
 
+    /**
+     * One: the decode graphs of a batched plan consume the weights the prefill graphs uploaded, so
+     * the plan holds them once. Measured: Phi-3-mini F16 (7.1 GiB file) peaks at 7.9 GiB of GPU
+     * memory batched on CUDA.
+     */
+    @Override
+    public int weightBindingFamilies(int layerGraphFamilies) {
+        return 1;
+    }
+
     @Override
     public String quantization() {
         return quantization;

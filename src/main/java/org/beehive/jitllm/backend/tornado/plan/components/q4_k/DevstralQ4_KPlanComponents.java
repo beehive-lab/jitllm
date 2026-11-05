@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.plan.components.q4_k;
 
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
@@ -11,6 +12,7 @@ import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.type.q4_k.DevstralQ4_KFFNLayers;
 import org.beehive.jitllm.backend.tornado.layers.type.q4_k.decode.DevstralQ4_KFFNLayersDecode;
 import org.beehive.jitllm.backend.tornado.layers.type.q4_k.prefill.DevstralQ4_KLayersBatchPrefillMMA;
+import org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill.LlamaQ8_0LayersBatchPrefill;
 import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefillActivation;
@@ -63,7 +65,10 @@ public class DevstralQ4_KPlanComponents implements BatchPrefillDecodeForwardPlan
     /** the F16 tensor-core layers, each Q4_K (or Q6_K) projection decoded into FP16 first. */
     @Override
     public BatchPrefillTransformerLayerTaskGraphs batchPrefillTransformerLayers(int batchSize) {
-        return new DevstralQ4_KLayersBatchPrefillMMA(state, weights, config, batchSize);
+        if (TensorCoreSupport.isTensorCoreCapableBackend()) {
+            return new DevstralQ4_KLayersBatchPrefillMMA(state, weights, config, batchSize);
+        }
+        return new LlamaQ8_0LayersBatchPrefill(state, weights, config, batchSize);
     }
 
     /** The host decodes the embedding, whatever its type, into the FP32 batch directly. */
