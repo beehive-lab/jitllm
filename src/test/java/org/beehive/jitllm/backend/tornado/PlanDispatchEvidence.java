@@ -279,7 +279,25 @@ public final class PlanDispatchEvidence {
         assertTrue(
                 "not a batched plan: " + plan.getClass().getSimpleName(),
                 plan instanceof TornadoVMMasterPlanBatchPrefillDecode);
-        var batched = (TornadoVMMasterPlanBatchPrefillDecode) plan;
+        return taskKernelsByGraph(
+                (TornadoVMMasterPlanBatchPrefillDecode) plan, "batchLayer_", task);
+    }
+
+    /**
+     * {@link #batchedTaskKernelsByGraph} for the families whose batched-prefill layer graphs are
+     * {@code batchPrefillLayer_<i>}, such as Qwen3. Empty when the plan is not batched or no such
+     * graph holds the task.
+     */
+    public static java.util.Map<String, String> batchPrefillTaskKernelsByGraph(
+            TornadoVMMasterPlan plan, String task) {
+        if (!(plan instanceof TornadoVMMasterPlanBatchPrefillDecode batched)) {
+            return java.util.Map.of();
+        }
+        return taskKernelsByGraph(batched, "batchPrefillLayer_", task);
+    }
+
+    private static java.util.Map<String, String> taskKernelsByGraph(
+            TornadoVMMasterPlanBatchPrefillDecode batched, String graphPrefix, String task) {
         java.util.Map<String, String> kernels = new java.util.TreeMap<>();
         try {
             java.lang.reflect.Field field = ImmutableTaskGraph.class.getDeclaredField("taskGraph");
@@ -289,7 +307,7 @@ public final class PlanDispatchEvidence {
             for (ImmutableTaskGraph immutable :
                     batched.batchPrefillDecodeForwardPlan.getImmutableTaskGraphs()) {
                 TaskGraph graph = (TaskGraph) field.get(immutable);
-                if (!graph.getTaskGraphName().startsWith("batchLayer_")) {
+                if (!graph.getTaskGraphName().startsWith(graphPrefix)) {
                     continue;
                 }
                 var found = ((TornadoTaskGraphInterface) impl.get(graph)).getTask(task);

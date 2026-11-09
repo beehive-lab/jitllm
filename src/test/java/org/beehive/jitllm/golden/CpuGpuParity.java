@@ -388,15 +388,94 @@ abstract class CpuGpuParity {
                     prefillBatchSize > 1 ? "batched prefill" : "sequential prefill",
                     prefillBatchSize);
         }
+        dumpRowsIfAsked(gpu);
+        assertRows(label, cpu.rows, gpu.rows, bounds);
+        return gpu;
+    }
 
-        assertEquals("compared row count", cpu.rows.size(), gpu.rows.size());
-        // Opt-in: the accelerator's rows as raw little-endian floats, one row after another, so
-        // two builds' accelerator outputs can be compared directly with each other rather than
-        // only each against the CPU reference (the metrics below measure the latter).
+    // @formatter:off
+    /**
+     * {@link #assertParityBatched} for a batched prefill whose GEMMs may stage the weights as FP16,
+     * the {@code ...HalfTiles} kernels on Metal, with what actually ran deciding the comparison.
+     *
+     * <p>Where no projection ran such a kernel, this is {@link #assertParityBatched} with {@code
+     * bounds}. Where some did, there are two comparisons:
+     *
+     * <ul>
+     *   <li>{@code bounds} against the host with exactly those weights rounded to FP16 for the
+     *       positions the prefill covered ({@link
+     *       GoldenCapture#captureWithPrefillWeightsRoundedToFp16}). What remains is accumulation
+     *       order, so an accumulation, masking or indexing defect fails at the original
+     *       sensitivity.
+     *   <li>{@code staged} against the exact host: the end-to-end cost of the rounding.
+     * </ul>
+     *
+     * <p>Example, Metal at width 128, Qwen3-0.6B Q8_0, q|k|v and gate|up staged as FP16: against
+     * the rounded host relative L2 8.6e-6, largest absolute difference 2.1e-4, no violations at
+     * {@link #Q8_0}'s atol; against the exact host 5.64e-4, 0.0111 and 0.088%.
+     */
+    // @formatter:on
+    GoldenCapture.Result assertParityBatchedStagedWeights(
+            Fixture fixture, Bounds bounds, Bounds staged, int prefillBatchSize) throws Exception {
+        Path model = GoldenFixture.locate(fixture);
+        if (model == null) {
+            System.out.println(
+                    "[SKIP] environment absent — " + GoldenFixture.absentMessage(fixture));
+            assumeTrue("environment absent: fixture " + fixture.fileName, false);
+        }
+        if (!TupleInfo.acceleratorPresent()) {
+            System.out.println("[SKIP] environment absent — no TornadoVM device");
+            assumeTrue("environment absent: no accelerator", false);
+        }
+        GoldenCapture.Result cpu = GoldenCapture.capture(model, false);
+        GoldenCapture.Result gpu =
+                GoldenCapture.capture(model, true, cpu.tokenIds, prefillBatchSize, true);
+        System.out.printf("  batched prefill, batch %d%n", prefillBatchSize);
+        dumpRowsIfAsked(gpu);
+        java.util.Map<Integer, java.util.Set<String>> rounded = new java.util.TreeMap<>();
+        gpu.prefillProjectionKernels.forEach(
+                (layer, kernels) ->
+                        kernels.forEach(
+                                (task, kernel) -> {
+                                    if (kernel.endsWith("HalfTiles")) {
+                                        rounded.computeIfAbsent(
+                                                        layer, l -> new java.util.TreeSet<>())
+                                                .addAll(
+                                                        GoldenCapture.PREFILL_PROJECTION_WEIGHTS
+                                                                .get(task));
+                                    }
+                                }));
+        String label = fixture.quantization;
+        if (rounded.isEmpty()) {
+            assertRows(label, cpu.rows, gpu.rows, bounds);
+            return gpu;
+        }
+        System.out.printf(
+                "  weights staged as FP16 in %d layers, layer 0: %s%n",
+                rounded.size(), rounded.get(rounded.keySet().iterator().next()));
+        GoldenCapture.Result reference =
+                GoldenCapture.captureWithPrefillWeightsRoundedToFp16(model, cpu.tokenIds, rounded);
+        assertRows(label + " against the FP16-staged host", reference.rows, gpu.rows, bounds);
+        assertRows(label + " against the exact host", cpu.rows, gpu.rows, staged);
+        return gpu;
+    }
+
+    /**
+     * Opt-in: the accelerator's rows as raw little-endian floats, one row after another, so two
+     * builds' accelerator outputs can be compared directly with each other rather than only each
+     * against the CPU reference (the metrics measure the latter).
+     */
+    private static void dumpRowsIfAsked(GoldenCapture.Result gpu) throws java.io.IOException {
         String dump = System.getProperty("jitllm.parity.dumpRows");
         if (dump != null) {
             dumpRows(gpu.rows, Path.of(dump));
         }
+    }
+
+    /** The four gates over {@code got} against {@code reference}, row by row. */
+    private static void assertRows(
+            String label, List<float[]> reference, List<float[]> accelerator, Bounds bounds) {
+        assertEquals("compared row count", reference.size(), accelerator.size());
 
         // The two absolute-scale bounds are fractions of the reference's own RMS, not constants.
         // Families differ by two orders of magnitude here -- Granite-3.2-2B's logits have an RMS
@@ -406,7 +485,7 @@ abstract class CpuGpuParity {
         // measured worst-case error sits in one narrow band across every family on the pinned
         // tuple: Granite 0.0035, Llama 0.0026, Qwen3 0.0019, Phi-3 0.0009. The bounds below are
         // roughly 2x that band, which is the same margin the constants used to carry for Llama.
-        double refRms = rms(cpu.rows);
+        double refRms = rms(reference);
         double atol = bounds.atolPerRms() * refRms;
         double maxAbsCeiling = bounds.ceilingPerRms() * refRms;
         System.out.printf(
@@ -427,9 +506,9 @@ abstract class CpuGpuParity {
         double top10 = 0;
         List<String> wideReversals = new ArrayList<>();
 
-        for (int r = 0; r < cpu.rows.size(); r++) {
-            float[] ref = cpu.rows.get(r);
-            float[] got = gpu.rows.get(r);
+        for (int r = 0; r < reference.size(); r++) {
+            float[] ref = reference.get(r);
+            float[] got = accelerator.get(r);
             assertEquals("vocabulary length, row " + r, ref.length, got.length);
             assertFalse("NaN/Inf in CPU logits, row " + r, Envelope.hasNonFinite(ref));
             assertFalse("NaN/Inf in GPU logits, row " + r, Envelope.hasNonFinite(got));
@@ -492,7 +571,7 @@ abstract class CpuGpuParity {
             }
         }
 
-        int rows = cpu.rows.size();
+        int rows = reference.size();
         System.out.printf("[PARITY] %s rows=%d elements=%d%n", label, rows, elements);
         System.out.printf(
                 "[PARITY]   elementwise: violations=%d (%.4g%%, budget %.4g%%) worstRatio=%.4g%n",
@@ -548,7 +627,6 @@ abstract class CpuGpuParity {
                                 + " (gap > %.3g): %s",
                         label, bounds.decisionGap(), wideReversals),
                 wideReversals.isEmpty());
-        return gpu;
     }
 
     /** Number of shared entries between the two top-k sets. */

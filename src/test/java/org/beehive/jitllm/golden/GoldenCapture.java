@@ -7,9 +7,12 @@ import java.util.Set;
 import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
 import org.beehive.jitllm.inference.sampler.Sampler;
 import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.standard.StandardWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.format.ChatFormat;
 import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.tensor.standard.FP16FloatTensor;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
 import uk.ac.manchester.tornado.api.GridScheduler;
 
 /**
@@ -56,12 +59,36 @@ public final class GoldenCapture {
          */
         public final java.util.Map<String, java.util.Set<String>> batchedTaskKernels =
                 new java.util.TreeMap<>();
+
+        /**
+         * For a batched plan whose layer graphs are {@code batchPrefillLayer_<i>} (Qwen3), the
+         * kernel each layer's graph compiles for the projection tasks of {@link
+         * #PREFILL_PROJECTION_WEIGHTS}, by layer and then task. Empty otherwise.
+         */
+        public final java.util.Map<Integer, java.util.Map<String, String>>
+                prefillProjectionKernels = new java.util.TreeMap<>();
     }
 
     /** The batched tasks whose compiled kernel a capture records. */
     static final String[] RECORDED_BATCHED_TASKS = {
         "attention", "ssm_delta_rule", "ssm_alpha_proj", "ssm_beta_proj"
     };
+
+    /**
+     * The batched-prefill projection tasks whose compiled kernel a capture records, and the weights
+     * each reads, named as in {@link StandardWeights}.
+     */
+    static final java.util.Map<String, List<String>> PREFILL_PROJECTION_WEIGHTS =
+            java.util.Map.of(
+                    "batch_qkv", List.of("wq", "wk", "wv"),
+                    "batch_q", List.of("wq"),
+                    "batch_k", List.of("wk"),
+                    "batch_v", List.of("wv"),
+                    "batch_attn_out", List.of("wo"),
+                    "batch_ffn_gate_up", List.of("w1", "w3"),
+                    "batch_ffn_gate", List.of("w1"),
+                    "batch_ffn_up", List.of("w3"),
+                    "batch_ffn_down", List.of("w2"));
 
     private GoldenCapture() {}
 
@@ -155,30 +182,11 @@ public final class GoldenCapture {
                 prefillBatchSize > 1
                         ? State.withPrefillBatchSize(prefillBatchSize, () -> model.createNewState())
                         : model.createNewState();
-        ChatFormat chatFormat = model.chatFormat();
-
-        List<Integer> promptTokens = new ArrayList<>();
-        if (model.shouldAddBeginOfText()) {
-            promptTokens.add(chatFormat.getBeginOfText());
-        }
-        promptTokens.addAll(
-                chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, PROMPT)));
-        promptTokens.addAll(
-                chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+        List<Integer> promptTokens = promptTokens(model);
 
         Result result = new Result();
         result.dim = model.configuration().dim();
-        Sampler capturing =
-                tensor -> {
-                    result.rows.add(toFloatArray(tensor));
-                    int token = Sampler.TENSOR_ARGMAX.sampleToken(tensor);
-                    result.tokenIds.add(token);
-                    int step = result.rows.size() - 1;
-                    if (forcedTokens != null && step < forcedTokens.size()) {
-                        return forcedTokens.get(step);
-                    }
-                    return token;
-                };
+        Sampler capturing = capturing(result, forcedTokens);
 
         // No stop tokens: a golden must always compare the same number of rows, so generation is
         // bounded only by TOKENS.
@@ -220,6 +228,21 @@ public final class GoldenCapture {
                             result.batchedTaskKernels.put(task, kernels);
                         }
                     }
+                    for (String task : PREFILL_PROJECTION_WEIGHTS.keySet()) {
+                        java.util.Map<String, String> byGraph =
+                                org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
+                                        .batchPrefillTaskKernelsByGraph(plan, task);
+                        byGraph.forEach(
+                                (graph, kernel) ->
+                                        result.prefillProjectionKernels
+                                                .computeIfAbsent(
+                                                        Integer.parseInt(
+                                                                graph.substring(
+                                                                        graph.lastIndexOf('_')
+                                                                                + 1)),
+                                                        layer -> new java.util.TreeMap<>())
+                                                .put(task, kernel));
+                    }
                 }
                 model.generateTokensGPU(
                         state, 0, promptTokens, stopTokens, budget, capturing, false, null, plan);
@@ -233,6 +256,123 @@ public final class GoldenCapture {
             }
         }
         return result;
+    }
+
+    // @formatter:off
+    /**
+     * A host capture whose prompt goes through FP16-rounded weights where a batched prefill staged
+     * them as FP16: the reference for what that prefill computes.
+     *
+     * <p>{@code rounded} names, for each layer, the weights rounded to FP16 (round to nearest even,
+     * subnormals kept), as in {@link StandardWeights}: {@code wq}, {@code w1} and so on. They are
+     * rounded while the positions the batched prefill covers are ingested, prompt[0..N-2], and
+     * exact again from the last prompt token on, which the accelerator decodes. Example: on Metal
+     * at width 128, Qwen3-0.6B Q8_0 stages q|k|v and gate|up as FP16, so {@code wq}, {@code wk},
+     * {@code wv}, {@code w1} and {@code w3} are rounded for the first N-1 positions of every layer.
+     *
+     * <p>The difference from {@link #capture} is then the rounding alone. Two calls of the loop
+     * {@link #capture} runs, the second continuing at position N-1, so the loop is the same one.
+     */
+    // @formatter:on
+    public static Result captureWithPrefillWeightsRoundedToFp16(
+            Path ggufPath, List<Integer> forcedTokens, java.util.Map<Integer, Set<String>> rounded)
+            throws Exception {
+        assertHostLogitsAvailable();
+        Model model = ModelLoader.loadModel(ggufPath, CONTEXT_LENGTH, true, false);
+        State state = model.createNewState();
+        List<Integer> promptTokens = promptTokens(model);
+        int n = promptTokens.size();
+        if (org.beehive.jitllm.inference.PromptIngestion.of(state, promptTokens, 0).firstIndex()
+                != 1) {
+            // The batched prefill then ingests the seed as well, which this capture does not do.
+            throw new IllegalStateException(
+                    "the batched prefill covers prompt[0..N-2] only when the prompt opens with the"
+                            + " state's seed");
+        }
+        StandardWeights weights = (StandardWeights) model.weights();
+        java.util.Map<String, FloatTensor[]> byName =
+                java.util.Map.of(
+                        "wq", weights.wq,
+                        "wk", weights.wk,
+                        "wv", weights.wv,
+                        "wo", weights.wo,
+                        "w1", weights.w1,
+                        "w2", weights.w2,
+                        "w3", weights.w3);
+        java.util.Map<String, FloatTensor[]> exact = new java.util.HashMap<>();
+        byName.forEach((name, tensors) -> exact.put(name, tensors.clone()));
+        rounded.forEach(
+                (layer, names) -> {
+                    for (String name : names) {
+                        byName.get(name)[layer] = roundedToFp16(byName.get(name)[layer]);
+                    }
+                });
+        Set<Integer> stopTokens = Set.of();
+        Sampler none =
+                tensor -> {
+                    throw new IllegalStateException("the prompt positions sample nothing");
+                };
+        model.generateTokens(
+                state, 0, promptTokens.subList(0, n - 1), stopTokens, n - 1, none, false, null);
+        byName.forEach(
+                (name, tensors) ->
+                        System.arraycopy(exact.get(name), 0, tensors, 0, tensors.length));
+
+        Result result = new Result();
+        result.dim = model.configuration().dim();
+        // The budget capture uses: the prompt, plus TOKENS, less the seed the prompt carries.
+        int budget = n + TOKENS - 1;
+        model.generateTokens(
+                state,
+                n - 1,
+                promptTokens.subList(n - 1, n),
+                stopTokens,
+                budget,
+                capturing(result, forcedTokens),
+                false,
+                null);
+        return result;
+    }
+
+    /** {@code w} rounded to FP16 element by element, in the form an F16 file loads as. */
+    private static FloatTensor roundedToFp16(FloatTensor w) {
+        byte[] bytes = new byte[w.size() * 2];
+        java.nio.ShortBuffer halves =
+                java.nio.ByteBuffer.wrap(bytes)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                        .asShortBuffer();
+        for (int i = 0; i < w.size(); i++) {
+            halves.put(i, Float.floatToFloat16(w.getFloat(i)));
+        }
+        return new FP16FloatTensor(w.size(), java.lang.foreign.MemorySegment.ofArray(bytes));
+    }
+
+    /** The prompt every capture feeds: the fixed user message and the assistant header. */
+    private static List<Integer> promptTokens(Model model) {
+        ChatFormat chatFormat = model.chatFormat();
+        List<Integer> promptTokens = new ArrayList<>();
+        if (model.shouldAddBeginOfText()) {
+            promptTokens.add(chatFormat.getBeginOfText());
+        }
+        promptTokens.addAll(
+                chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, PROMPT)));
+        promptTokens.addAll(
+                chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+        return promptTokens;
+    }
+
+    /** Records each row into {@code result}, and returns {@code forcedTokens} when given. */
+    private static Sampler capturing(Result result, List<Integer> forcedTokens) {
+        return tensor -> {
+            result.rows.add(toFloatArray(tensor));
+            int token = Sampler.TENSOR_ARGMAX.sampleToken(tensor);
+            result.tokenIds.add(token);
+            int step = result.rows.size() - 1;
+            if (forcedTokens != null && step < forcedTokens.size()) {
+                return forcedTokens.get(step);
+            }
+            return token;
+        };
     }
 
     private static float[] toFloatArray(org.beehive.jitllm.inference.Logits logits) {
