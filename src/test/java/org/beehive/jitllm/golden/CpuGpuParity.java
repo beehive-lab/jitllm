@@ -409,14 +409,47 @@ abstract class CpuGpuParity {
      *       sensitivity.
      *   <li>{@code staged} against the exact host: the end-to-end cost of the rounding.
      * </ul>
-     *
-     * <p>Example, Metal at width 128, Qwen3-0.6B Q8_0, q|k|v and gate|up staged as FP16: against
-     * the rounded host relative L2 8.6e-6, largest absolute difference 2.1e-4, no violations at
-     * {@link #Q8_0}'s atol; against the exact host 5.64e-4, 0.0111 and 0.088%.
      */
     // @formatter:on
     GoldenCapture.Result assertParityBatchedStagedWeights(
             Fixture fixture, Bounds bounds, Bounds staged, int prefillBatchSize) throws Exception {
+        return assertParityBatchedStagedWeights(
+                fixture, bounds, staged, prefillBatchSize, CpuGpuParity::halfTilesWeights);
+    }
+
+    /** The weights each layer's {@code ...HalfTiles} GEMMs staged as FP16, by layer. */
+    private static java.util.Map<Integer, java.util.Set<String>> halfTilesWeights(
+            GoldenCapture.Result gpu) {
+        java.util.Map<Integer, java.util.Set<String>> rounded = new java.util.TreeMap<>();
+        gpu.prefillProjectionKernels.forEach(
+                (layer, kernels) ->
+                        kernels.forEach(
+                                (task, kernel) -> {
+                                    if (kernel.endsWith("HalfTiles")) {
+                                        rounded.computeIfAbsent(
+                                                        layer, l -> new java.util.TreeSet<>())
+                                                .addAll(
+                                                        GoldenCapture.PREFILL_PROJECTION_WEIGHTS
+                                                                .get(task));
+                                    }
+                                }));
+        return rounded;
+    }
+
+    /**
+     * {@link #assertParityBatchedStagedWeights(Fixture, Bounds, Bounds, int)} with {@code
+     * stagedWeights} naming, from the accelerator's capture, the weights its prefill rounded to
+     * FP16, by layer.
+     */
+    GoldenCapture.Result assertParityBatchedStagedWeights(
+            Fixture fixture,
+            Bounds bounds,
+            Bounds staged,
+            int prefillBatchSize,
+            java.util.function.Function<
+                            GoldenCapture.Result, java.util.Map<Integer, java.util.Set<String>>>
+                    stagedWeights)
+            throws Exception {
         Path model = GoldenFixture.locate(fixture);
         if (model == null) {
             System.out.println(
@@ -432,19 +465,7 @@ abstract class CpuGpuParity {
                 GoldenCapture.capture(model, true, cpu.tokenIds, prefillBatchSize, true);
         System.out.printf("  batched prefill, batch %d%n", prefillBatchSize);
         dumpRowsIfAsked(gpu);
-        java.util.Map<Integer, java.util.Set<String>> rounded = new java.util.TreeMap<>();
-        gpu.prefillProjectionKernels.forEach(
-                (layer, kernels) ->
-                        kernels.forEach(
-                                (task, kernel) -> {
-                                    if (kernel.endsWith("HalfTiles")) {
-                                        rounded.computeIfAbsent(
-                                                        layer, l -> new java.util.TreeSet<>())
-                                                .addAll(
-                                                        GoldenCapture.PREFILL_PROJECTION_WEIGHTS
-                                                                .get(task));
-                                    }
-                                }));
+        java.util.Map<Integer, java.util.Set<String>> rounded = stagedWeights.apply(gpu);
         String label = fixture.quantization;
         if (rounded.isEmpty()) {
             assertRows(label, cpu.rows, gpu.rows, bounds);

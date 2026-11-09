@@ -52,6 +52,9 @@ public final class GoldenCapture {
         /** The model dimension of the capture, so a caller can compute an expected grid. */
         public int dim;
 
+        /** The model's layer count. */
+        public int layers;
+
         /**
          * For a batched plan, the kernel method names its batched layer graphs compile for the
          * tasks of {@link #RECORDED_BATCHED_TASKS}, by task name — read off the plan while it was
@@ -186,6 +189,7 @@ public final class GoldenCapture {
 
         Result result = new Result();
         result.dim = model.configuration().dim();
+        result.layers = model.configuration().numberOfLayers();
         Sampler capturing = capturing(result, forcedTokens);
 
         // No stop tokens: a golden must always compare the same number of rows, so generation is
@@ -264,7 +268,9 @@ public final class GoldenCapture {
      * them as FP16: the reference for what that prefill computes.
      *
      * <p>{@code rounded} names, for each layer, the weights rounded to FP16 (round to nearest even,
-     * subnormals kept), as in {@link StandardWeights}: {@code wq}, {@code w1} and so on. They are
+     * subnormals kept), as in {@link StandardWeights}: {@code wq}, {@code w1} and so on; Gemma 4's
+     * gate, down and up projections are {@code w1}, {@code w2} and {@code w3} here too. A layer
+     * without a named weight (a Gemma 4 layer that shares its keys and values) skips it. They are
      * rounded while the positions the batched prefill covers are ingested, prompt[0..N-2], and
      * exact again from the last prompt token on, which the accelerator decodes. Example: on Metal
      * at width 128, Qwen3-0.6B Q8_0 stages q|k|v and gate|up as FP16, so {@code wq}, {@code wk},
@@ -289,22 +295,16 @@ public final class GoldenCapture {
                     "the batched prefill covers prompt[0..N-2] only when the prompt opens with the"
                             + " state's seed");
         }
-        StandardWeights weights = (StandardWeights) model.weights();
-        java.util.Map<String, FloatTensor[]> byName =
-                java.util.Map.of(
-                        "wq", weights.wq,
-                        "wk", weights.wk,
-                        "wv", weights.wv,
-                        "wo", weights.wo,
-                        "w1", weights.w1,
-                        "w2", weights.w2,
-                        "w3", weights.w3);
+        java.util.Map<String, FloatTensor[]> byName = projectionWeights(model);
         java.util.Map<String, FloatTensor[]> exact = new java.util.HashMap<>();
         byName.forEach((name, tensors) -> exact.put(name, tensors.clone()));
         rounded.forEach(
                 (layer, names) -> {
                     for (String name : names) {
-                        byName.get(name)[layer] = roundedToFp16(byName.get(name)[layer]);
+                        FloatTensor[] tensors = byName.get(name);
+                        if (tensors[layer] != null) {
+                            tensors[layer] = roundedToFp16(tensors[layer]);
+                        }
                     }
                 });
         Set<Integer> stopTokens = Set.of();
@@ -332,6 +332,31 @@ public final class GoldenCapture {
                 false,
                 null);
         return result;
+    }
+
+    /** The model's projection weight arrays by their {@link StandardWeights} names. */
+    private static java.util.Map<String, FloatTensor[]> projectionWeights(Model model) {
+        if (model.weights()
+                instanceof
+                org.beehive.jitllm.inference.weights.standard.Gemma4StandardWeights weights) {
+            return java.util.Map.of(
+                    "wq", weights.wq,
+                    "wk", weights.wk,
+                    "wv", weights.wv,
+                    "wo", weights.wo,
+                    "w1", weights.ffnGate,
+                    "w2", weights.ffnDown,
+                    "w3", weights.ffnUp);
+        }
+        StandardWeights weights = (StandardWeights) model.weights();
+        return java.util.Map.of(
+                "wq", weights.wq,
+                "wk", weights.wk,
+                "wv", weights.wv,
+                "wo", weights.wo,
+                "w1", weights.w1,
+                "w2", weights.w2,
+                "w3", weights.w3);
     }
 
     /** {@code w} rounded to FP16 element by element, in the form an F16 file loads as. */

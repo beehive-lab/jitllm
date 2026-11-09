@@ -42,13 +42,6 @@ public class Qwen3BatchedPrefillParityAccelTest extends CpuGpuParity {
      * this rounds less than the tensor-core GEMMs do. Elsewhere the prefill keeps FP32 weights and
      * activations, and {@link #Q8_0} applies against the exact host.
      *
-     * <p>Measured on Metal (M4 Pro) over these 63 rows at width 128, against the host with the
-     * staged weights rounded: relative L2 at most 1.8e-5 and largest absolute difference at most
-     * 2.9e-4, no violations, for every quantized file here. Against the exact host: relative L2
-     * 3.5e-4 (Q4_0) to 5.9e-4 (Q4_K_S), largest absolute difference up to 0.0114, cosine at least
-     * 0.99999983, no argmax disagreement. Rounding those weights on the host alone moves it as far
-     * from the exact host as the GPU is: relative L2 5.64e-4 on Q8_0.
-     *
      * <p>Measured with the packed path off on CUDA over these 63 rows, against {@link #Q8_0}: Q8_0
      * 0.28% elementwise violations, relative L2 7.6e-4; Q4_K_M 0.6B 0.30% and 1.25e-3; Q4_K_M 1.7B
      * 0.21% and 9.7e-4; cosine at least 0.9999992 and no argmax disagreement on any. The F16 file,
