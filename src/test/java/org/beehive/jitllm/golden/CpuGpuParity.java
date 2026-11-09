@@ -366,6 +366,14 @@ abstract class CpuGpuParity {
         return assertParity(model, label, bounds, prefillBatchSize, true);
     }
 
+    /**
+     * {@link #assertParity(Fixture, Bounds)} for a model file that is not a pinned fixture, located
+     * by the caller; {@code label} names it in the report.
+     */
+    GoldenCapture.Result assertParity(Path model, String label, Bounds bounds) throws Exception {
+        return assertParity(model, label, bounds, 1, false);
+    }
+
     private GoldenCapture.Result assertParity(
             Path model,
             String label,

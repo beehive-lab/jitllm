@@ -70,7 +70,30 @@ public final class GoldenCapture {
          */
         public final java.util.Map<Integer, java.util.Map<String, String>>
                 prefillProjectionKernels = new java.util.TreeMap<>();
+
+        /**
+         * For a plan whose decode layer graphs are {@code layer_<g>} (Qwen3.5), the kernel each
+         * decode layer compiles for the tasks of {@link #RECORDED_DECODE_TASKS}, by layer and then
+         * task. Empty otherwise.
+         */
+        public final java.util.Map<Integer, java.util.Map<String, String>> decodeProjectionKernels =
+                new java.util.TreeMap<>();
     }
+
+    /** Qwen3.5's decode projection tasks whose compiled kernel a capture records. */
+    static final String[] RECORDED_DECODE_TASKS = {
+        "attn_q_proj",
+        "attn_k_proj",
+        "attn_v_proj",
+        "attn_output_proj",
+        "ssm_qkv_proj",
+        "ssm_gate_proj",
+        "ssm_alpha_proj",
+        "ssm_beta_proj",
+        "ssm_out_proj",
+        "ffn_gate_up",
+        "ffn_down_proj"
+    };
 
     /** The batched tasks whose compiled kernel a capture records. */
     static final String[] RECORDED_BATCHED_TASKS = {
@@ -248,6 +271,16 @@ public final class GoldenCapture {
                                                 .put(task, kernel));
                     }
                 }
+                for (String task : RECORDED_DECODE_TASKS) {
+                    org.beehive.jitllm.backend.tornado.PlanDispatchEvidence
+                            .decodeTaskKernelsByLayer(plan, task)
+                            .forEach(
+                                    (layer, kernel) ->
+                                            result.decodeProjectionKernels
+                                                    .computeIfAbsent(
+                                                            layer, l -> new java.util.TreeMap<>())
+                                                    .put(task, kernel));
+                }
                 model.generateTokensGPU(
                         state, 0, promptTokens, stopTokens, budget, capturing, false, null, plan);
             } else {
@@ -373,7 +406,7 @@ public final class GoldenCapture {
     }
 
     /** The prompt every capture feeds: the fixed user message and the assistant header. */
-    private static List<Integer> promptTokens(Model model) {
+    static List<Integer> promptTokens(Model model) {
         ChatFormat chatFormat = model.chatFormat();
         List<Integer> promptTokens = new ArrayList<>();
         if (model.shouldAddBeginOfText()) {
