@@ -12,13 +12,14 @@ import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.junit.Test;
 
 /**
- * The attention-output and down projections of Llama 3.2 1B F16's tensor-core batched prefill at
- * chunks that are not whole 128-row tiles, read off the printed task-graph chain.
+ * The projections of Llama 3.2 1B F16's tensor-core batched prefill at chunks that are not whole
+ * 128-row tiles, read off the printed task-graph chain.
  *
  * <p>The JIT GEMMs compute whole tiles, so they take the padded rows and split their depth on them:
  * a chunk of 16 is one tile, 16 output tiles and four depth slices. cuBLAS multiplies only the
- * chunk's tokens. Example: at a chunk of 129, the JIT GEMMs run 256 rows ({@code 512×16×4}) and
- * cuBLAS {@code n=129}.
+ * chunk's tokens, for the contiguous q|k|v and gate|up copies as for the other projections.
+ * Example: at a chunk of 129, the JIT GEMMs run 256 rows ({@code 512×16×4}) and cuBLAS {@code
+ * n=129}.
  */
 public class LlamaF16NarrowPrefillDispatchAccelTest {
 
@@ -46,6 +47,18 @@ public class LlamaF16NarrowPrefillDispatchAccelTest {
         assumeTrue("cuBLAS is not loadable here", NativePrefillSupport.cublasAvailable());
         for (int width : new int[] {16, 129}) {
             String chain = chain(width, true);
+            assertTrue(
+                    chain,
+                    chain.matches(
+                            "(?s).*libraryTask +qkvProj +cuBLAS cublasGemmExFP16FP32 +m=3072 n="
+                                    + width
+                                    + " k=2048\n.*"));
+            assertTrue(
+                    chain,
+                    chain.matches(
+                            "(?s).*libraryTask +gateUpProj +cuBLAS cublasGemmExFP16FP32 +m=16384 n="
+                                    + width
+                                    + " k=2048\n.*"));
             assertTrue(
                     chain,
                     chain.matches(
