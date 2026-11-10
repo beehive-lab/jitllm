@@ -142,13 +142,16 @@ public abstract class Fp16MatMul implements Implementation {
             FloatArray c = (FloatArray) operands.activation(first.output());
             TornadoTensor[] w = weights(step, operands);
             if (matMuls.size() == 1) {
+                // The JIT GEMMs compute whole 128-row tiles, so they take the padded rows and
+                // choose their depth split from them; cuBLAS multiplies only the chunk's tokens.
+                // Example: a chunk of 16 sends 128 rows to gemmMMASplitK and 16 to cuBLAS.
                 splitK.gemm(
                         graph,
                         task,
                         a,
                         w[0].asHalfFloatArray(),
                         c,
-                        first.batchSize(),
+                        splitK.nativeGemm() ? step.tokens() : first.batchSize(),
                         first.rows(),
                         first.columns());
             } else if (nativeLibContiguousProjections != null) {
