@@ -29,6 +29,7 @@ import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
 import org.beehive.jitllm.backend.tornado.ops.jit.JitLayerProjections;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.CublasLayerProjections;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
@@ -1389,8 +1390,9 @@ public class Gemma4BatchPrefillLayers
                         attnF32);
             }
             if (ple) {
-                layer.transferToDevice(
-                        DataTransferMode.FIRST_EXECUTION,
+                UnifiedMemoryWeights.upload(
+                        layer,
+                        state.workspace,
                         pleModelProjF16,
                         weights.perLayerProjNorm.asFloatArray());
             }
@@ -1442,16 +1444,18 @@ public class Gemma4BatchPrefillLayers
             }
         }
 
-        layer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
+        UnifiedMemoryWeights.upload(
+                layer,
+                state.workspace,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 weights.attnQNorm[layerIndex].asFloatArray(),
                 weights.attnPostNorm[layerIndex].asFloatArray(),
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
                 weights.ffnPostNorm[layerIndex].asFloatArray());
         if (ple) {
-            layer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION,
+            UnifiedMemoryWeights.upload(
+                    layer,
+                    state.workspace,
                     pleGateF16[layerIndex],
                     pleProjF16[layerIndex],
                     weights.perLayerPostNorm[layerIndex].asFloatArray());
@@ -1468,7 +1472,7 @@ public class Gemma4BatchPrefillLayers
         };
         if (mlx != null) {
             declareMlxBuffers(layer, layerIndex);
-            layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, mlxWeights(layerIndex));
+            UnifiedMemoryWeights.upload(layer, state.workspace, mlxWeights(layerIndex));
         } else {
             state.workspace.prepacker.configureGraphInputs(
                     layer, state.workspace.prepacking, projections);
@@ -1476,8 +1480,8 @@ public class Gemma4BatchPrefillLayers
         if (hasOwnKv) {
             requireDecodable(weights.wkLayered[layerIndex], "blk." + layerIndex + ".attn_k");
             requireDecodable(valueWeights(layerIndex), "blk." + layerIndex + ".attn_v");
-            layer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION, weights.attnKNorm[layerIndex].asFloatArray());
+            UnifiedMemoryWeights.upload(
+                    layer, state.workspace, weights.attnKNorm[layerIndex].asFloatArray());
             if (mlx == null) {
                 state.workspace.prepacker.configureGraphInputs(
                         layer, state.workspace.prepacking, weights.wkLayered[layerIndex]);
@@ -1488,9 +1492,8 @@ public class Gemma4BatchPrefillLayers
             }
         }
         if (weights.layerOutputScale[layerIndex] != null) {
-            layer.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION,
-                    weights.layerOutputScale[layerIndex].asFloatArray());
+            UnifiedMemoryWeights.upload(
+                    layer, state.workspace, weights.layerOutputScale[layerIndex].asFloatArray());
         }
 
         bindRopeTables(layer, isSwa, freqCisReal, freqCisImag);

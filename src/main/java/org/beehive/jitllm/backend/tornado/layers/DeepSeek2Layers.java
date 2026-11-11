@@ -8,6 +8,7 @@ import org.beehive.jitllm.backend.tornado.kernels.DeepSeek2Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.DeepSeek2State;
@@ -277,12 +278,19 @@ public class DeepSeek2Layers
 
     private void bindWeights(TaskGraph graph, int l) {
         if (prefill != null) {
-            graph.consumeFromDevice(
-                    prefill.graphName(l),
-                    DeepSeek2BatchPrefillLayers.sharedWeights(w, config, l).toArray());
+            // Mapped weights are read in place here too, as in the prefill graph.
+            Object[] provided =
+                    UnifiedMemoryWeights.consume(
+                            graph,
+                            state.workspace,
+                            DeepSeek2BatchPrefillLayers.sharedWeights(w, config, l).toArray());
+            if (provided.length > 0) {
+                graph.consumeFromDevice(prefill.graphName(l), provided);
+            }
             // The prefill reads these in other forms: padded, and in FP16.
-            graph.transferToDevice(
-                    DataTransferMode.FIRST_EXECUTION,
+            UnifiedMemoryWeights.upload(
+                    graph,
+                    state.workspace,
                     deviceArray(w.kvAMqa()[l]),
                     deviceArray(w.kB()[l]),
                     deviceArray(w.vB()[l]));
@@ -312,7 +320,7 @@ public class DeepSeek2Layers
             arrays.add(deviceArray(w.sharedUp()[l]));
             arrays.add(deviceArray(w.sharedDown()[l]));
         }
-        graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, arrays.toArray());
+        UnifiedMemoryWeights.upload(graph, state.workspace, arrays.toArray());
     }
 
     // ── one layer ─────────────────────────────────────────────────────────────

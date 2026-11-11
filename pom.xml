@@ -48,8 +48,9 @@
                  simdgroupMatrixLoad over HalfFloatArray) to what 7.0.0 brought (BFloat16Array,
                  KernelContext.allocateHalf2LocalArray, signed int-to-float conversion, private
                  array zero-init, FP16 header selection, HalfFloat(short) bit reinterpretation,
-                 in-kernel reads of MMA accumulator elements, byte-offset int8 fragment loads); an
-                 older SDK fails at compile time. Its JDK line
+                 in-kernel reads of MMA accumulator elements, byte-offset int8 fragment loads), and
+                 TornadoVM 8.1.0 adds TaskGraph.consumeFromUnifiedMemory, with which a plan reads the
+                 weights in place on Apple silicon; an older SDK fails at compile time. Its JDK line
                  must also match the JDK running Maven: a -jdk21 SDK for JDK 21, a -jdk22plus SDK for
                  JDK 22 and newer, or javac rejects its class files.
 
@@ -70,7 +71,7 @@
         <!-- The tornado.jdk.floor a matching SDK records in etc/tornado.jdk; set by the JDK profiles. -->
         <tornadovm.sdk.jdk.floor>22</tornadovm.sdk.jdk.floor>
         <!-- The published TornadoVM release that -P release builds against (see prepare-release.yml). -->
-        <tornadovm.release.version>8.0.0</tornadovm.release.version>
+        <tornadovm.release.version>8.1.0</tornadovm.release.version>
         <archunit.version>1.4.2</archunit.version>
         <jdk.version.suffix>-jdk21</jdk.version.suffix>
         <!-- TornadoVM's own JDK suffix for the release coordinates, a separate property from
@@ -223,7 +224,7 @@
                             <rules>
                                 <requireEnvironmentVariable>
                                     <variableName>TORNADOVM_HOME</variableName>
-                                    <message>TORNADOVM_HOME is not set. jitllm compiles against the TornadoVM SDK it points at (7.3 or newer, on the JDK line of the JDK running Maven): install one (sdk install tornadovm) or prepare one (scripts/tornadovm-dev.sh setup) and export TORNADOVM_HOME.</message>
+                                    <message>TORNADOVM_HOME is not set. jitllm compiles against the TornadoVM SDK it points at (8.1 or newer, on the JDK line of the JDK running Maven): install one (sdk install tornadovm) or prepare one (scripts/tornadovm-dev.sh setup) and export TORNADOVM_HOME.</message>
                                 </requireEnvironmentVariable>
                                 <!-- Not requireFilesExist: it also requires the path to equal its
                                          canonical form, so it rejects any path through a symlink,

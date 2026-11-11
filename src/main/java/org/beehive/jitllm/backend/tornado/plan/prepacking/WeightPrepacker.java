@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.kernels.PackedRepackKernels;
 import org.beehive.jitllm.backend.tornado.layers.PrefillFamily;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -83,6 +84,12 @@ public final class WeightPrepacker {
     private final Map<String, List<Weight>> pendingWeightsByGraph = new LinkedHashMap<>();
 
     /**
+     * Whether this plan reads its weights in place from unified memory ({@code
+     * UnifiedMemoryWeights}); set with the workspace's own answer when the plan is built.
+     */
+    public boolean unifiedMemory;
+
+    /**
      * The weights in {@link #pendingWeightsByGraph}, by identity. A weight registered twice for one
      * plan would be rearranged twice in the same device buffer, which scrambles it, so a second
      * registration is refused. A later plan has device buffers of its own and may register it
@@ -135,8 +142,10 @@ public final class WeightPrepacker {
                 plain.add(o);
             }
         }
-        if (!plain.isEmpty()) {
-            graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, plain.toArray());
+        Object[] uploaded =
+                UnifiedMemoryWeights.consume(graph, unifiedMemory, prepacking, plain.toArray());
+        if (uploaded.length > 0) {
+            graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, uploaded);
         }
         if (!prepacked.isEmpty()) {
             graph.consumeFromDevice(PREFIX + graph.getTaskGraphName(), prepacked.toArray());

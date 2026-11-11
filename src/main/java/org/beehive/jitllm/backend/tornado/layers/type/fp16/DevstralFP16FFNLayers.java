@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
@@ -107,7 +108,7 @@ public class DevstralFP16FFNLayers
         if (weightSrc != null) {
             bindLayerWeights(unifiedLayer, weightSrc, layerIndex, layerWeights);
         } else {
-            unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
+            UnifiedMemoryWeights.upload(unifiedLayer, state.workspace, layerWeights);
         }
         unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
 
