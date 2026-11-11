@@ -279,7 +279,64 @@ public final class PlanDispatchEvidence {
         assertTrue(
                 "not a batched plan: " + plan.getClass().getSimpleName(),
                 plan instanceof TornadoVMMasterPlanBatchPrefillDecode);
-        var batched = (TornadoVMMasterPlanBatchPrefillDecode) plan;
+        return taskKernelsByGraph(
+                (TornadoVMMasterPlanBatchPrefillDecode) plan, "batchLayer_", task);
+    }
+
+    /**
+     * {@link #batchedTaskKernelsByGraph} for the families whose batched-prefill layer graphs are
+     * {@code batchPrefillLayer_<i>}, such as Qwen3. Empty when the plan is not batched or no such
+     * graph holds the task.
+     */
+    public static java.util.Map<String, String> batchPrefillTaskKernelsByGraph(
+            TornadoVMMasterPlan plan, String task) {
+        if (!(plan instanceof TornadoVMMasterPlanBatchPrefillDecode batched)) {
+            return java.util.Map.of();
+        }
+        return taskKernelsByGraph(batched, "batchPrefillLayer_", task);
+    }
+
+    /**
+     * The kernel each decode layer compiles for {@code task}, by layer, in any plan shape {@link
+     * #forwardPlanIfAvailable} reaches. Decode graphs are {@code layer_<g>} and may hold several
+     * layers: layer {@code g + s} names its task {@code l<s>_task}, and layer {@code g} the bare
+     * {@code task}. Empty when no decode graph holds the task.
+     */
+    public static java.util.Map<Integer, String> decodeTaskKernelsByLayer(
+            TornadoVMMasterPlan plan, String task) {
+        java.util.Map<Integer, String> kernels = new java.util.TreeMap<>();
+        java.util.List<ImmutableTaskGraph> graphs = forwardPlanIfAvailable(plan);
+        if (graphs == null) {
+            return kernels;
+        }
+        try {
+            java.lang.reflect.Field field = ImmutableTaskGraph.class.getDeclaredField("taskGraph");
+            field.setAccessible(true);
+            java.lang.reflect.Field impl = TaskGraph.class.getDeclaredField("taskGraphImpl");
+            impl.setAccessible(true);
+            for (ImmutableTaskGraph immutable : graphs) {
+                TaskGraph graph = (TaskGraph) field.get(immutable);
+                String name = graph.getTaskGraphName();
+                if (!name.matches("layer_\\d+")) {
+                    continue;
+                }
+                int first = Integer.parseInt(name.substring("layer_".length()));
+                var tasks = (TornadoTaskGraphInterface) impl.get(graph);
+                for (int slot = 0; slot < 64; slot++) {
+                    var found = tasks.getTask(slot == 0 ? task : "l" + slot + "_" + task);
+                    if (found != null) {
+                        kernels.put(first + slot, found.getTaskName());
+                    }
+                }
+            }
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("cannot reach the task graphs behind the plan", e);
+        }
+        return kernels;
+    }
+
+    private static java.util.Map<String, String> taskKernelsByGraph(
+            TornadoVMMasterPlanBatchPrefillDecode batched, String graphPrefix, String task) {
         java.util.Map<String, String> kernels = new java.util.TreeMap<>();
         try {
             java.lang.reflect.Field field = ImmutableTaskGraph.class.getDeclaredField("taskGraph");
@@ -289,7 +346,7 @@ public final class PlanDispatchEvidence {
             for (ImmutableTaskGraph immutable :
                     batched.batchPrefillDecodeForwardPlan.getImmutableTaskGraphs()) {
                 TaskGraph graph = (TaskGraph) field.get(immutable);
-                if (!graph.getTaskGraphName().startsWith("batchLayer_")) {
+                if (!graph.getTaskGraphName().startsWith(graphPrefix)) {
                     continue;
                 }
                 var found = ((TornadoTaskGraphInterface) impl.get(graph)).getTask(task);

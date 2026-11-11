@@ -168,7 +168,8 @@ public class Gemma4BatchPrefillLayers
     private final Gemma4State state;
     private final Gemma4TornadoWeights weights;
     private final Gemma4Configuration config;
-    private final KernelContext context = new KernelContext();
+    private final KernelContext context;
+    private final PrefillFamily family;
     private final int batchSize;
 
     /** Whether the state holds its key/value cache in half precision; decided at allocation. */
@@ -297,6 +298,15 @@ public class Gemma4BatchPrefillLayers
     private HalfFloatArray mlxOutHalf; // paddedBatch × dim
     private FloatArray mlxDownRowScale; // paddedBatch
 
+    /**
+     * The FP16 operands of the query/key/value and gate/up projections: the workspace's, except in
+     * the narrow family on MLX ({@link PrefillFamily}), whose GEMMs take arrays exactly its rows
+     * long.
+     */
+    private final HalfFloatArray xbFP16;
+
+    private final HalfFloatArray normedFFNFP16;
+
     /** For each MLX buffer, the first layer whose graph uses it, and so uploads it. */
     private final java.util.Map<Object, Integer> mlxFirstUser = new java.util.IdentityHashMap<>();
 
@@ -376,6 +386,10 @@ public class Gemma4BatchPrefillLayers
         this.endLayer = endLayer;
         this.ple = config.hasPerLayerEmbeddings();
         this.state = state;
+        this.family = PrefillFamily.of(state);
+        // The narrow family takes its primary's context, weight copies and attention arrays.
+        Gemma4BatchPrefillLayers primary = family.primary(Gemma4BatchPrefillLayers.class);
+        this.context = primary != null ? primary.context : new KernelContext();
         this.weights = weights;
         this.config = config;
         this.batchSize = batchSize;
@@ -390,21 +404,23 @@ public class Gemma4BatchPrefillLayers
         this.perLayerInputScale = (float) (1.0 / Math.sqrt(2.0));
 
         int layers = config.numberOfLayers();
-        this.pleGateF16 = new HalfFloatArray[layers];
-        this.pleProjF16 = new HalfFloatArray[layers];
-        for (int l = firstLayer; ple && l < endLayer; l++) {
+        this.pleGateF16 = primary != null ? primary.pleGateF16 : new HalfFloatArray[layers];
+        this.pleProjF16 = primary != null ? primary.pleProjF16 : new HalfFloatArray[layers];
+        for (int l = firstLayer; ple && primary == null && l < endLayer; l++) {
             int pleElements = dim * nEmbdPerLayer;
             pleGateF16[l] =
                     narrowToF16(weights.perLayerInpGate[l], pleElements, "blk." + l + ".inp_gate");
             pleProjF16[l] = narrowToF16(weights.perLayerProj[l], pleElements, "blk." + l + ".proj");
         }
         this.pleModelProjF16 =
-                ple
-                        ? narrowToF16(
-                                weights.perLayerModelProj,
-                                perLayerTotal * dim,
-                                "per_layer_model_proj")
-                        : null;
+                !ple
+                        ? null
+                        : primary != null
+                                ? primary.pleModelProjF16
+                                : narrowToF16(
+                                        weights.perLayerModelProj,
+                                        perLayerTotal * dim,
+                                        "per_layer_model_proj");
 
         this.regions = new LayerRegions[config.numberOfLayers()];
         List<Region> all = new ArrayList<>();
@@ -424,6 +440,7 @@ public class Gemma4BatchPrefillLayers
         }
         this.plan =
                 WorkPlan.of(
+                        primary != null ? primary.plan : null,
                         all,
                         List.of(new CublasLayerProjections(this), new JitLayerProjections(this)),
                         Target.of(state.executionPolicy()),
@@ -432,11 +449,30 @@ public class Gemma4BatchPrefillLayers
         this.nativeProjections = plan.runs(regions[firstLayer].qkv(), "cuBLAS");
         this.mlx = mlxPrefill(state.executionPolicy(), weights.dataType(), config).orElse(null);
         if (mlx != null) {
-            buildMlxProjections();
+            buildMlxProjections(primary);
         }
+        boolean ownOperands = mlx != null && family.isNarrow();
+        this.xbFP16 =
+                ownOperands
+                        ? family.own(new HalfFloatArray(paddedBatch * dim))
+                        : state.workspace.wrapXbFP16Batch;
+        this.normedFFNFP16 =
+                ownOperands
+                        ? family.own(new HalfFloatArray(paddedBatch * dim))
+                        : state.workspace.normedXFFNFP16;
 
         this.gemmAttention = fp16KeyValue && TensorCoreSupport.isTensorCoreCapableBackend();
-        if (gemmAttention) {
+        if (gemmAttention && primary != null) {
+            // The primary's arrays and its heads per pass, which fit fewer rows.
+            paddedPositions = primary.paddedPositions;
+            headsPerPass = primary.headsPerPass;
+            queriesF16 = primary.queriesF16;
+            keysF16 = primary.keysF16;
+            valuesTF16 = primary.valuesTF16;
+            scores = primary.scores;
+            probs = primary.probs;
+            attnF32 = primary.attnF32;
+        } else if (gemmAttention) {
             paddedPositions = (config.contextLength() + 127) / 128 * 128;
             headsPerPass = headsPerPass(nHead, paddedBatch, paddedPositions);
             int qWidth = nHead * config.maxHeadDim();
@@ -975,14 +1011,15 @@ public class Gemma4BatchPrefillLayers
     }
 
     /** Each layer's projections in MLX's form, and the FP16 buffers the GEMMs share. */
-    private void buildMlxProjections() {
+    private void buildMlxProjections(Gemma4BatchPrefillLayers primary) {
         int layers = config.numberOfLayers();
-        mlxQkv = new MlxPrefillProjections.Matrix[layers];
-        mlxWo = new MlxPrefillProjections.Matrix[layers];
-        mlxGateUp = new MlxPrefillProjections.Matrix[layers];
-        mlxDown = new MlxPrefillProjections.Matrix[layers];
+        // The narrow family takes the primary's copies, already made.
+        mlxQkv = primary != null ? primary.mlxQkv : new MlxPrefillProjections.Matrix[layers];
+        mlxWo = primary != null ? primary.mlxWo : new MlxPrefillProjections.Matrix[layers];
+        mlxGateUp = primary != null ? primary.mlxGateUp : new MlxPrefillProjections.Matrix[layers];
+        mlxDown = primary != null ? primary.mlxDown : new MlxPrefillProjections.Matrix[layers];
         MlxPrefill.Projections form = mlx.projections();
-        for (int l = firstLayer; l < endLayer; l++) {
+        for (int l = firstLayer; primary == null && l < endLayer; l++) {
             TornadoTensor[] qkv =
                     config.hasOwnKv(l)
                             ? new TornadoTensor[] {
@@ -1018,8 +1055,10 @@ public class Gemma4BatchPrefillLayers
                     MlxPrefillProjections.matrix(
                             form, requireMlx(name + ".ffn_down", weights.w2Layered[l]));
         }
-        mlxOutHalf = new HalfFloatArray(paddedBatch * dim);
-        mlxDownRowScale = new FloatArray(paddedBatch);
+        // MLX takes an array as exactly the matrix the dimensions describe, so these are each
+        // family's own, paddedBatch rows long.
+        mlxOutHalf = family.own(new HalfFloatArray(paddedBatch * dim));
+        mlxDownRowScale = family.own(new FloatArray(paddedBatch));
         for (int l = firstLayer; l < endLayer; l++) {
             int qDim = nHead * config.headDim(l);
             int ffnLen = config.feedForwardLength(l);
@@ -1039,7 +1078,7 @@ public class Gemma4BatchPrefillLayers
 
     /** The buffer of {@code paddedBatch} rows of {@code width} in {@code byWidth}, made once. */
     private HalfFloatArray mlxBuffer(java.util.Map<Integer, HalfFloatArray> byWidth, int width) {
-        return byWidth.computeIfAbsent(width, w -> new HalfFloatArray(paddedBatch * w));
+        return byWidth.computeIfAbsent(width, w -> family.own(new HalfFloatArray(paddedBatch * w)));
     }
 
     /**
@@ -1074,7 +1113,7 @@ public class Gemma4BatchPrefillLayers
         MlxPrefillProjections.gemm(
                 layer,
                 "qkvProj",
-                state.workspace.wrapXbFP16Batch,
+                xbFP16,
                 mlxQkv[layerIndex],
                 mlxQkvOut.get(stride),
                 paddedBatch,
@@ -1110,7 +1149,7 @@ public class Gemma4BatchPrefillLayers
             if (firstUser == l) {
                 layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, buffer);
             } else {
-                layer.consumeFromDevice(GraphNames.batchPrefillLayer(firstUser), buffer);
+                layer.consumeFromDevice(family.batchPrefillLayer(firstUser), buffer);
             }
         }
     }
@@ -1268,11 +1307,10 @@ public class Gemma4BatchPrefillLayers
             }
         }
         String graphName = layer.getTaskGraphName();
-        if (graphName.equals(GraphNames.batchPrefillLayer(firstUser))) {
+        if (graphName.equals(family.batchPrefillLayer(firstUser))) {
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, freqCisReal, freqCisImag);
         } else {
-            layer.consumeFromDevice(
-                    GraphNames.batchPrefillLayer(firstUser), freqCisReal, freqCisImag);
+            layer.consumeFromDevice(family.batchPrefillLayer(firstUser), freqCisReal, freqCisImag);
         }
     }
 
@@ -1291,7 +1329,7 @@ public class Gemma4BatchPrefillLayers
         if (layerIndex == endLayer - 1) {
             lastLayerTaskGraphID = graphName;
         }
-        TaskGraph layer = new TaskGraph(graphName);
+        TaskGraph layer = family.taskGraph(graphName);
 
         final int headDim = config.headDim(layerIndex);
         final boolean isSwa = config.isSwa(layerIndex);
@@ -1328,14 +1366,14 @@ public class Gemma4BatchPrefillLayers
                     state.workspace.attnScaleBatch,
                     state.workspace.ffnScaleBatch,
                     state.workspace.branchScaleBatch,
-                    state.workspace.wrapXbFP16Batch,
+                    xbFP16,
                     state.workspace.qkvResultBatch,
                     state.workspace.attnOutFP16,
                     state.workspace.attnScoresBatch,
                     state.workspace.splitKPartialBatch,
                     state.workspace.contiguousF16WeightsScratch,
                     state.workspace.woOut,
-                    state.workspace.normedXFFNFP16,
+                    normedFFNFP16,
                     state.workspace.gateUpResultBatch,
                     state.workspace.wrapHbFP16Batch,
                     state.workspace.w2Out,
@@ -1375,7 +1413,7 @@ public class Gemma4BatchPrefillLayers
             }
             layer.consumeFromDevice(GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
         } else {
-            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
+            String pred = family.batchPrefillLayer(layerIndex - 1);
             layer.consumeFromDevice(
                     pred,
                     context,
@@ -1384,14 +1422,14 @@ public class Gemma4BatchPrefillLayers
                     state.workspace.attnScaleBatch,
                     state.workspace.ffnScaleBatch,
                     state.workspace.branchScaleBatch,
-                    state.workspace.wrapXbFP16Batch,
+                    xbFP16,
                     state.workspace.qkvResultBatch,
                     state.workspace.attnOutFP16,
                     state.workspace.attnScoresBatch,
                     state.workspace.splitKPartialBatch,
                     state.workspace.contiguousF16WeightsScratch,
                     state.workspace.woOut,
-                    state.workspace.normedXFFNFP16,
+                    normedFFNFP16,
                     state.workspace.gateUpResultBatch,
                     state.workspace.wrapHbFP16Batch,
                     state.workspace.w2Out,
@@ -1411,7 +1449,7 @@ public class Gemma4BatchPrefillLayers
                 // From the graph that allocated them, not the previous one: the full-attention
                 // layers never hand them to a task.
                 layer.consumeFromDevice(
-                        GraphNames.batchPrefillLayer(firstLayer),
+                        family.batchPrefillLayer(firstLayer),
                         state.workspace.attnOutF32Batch,
                         state.workspace.attnProbStageBatch);
             }
@@ -1494,7 +1532,7 @@ public class Gemma4BatchPrefillLayers
                 "batch_attn_rms_apply",
                 TransformerBatchPrefillKernels::batchedRmsApplyFP16,
                 context,
-                state.workspace.wrapXbFP16Batch,
+                xbFP16,
                 state.workspace.wrapXBatch,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 state.workspace.attnScaleBatch,
@@ -1752,7 +1790,7 @@ public class Gemma4BatchPrefillLayers
                 "batch_ffn_rms_apply",
                 TransformerBatchPrefillKernels::batchedRmsApplyFP16,
                 context,
-                state.workspace.normedXFFNFP16,
+                normedFFNFP16,
                 state.workspace.wrapXBatch,
                 weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
                 state.workspace.ffnScaleBatch,
@@ -1764,7 +1802,7 @@ public class Gemma4BatchPrefillLayers
             MlxPrefillProjections.gemm(
                     layer,
                     "gateUpProj",
-                    state.workspace.normedXFFNFP16,
+                    normedFFNFP16,
                     mlxGateUp[layerIndex],
                     mlxGateUpOut.get(2 * ffnLen),
                     paddedBatch,
@@ -2061,7 +2099,7 @@ public class Gemma4BatchPrefillLayers
                 simdgroupGemm(
                         layer,
                         "qkvProj",
-                        state.workspace.wrapXbFP16Batch,
+                        xbFP16,
                         weights.wqLayered[layerIndex],
                         state.workspace.qkvResultBatch,
                         dim,
@@ -2071,7 +2109,7 @@ public class Gemma4BatchPrefillLayers
                 simdgroupGemm(
                         layer,
                         "kProj",
-                        state.workspace.wrapXbFP16Batch,
+                        xbFP16,
                         weights.wkLayered[layerIndex],
                         state.workspace.qkvResultBatch,
                         dim,
@@ -2081,7 +2119,7 @@ public class Gemma4BatchPrefillLayers
                 simdgroupGemm(
                         layer,
                         "vProj",
-                        state.workspace.wrapXbFP16Batch,
+                        xbFP16,
                         weights.wvLayered[layerIndex],
                         state.workspace.qkvResultBatch,
                         dim,
@@ -2091,7 +2129,7 @@ public class Gemma4BatchPrefillLayers
             } else if (int8Qkv[layerIndex]) {
                 // Three GEMMs over one quantized activation, each into its slot of the packed
                 // [q|k|v] row; a layer without a value projection projects the key again.
-                int8Quantize(layer, "qkv_q8", state.workspace.wrapXbFP16Batch, dim);
+                int8Quantize(layer, "qkv_q8", xbFP16, dim);
                 int8Gemm(
                         layer,
                         "q_i8",
@@ -2130,7 +2168,7 @@ public class Gemma4BatchPrefillLayers
                         layer,
                         "qkvProj",
                         state.workspace.contiguousF16WeightsScratch,
-                        state.workspace.wrapXbFP16Batch,
+                        xbFP16,
                         state.workspace.qkvResultBatch,
                         qDim + 2 * kvDim,
                         dim);
@@ -2145,7 +2183,7 @@ public class Gemma4BatchPrefillLayers
                         "qkvProj",
                         TransformerBatchPrefillKernels::gemmMMA,
                         context,
-                        state.workspace.wrapXbFP16Batch,
+                        xbFP16,
                         state.workspace.contiguousF16WeightsScratch,
                         state.workspace.qkvResultBatch,
                         paddedBatch,
@@ -2156,7 +2194,7 @@ public class Gemma4BatchPrefillLayers
                         "qkvProj",
                         TransformerBatchPrefillKernels::gemmMMAQKVQ8,
                         context,
-                        state.workspace.wrapXbFP16Batch,
+                        xbFP16,
                         weights.wqLayered[layerIndex].asByteArray(),
                         weights.wkLayered[layerIndex].asByteArray(),
                         valueWeights(layerIndex).asByteArray(),
@@ -2171,7 +2209,7 @@ public class Gemma4BatchPrefillLayers
                 simdgroupGemm(
                         layer,
                         "qkvProj",
-                        state.workspace.wrapXbFP16Batch,
+                        xbFP16,
                         weights.wqLayered[layerIndex],
                         state.workspace.qkvResultBatch,
                         dim,
@@ -2179,7 +2217,7 @@ public class Gemma4BatchPrefillLayers
                         stride,
                         0);
             } else if (int8Qkv[layerIndex]) {
-                int8Quantize(layer, "qkv_q8", state.workspace.wrapXbFP16Batch, dim);
+                int8Quantize(layer, "qkv_q8", xbFP16, dim);
                 int8Gemm(
                         layer,
                         "q_i8",
@@ -2196,7 +2234,7 @@ public class Gemma4BatchPrefillLayers
                         layer,
                         "qkvProj",
                         state.workspace.contiguousF16WeightsScratch,
-                        state.workspace.wrapXbFP16Batch,
+                        xbFP16,
                         state.workspace.qkvResultBatch,
                         qDim,
                         dim);
@@ -2205,7 +2243,7 @@ public class Gemma4BatchPrefillLayers
                         "qkvProj",
                         TransformerBatchPrefillKernels::gemmMMAQ8,
                         context,
-                        state.workspace.wrapXbFP16Batch,
+                        xbFP16,
                         weights.wqLayered[layerIndex].asByteArray(),
                         state.workspace.qkvResultBatch,
                         paddedBatch,
@@ -2217,7 +2255,7 @@ public class Gemma4BatchPrefillLayers
                         "qkvProj",
                         TransformerBatchPrefillKernels::gemmMMA,
                         context,
-                        state.workspace.wrapXbFP16Batch,
+                        xbFP16,
                         state.workspace.contiguousF16WeightsScratch,
                         state.workspace.qkvResultBatch,
                         paddedBatch,
@@ -2325,7 +2363,7 @@ public class Gemma4BatchPrefillLayers
             simdgroupGemm(
                     layer,
                     "gateProj",
-                    state.workspace.normedXFFNFP16,
+                    normedFFNFP16,
                     weights.w1Layered[layerIndex],
                     state.workspace.gateUpResultBatch,
                     dim,
@@ -2335,7 +2373,7 @@ public class Gemma4BatchPrefillLayers
             simdgroupGemm(
                     layer,
                     "upProj",
-                    state.workspace.normedXFFNFP16,
+                    normedFFNFP16,
                     weights.w3Layered[layerIndex],
                     state.workspace.gateUpResultBatch,
                     dim,
@@ -2344,7 +2382,7 @@ public class Gemma4BatchPrefillLayers
                     ffnLen);
         } else if (int8GateUp[layerIndex]) {
             // Gate and up into the two halves of the packed [gate|up] row the activation reads.
-            int8Quantize(layer, "ffn_q8", state.workspace.normedXFFNFP16, dim);
+            int8Quantize(layer, "ffn_q8", normedFFNFP16, dim);
             int8Gemm(
                     layer,
                     "gate_i8",
@@ -2372,7 +2410,7 @@ public class Gemma4BatchPrefillLayers
                     layer,
                     "gateUpProj",
                     state.workspace.contiguousF16WeightsScratch,
-                    state.workspace.normedXFFNFP16,
+                    normedFFNFP16,
                     state.workspace.gateUpResultBatch,
                     2 * ffnLen,
                     dim);
@@ -2387,7 +2425,7 @@ public class Gemma4BatchPrefillLayers
                     "gateUpProj",
                     TransformerBatchPrefillKernels::gemmMMA,
                     context,
-                    state.workspace.normedXFFNFP16,
+                    normedFFNFP16,
                     state.workspace.contiguousF16WeightsScratch,
                     state.workspace.gateUpResultBatch,
                     paddedBatch,
@@ -2398,7 +2436,7 @@ public class Gemma4BatchPrefillLayers
                     "gateUpProj",
                     TransformerBatchPrefillKernels::gemmMMAGateUpQ8,
                     context,
-                    state.workspace.normedXFFNFP16,
+                    normedFFNFP16,
                     weights.w1Layered[layerIndex].asByteArray(),
                     weights.w3Layered[layerIndex].asByteArray(),
                     state.workspace.gateUpResultBatch,
@@ -2695,7 +2733,7 @@ public class Gemma4BatchPrefillLayers
         WorkerGrid reduceWorker = elementwise(paddedBatch * dim, 256);
 
         for (int l = firstLayer; l < endLayer; l++) {
-            String p = GraphNames.batchPrefillLayer(l) + ".";
+            String p = family.batchPrefillLayer(l) + ".";
             int headDim = config.headDim(l);
             int nHeadKv = config.keyValueHeads(l);
             int qDim = nHead * headDim;
@@ -2851,7 +2889,7 @@ public class Gemma4BatchPrefillLayers
         if (firstLayer > 0) {
             return;
         }
-        String p0 = "batchPrefillLayer_0.";
+        String p0 = family.batchPrefillLayer(0) + ".";
         scheduler.addWorkerGrid(p0 + "batch_scale_embedding", dimApplyWorker);
         if (!ple) {
             return;

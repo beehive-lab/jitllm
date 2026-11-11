@@ -138,7 +138,8 @@ public class Qwen35BatchPrefillLayers
     /** Q8_0 projections decoded for cuBLAS, as "graph.task" and element count, for their grids. */
     private final java.util.Map<String, Integer> q8DequantTasks = new java.util.LinkedHashMap<>();
 
-    private final KernelContext context = new KernelContext();
+    private final KernelContext context;
+    private final PrefillFamily family;
 
     /** Every projection a layer can have, and each one's region by qualified task name. */
     private final List<Qwen35PrefillRegions.Projection> projections;
@@ -354,7 +355,7 @@ public class Qwen35BatchPrefillLayers
 
     /** {@code x += out}: the residual of a projection whose kernel stored rather than added. */
     private void residualPass(TaskGraph layer, int layerIndex, String task) {
-        residualPasses.add(GraphNames.batchLayer(layerIndex) + "." + task);
+        residualPasses.add(family.batchLayer(layerIndex) + "." + task);
         layer.task(
                 task,
                 Qwen35MMAKernels::residualAdd,
@@ -379,7 +380,7 @@ public class Qwen35BatchPrefillLayers
      */
     private void quantizeActivation(TaskGraph graph, int layer, String task, FloatArray x, int k) {
         quantizedInput = x;
-        quantizeTasks.put(GraphNames.batchLayer(layer) + "." + task, batchSize * k);
+        quantizeTasks.put(family.batchLayer(layer) + "." + task, batchSize * k);
         graph.task(
                 task,
                 Int8GemmKernels::quantizeActivationsQ8Warp,
@@ -679,7 +680,7 @@ public class Qwen35BatchPrefillLayers
         }
         // Named as the Q4_0 paths name their conversion: attn_output_fp16, ffn_down_fp16.
         String convert = task.replace("_proj", "_fp16");
-        fp16Converts.put(GraphNames.batchLayer(layer) + "." + convert, batchSize * inputs);
+        fp16Converts.put(family.batchLayer(layer) + "." + convert, batchSize * inputs);
         graph.task(
                 convert,
                 Qwen35MMAKernels::convertToFP16,
@@ -750,7 +751,7 @@ public class Qwen35BatchPrefillLayers
                     outputs);
             return;
         }
-        gemmTasks.put(GraphNames.batchLayer(layer) + "." + task, outputs);
+        gemmTasks.put(family.batchLayer(layer) + "." + task, outputs);
         graph.task(
                 task,
                 TransformerBatchPrefillKernels::gemmMMA,
@@ -782,7 +783,7 @@ public class Qwen35BatchPrefillLayers
             int inputs,
             int outputs,
             boolean residual) {
-        String qualified = GraphNames.batchLayer(layer) + "." + task;
+        String qualified = family.batchLayer(layer) + "." + task;
         HalfFloatArray a = fp16Input(graph, layer, task, xBatch, inputs);
         int elements = outputs * inputs;
         dequantTasks.put(
@@ -825,7 +826,7 @@ public class Qwen35BatchPrefillLayers
      * The decode flag the tiled decoders check, never set: the K-quant pairs decode for every
      * chunk.
      */
-    private final IntArray neverDecoded = new IntArray(1);
+    private final IntArray neverDecoded;
 
     /**
      * Grows the shared scratch to the largest K-quant matrix that takes the pair, when that is
@@ -846,6 +847,10 @@ public class Qwen35BatchPrefillLayers
             }
         }
         if (halves > state.workspace.wrapDequantScratchFP16.getSize()) {
+            if (family.isNarrow()) {
+                throw new IllegalStateException(
+                        "the narrow family's K-quant weights outgrow the primary's scratch");
+            }
             state.workspace.wrapDequantScratchFP16 =
                     TornadoWorkspaces.halfFloats(Math.toIntExact(halves));
         }
@@ -912,6 +917,11 @@ public class Qwen35BatchPrefillLayers
                             + " layers");
         }
         this.state = state;
+        this.family = PrefillFamily.of(state);
+        // The narrow family takes its primary's context, decode flag and projections.
+        Qwen35BatchPrefillLayers primary = family.primary(Qwen35BatchPrefillLayers.class);
+        this.context = primary != null ? primary.context : new KernelContext();
+        this.neverDecoded = primary != null ? primary.neverDecoded : new IntArray(1);
         this.weights = weights;
         this.config = config;
         this.batchSize = batchSize;
@@ -924,12 +934,13 @@ public class Qwen35BatchPrefillLayers
                 if (p.tensor(layer) != null) {
                     Region region = Qwen35PrefillRegions.region(p, layer, batchSize);
                     regions.add(region);
-                    projectionRegions.put(GraphNames.batchLayer(layer) + "." + p.task(), region);
+                    projectionRegions.put(family.batchLayer(layer) + "." + p.task(), region);
                 }
             }
         }
         this.plan =
                 WorkPlan.of(
+                        primary != null ? primary.plan : null,
                         regions,
                         List.of(new CublasLayerProjections(this), new JitLayerProjections(this)),
                         Target.of(state.executionPolicy()),
@@ -949,7 +960,7 @@ public class Qwen35BatchPrefillLayers
                         .mapToObj(this::buildLayer)
                         .map(TaskGraph::snapshot)
                         .toList();
-        this.lastLayerTaskGraphID = GraphNames.batchLayer(endLayer - 1);
+        this.lastLayerTaskGraphID = family.batchLayer(endLayer - 1);
     }
 
     // @formatter:off
@@ -985,12 +996,25 @@ public class Qwen35BatchPrefillLayers
                         }
                     }
                     if (plan.runs(
-                            projectionRegions.get(GraphNames.batchLayer(layer) + "." + p.task()),
+                            projectionRegions.get(family.batchLayer(layer) + "." + p.task()),
                             "cuBLAS")) {
                         widest = Math.max(widest, (long) outputs * inputs);
                     }
                 }
             }
+        }
+        if (family.isNarrow()) {
+            // The narrow family multiplies in the primary's scratch, and never grows it.
+            FloatArray scratch = state.workspace.wrapDequantScratchF32;
+            FloatArray partial = state.workspace.wrapQ8SplitPartial;
+            if ((widest > 0 && (scratch == null || scratch.getSize() < widest))
+                    || (partials > 0 && (partial == null || partial.getSize() < partials))) {
+                throw PrefillFamily.decline(
+                        "its int8 GEMMs would need more scratch than the primary's at "
+                                + batchSize
+                                + " rows");
+            }
+            return;
         }
         if (widest > 0) {
             FloatArray current = state.workspace.wrapDequantScratchF32;
@@ -1124,7 +1148,7 @@ public class Qwen35BatchPrefillLayers
             int n,
             int d,
             boolean residual) {
-        Region region = projectionRegions.get(GraphNames.batchLayer(layer) + "." + task);
+        Region region = projectionRegions.get(family.batchLayer(layer) + "." + task);
         MatMul m = region == null ? null : (MatMul) region.ops().get(0);
         if (m == null
                 || m.columns() != n
@@ -1237,7 +1261,7 @@ public class Qwen35BatchPrefillLayers
                     // A warp per 4 x 4 tile of (row, output) pairs where the outputs divide into
                     // tiles — the same per-pair arithmetic, each load serving four products.
                     boolean tiled = d % TransformerBatchPrefillKernels.MATVEC_TILE == 0;
-                    warpMatVecTasks.put(GraphNames.batchLayer(layer) + "." + task, tiled ? -d : d);
+                    warpMatVecTasks.put(family.batchLayer(layer) + "." + task, tiled ? -d : d);
                     graph.task(
                             task,
                             tiled
@@ -1267,7 +1291,7 @@ public class Qwen35BatchPrefillLayers
             case Q4_0 -> {
                 if (state.workspace.prepacking.prepackedQ4(w)) {
                     // A prepacked weight has only the int8 GEMM: the activation quantized here.
-                    String qualified = GraphNames.batchLayer(layer) + "." + task;
+                    String qualified = family.batchLayer(layer) + "." + task;
                     if (!prepackedQ4Eligible(task, d, n)) {
                         throw WeightPrepacking.noPrepackedKernel(
                                 "qwen35 batch-prefill task '" + qualified + "'");
@@ -1289,7 +1313,7 @@ public class Qwen35BatchPrefillLayers
                 if (simdgroupGemm(n)) {
                     // Metal: 64-token x 64-output tiles on SIMD-group matrices, the weights
                     // dequantized to float as they are staged.
-                    simdgroupTasks.put(GraphNames.batchLayer(layer) + "." + task, d);
+                    simdgroupTasks.put(family.batchLayer(layer) + "." + task, d);
                     graph.task(
                             task,
                             residual
@@ -1312,7 +1336,7 @@ public class Qwen35BatchPrefillLayers
                 if (!residual && xBatch == state.workspace.wrapNormedBatch && mmaEligible(n, d)) {
                     q40Projection(
                             graph,
-                            GraphNames.batchLayer(layer) + "." + task,
+                            family.batchLayer(layer) + "." + task,
                             task,
                             state.workspace.wrapNormedFP16Batch,
                             w,
@@ -1325,10 +1349,10 @@ public class Qwen35BatchPrefillLayers
                 // for the tile. A quantized projection is memory-bound, and a chunk is only worth
                 // scheduling if it reuses the weights it reads.
                 rowTiles.put(
-                        GraphNames.batchLayer(layer) + "." + task,
+                        family.batchLayer(layer) + "." + task,
                         TransformerComputeKernelsQ4_0.rowTile());
                 colTiles.put(
-                        GraphNames.batchLayer(layer) + "." + task,
+                        family.batchLayer(layer) + "." + task,
                         TransformerComputeKernelsQ4_0.colTile());
                 if (residual) {
                     graph.task(
@@ -1358,10 +1382,10 @@ public class Qwen35BatchPrefillLayers
             }
             case Q4_1 -> {
                 rowTiles.put(
-                        GraphNames.batchLayer(layer) + "." + task,
+                        family.batchLayer(layer) + "." + task,
                         TransformerComputeKernelsQ4_1.rowTile());
                 colTiles.put(
-                        GraphNames.batchLayer(layer) + "." + task,
+                        family.batchLayer(layer) + "." + task,
                         TransformerComputeKernelsQ4_1.colTile());
                 if (residual) {
                     graph.task(
@@ -1391,10 +1415,10 @@ public class Qwen35BatchPrefillLayers
             }
             case Q5_K -> {
                 rowTiles.put(
-                        GraphNames.batchLayer(layer) + "." + task,
+                        family.batchLayer(layer) + "." + task,
                         TransformerComputeKernelsQ5_K.rowTile());
                 colTiles.put(
-                        GraphNames.batchLayer(layer) + "." + task,
+                        family.batchLayer(layer) + "." + task,
                         TransformerComputeKernelsQ5_K.colTile());
                 if (residual) {
                     graph.task(
@@ -1442,7 +1466,7 @@ public class Qwen35BatchPrefillLayers
             boolean residual) {
         QuantizedBatchProjections projections = batchProjections();
         projections.projection(graph, task, xBatch, outBatch, w, n, d, residual);
-        sharedTasks.put(GraphNames.batchLayer(layer) + "." + task, projections.worker(w, d));
+        sharedTasks.put(family.batchLayer(layer) + "." + task, projections.worker(w, d));
     }
 
     /**
@@ -1501,7 +1525,7 @@ public class Qwen35BatchPrefillLayers
                 config.dim(),
                 config.hiddenDim(),
                 false);
-        splitGateUpLayers.add(GraphNames.batchLayer(layer) + ".");
+        splitGateUpLayers.add(family.batchLayer(layer) + ".");
         if (hbFP16) {
             graph.task(
                     "ffn_swiglu",
@@ -1569,7 +1593,7 @@ public class Qwen35BatchPrefillLayers
             int d,
             boolean residual,
             boolean cublas) {
-        String qualified = GraphNames.batchLayer(layer) + "." + task;
+        String qualified = family.batchLayer(layer) + "." + task;
         if (q8Int8Eligible(task, d, n)) {
             quantizeInput(graph, layer, task, xBatch, n);
             int8Projection(
@@ -1743,7 +1767,7 @@ public class Qwen35BatchPrefillLayers
                 quantizeInput(graph, layer, "ffn_gate_up", xBatch, config.dim());
                 int8Projection(
                         graph,
-                        GraphNames.batchLayer(layer) + ".ffn_gate_proj",
+                        family.batchLayer(layer) + ".ffn_gate_proj",
                         "ffn_gate_proj",
                         gate,
                         state.workspace.wrapGateBatch,
@@ -1755,7 +1779,7 @@ public class Qwen35BatchPrefillLayers
                         true);
                 int8Projection(
                         graph,
-                        GraphNames.batchLayer(layer) + ".ffn_up_proj",
+                        family.batchLayer(layer) + ".ffn_up_proj",
                         "ffn_up_proj",
                         up,
                         null,
@@ -1765,7 +1789,7 @@ public class Qwen35BatchPrefillLayers
                         config.dim(),
                         Epilogue.SWIGLU,
                         true);
-                fusedSwigluLayers.add(GraphNames.batchLayer(layer) + ".");
+                fusedSwigluLayers.add(family.batchLayer(layer) + ".");
                 return;
             }
             // Gate and up as two projections into their own buffers, then SwiGLU.
@@ -1791,7 +1815,7 @@ public class Qwen35BatchPrefillLayers
                     config.dim(),
                     config.hiddenDim(),
                     false);
-            q8SwigluLayers.add(GraphNames.batchLayer(layer) + ".");
+            q8SwigluLayers.add(family.batchLayer(layer) + ".");
             graph.task(
                     "ffn_swiglu",
                     Qwen35MMAKernels::swiGLUBatch,
@@ -1812,7 +1836,7 @@ public class Qwen35BatchPrefillLayers
             // staged once. The kernel is the one every other projection already uses.
             q40Projection(
                     graph,
-                    GraphNames.batchLayer(layer) + ".ffn_gate_proj",
+                    family.batchLayer(layer) + ".ffn_gate_proj",
                     "ffn_gate_proj",
                     state.workspace.wrapNormedFP16Batch,
                     gate,
@@ -1825,7 +1849,7 @@ public class Qwen35BatchPrefillLayers
                 // where it stays on the FP16 pair (the Q4_1 layers).
                 int8Projection(
                         graph,
-                        GraphNames.batchLayer(layer) + ".ffn_up_proj",
+                        family.batchLayer(layer) + ".ffn_up_proj",
                         "ffn_up_proj",
                         up,
                         null,
@@ -1834,7 +1858,7 @@ public class Qwen35BatchPrefillLayers
                         config.hiddenDim(),
                         config.dim(),
                         Epilogue.SWIGLU);
-                fusedSwigluLayers.add(GraphNames.batchLayer(layer) + ".");
+                fusedSwigluLayers.add(family.batchLayer(layer) + ".");
                 return;
             }
             if (hbFP16 && q40Pair(config.hiddenDim(), config.dim())) {
@@ -1842,7 +1866,7 @@ public class Qwen35BatchPrefillLayers
                 // stored, no SwiGLU task.
                 q40Projection(
                         graph,
-                        GraphNames.batchLayer(layer) + ".ffn_up_proj",
+                        family.batchLayer(layer) + ".ffn_up_proj",
                         "ffn_up_proj",
                         state.workspace.wrapNormedFP16Batch,
                         up,
@@ -1852,12 +1876,12 @@ public class Qwen35BatchPrefillLayers
                         config.hiddenDim(),
                         config.dim(),
                         Epilogue.SWIGLU);
-                fusedSwigluLayers.add(GraphNames.batchLayer(layer) + ".");
+                fusedSwigluLayers.add(family.batchLayer(layer) + ".");
                 return;
             }
             q40Projection(
                     graph,
-                    GraphNames.batchLayer(layer) + ".ffn_up_proj",
+                    family.batchLayer(layer) + ".ffn_up_proj",
                     "ffn_up_proj",
                     state.workspace.wrapNormedFP16Batch,
                     up,
@@ -1922,10 +1946,10 @@ public class Qwen35BatchPrefillLayers
             return;
         }
         rowTiles.put(
-                GraphNames.batchLayer(layer) + ".ffn_gate_up",
+                family.batchLayer(layer) + ".ffn_gate_up",
                 TransformerComputeKernelsQ4_0.ffnRowTile());
         colTiles.put(
-                GraphNames.batchLayer(layer) + ".ffn_gate_up",
+                family.batchLayer(layer) + ".ffn_gate_up",
                 TransformerComputeKernelsQ4_0.ffnColTile());
         graph.task(
                 "ffn_gate_up",
@@ -1944,13 +1968,13 @@ public class Qwen35BatchPrefillLayers
     // ── the layer graphs ──────────────────────────────────────────────────────
 
     private TaskGraph buildLayer(int layerIndex) {
-        TaskGraph layer = new TaskGraph(GraphNames.batchLayer(layerIndex));
+        TaskGraph layer = family.taskGraph(GraphNames.batchLayer(layerIndex));
         quantizedInput = null;
 
         String predecessor =
                 layerIndex == firstLayer
                         ? GraphNames.PREFILL_ACTIVATION
-                        : GraphNames.batchLayer(layerIndex - 1);
+                        : family.batchLayer(layerIndex - 1);
         layer.consumeFromDevice(predecessor, state.workspace.wrapXBatch);
         configureTransfers(layer, layerIndex, predecessor);
         transferLayerWeights(layer, layerIndex);
@@ -1961,7 +1985,8 @@ public class Qwen35BatchPrefillLayers
                 "attn_rms_reduce",
                 "attn_rms_apply",
                 state.workspace.attnScaleBatch,
-                require(weights.rms_att_weightLayered, layerIndex, "attn_norm"));
+                require(weights.rms_att_weightLayered, layerIndex, "attn_norm"),
+                normedNeedsQuantizing(layerIndex, false));
 
         if (config.isRecurrentLayer(layerIndex)) {
             deltaNetBranch(layer, layerIndex);
@@ -1975,7 +2000,8 @@ public class Qwen35BatchPrefillLayers
                 "ffn_rms_reduce",
                 "ffn_rms_apply",
                 state.workspace.ffnScaleBatch,
-                require(weights.rms_ffn_weightLayered, layerIndex, "post_attention_norm"));
+                require(weights.rms_ffn_weightLayered, layerIndex, "post_attention_norm"),
+                normedNeedsQuantizing(layerIndex, true));
 
         if (feedForward != null) {
             feedForward.appendTasks(layer, context, layerIndex);
@@ -2040,7 +2066,7 @@ public class Qwen35BatchPrefillLayers
                         state.workspace.wrapHbBatch,
                         config.hiddenDim());
             } else if (!swigluWritesFP16) {
-                hbConvertLayers.add(GraphNames.batchLayer(layerIndex) + ".");
+                hbConvertLayers.add(family.batchLayer(layerIndex) + ".");
                 layer.task(
                         "ffn_down_fp16",
                         Qwen35MMAKernels::convertToFP16,
@@ -2053,7 +2079,7 @@ public class Qwen35BatchPrefillLayers
                     // The same tiled pair as the Q4_0 projections, through the same scratch,
                     // with the Q4_1 paired-nibble decoder; this matrix is the scratch's full
                     // size. One lane per packed byte.
-                    String qualified = GraphNames.batchLayer(layerIndex) + ".ffn_down_proj";
+                    String qualified = family.batchLayer(layerIndex) + ".ffn_down_proj";
                     dequantTasks.put(qualified + "_dequant", config.dim() * config.hiddenDim() / 2);
                     gemmTasks.put(qualified, config.dim());
                     layer.task(
@@ -2076,8 +2102,7 @@ public class Qwen35BatchPrefillLayers
                             Epilogue.RESIDUAL);
                     downResidualFused = true;
                 } else {
-                    mmaTasks.put(
-                            GraphNames.batchLayer(layerIndex) + ".ffn_down_proj", config.dim());
+                    mmaTasks.put(family.batchLayer(layerIndex) + ".ffn_down_proj", config.dim());
                     layer.task(
                             "ffn_down_proj",
                             Qwen35MMAKernels::projectionMMAQ4_1,
@@ -2093,7 +2118,7 @@ public class Qwen35BatchPrefillLayers
                 downResidualFused = q40Pair(config.dim(), config.hiddenDim());
                 q40Projection(
                         layer,
-                        GraphNames.batchLayer(layerIndex) + ".ffn_down_proj",
+                        family.batchLayer(layerIndex) + ".ffn_down_proj",
                         "ffn_down_proj",
                         state.workspace.wrapHbFP16BatchMMA,
                         down,
@@ -2162,7 +2187,8 @@ public class Qwen35BatchPrefillLayers
             String reduce,
             String apply,
             FloatArray scaleBatch,
-            TornadoTensor weight) {
+            TornadoTensor weight,
+            boolean quantize) {
         if (groupRmsEligible(config.dim())) {
             layer.task(
                     reduce,
@@ -2213,14 +2239,41 @@ public class Qwen35BatchPrefillLayers
             }
         }
         if (int8Quantizes(config.dim())) {
-            // The normed chunk quantized once for every Q4_0 projection that reads it.
-            quantizeActivation(
-                    layer,
-                    layerIndex,
-                    apply + "_q8",
-                    state.workspace.wrapNormedBatch,
-                    config.dim());
+            if (quantize) {
+                // The normed chunk quantized once for every Q4_0 projection that reads it.
+                quantizeActivation(
+                        layer,
+                        layerIndex,
+                        apply + "_q8",
+                        state.workspace.wrapNormedBatch,
+                        config.dim());
+            } else {
+                // The apply rewrote the normed chunk, so the scratch no longer holds it.
+                quantizedInput = null;
+            }
         }
+    }
+
+    /**
+     * Whether a norm's chunk must be quantized: the feed-forward's norm if {@code ffn}, otherwise
+     * the mixer's. Not when every projection reading the chunk is F16, because those read its FP16
+     * or FP32 form. Example: Qwen3.5-0.8B F16, where no task of a layer reads the int8 scratch. A
+     * family's own feed-forward reads the quantized chunk whatever the dense weights are.
+     */
+    private boolean normedNeedsQuantizing(int layer, boolean ffn) {
+        if (ffn && feedForward != null) {
+            return true;
+        }
+        for (Qwen35PrefillRegions.Projection p : projections) {
+            TornadoTensor w = p.tensor(layer);
+            if (p.normedInput()
+                    && p.task().startsWith("ffn_") == ffn
+                    && w != null
+                    && w.dataType() != DataType.F16) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void attentionBranch(TaskGraph layer, int layerIndex) {
@@ -2482,7 +2535,7 @@ public class Qwen35BatchPrefillLayers
             boolean fused = q40Pair(config.dim(), attnDim);
             q40Projection(
                     layer,
-                    GraphNames.batchLayer(layerIndex) + ".attn_output_proj",
+                    family.batchLayer(layerIndex) + ".attn_output_proj",
                     "attn_output_proj",
                     state.workspace.wrapHbFP16BatchMMA,
                     attnOutput,
@@ -2547,7 +2600,7 @@ public class Qwen35BatchPrefillLayers
                 && ssmAlpha.dataType() == DataType.Q8_0
                 && quantizedInput == state.workspace.wrapNormedBatch) {
             // Both narrow projections in one launch, against the chunk the norm quantized.
-            alphaBetaFused.add(GraphNames.batchLayer(layerIndex) + ".");
+            alphaBetaFused.add(family.batchLayer(layerIndex) + ".");
             layer.task(
                     "ssm_alpha_beta",
                     Qwen35BatchKernels::alphaBetaQ8_0,
@@ -2756,7 +2809,7 @@ public class Qwen35BatchPrefillLayers
                 // fours of k-tiles per row block): its dequantization runs after the previous
                 // projection's GEMM has read the scratch and before this GEMM, in this graph's
                 // task order.
-                String qualified = GraphNames.batchLayer(layerIndex) + ".ssm_out_proj";
+                String qualified = family.batchLayer(layerIndex) + ".ssm_out_proj";
                 dequantTasks.put(qualified + "_dequant", config.dim() * valueDim / 2);
                 gemmTasks.put(qualified, config.dim());
                 layer.task(
@@ -2779,7 +2832,7 @@ public class Qwen35BatchPrefillLayers
                         Epilogue.RESIDUAL);
                 ssmOutResidualFused = true;
             } else {
-                mmaTasks.put(GraphNames.batchLayer(layerIndex) + ".ssm_out_proj", config.dim());
+                mmaTasks.put(family.batchLayer(layerIndex) + ".ssm_out_proj", config.dim());
                 layer.task(
                         "ssm_out_proj",
                         Qwen35MMAKernels::projectionMMAQ5_KPaired,
@@ -2839,6 +2892,10 @@ public class Qwen35BatchPrefillLayers
             tensors.add(require(weights.woLayered, layerIndex, "attn_output"));
             tensors.add(require(weights.attnQNorm, layerIndex, "attn_q_norm").asFloatArray());
             tensors.add(require(weights.attnKNorm, layerIndex, "attn_k_norm").asFloatArray());
+            // The rotation tables, declared rather than left to the rope task's arguments, so the
+            // narrow family's graph binds this graph's copy instead of allocating its own.
+            tensors.add(weights.freq_cis_realFlat.asFloatArray());
+            tensors.add(weights.freq_cis_imagFlat.asFloatArray());
         }
         state.workspace.prepacker.configureGraphInputs(
                 layer, state.workspace.prepacking, tensors.toArray());
@@ -3173,7 +3230,7 @@ public class Qwen35BatchPrefillLayers
                         batchSize * config.numberOfValueHeads(), ELEMENTWISE_LOCAL);
 
         for (int layer = firstLayer; layer < endLayer; layer++) {
-            String prefix = GraphNames.batchLayer(layer) + ".";
+            String prefix = family.batchLayer(layer) + ".";
             scheduler.addWorkerGrid(prefix + "attn_rms_reduce", rmsReduce);
             scheduler.addWorkerGrid(prefix + "ffn_rms_reduce", rmsReduce);
             scheduler.addWorkerGrid(prefix + "attn_rms_apply", rmsApply);

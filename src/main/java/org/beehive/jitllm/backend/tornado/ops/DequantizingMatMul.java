@@ -80,6 +80,23 @@ public abstract class DequantizingMatMul implements Implementation {
                 new HalfFloatArray(Math.toIntExact(s.widest)));
     }
 
+    /** The primary's partial products and scratch, split as the primary splits. */
+    @Override
+    public Instance narrowed(
+            Instance primary,
+            List<Step> steps,
+            Target target,
+            KernelContext context,
+            WeightPrepacking prepacking) {
+        Sizes s = Sizes.of(steps);
+        Tasks wider = (Tasks) primary;
+        return new Tasks(
+                context,
+                prepacking,
+                wider.splitK.narrowed(s.rows, s.widestSplit),
+                wider.contiguousScratch);
+    }
+
     /** The task that decodes a projection's weight, by its role: {@code qDecode} for the query. */
     private static String decodeTask(MatMul projection) {
         return switch (projection.weight().role()) {

@@ -10,6 +10,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.layers.PrefillFamily;
 import org.beehive.jitllm.backend.tornado.layers.QuantizedBatchProjections;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -44,7 +45,8 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
     private final Qwen2MoEState state;
     private final Qwen2MoETornadoWeights weights;
     private final Qwen2MoEConfiguration config;
-    private final KernelContext context = new KernelContext();
+    private final KernelContext context;
+    private final PrefillFamily family;
     private final int batchSize;
     private final int dim;
     private final int kvDim;
@@ -59,6 +61,11 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
             Qwen2MoEConfiguration config,
             int batchSize) {
         this.state = state;
+        this.family = PrefillFamily.of(state);
+        // The narrow family takes its primary's context.
+        Qwen2MoEQ8_0LayersBatchPrefill primary =
+                family.primary(Qwen2MoEQ8_0LayersBatchPrefill.class);
+        this.context = primary != null ? primary.context : new KernelContext();
         this.weights = weights;
         this.config = config;
         this.batchSize = batchSize;
@@ -80,7 +87,7 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
             lastLayerTaskGraphID = graphName;
         }
 
-        TaskGraph layer = new TaskGraph(graphName);
+        TaskGraph layer = family.taskGraph(graphName);
         configureDataTransfers(layer, layerIndex);
         configureAttention(layer, layerIndex);
         configureMoE(layer, layerIndex);
@@ -145,7 +152,7 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
                 layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, nativeScratch());
             }
         } else {
-            String predecessor = GraphNames.batchPrefillLayer(layerIndex - 1);
+            String predecessor = family.batchPrefillLayer(layerIndex - 1);
             layer.consumeFromDevice(
                     predecessor,
                     context,
@@ -574,7 +581,7 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
         WorkerGrid sharedWeightWorker = groupedRowsWorker(batchSize);
 
         for (int layer = 0; layer < config.numberOfLayers(); layer++) {
-            String prefix = GraphNames.batchPrefillLayer(layer) + ".";
+            String prefix = family.batchPrefillLayer(layer) + ".";
             if (nativeLayer(layer)) {
                 addNativeWorkerGrids(scheduler, prefix, layer, qkvWorker);
             }

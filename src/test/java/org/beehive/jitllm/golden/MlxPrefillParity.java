@@ -63,6 +63,48 @@ abstract class MlxPrefillParity extends CpuGpuParity {
     }
 
     void assertMlxParity(Fixture fixture, Bounds bounds, Weights weights) throws Exception {
+        assertWithMlx(weights, width -> assertParityBatched(fixture, bounds, width));
+    }
+
+    // @formatter:off
+    /**
+     * {@link #assertMlxParity} for a family whose four projections all run on MLX with FP16
+     * weights: the copies, or the affine repack, which MLX's GEMM decodes to the same FP16 values.
+     * {@code bounds} applies against the host with every projection weight rounded to FP16 for the
+     * positions the prefill covers, and {@code staged} against the exact host; see {@link
+     * #assertParityBatchedStagedWeights}.
+     */
+    // @formatter:on
+    void assertMlxParityStagedWeights(
+            Fixture fixture, Bounds bounds, Bounds staged, Weights weights) throws Exception {
+        assertWithMlx(
+                weights,
+                width ->
+                        assertParityBatchedStagedWeights(
+                                fixture,
+                                bounds,
+                                staged,
+                                width,
+                                gpu -> {
+                                    assertRanMlx(gpu);
+                                    java.util.Map<Integer, java.util.Set<String>> rounded =
+                                            new java.util.TreeMap<>();
+                                    for (int l = 0; l < gpu.layers; l++) {
+                                        rounded.put(l, MLX_PROJECTION_WEIGHTS);
+                                    }
+                                    return rounded;
+                                }));
+    }
+
+    /** The weights of the four projections MLX takes, by their {@code StandardWeights} names. */
+    private static final java.util.Set<String> MLX_PROJECTION_WEIGHTS =
+            java.util.Set.of("wq", "wk", "wv", "wo", "w1", "w2", "w3");
+
+    private interface Capture {
+        GoldenCapture.Result run(int width) throws Exception;
+    }
+
+    private void assertWithMlx(Weights weights, Capture capture) throws Exception {
         assumeTrue(
                 "the MLX prefill runs on Metal only",
                 BackendId.METAL.equals(TornadoDevices.current().backend()));
@@ -74,22 +116,21 @@ abstract class MlxPrefillParity extends CpuGpuParity {
             System.setProperty(ExecutionPolicy.DECODED_PROJECTIONS_PROPERTY, weights.property);
         }
         try {
-            GoldenCapture.Result gpu =
-                    assertParityBatched(
-                            fixture, bounds, weights == Weights.AFFINE ? AFFINE_WIDTH : WIDTH);
-            assertTrue(
-                    "the plan did not record its dispatch, so it cannot show it ran MLX",
-                    gpu.gridScheduler != null);
-            for (String marker : mlxTasks()) {
-                assertTrue(
-                        "no "
-                                + marker
-                                + " task in the batched prefill: the MLX path did not engage",
-                        gpu.gridScheduler.keySet().stream().anyMatch(k -> k.endsWith(marker)));
-            }
+            assertRanMlx(capture.run(weights == Weights.AFFINE ? AFFINE_WIDTH : WIDTH));
         } finally {
             restore(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, previousNative);
             restore(ExecutionPolicy.DECODED_PROJECTIONS_PROPERTY, previousDecoded);
+        }
+    }
+
+    private void assertRanMlx(GoldenCapture.Result gpu) {
+        assertTrue(
+                "the plan did not record its dispatch, so it cannot show it ran MLX",
+                gpu.gridScheduler != null);
+        for (String marker : mlxTasks()) {
+            assertTrue(
+                    "no " + marker + " task in the batched prefill: the MLX path did not engage",
+                    gpu.gridScheduler.keySet().stream().anyMatch(k -> k.endsWith(marker)));
         }
     }
 

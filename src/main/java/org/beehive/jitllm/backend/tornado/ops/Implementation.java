@@ -32,4 +32,18 @@ public interface Implementation {
     /** Allocates what {@code steps} need and returns the object that adds their tasks. */
     Instance create(
             List<Step> steps, Target target, KernelContext context, WeightPrepacking prepacking);
+
+    /**
+     * {@link #create} for the narrow family ({@code PrefillFamily}), whose {@code steps} are the
+     * primary's over fewer rows: an implementation that allocates takes {@code primary}'s buffers,
+     * the instance it created for the primary. One that allocates nothing creates as usual.
+     */
+    default Instance narrowed(
+            Instance primary,
+            List<Step> steps,
+            Target target,
+            KernelContext context,
+            WeightPrepacking prepacking) {
+        return create(steps, target, context, prepacking);
+    }
 }

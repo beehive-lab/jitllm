@@ -62,6 +62,18 @@ public abstract class DecodedMatMul implements Implementation {
         return new Tasks(context, projections);
     }
 
+    /** The primary's decoded copies and scratch, split as the primary splits. */
+    @Override
+    public Instance narrowed(
+            Instance primary,
+            List<Step> steps,
+            Target target,
+            KernelContext context,
+            WeightPrepacking prepacking) {
+        Sizes s = Sizes.of(steps);
+        return new Tasks(context, ((Tasks) primary).projections.narrowed(s.rows, s.widestSplit));
+    }
+
     /** The projections through {@link FP16Projections}: each weight decoded, then one GEMM. */
     private static final class Tasks extends TensorCoreSteps {
 

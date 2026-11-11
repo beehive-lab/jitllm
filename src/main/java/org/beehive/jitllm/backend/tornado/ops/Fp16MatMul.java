@@ -24,8 +24,12 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  * matrix per call, so under it q|k|v and gate|up are first copied into one contiguous buffer each
  * ({@link FP16Projections}), and the rest go to cuBLAS as they are. The subclass picks the GEMM.
  *
+ * <p>The JIT GEMMs compute whole 128-row tiles, so they take the padded rows; cuBLAS multiplies
+ * only the chunk's tokens.
+ *
  * <p>Example: Llama-3.2-1B F16 on the JIT GEMMs uploads its weights once and copies none; on cuBLAS
- * it keeps a contiguous copy of q|k|v and of gate|up.
+ * it keeps a contiguous copy of q|k|v and of gate|up. At a chunk of 16, the JIT GEMMs run 128 rows
+ * and cuBLAS 16.
  */
 public abstract class Fp16MatMul implements Implementation {
 
@@ -102,6 +106,24 @@ public abstract class Fp16MatMul implements Implementation {
         return new Tasks(context, splitK, nativeLibContiguousProjections);
     }
 
+    /** The primary's partial products and contiguous copies, split as the primary splits. */
+    @Override
+    public Instance narrowed(
+            Instance primary,
+            List<Step> steps,
+            Target target,
+            KernelContext context,
+            WeightPrepacking prepacking) {
+        Sizes s = Sizes.of(steps);
+        Tasks wider = (Tasks) primary;
+        return new Tasks(
+                context,
+                wider.splitK.narrowed(s.rows, s.widestSplit),
+                wider.nativeLibContiguousProjections == null
+                        ? null
+                        : wider.nativeLibContiguousProjections.narrowed(s.rows, s.widestSplit));
+    }
+
     /** The projections: in place on the JIT GEMMs, q|k|v and gate|up contiguous for cuBLAS. */
     private static final class Tasks extends TensorCoreSteps {
 
@@ -142,18 +164,19 @@ public abstract class Fp16MatMul implements Implementation {
             FloatArray c = (FloatArray) operands.activation(first.output());
             TornadoTensor[] w = weights(step, operands);
             if (matMuls.size() == 1) {
+                // The JIT GEMMs choose their depth split from the padded rows.
                 splitK.gemm(
                         graph,
                         task,
                         a,
                         w[0].asHalfFloatArray(),
                         c,
-                        first.batchSize(),
+                        splitK.nativeGemm() ? step.tokens() : first.batchSize(),
                         first.rows(),
                         first.columns());
             } else if (nativeLibContiguousProjections != null) {
                 nativeLibContiguousProjections.project(
-                        graph, task, a, c, first.batchSize(), first.columns(), w);
+                        graph, task, a, c, step.tokens(), first.columns(), w);
             } else if (matMuls.size() == 3) {
                 graph.task(
                         task,

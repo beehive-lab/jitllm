@@ -13,6 +13,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefill
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.layers.PrefillFamily;
 import org.beehive.jitllm.backend.tornado.layers.SplitKGemm;
 import org.beehive.jitllm.backend.tornado.layers.TensorCoreBatchAttention;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
@@ -119,7 +120,8 @@ public class Qwen3FP16LayersBatchPrefillMMA
     private final boolean packedHalf2Attention;
     private final Qwen3TornadoWeights weights;
     private final Qwen3Configuration config;
-    private final KernelContext context = new KernelContext();
+    private final KernelContext context;
+    private final PrefillFamily family;
 
     /** One layer's regions, in the order they run. */
     private record LayerRegions(
@@ -198,9 +200,16 @@ public class Qwen3FP16LayersBatchPrefillMMA
 
     /**
      * Graph-name prefix for this family. The primary keeps "batchPrefillLayer_", which the decode
-     * graphs bind their weights by name from; the fallback family gets its own prefix.
+     * graphs bind their weights by name from; the fallback family gets its own prefix. The narrow
+     * family keeps the primary's, which {@link PrefillFamily#name} turns into its graphs' names.
      */
     private final String graphPrefix;
+
+    /**
+     * The prefix of the graphs whose arrays the narrow family binds: the fallback family's under
+     * cuDNN, whose tensor-core attention it runs, else the primary's. A family's own otherwise.
+     */
+    private final String twinPrefix;
 
     /**
      * True for the fallback family: every buffer it uses is bound from the primary family's graph
@@ -384,7 +393,17 @@ public class Qwen3FP16LayersBatchPrefillMMA
             Qwen3TornadoWeights weights,
             Qwen3Configuration config,
             int batchSize) {
+        this.family = PrefillFamily.of(state);
+        Qwen3FP16LayersBatchPrefillMMA primary =
+                family.primary(Qwen3FP16LayersBatchPrefillMMA.class);
+        // The narrow family runs the graphs of the family whose attention it shares.
+        Qwen3FP16LayersBatchPrefillMMA twin =
+                primary == null || primary.fallbackFamily == null
+                        ? primary
+                        : primary.fallbackFamily;
+        this.context = twin != null ? twin.context : new KernelContext();
         this.graphPrefix = "batchPrefillLayer_";
+        this.twinPrefix = twin != null ? twin.graphPrefix : graphPrefix;
         this.consumeFromPrimary = false;
         this.state = state;
         // Resolved once from the session's policy, not read from a class constant.
@@ -418,19 +437,28 @@ public class Qwen3FP16LayersBatchPrefillMMA
         logInitialization(
                 "[jitllm] prefill acceleration: %s%n",
                 NativePrefillSupport.describe(state.executionPolicy(), fp16Kv, sdpaShape));
-        this.tcAttention =
-                !cudnnAttention && TensorCoreBatchAttention.applies(fp16Kv, paddedBatch, nEmbdHead)
-                        ? new TensorCoreBatchAttention(
-                                state,
-                                qDim,
-                                kvDim,
-                                nEmbdHead,
-                                config.numberOfHeads(),
-                                gqa,
-                                paddedBatch,
-                                config.contextLength())
-                        : null;
-        this.splitK = new SplitKGemm(context, paddedBatch, config.dim(), false);
+        if (twin != null) {
+            // The twin's attention, split-K partials and resident copies, over fewer rows.
+            this.tcAttention =
+                    twin.tcAttention != null ? twin.tcAttention.narrowed(paddedBatch) : null;
+            this.splitK = twin.splitK.narrowed(paddedBatch, config.dim());
+        } else {
+            this.tcAttention =
+                    !cudnnAttention
+                                    && TensorCoreBatchAttention.applies(
+                                            fp16Kv, paddedBatch, nEmbdHead)
+                            ? new TensorCoreBatchAttention(
+                                    state,
+                                    qDim,
+                                    kvDim,
+                                    nEmbdHead,
+                                    config.numberOfHeads(),
+                                    gqa,
+                                    paddedBatch,
+                                    config.contextLength())
+                            : null;
+            this.splitK = new SplitKGemm(context, paddedBatch, config.dim(), false);
+        }
         int cudnnElems = cudnnAttention ? qDim * batchSize : 0;
         this.cudnnQ = new HalfFloatArray(cudnnElems);
         this.cudnnK = new HalfFloatArray(cudnnElems);
@@ -455,17 +483,22 @@ public class Qwen3FP16LayersBatchPrefillMMA
                         && FP16Projections.resident(
                                 state.executionPolicy(), nativeLibResidentContiguousSize(config));
         this.nativeLibScratchContiguousProjections =
-                nativeProjections && !keepContiguousBuffers
-                        ? new FP16Projections(
-                                context,
-                                state.workspace.prepacking,
-                                nativeLibScratchContiguousSize(config),
-                                paddedBatch,
-                                config.dim(),
-                                false,
-                                2 * config.numberOfLayers(),
-                                true)
-                        : null;
+                twin != null
+                        ? twin.nativeLibScratchContiguousProjections == null
+                                ? null
+                                : twin.nativeLibScratchContiguousProjections.narrowed(
+                                        paddedBatch, config.dim())
+                        : nativeProjections && !keepContiguousBuffers
+                                ? new FP16Projections(
+                                        context,
+                                        state.workspace.prepacking,
+                                        nativeLibScratchContiguousSize(config),
+                                        paddedBatch,
+                                        config.dim(),
+                                        false,
+                                        2 * config.numberOfLayers(),
+                                        true)
+                                : null;
         if (nativeLibScratchContiguousProjections != null) {
             logInitialization(
                     "[jitllm] prefill QKV and gate/up: cuBLAS over one %d MiB scratch, refilled"
@@ -473,8 +506,10 @@ public class Qwen3FP16LayersBatchPrefillMMA
                     2L * nativeLibScratchContiguousSize(config) / (1024 * 1024));
         }
         this.nativeLibResidentContiguousGateUp =
-                new HalfFloatArray[keepContiguousBuffers ? config.numberOfLayers() : 0];
-        if (keepContiguousBuffers) {
+                twin != null
+                        ? twin.nativeLibResidentContiguousGateUp
+                        : new HalfFloatArray[keepContiguousBuffers ? config.numberOfLayers() : 0];
+        if (keepContiguousBuffers && twin == null) {
             long t0 = System.nanoTime();
             int rowsK = config.hiddenDim() * config.dim();
             for (int l = 0; l < config.numberOfLayers(); l++) {
@@ -498,8 +533,10 @@ public class Qwen3FP16LayersBatchPrefillMMA
                     (System.nanoTime() - t0) / 1e9);
         }
         this.nativeLibResidentContiguousQkv =
-                new HalfFloatArray[keepContiguousBuffers ? config.numberOfLayers() : 0];
-        if (keepContiguousBuffers) {
+                twin != null
+                        ? twin.nativeLibResidentContiguousQkv
+                        : new HalfFloatArray[keepContiguousBuffers ? config.numberOfLayers() : 0];
+        if (keepContiguousBuffers && twin == null) {
             long t0 = System.nanoTime();
             for (int l = 0; l < config.numberOfLayers(); l++) {
                 HalfFloatArray wq = weights.wqLayered[l].asHalfFloatArray();
@@ -577,6 +614,9 @@ public class Qwen3FP16LayersBatchPrefillMMA
      */
     private Qwen3FP16LayersBatchPrefillMMA(Qwen3FP16LayersBatchPrefillMMA primary) {
         this.graphPrefix = "batchPrefillFallbackLayer_";
+        this.twinPrefix = graphPrefix;
+        this.family = primary.family;
+        this.context = new KernelContext();
         this.consumeFromPrimary = true;
         this.useCudnnAttention = false;
         this.state = primary.state;
@@ -670,7 +710,7 @@ public class Qwen3FP16LayersBatchPrefillMMA
         String graphName = graphPrefix + firstLayer;
         if (lastLayer == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
 
-        TaskGraph batchPrefillLayer = new TaskGraph(graphName);
+        TaskGraph batchPrefillLayer = family.taskGraph(graphName, twinPrefix + firstLayer);
         int dim = config.dim();
         int hidDim = config.hiddenDim();
 
@@ -805,7 +845,7 @@ public class Qwen3FP16LayersBatchPrefillMMA
                         DataTransferMode.FIRST_EXECUTION, tcAttention.buffers());
             }
         } else {
-            String pred = graphPrefix + (firstLayer - layersPerGraph);
+            String pred = family.name(graphPrefix + (firstLayer - layersPerGraph));
             batchPrefillLayer.consumeFromDevice(
                     pred,
                     context,
@@ -1066,8 +1106,10 @@ public class Qwen3FP16LayersBatchPrefillMMA
      */
     @Override
     public boolean cudnnForm(Step step) {
+        // Not in the narrow family: its chunks start anywhere, and cuDNN masks only a first one.
         return state.usesFp16KeyValueCache()
                 && !consumeFromPrimary
+                && !family.isNarrow()
                 && NativePrefillSupport.nativeAttention(state.executionPolicy(), sdpaShape);
     }
 
@@ -1515,7 +1557,8 @@ public class Qwen3FP16LayersBatchPrefillMMA
         WorkerGrid ewHidWorker = elementwiseGrid(batchSize * hidDim); // swiglu
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String p = graphPrefix + (i / layersPerGraph) * layersPerGraph + "." + taskPrefix(i);
+            String graph = family.name(graphPrefix + (i / layersPerGraph) * layersPerGraph);
+            String p = graph + "." + taskPrefix(i);
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApplyWorker);
             if (!nativeProjections) {
@@ -1529,10 +1572,7 @@ public class Qwen3FP16LayersBatchPrefillMMA
                 scheduler.addWorkerGrid(p + "cudnn_gather_kv", cudnnWorker);
                 scheduler.addWorkerGrid(p + "cudnn_scatter", cudnnWorker);
             } else if (tcAttention != null) {
-                tcAttention.addGrids(
-                        scheduler,
-                        graphPrefix + (i / layersPerGraph) * layersPerGraph,
-                        taskPrefix(i));
+                tcAttention.addGrids(scheduler, graph, taskPrefix(i));
             } else {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }

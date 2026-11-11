@@ -17,6 +17,7 @@ import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTas
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillAttention;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
+import org.beehive.jitllm.backend.tornado.layers.PrefillFamily;
 import org.beehive.jitllm.backend.tornado.layers.QuantizedBatchProjections;
 import org.beehive.jitllm.backend.tornado.layers.Qwen3PrefillRegions;
 import org.beehive.jitllm.backend.tornado.ops.Implementation;
@@ -82,7 +83,8 @@ public class Qwen3Q8_0LayersBatchPrefill
     private final Qwen3State state;
     private final Qwen3TornadoWeights weights;
     private final Qwen3Configuration config;
-    private final KernelContext context = new KernelContext();
+    private final KernelContext context;
+    private final PrefillFamily family;
     private final int batchSize;
     private final int nHeadKv;
     private final int nEmbdHeadK;
@@ -115,6 +117,10 @@ public class Qwen3Q8_0LayersBatchPrefill
             Qwen3Configuration config,
             int batchSize) {
         this.state = state;
+        this.family = PrefillFamily.of(state);
+        // The narrow family takes its primary's context, MLX helpers and projections.
+        Qwen3Q8_0LayersBatchPrefill primary = family.primary(Qwen3Q8_0LayersBatchPrefill.class);
+        this.context = primary != null ? primary.context : new KernelContext();
         this.weights = weights;
         this.config = config;
         this.batchSize = batchSize;
@@ -127,27 +133,31 @@ public class Qwen3Q8_0LayersBatchPrefill
         this.gqa = config.numberOfHeads() / nHeadKv;
         Optional<MlxPrefill> mlx = MlxPrefill.resolve(state.executionPolicy(), weights, config);
         this.mlxAttention =
-                MlxPrefillAttention.ifPresent(
-                        mlx,
-                        state,
-                        context,
-                        batchSize,
-                        config.contextLength(),
-                        config.numberOfHeads(),
-                        nHeadKv,
-                        nEmbdHead);
+                primary != null
+                        ? MlxPrefillAttention.narrowed(primary.mlxAttention, batchSize, family)
+                        : MlxPrefillAttention.ifPresent(
+                                mlx,
+                                state,
+                                context,
+                                batchSize,
+                                config.contextLength(),
+                                config.numberOfHeads(),
+                                nHeadKv,
+                                nEmbdHead);
         this.mlxProjections =
-                MlxPrefillProjections.ifPresent(
-                        mlx,
-                        state,
-                        weights,
-                        context,
-                        batchSize,
-                        config.numberOfLayers(),
-                        config.dim(),
-                        qDim,
-                        kvDim,
-                        config.hiddenDim());
+                primary != null
+                        ? MlxPrefillProjections.narrowed(primary.mlxProjections, batchSize, family)
+                        : MlxPrefillProjections.ifPresent(
+                                mlx,
+                                state,
+                                weights,
+                                context,
+                                batchSize,
+                                config.numberOfLayers(),
+                                config.dim(),
+                                qDim,
+                                kvDim,
+                                config.hiddenDim());
         this.regions =
                 Qwen3PrefillRegions.of(
                         config,
@@ -166,6 +176,7 @@ public class Qwen3Q8_0LayersBatchPrefill
                         : List.of(new LayerKernels(this));
         this.plan =
                 WorkPlan.of(
+                        primary != null ? primary.plan : null,
                         all,
                         candidates,
                         Target.of(state.executionPolicy()),
@@ -206,7 +217,7 @@ public class Qwen3Q8_0LayersBatchPrefill
         String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
 
-        TaskGraph layer = new TaskGraph(graphName);
+        TaskGraph layer = family.taskGraph(graphName);
         int dim = config.dim();
         int hidDim = config.hiddenDim();
 
@@ -237,7 +248,7 @@ public class Qwen3Q8_0LayersBatchPrefill
                         DataTransferMode.FIRST_EXECUTION, state.workspace.ffnUpResult);
             }
         } else {
-            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
+            String pred = family.batchPrefillLayer(layerIndex - 1);
             layer.consumeFromDevice(
                     pred,
                     context,
@@ -258,10 +269,10 @@ public class Qwen3Q8_0LayersBatchPrefill
             }
         }
         if (mlxAttention != null) {
-            mlxAttention.declare(layer, layerIndex, GraphNames.batchPrefillLayer(layerIndex - 1));
+            mlxAttention.declare(layer, layerIndex, family.batchPrefillLayer(layerIndex - 1));
         }
         if (mlxProjections != null) {
-            mlxProjections.declare(layer, layerIndex, GraphNames.batchPrefillLayer(layerIndex - 1));
+            mlxProjections.declare(layer, layerIndex, family.batchPrefillLayer(layerIndex - 1));
         }
 
         // Per-layer weights (Q8_0 format)
@@ -469,7 +480,7 @@ public class Qwen3Q8_0LayersBatchPrefill
                                 batchSize * config.numberOfHeads() * optLocal, optLocal);
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String p = GraphNames.batchPrefillLayer(i) + ".";
+            String p = family.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_qk_rmsnorm", qkRmsNormWorker);
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
             if (!plan.runs(attention.get(i), "MLX")) {

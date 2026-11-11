@@ -307,6 +307,68 @@ public final class MlxPrefillProjections {
                 perLayer);
     }
 
+    /**
+     * The same projections over {@code rows} rows, on {@code wider}'s weight copies. The buffers
+     * MLX multiplies are its own, {@code rows} long: MLX takes an array as exactly the matrix the
+     * dimensions describe.
+     */
+    private MlxPrefillProjections(MlxPrefillProjections wider, int rows) {
+        this.state = wider.state;
+        this.weights = wider.weights;
+        this.context = wider.context;
+        this.batchSize = rows;
+        this.dim = wider.dim;
+        this.qDim = wider.qDim;
+        this.kvDim = wider.kvDim;
+        this.hidden = wider.hidden;
+        this.residualScale = wider.residualScale;
+        this.qkv = wider.qkv;
+        this.wo = wider.wo;
+        this.gateUp = wider.gateUp;
+        this.w2 = wider.w2;
+        this.xHalf = new HalfFloatArray(rows * dim);
+        this.qkvHalf = new HalfFloatArray(rows * (qDim + 2 * kvDim));
+        this.attnHalf = new HalfFloatArray(rows * qDim);
+        this.outHalf = new HalfFloatArray(rows * dim);
+        this.gateUpHalf = new HalfFloatArray(rows * 2 * hidden);
+        this.hbHalf = new HalfFloatArray(rows * hidden);
+        this.attnRowScale = new FloatArray(rows);
+        this.downRowScale = new FloatArray(rows);
+    }
+
+    /**
+     * {@code wider} over its first {@code rows} rows, for {@code family}, the narrow family ({@link
+     * PrefillFamily}), whose own the buffers MLX multiplies are; null where {@code wider} is.
+     *
+     * @throws PrefillFamily.Declined where a quantized GEMM at {@code rows} would split its depth
+     */
+    public static MlxPrefillProjections narrowed(
+            MlxPrefillProjections wider, int rows, PrefillFamily family) {
+        if (wider == null) {
+            return null;
+        }
+        if (rows > wider.batchSize) {
+            throw new IllegalArgumentException(rows + " rows is wider than " + wider.batchSize);
+        }
+        if (wider.qkv[0].fp16() == null) {
+            declineIfSplit(rows, wider.qDim + 2 * wider.kvDim, "qkvProj");
+            declineIfSplit(rows, wider.dim, "woProj");
+            declineIfSplit(rows, 2 * wider.hidden, "gateUpProj");
+        }
+        MlxPrefillProjections narrow = new MlxPrefillProjections(wider, rows);
+        for (Object buffer : narrow.buffers()) {
+            family.own(buffer);
+        }
+        return narrow;
+    }
+
+    /** The FP16 buffers the GEMMs and the glue around them share, {@code batchSize} rows each. */
+    private Object[] buffers() {
+        return new Object[] {
+            xHalf, qkvHalf, attnHalf, outHalf, gateUpHalf, hbHalf, attnRowScale, downRowScale
+        };
+    }
+
     private MlxPrefillProjections(
             MlxPrefill mlx,
             State state,
@@ -684,6 +746,35 @@ public final class MlxPrefillProjections {
                     n,
                     GROUP,
                     w.bits());
+        }
+    }
+
+    /**
+     * Whether MLX's quantized GEMM splits the depth of an {@code m x n} output: it does when the
+     * output has no more than 256 tiles of 32 x 32, and it keeps the partial sums in FP16.
+     *
+     * <p>Example: 128 rows by 3072 columns is 384 tiles, one pass; 128 by 2048 is 256, two parts.
+     */
+    static boolean splitsDepth(int m, int n) {
+        long tiles = (long) ((m + 31) / 32) * ((n + 31) / 32);
+        return tiles <= 256;
+    }
+
+    /**
+     * Declines the narrow family ({@link PrefillFamily#decline}) where MLX's quantized GEMM of
+     * {@code task} would split the depth of its {@code rows x n} output and sum the parts in FP16,
+     * which it does not at the plan's width.
+     */
+    static void declineIfSplit(int rows, int n, String task) {
+        if (splitsDepth(rows, n)) {
+            throw PrefillFamily.decline(
+                    "MLX's quantized GEMM would split the depth of "
+                            + task
+                            + " ("
+                            + rows
+                            + " x "
+                            + n
+                            + ") and sum the parts in FP16");
         }
     }
 
