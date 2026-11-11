@@ -10,11 +10,18 @@ import java.lang.foreign.Arena;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
 import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspace;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
+import org.beehive.jitllm.inference.PromptIngestion;
+import org.beehive.jitllm.inference.sampler.Sampler;
+import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.policy.StorageOptions;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -83,7 +90,130 @@ public class UnifiedMemoryWeightsAccelTest {
         check(Fixture.LLAMA_3_2_1B_Q8_0, 128);
     }
 
+    /**
+     * A plan 512 wide with its narrow family: 40 tokens run on the narrow graphs alone, 600 on a
+     * full chunk and then a narrow one. Narrow graphs read the weights in place as their twins do.
+     */
+    @Test
+    public void qwen3F16NarrowChunks() throws Exception {
+        check(Fixture.QWEN3_0_6B_F16, 512, 40);
+        check(Fixture.QWEN3_0_6B_F16, 512, 600);
+    }
+
+    @Test
+    public void llamaQ8_0NarrowChunks() throws Exception {
+        check(Fixture.LLAMA_3_2_1B_Q8_0, 512, 40);
+        check(Fixture.LLAMA_3_2_1B_Q8_0, 512, 600);
+    }
+
+    /**
+     * Two plans over one model, both reading its weights in place, each with its own bindings:
+     * either gives the copied plan's logits, and closing one leaves the other's weights readable.
+     */
+    @Test
+    public void twoPlansReadTheSameWeightsInPlace() throws Exception {
+        assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
+        assumeTrue(
+                "the device does not share memory with the host",
+                UnifiedMemoryWeights.deviceSupports());
+        Path file = GoldenFixture.locate(Fixture.QWEN3_0_6B_F16);
+        assumeTrue(
+                "environment absent: " + GoldenFixture.absentMessage(Fixture.QWEN3_0_6B_F16),
+                file != null);
+        String[] keys = {
+            "use.tornadovm",
+            "jitllm.withPrefillDecode",
+            "jitllm.prefillBatchSize",
+            "jitllm.nativeLibraries",
+            UnifiedMemoryWeights.PROPERTY
+        };
+        String[] previous = new String[keys.length];
+        for (int i = 0; i < keys.length; i++) {
+            previous[i] = System.getProperty(keys[i]);
+        }
+        System.setProperty("use.tornadovm", "true");
+        System.setProperty("jitllm.withPrefillDecode", "true");
+        System.setProperty("jitllm.prefillBatchSize", "512");
+        System.setProperty("jitllm.nativeLibraries", "false");
+        try {
+            Model model = KvPrecisionHarness.load(file, CONTEXT, true);
+            List<Integer> prompt = KvPrecisionHarness.longPrompt(model, 600);
+            System.setProperty(UnifiedMemoryWeights.PROPERTY, "false");
+            var copied =
+                    KvPrecisionHarness.run(
+                            model, true, DataType.F16, 512, prompt, DECODE_STEPS, null);
+            System.setProperty(UnifiedMemoryWeights.PROPERTY, "true");
+            // The copied run's storage: an FP16 key/value cache.
+            StorageOptions storage = new StorageOptions(DataType.F16, false);
+            State stateA =
+                    State.withStorageOptions(
+                            storage, () -> State.withPrefillBatchSize(512, model::createNewState));
+            State stateB =
+                    State.withStorageOptions(
+                            storage, () -> State.withPrefillBatchSize(512, model::createNewState));
+            int seed = stateA.latestToken;
+            TornadoVMMasterPlan planA = TornadoVMMasterPlan.initializeTornadoVMPlan(stateA, model);
+            TornadoVMMasterPlan planB = TornadoVMMasterPlan.initializeTornadoVMPlan(stateB, model);
+            try {
+                assertRows("plan A", copied.rows(), generate(model, stateA, planA, prompt));
+                assertRows("plan B", copied.rows(), generate(model, stateB, planB, prompt));
+            } finally {
+                planA.freeTornadoExecutionPlan();
+            }
+            try {
+                planB.resetSequenceState();
+                stateB.latestToken = seed;
+                assertRows(
+                        "plan B after plan A closed",
+                        copied.rows(),
+                        generate(model, stateB, planB, prompt));
+            } finally {
+                planB.freeTornadoExecutionPlan();
+            }
+        } finally {
+            for (int i = 0; i < keys.length; i++) {
+                if (previous[i] == null) {
+                    System.clearProperty(keys[i]);
+                } else {
+                    System.setProperty(keys[i], previous[i]);
+                }
+            }
+        }
+    }
+
+    private static void assertRows(String what, List<float[]> expected, List<float[]> got) {
+        assertEquals(what + ", rows", expected.size(), got.size());
+        for (int r = 0; r < expected.size(); r++) {
+            assertArrayEquals(what + ", row " + r, expected.get(r), got.get(r), 0f);
+        }
+    }
+
+    /**
+     * The greedy logits of {@code prompt} and {@link #DECODE_STEPS} decode steps on {@code plan}.
+     */
+    private static List<float[]> generate(
+            Model model, State state, TornadoVMMasterPlan plan, List<Integer> prompt) {
+        List<float[]> rows = new ArrayList<>();
+        Sampler capturing =
+                logits -> {
+                    float[] row = new float[logits.size()];
+                    for (int i = 0; i < row.length; i++) {
+                        row[i] = logits.get(i);
+                    }
+                    rows.add(row);
+                    return Sampler.TENSOR_ARGMAX.sampleToken(logits);
+                };
+        int skippedSeed = PromptIngestion.of(state, prompt, 0).firstIndex();
+        int budget = prompt.size() + DECODE_STEPS - skippedSeed;
+        model.generateTokensGPU(state, 0, prompt, Set.of(), budget, capturing, false, null, plan);
+        return rows;
+    }
+
     private static void check(Fixture fixture, int batch) throws Exception {
+        check(fixture, batch, PROMPT_TOKENS);
+    }
+
+    private static void check(Fixture fixture, int batch, int promptTokens) throws Exception {
         assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
         assumeTrue(
                 "the device does not share memory with the host",
@@ -108,7 +238,7 @@ public class UnifiedMemoryWeightsAccelTest {
         System.setProperty("jitllm.nativeLibraries", "false");
         try {
             Model model = KvPrecisionHarness.load(file, CONTEXT, true);
-            List<Integer> prompt = KvPrecisionHarness.longPrompt(model, PROMPT_TOKENS);
+            List<Integer> prompt = KvPrecisionHarness.longPrompt(model, promptTokens);
             System.setProperty(UnifiedMemoryWeights.PROPERTY, "false");
             var copied =
                     KvPrecisionHarness.run(
