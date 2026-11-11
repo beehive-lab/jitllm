@@ -6,8 +6,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.function.BiConsumer;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
@@ -32,8 +31,9 @@ import org.graalvm.nativeimage.hosted.RuntimeSerialization;
  *       $deserializeLambda$} method;
  *   <li>the kernel classes loadable by name — every jitllm class is registered, since a kernel can
  *       call helpers in any package — and their declared methods, which TornadoVM after 8.0.0 looks
- *       up by reflection; classes that use the Vector API (disabled in the image, see the
- *       properties file) hold no kernels and keep only the class registration;
+ *       up by reflection, with their constructors and fields for jitllm's own reflective lookups
+ *       (the NCCL pipeline transport, for one); classes that use the Vector API (disabled in the
+ *       image, see the properties file) hold no kernels and keep only the class registration;
  *   <li>their class files as resources — the {@code org/beehive/jitllm/**}{@code /*.class} glob in
  *       the {@code reachability-metadata.json} next to the properties file.
  * </ul>
@@ -58,28 +58,17 @@ public final class JitllmNativeImageFeature implements Feature {
 
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess access) {
-        int classes = 0;
+        int[] classes = {0};
         for (Path entry : access.getApplicationClassPath()) {
-            for (ClassFile file : classFiles(entry)) {
-                Class<?> type = access.findClassByName(file.name());
-                if (type == null) {
-                    continue;
-                }
-                RuntimeReflection.register(type);
-                classes++;
-                // This class holds both markers as string constants, not as references.
-                if (type == JitllmNativeImageFeature.class) {
-                    continue;
-                }
-                if (indexOf(file.bytes(), VECTOR_API) < 0) {
-                    RuntimeReflection.register(type.getDeclaredMethods());
-                }
-                if (indexOf(file.bytes(), DESERIALIZE_LAMBDA) >= 0) {
-                    RuntimeSerialization.registerLambdaCapturingClass(type);
-                }
-            }
+            forEachClassFile(
+                    entry,
+                    (name, bytes) -> {
+                        if (register(access, name, bytes)) {
+                            classes[0]++;
+                        }
+                    });
         }
-        if (classes == 0) {
+        if (classes[0] == 0) {
             throw new IllegalStateException(
                     "jitllm native-image feature found no "
                             + PACKAGE_PATH
@@ -87,21 +76,50 @@ public final class JitllmNativeImageFeature implements Feature {
         }
     }
 
-    private record ClassFile(String name, byte[] bytes) {}
+    /**
+     * Registers one jitllm class; returns whether it was found. A class whose members name types
+     * missing from this image (a TornadoVM module the SDK does not ship, such as {@code
+     * tornado.nccl} or {@code tornado.mlx}, or no TornadoVM at all in a CPU-only consumer) cannot
+     * be used in the image anyway, so a {@link LinkageError} while resolving its members skips it
+     * instead of failing the build.
+     */
+    private static boolean register(BeforeAnalysisAccess access, String name, byte[] bytes) {
+        Class<?> type = access.findClassByName(name);
+        if (type == null) {
+            return false;
+        }
+        try {
+            RuntimeReflection.register(type);
+            // This class holds both markers as string constants, not as references.
+            if (type == JitllmNativeImageFeature.class) {
+                return true;
+            }
+            if (indexOf(bytes, VECTOR_API) < 0) {
+                RuntimeReflection.register(type.getDeclaredConstructors());
+                RuntimeReflection.register(type.getDeclaredMethods());
+                RuntimeReflection.register(type.getDeclaredFields());
+            }
+            if (indexOf(bytes, DESERIALIZE_LAMBDA) >= 0) {
+                RuntimeSerialization.registerLambdaCapturingClass(type);
+            }
+        } catch (LinkageError e) {
+            // Not usable in this image; see above.
+        }
+        return true;
+    }
 
-    private static List<ClassFile> classFiles(Path entry) {
-        List<ClassFile> files = new ArrayList<>();
+    private static void forEachClassFile(Path entry, BiConsumer<String, byte[]> action) {
         try {
             if (Files.isDirectory(entry)) {
                 Path root = entry.resolve(PACKAGE_PATH);
                 if (!Files.isDirectory(root)) {
-                    return files;
+                    return;
                 }
                 try (Stream<Path> walk = Files.walk(root)) {
                     for (Path p : (Iterable<Path>) walk::iterator) {
                         String relative = entry.relativize(p).toString().replace('\\', '/');
                         if (isClassFile(relative)) {
-                            files.add(new ClassFile(className(relative), Files.readAllBytes(p)));
+                            action.accept(className(relative), Files.readAllBytes(p));
                         }
                     }
                 }
@@ -110,7 +128,7 @@ public final class JitllmNativeImageFeature implements Feature {
                     for (JarEntry e : (Iterable<JarEntry>) jar.stream()::iterator) {
                         if (isClassFile(e.getName())) {
                             try (InputStream in = jar.getInputStream(e)) {
-                                files.add(new ClassFile(className(e.getName()), in.readAllBytes()));
+                                action.accept(className(e.getName()), in.readAllBytes());
                             }
                         }
                     }
@@ -119,7 +137,6 @@ public final class JitllmNativeImageFeature implements Feature {
         } catch (IOException e) {
             throw new UncheckedIOException("cannot scan " + entry + " for jitllm classes", e);
         }
-        return files;
     }
 
     private static boolean isClassFile(String path) {
