@@ -126,7 +126,7 @@ public final class TornadoPlanRegistry {
                                                     (BatchPrefillDecodeForwardPlanComponents)
                                                             components,
                                                     state.executionPolicy().prefillBatchSize(),
-                                                    state.workspace.prepacker);
+                                                    state.workspace);
                                 });
     }
 

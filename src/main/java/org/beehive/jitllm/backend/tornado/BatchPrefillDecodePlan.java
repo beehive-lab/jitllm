@@ -28,6 +28,19 @@ public interface BatchPrefillDecodePlan extends TornadoVMMasterPlan {
     }
 
     /**
+     * The rows of the plan's narrow prefill graphs, or 0 when it has none: a chunk with no more
+     * tokens than this runs on them, whatever its start position.
+     */
+    default int narrowPrefillRows() {
+        return 0;
+    }
+
+    /** Runs the staged chunk through the narrow prefill graphs. */
+    default void tornadoVMForwardBatchPrefillNarrow() {
+        throw new UnsupportedOperationException("this plan has no narrow prefill graphs");
+    }
+
+    /**
      * Whether this plan runs a prompt's chunks overlapped, a later one starting before an earlier
      * one has finished: a pipeline, whose first device takes the next chunk while the next device
      * still works on the previous one.

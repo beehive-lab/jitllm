@@ -7,7 +7,6 @@ import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen2MoEBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
-import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.Qwen35MoeBatchFeedForward;
 import org.beehive.jitllm.backend.tornado.layers.qwen2.Qwen2Q8_0LayersBatchPrefillMMA;
 import org.beehive.jitllm.backend.tornado.ops.LayerProjections;
@@ -142,19 +141,31 @@ public class Qwen2MoEQ8_0LayersBatchPrefillMMA extends Qwen2Q8_0LayersBatchPrefi
         if (sharedProjections == null) {
             Qwen2MoEConfiguration c = moeConfig();
             int shared = c.sharedExpertHiddenDim();
-            sharedPlan = sharedPlan();
+            // The narrow family takes the primary's scratch and buffers.
+            Qwen2MoEQ8_0LayersBatchPrefillMMA primary =
+                    family.primary(Qwen2MoEQ8_0LayersBatchPrefillMMA.class);
+            sharedPlan = sharedPlan(primary != null ? primary.sharedPlan : null);
             sharedProjections =
-                    new FP16Projections(
-                            context,
-                            state.workspace.prepacking,
-                            2L * shared * c.dim(),
-                            paddedBatch,
-                            Math.max(2 * shared, c.dim()),
-                            false,
-                            2 * c.numberOfLayers(),
-                            "cuBLAS".equals(sharedPlan.libraries()));
-            sharedGateUpBatch = new FloatArray(paddedBatch * 2 * shared);
-            sharedHiddenFP16 = new HalfFloatArray(paddedBatch * shared);
+                    primary != null
+                            ? primary.sharedProjections()
+                                    .narrowed(paddedBatch, Math.max(2 * shared, c.dim()))
+                            : new FP16Projections(
+                                    context,
+                                    state.workspace.prepacking,
+                                    2L * shared * c.dim(),
+                                    paddedBatch,
+                                    Math.max(2 * shared, c.dim()),
+                                    false,
+                                    2 * c.numberOfLayers(),
+                                    "cuBLAS".equals(sharedPlan.libraries()));
+            sharedGateUpBatch =
+                    primary != null
+                            ? primary.sharedGateUpBatch
+                            : new FloatArray(paddedBatch * 2 * shared);
+            sharedHiddenFP16 =
+                    primary != null
+                            ? primary.sharedHiddenFP16
+                            : new HalfFloatArray(paddedBatch * shared);
         }
         return sharedProjections;
     }
@@ -217,7 +228,7 @@ public class Qwen2MoEQ8_0LayersBatchPrefillMMA extends Qwen2Q8_0LayersBatchPrefi
                     DataTransferMode.EVERY_EXECUTION, state.workspace.activeBatchSizeHolder);
             batchPrefillLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, moeScratch());
         } else {
-            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
+            String pred = family.batchPrefillLayer(layerIndex - 1);
             batchPrefillLayer.consumeFromDevice(pred, state.workspace.activeBatchSizeHolder);
             batchPrefillLayer.consumeFromDevice(pred, moeScratch());
         }
@@ -326,7 +337,7 @@ public class Qwen2MoEQ8_0LayersBatchPrefillMMA extends Qwen2Q8_0LayersBatchPrefi
      * The plan of the FP16 shared experts: for each layer that runs one here, gate|up and down,
      * each on cuBLAS or on the JIT GEMMs ({@link FP16Projections}).
      */
-    private WorkPlan sharedPlan() {
+    private WorkPlan sharedPlan(WorkPlan primary) {
         Qwen2MoEConfiguration c = moeConfig();
         Qwen2MoETornadoWeights w = moeWeights();
         int dim = c.dim();
@@ -378,6 +389,7 @@ public class Qwen2MoEQ8_0LayersBatchPrefillMMA extends Qwen2Q8_0LayersBatchPrefi
             all.add(down);
         }
         return WorkPlan.of(
+                primary,
                 all,
                 List.of(new CublasLayerProjections(this), new JitLayerProjections(this)),
                 Target.of(state.executionPolicy()),

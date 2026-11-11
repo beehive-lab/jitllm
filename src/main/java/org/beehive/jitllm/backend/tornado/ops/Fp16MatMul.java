@@ -106,6 +106,24 @@ public abstract class Fp16MatMul implements Implementation {
         return new Tasks(context, splitK, nativeLibContiguousProjections);
     }
 
+    /** The primary's partial products and contiguous copies, split as the primary splits. */
+    @Override
+    public Instance narrowed(
+            Instance primary,
+            List<Step> steps,
+            Target target,
+            KernelContext context,
+            WeightPrepacking prepacking) {
+        Sizes s = Sizes.of(steps);
+        Tasks wider = (Tasks) primary;
+        return new Tasks(
+                context,
+                wider.splitK.narrowed(s.rows, s.widestSplit),
+                wider.nativeLibContiguousProjections == null
+                        ? null
+                        : wider.nativeLibContiguousProjections.narrowed(s.rows, s.widestSplit));
+    }
+
     /** The projections: in place on the JIT GEMMs, q|k|v and gate|up contiguous for cuBLAS. */
     private static final class Tasks extends TensorCoreSteps {
 

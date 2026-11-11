@@ -15,7 +15,8 @@ package org.beehive.jitllm.backend.tornado.plan.layout;
  * </pre>
  *
  * <p>With a fallback family its F graphs follow the batch-prefill layers and move every later index
- * by F. Every index is computed here from P, so no caller adds an offset of its own.
+ * by F; a narrow family's R graphs follow those and move every later index by R. Every index is
+ * computed here from P, so no caller adds an offset of its own.
  *
  * <p><b>{@code D} is not always {@code N}.</b> A family may put more than one transformer layer in
  * a decode graph, which costs one graph submission instead of several. The logical layer count and
@@ -29,22 +30,33 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
         int batchLayerGraphs,
         int fallbackLayerGraphs,
         int decodeLayerGraphs,
-        int prepackingGraphs) {
+        int prepackingGraphs,
+        int narrowLayerGraphs) {
+
+    /** The layout as given, with no narrow family. */
+    public BatchPrefillDecodeForwardTaskGraphLayout(
+            int N,
+            int batchLayerGraphs,
+            int fallbackLayerGraphs,
+            int decodeLayerGraphs,
+            int prepackingGraphs) {
+        this(N, batchLayerGraphs, fallbackLayerGraphs, decodeLayerGraphs, prepackingGraphs, 0);
+    }
 
     /** The layout as given, with no prepacking graphs. */
     public BatchPrefillDecodeForwardTaskGraphLayout(
             int N, int batchLayerGraphs, int fallbackLayerGraphs, int decodeLayerGraphs) {
-        this(N, batchLayerGraphs, fallbackLayerGraphs, decodeLayerGraphs, 0);
+        this(N, batchLayerGraphs, fallbackLayerGraphs, decodeLayerGraphs, 0, 0);
     }
 
     /** The fully ungrouped layout, no fallback family: one graph per layer on both sides. */
     public BatchPrefillDecodeForwardTaskGraphLayout(int N) {
-        this(N, N, 0, N, 0);
+        this(N, N, 0, N, 0, 0);
     }
 
     /** The batch-prefill side ungrouped, the decode side as given. */
     public BatchPrefillDecodeForwardTaskGraphLayout(int N, int decodeLayerGraphs) {
-        this(N, N, 0, decodeLayerGraphs, 0);
+        this(N, N, 0, decodeLayerGraphs, 0, 0);
     }
 
     public BatchPrefillDecodeForwardTaskGraphLayout {
@@ -65,6 +77,13 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
                             + N
                             + ", got "
                             + fallbackLayerGraphs);
+        }
+        if (narrowLayerGraphs < 0 || narrowLayerGraphs > N) {
+            throw new IllegalArgumentException(
+                    "narrow layer graphs must be between 0 and "
+                            + N
+                            + ", got "
+                            + narrowLayerGraphs);
         }
         if (decodeLayerGraphs < 1 || decodeLayerGraphs > N) {
             throw new IllegalArgumentException(
@@ -101,8 +120,18 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
         return firstInferenceIdx() + 1 + batchLayerGraphs + g;
     }
 
+    /** The index of the {@code g}-th NARROW batch-prefill layer graph. */
+    public int narrowLayerIdx(int g) {
+        return firstInferenceIdx() + 1 + batchLayerGraphs + fallbackLayerGraphs + g;
+    }
+
+    /** The batch-prefill layer graphs of every family. */
+    private int prefillLayerGraphs() {
+        return batchLayerGraphs + fallbackLayerGraphs + narrowLayerGraphs;
+    }
+
     public int decodeActivationIdx() {
-        return firstInferenceIdx() + batchLayerGraphs + fallbackLayerGraphs + 1;
+        return firstInferenceIdx() + prefillLayerGraphs() + 1;
     }
 
     /**
@@ -112,11 +141,11 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
      * graph may hold more than one layer.
      */
     public int decodeLayerGraphIdx(int g) {
-        return firstInferenceIdx() + batchLayerGraphs + fallbackLayerGraphs + 2 + g;
+        return firstInferenceIdx() + prefillLayerGraphs() + 2 + g;
     }
 
     public int logitsIdx() {
-        return firstInferenceIdx() + batchLayerGraphs + fallbackLayerGraphs + 2 + decodeLayerGraphs;
+        return firstInferenceIdx() + prefillLayerGraphs() + 2 + decodeLayerGraphs;
     }
 
     // @formatter:off
@@ -124,13 +153,14 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
      * How many distinct <b>layer graph families</b> this topology builds.
      *
      * <p>A family is a set of graphs that bind the layers' weights. This layout has 2: the
-     * batch-prefill layers and the decode layers. It is <b>not</b> a graph count and <b>not</b> a
+     * batch-prefill layers and the decode layers, plus one for a fallback family and one for a
+     * narrow family when the plan builds them. It is <b>not</b> a graph count and <b>not</b> a
      * weight multiplier — a family that consumes another's upload costs graphs, not gigabytes,
      * which is what {@code Configuration.weightBindingFamilies} decides.
      */
     // @formatter:on
     public int layerGraphFamilies() {
-        return fallbackLayerGraphs > 0 ? 3 : 2;
+        return layerFamilyGraphCounts().length;
     }
 
     /**
@@ -140,9 +170,10 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
      * family added without a term here fails rather than under-predicting silently.
      */
     public int[] layerFamilyGraphCounts() {
-        return fallbackLayerGraphs > 0
-                ? new int[] {batchLayerGraphs, fallbackLayerGraphs, decodeLayerGraphs}
-                : new int[] {batchLayerGraphs, decodeLayerGraphs};
+        return java.util.stream.IntStream.of(
+                        batchLayerGraphs, fallbackLayerGraphs, narrowLayerGraphs, decodeLayerGraphs)
+                .filter(graphs -> graphs > 0)
+                .toArray();
     }
 
     /** Graphs that are not per-layer: batch activation, decode activation and logits. */
@@ -152,7 +183,7 @@ public record BatchPrefillDecodeForwardTaskGraphLayout(
 
     /** The inference graphs, without the prepacking graphs. */
     public int inferenceGraphCount() {
-        return batchLayerGraphs + fallbackLayerGraphs + decodeLayerGraphs + nonLayerGraphs();
+        return prefillLayerGraphs() + decodeLayerGraphs + nonLayerGraphs();
     }
 
     /** Every graph of the plan: the prepacking graphs and the inference graphs. */

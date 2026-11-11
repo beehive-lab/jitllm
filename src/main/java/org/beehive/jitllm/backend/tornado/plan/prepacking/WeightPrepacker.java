@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.kernels.PackedRepackKernels;
+import org.beehive.jitllm.backend.tornado.layers.PrefillFamily;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -106,6 +107,12 @@ public final class WeightPrepacker {
         List<Object> prepacked = new ArrayList<>();
         for (Object o : objects) {
             if (o instanceof TornadoTensor t && prepacking.prepacked(t)) {
+                if (PrefillFamily.isNarrow(graph)) {
+                    // The weights its twin's prepacking graph prepared: the narrow graph binds
+                    // them from the twin.
+                    prepacked.add(t.asByteArray());
+                    continue;
+                }
                 if (!registered.add(t)) {
                     throw new IllegalStateException(
                             "weight already registered for prepacking, again by graph "

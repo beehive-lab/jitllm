@@ -42,4 +42,28 @@ public interface BatchPrefillTransformerLayerTaskGraphs {
 
     /** Registers the fallback family's worker grids; a no-op when there is no fallback family. */
     default void updateFallbackGridScheduler(GridScheduler scheduler) {}
+
+    /**
+     * {@code -Djitllm.prefill.narrowChunks=false} builds no narrow family, so every chunk runs at
+     * the plan's width.
+     */
+    String NARROW_CHUNKS_PROPERTY = "jitllm.prefill.narrowChunks";
+
+    // @formatter:off
+    /**
+     * The rows of the narrow family for a plan {@code paddedRows} wide, or 0 for none: a quarter of
+     * the width in whole 128-row tiles, at least one tile, and only where that is narrower than the
+     * plan. A chunk with no more tokens than this, a short prompt or the last part of a long one,
+     * then runs on graphs that width instead of the plan's.
+     *
+     * <p>Example: a plan 512 wide has a narrow family 128 wide; 2048, 512; 128, none.
+     */
+    // @formatter:on
+    static int narrowRows(int paddedRows) {
+        if ("false".equalsIgnoreCase(System.getProperty(NARROW_CHUNKS_PROPERTY))) {
+            return 0;
+        }
+        int rows = Math.max(128, (paddedRows / 4 + 127) & ~127);
+        return rows < paddedRows ? rows : 0;
+    }
 }

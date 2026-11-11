@@ -501,6 +501,15 @@ abstract class CpuGpuParity {
         }
     }
 
+    /**
+     * {@link #assertRows} for rows a test captured itself, such as {@link KvPrecisionHarness}'s
+     * teacher-forced traces of a prompt the capture's own does not cover.
+     */
+    static void assertRowsWithin(
+            String label, List<float[]> reference, List<float[]> accelerator, Bounds bounds) {
+        assertRows(label, reference, accelerator, bounds);
+    }
+
     /** The four gates over {@code got} against {@code reference}, row by row. */
     private static void assertRows(
             String label, List<float[]> reference, List<float[]> accelerator, Bounds bounds) {

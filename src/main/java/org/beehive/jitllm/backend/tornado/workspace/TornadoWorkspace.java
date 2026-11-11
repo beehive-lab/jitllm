@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.workspace;
 
+import org.beehive.jitllm.backend.tornado.layers.PrefillFamily;
 import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
@@ -39,6 +40,9 @@ public final class TornadoWorkspace {
 
     /** Which task graph uploads each weight. Reset for every new execution plan. */
     public WeightBindings weightBindings = new WeightBindings();
+
+    /** The batched-prefill family the plan is building, set around each build; null outside. */
+    public PrefillFamily prefillFamily;
 
     public FloatArray wrapAttSplit;
     public FloatArray

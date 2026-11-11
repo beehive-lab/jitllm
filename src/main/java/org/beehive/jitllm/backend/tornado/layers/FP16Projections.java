@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers;
 
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
@@ -120,6 +121,17 @@ public final class FP16Projections {
     private final int neverDecoded;
     private int nextFlag;
 
+    /** A resident copy and its decode flag. */
+    private record Copy(HalfFloatArray weights, int flag) {}
+
+    /** The resident copies, by the first weight each holds. */
+    private final Map<TornadoTensor, Copy> copies;
+
+    /**
+     * Whether these are the narrow family's, which take the primary's copies ({@link #narrowed}).
+     */
+    private final boolean narrow;
+
     /**
      * @param prepacking the plan's weight prepacking: a prepacked weight has no FP16 decode here
      * @param widest the most weights one projection call multiplies, all its tensors together
@@ -143,6 +155,30 @@ public final class FP16Projections {
         this.neverDecoded = projectionCalls;
         this.contiguousScratch = new HalfFloatArray(resident ? 1 : Math.toIntExact(widest));
         this.gemm = new SplitKGemm(context, rows, widestSplit, nativeGemm);
+        this.copies = new IdentityHashMap<>();
+        this.narrow = false;
+    }
+
+    /** {@code wider}'s projections, copies, flags and scratch, multiplied by {@code gemm}. */
+    private FP16Projections(FP16Projections wider, SplitKGemm gemm) {
+        this.context = wider.context;
+        this.prepacking = wider.prepacking;
+        this.resident = wider.resident;
+        this.decoded = wider.decoded;
+        this.neverDecoded = wider.neverDecoded;
+        this.contiguousScratch = wider.contiguousScratch;
+        this.gemm = gemm;
+        this.copies = wider.copies;
+        this.narrow = true;
+    }
+
+    /**
+     * These projections, their resident copies, decode flags and scratch, multiplied over {@code
+     * rows} and split as this one splits them ({@link SplitKGemm#narrowed}): for the narrow family
+     * ({@link PrefillFamily}), whose graphs bind them from this one's.
+     */
+    public FP16Projections narrowed(int rows, int widestSplit) {
+        return new FP16Projections(this, gemm.narrowed(rows, widestSplit));
     }
 
     /** The buffers, which every layer graph transfers or consumes with its intermediates. */
@@ -169,13 +205,24 @@ public final class FP16Projections {
         HalfFloatArray b = contiguousScratch;
         int flag = 0;
         if (resident) {
-            long total = 0;
-            for (TornadoTensor w : ws) {
-                total += elements(w);
+            // The narrow family multiplies the same weights: it takes the primary's copy and flag.
+            Copy copy = narrow ? copies.get(ws[0]) : null;
+            if (copy == null) {
+                if (narrow) {
+                    throw new IllegalStateException(
+                            "the narrow family multiplies weights the primary has no copy of: "
+                                    + task);
+                }
+                long total = 0;
+                for (TornadoTensor w : ws) {
+                    total += elements(w);
+                }
+                copy = new Copy(new HalfFloatArray(Math.toIntExact(total)), nextFlag++);
+                copies.put(ws[0], copy);
             }
-            b = new HalfFloatArray(Math.toIntExact(total));
+            b = copy.weights();
             layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, b);
-            flag = nextFlag++;
+            flag = copy.flag();
         }
         long total = 0;
         boolean wholeRowBlocks = k % 32 == 0;

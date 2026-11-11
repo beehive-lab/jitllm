@@ -10,6 +10,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefill
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.LlamaPrefillRegions;
+import org.beehive.jitllm.backend.tornado.layers.PrefillFamily;
 import org.beehive.jitllm.backend.tornado.layers.TensorCoreBatchAttention;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
 import org.beehive.jitllm.backend.tornado.ops.Implementation;
@@ -81,7 +82,8 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final boolean packedHalf2Attention;
     protected final TornadoWeights weights;
     protected final Configuration config;
-    protected final KernelContext context = new KernelContext();
+    protected final KernelContext context;
+    protected final PrefillFamily family;
     protected final int batchSize;
     // GEMM M dimension rounded up to whole 128-row tiles (BM). The GEMM-adjacent
     // buffers in State are allocated at this padded size; rows >= batchSize are
@@ -176,6 +178,11 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.firstLayer = firstLayer;
         this.endLayer = endLayer;
         this.state = state;
+        this.family = PrefillFamily.of(state);
+        // The narrow family takes its primary's context, attention and projections.
+        LlamaFP16LayersBatchPrefillMMA primary =
+                family.primary(LlamaFP16LayersBatchPrefillMMA.class);
+        this.context = primary != null ? primary.context : new KernelContext();
         // Resolved once from the session's policy, not read from a class constant.
         this.packedHalf2Attention = state.executionPolicy().packedHalf2Attention();
         this.weights = weights;
@@ -193,15 +200,17 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         int qDim = config.numberOfHeads() * config.headSize();
         this.tcAttention =
                 TensorCoreBatchAttention.applies(useFp16KVCache(), paddedBatch, config.headSize())
-                        ? new TensorCoreBatchAttention(
-                                state,
-                                qDim,
-                                config.kvDim(),
-                                config.headSize(),
-                                config.numberOfHeads(),
-                                config.kvMul(),
-                                paddedBatch,
-                                config.contextLength())
+                        ? primary != null
+                                ? primary.tcAttention.narrowed(paddedBatch)
+                                : new TensorCoreBatchAttention(
+                                        state,
+                                        qDim,
+                                        config.kvDim(),
+                                        config.headSize(),
+                                        config.numberOfHeads(),
+                                        config.kvMul(),
+                                        paddedBatch,
+                                        config.contextLength())
                         : null;
         this.regions =
                 LlamaPrefillRegions.of(
@@ -214,6 +223,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         List<Region> all = LlamaPrefillRegions.all(regions);
         this.plan =
                 WorkPlan.of(
+                        primary != null ? primary.plan : null,
                         all,
                         candidates(),
                         Target.of(state.executionPolicy()),
@@ -252,7 +262,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == endLayer - 1) lastLayerTaskGraphID = graphName;
 
-        TaskGraph batchPrefillLayer = new TaskGraph(graphName);
+        TaskGraph batchPrefillLayer = family.taskGraph(graphName);
 
         Object keyCache =
                 useFp16KVCache() ? state.workspace.wrapKeyCacheFP16 : state.workspace.wrapKeyCache;
@@ -295,7 +305,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         } else {
             // for the same reasons as above, we should use the explicit uniqueTaskGraph name to
             // consume
-            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
+            String pred = family.batchPrefillLayer(layerIndex - 1);
             batchPrefillLayer.consumeFromDevice(
                     pred,
                     context,
@@ -327,7 +337,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
         } else {
             batchPrefillLayer.consumeFromDevice(
-                    GraphNames.batchPrefillLayer(layerIndex - 1), state.workspace.wrapBlockTable);
+                    family.batchPrefillLayer(layerIndex - 1), state.workspace.wrapBlockTable);
         }
 
         // Per-layer weights: upload once
@@ -644,11 +654,11 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 WorkerGridFactory.genericWorker(batchSize * nHeads * attnLocal, attnLocal);
 
         for (int i = firstLayer; i < endLayer; i++) {
-            String p = GraphNames.batchPrefillLayer(i) + ".";
+            String p = family.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
             addFamilyTaskGrids(scheduler, p, i);
             if (tcAttention != null) {
-                tcAttention.addGrids(scheduler, GraphNames.batchPrefillLayer(i));
+                tcAttention.addGrids(scheduler, family.batchPrefillLayer(i));
             } else {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }
