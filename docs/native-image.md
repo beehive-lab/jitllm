@@ -10,7 +10,8 @@ GPU kernels are compiled by TornadoVM at run time in both cases, and cached in
 
 ```bash
 export GRAALVM_HOME=<GraalVM for JDK 25 with native-image>
-./mvnw -Pnative -DskipTests package          # target/jitllm (+ target/libjsvml.so, ship both)
+./mvnw -Pnative -DskipTests package          # target/jitllm, plus the shared libraries next to it
+                                             # (libjsvml.so on Linux, libsleef.dylib on macOS): ship them together
 ```
 
 `scripts/native-image.sh build` does the same without Maven. Run the image with the system
@@ -26,7 +27,7 @@ application, for one) picks it up:
 
 | File | What it covers |
 |---|---|
-| `META-INF/native-image/io.github.beehive-lab/jitllm/native-image.properties` | builder flags: FFM with shared arenas, `-H:-VectorAPISupport` (incompatible with shared arenas; the CPU path's Vector API runs its portable Java code), and `JitllmNativeImageFeature` |
+| `META-INF/native-image/io.github.beehive-lab/jitllm/native-image.properties` | builder flags: FFM with shared arenas, `-H:-VectorAPISupport` (incompatible with shared arenas), `-Djitllm.VectorBitSize=0` with `FloatTensor` initialized at build time (the CPU path runs scalar code), and `JitllmNativeImageFeature` |
 | `JitllmNativeImageFeature` | scans jitllm's classes at build time: every class loadable by name, every class with task lambdas (`$deserializeLambda$`) registered as lambda-capturing — TornadoVM resolves kernels through `SerializedLambda` |
 | `…/jitllm/reachability-metadata.json` | jitllm's class files as resources: TornadoVM compiles kernels from their bytecode |
 | `…/jitllm/tornadovm/reachability-metadata.json` | what TornadoVM 8 and the JDK need (reflection, resources, FFM downcalls), recorded on the CUDA, OpenCL and Metal backends. TornadoVM ships no metadata yet; refresh it with `scripts/native-image.sh trace` after a TornadoVM upgrade |
@@ -39,12 +40,18 @@ machine, an OpenCL one and a Mac with Metal.
 
 On Metal the image runs, but decodes several times slower than the JVM on the same machine (Qwen3-0.6B
 F16, Apple Silicon: 25 tok/s against 149); CUDA images decode at least as fast as the JVM. The plan and
-the time to the first token are the same, so the cost is in TornadoVM's Metal driver on the host side.
+the time until the model is ready to generate are the same, so the cost is per token, most likely in
+TornadoVM's Metal driver on the host side.
 
 The image is built without the Vector API: GraalVM rejects `-H:+VectorAPISupport` together with shared
 arena support ("Support for Arena.ofShared is not available with Vector API support"), and TornadoVM
 opens shared arenas (`CUDAContext`, `OCLContext`, `CuBlasLtNativeLib`). Only jitllm's CPU path uses the
-Vector API; the GPU path is unaffected.
+Vector API; the GPU path is unaffected. In the image the CPU path runs scalar code instead: the
+properties file sets `-Djitllm.VectorBitSize=0` and initializes `FloatTensor` at build time, so the
+width is fixed when the image is built and `-Djitllm.VectorBitSize` at run time has no effect. CPU
+inference in an image is 6-23× slower than on the JVM (Qwen3-0.6B and Llama-3.2-1B, on an RTX 5070 Ti
+machine and on Apple Silicon). This applies to any native image built with the jitllm jar, a Quarkus
+application included; use the GPU path, or the JVM for CPU inference.
 
 Profile-guided optimization (Oracle GraalVM) builds only with sampling: `--pgo-instrument` fails in
 the shared-arena phase (`After inserting all session checks call Unsafe.convEndian was not inlined and
