@@ -42,13 +42,13 @@ public final class Qwen3State extends State {
     @Override
     protected int batchQDim(Configuration config) {
         Qwen3Configuration q3 = (Qwen3Configuration) config;
-        return q3.numberOfHeadsKey() * q3.numberOfHeads();
+        return q3.queryDim();
     }
 
     @Override
     protected int batchKvDim(Configuration config) {
         Qwen3Configuration q3 = (Qwen3Configuration) config;
-        return q3.numberOfHeadsValue() * q3.numberOfKeyValueHeads();
+        return q3.kvDim();
     }
 
     @Override

@@ -128,8 +128,8 @@ public class Qwen3FP16LayersBatchDecodeMMA implements BatchDecodeLayers {
         this.seqPositions = seqPositions;
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHead = config.numberOfHeadsValue();
-        this.qDim = config.numberOfHeadsKey() * config.numberOfHeads();
-        this.kvDim = config.numberOfHeadsValue() * nHeadKv;
+        this.qDim = config.queryDim();
+        this.kvDim = config.kvDim();
         this.gqa = config.numberOfHeads() / nHeadKv;
         this.layerITGs =
                 IntStream.range(0, config.numberOfLayers())

@@ -102,11 +102,11 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final Operands operands;
 
     private static long queryWidth(Qwen3Configuration config) {
-        return (long) config.numberOfHeadsKey() * config.numberOfHeads();
+        return config.queryDim();
     }
 
     private static long keyValueWidth(Qwen3Configuration config) {
-        return (long) config.numberOfHeadsValue() * config.numberOfKeyValueHeads();
+        return config.kvDim();
     }
 
     /** What these layers allocate for one session at {@code batchSize}; see the constructor. */
@@ -162,8 +162,8 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         }
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHead = config.numberOfHeadsValue();
-        this.qDim = config.numberOfHeadsKey() * config.numberOfHeads();
-        this.kvDim = config.numberOfHeadsValue() * nHeadKv;
+        this.qDim = config.queryDim();
+        this.kvDim = config.kvDim();
         this.gqa = config.numberOfHeads() / nHeadKv;
         this.tcAttention =
                 TensorCoreBatchAttention.applies(useFp16KVCache(), paddedBatch, nEmbdHead)

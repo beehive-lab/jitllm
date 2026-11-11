@@ -2,7 +2,6 @@ package org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.OptionalInt;
 import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.kernels.CuDnnPrefillAttentionKernels;
@@ -34,6 +33,7 @@ import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
+import org.beehive.jitllm.model.architecture.Qwen3ProgramDescription;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
 import org.beehive.jitllm.program.op.Attention;
 import org.beehive.jitllm.program.op.MatMul;
@@ -125,8 +125,7 @@ public class Qwen3FP16LayersBatchPrefillMMA
     private final PrefillFamily family;
 
     /** One layer's regions, in the order they run. */
-    private record LayerRegions(
-            Region qkv, Region attention, Region output, Region gateUp, Region down) {}
+    record LayerRegions(Region qkv, Region attention, Region output, Region gateUp, Region down) {}
 
     /** Every layer's regions. */
     private final List<LayerRegions> regions;
@@ -332,17 +331,13 @@ public class Qwen3FP16LayersBatchPrefillMMA
      * Qwen3-8B: 36 layers of 6144 x 4096 and 24576 x 4096, 4.5 G weights, 8.4 GiB in F16.
      */
     static long nativeLibResidentContiguousSize(Qwen3Configuration config) {
-        long qkvRows =
-                (long) config.numberOfHeadsKey() * config.numberOfHeads()
-                        + 2L * config.numberOfHeadsValue() * config.numberOfKeyValueHeads();
+        long qkvRows = (long) config.queryDim() + 2L * config.kvDim();
         return config.numberOfLayers() * (qkvRows + 2L * config.hiddenDim()) * config.dim();
     }
 
     /** How many weights the per-chunk scratch holds: the largest copy, gate|up. */
     static long nativeLibScratchContiguousSize(Qwen3Configuration config) {
-        long qkvRows =
-                (long) config.numberOfHeadsKey() * config.numberOfHeads()
-                        + 2L * config.numberOfHeadsValue() * config.numberOfKeyValueHeads();
+        long qkvRows = (long) config.queryDim() + 2L * config.kvDim();
         return Math.max(qkvRows, 2L * config.hiddenDim()) * config.dim();
     }
 
@@ -364,8 +359,8 @@ public class Qwen3FP16LayersBatchPrefillMMA
         long attention =
                 TensorCoreBatchAttention.applies(fp16Cache, padded, headSize)
                         ? TensorCoreBatchAttention.bytes(
-                                config.numberOfHeadsKey() * config.numberOfHeads(),
-                                config.numberOfHeadsValue() * config.numberOfKeyValueHeads(),
+                                config.queryDim(),
+                                config.kvDim(),
                                 headSize,
                                 config.numberOfHeads(),
                                 padded,
@@ -415,8 +410,8 @@ public class Qwen3FP16LayersBatchPrefillMMA
         this.paddedBatch = (batchSize + 127) & ~127;
         this.nHeadKv = config.numberOfKeyValueHeads();
         this.nEmbdHead = config.numberOfHeadsValue();
-        this.qDim = config.numberOfHeadsKey() * config.numberOfHeads();
-        this.kvDim = config.numberOfHeadsValue() * nHeadKv;
+        this.qDim = config.queryDim();
+        this.kvDim = config.kvDim();
         this.gqa = config.numberOfHeads() / nHeadKv;
         // The FP16 key/value cache is part of the supported configuration, not an extra switch:
         // the cuDNN adapters read K/V straight out of it as FP16, and the gather that would be
@@ -1408,25 +1403,20 @@ public class Qwen3FP16LayersBatchPrefillMMA
     }
 
     /** Every layer's regions: q|k|v, the attention, the output projection, gate|up and down. */
-    private static List<LayerRegions> regions(Qwen3Configuration config, int batchSize) {
+    static List<LayerRegions> regions(Qwen3Configuration config, int batchSize) {
         int dim = config.dim();
-        int head = config.numberOfHeadsValue();
-        int qDim = config.numberOfHeadsKey() * config.numberOfHeads();
-        int kvDim = head * config.numberOfKeyValueHeads();
+        int qDim = config.queryDim();
+        int kvDim = config.kvDim();
         int hidden = config.hiddenDim();
         List<LayerRegions> layers = new ArrayList<>(config.numberOfLayers());
         for (int i = 0; i < config.numberOfLayers(); i++) {
             Attention attention =
-                    new Attention(
+                    Qwen3ProgramDescription.attention(
+                            config,
                             new OperandRef.Activation("qkv"),
                             new OperandRef.Activation("qkv"),
                             new OperandRef.Activation("qkv"),
                             new OperandRef.Activation("attn"),
-                            config.numberOfHeads(),
-                            config.numberOfKeyValueHeads(),
-                            head,
-                            (float) (1.0 / Math.sqrt(head)),
-                            OptionalInt.empty(),
                             DataType.F16);
             layers.add(
                     new LayerRegions(

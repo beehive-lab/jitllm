@@ -138,8 +138,7 @@ public class Qwen3 extends AbstractModel {
     /** Qwen3's cache is sized by its value-head dimension, not by {@code dim}. */
     @Override
     public int kvCacheDim() {
-        Qwen3Configuration config = configuration();
-        return config.numberOfHeadsValue() * config.numberOfKeyValueHeads();
+        return configuration().kvDim();
     }
 
     @Override
