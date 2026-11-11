@@ -70,6 +70,7 @@
         <!-- The tornado.jdk.floor a matching SDK records in etc/tornado.jdk; set by the JDK profiles. -->
         <tornadovm.sdk.jdk.floor>22</tornadovm.sdk.jdk.floor>
         <!-- The published TornadoVM release that -P release builds against (see prepare-release.yml). -->
+        <graalvm.sdk.version>25.0.2</graalvm.sdk.version>
         <tornadovm.release.version>8.1.0</tornadovm.release.version>
         <archunit.version>1.4.2</archunit.version>
         <jdk.version.suffix>-jdk21</jdk.version.suffix>
@@ -100,6 +101,14 @@
             <artifactId>archunit-junit4</artifactId>
             <version>${archunit.version}</version>
             <scope>test</scope>
+        </dependency>
+        <!-- GraalVM's hosted API for JitllmNativeImageFeature, which only runs inside the
+             native-image builder (which provides this jar). Provided scope: never on a JVM class path. -->
+        <dependency>
+            <groupId>org.graalvm.sdk</groupId>
+            <artifactId>nativeimage</artifactId>
+            <version>${graalvm.sdk.version}</version>
+            <scope>provided</scope>
         </dependency>
         <!-- No TornadoVM dependency here: development builds compile against the SDK's modules
              (tornadovm.module.path above). The release and ide profiles declare TornadoVM as
@@ -299,6 +308,41 @@
 
     <!-- Profiles for optional/conditional builds -->
     <profiles>
+
+        <!-- GraalVM native image of the CLI: `./mvnw -Pnative -DskipTests package` builds
+             target/jitllm next to the jar. JDK 22+ (the image needs a jdk22plus TornadoVM SDK).
+             It runs scripts/native-image.sh build, which reads the TornadoVM modules from
+             TORNADOVM_HOME and needs GRAALVM_HOME (GraalVM for JDK 25 with native-image); the jar
+             carries its own native-image metadata in META-INF/native-image. -->
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>native-image</id>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <phase>package</phase>
+                                <configuration>
+                                    <executable>${project.basedir}/scripts/native-image.sh</executable>
+                                    <arguments>
+                                        <argument>build</argument>
+                                        <argument>-o</argument>
+                                        <argument>${project.build.directory}/jitllm</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
 
         <!-- Multi-GPU pipeline split with NCCL: `mvn install -Pnccl`. Needs a TornadoVM SDK that
              ships tornado-nccl, whose module joins the others. Without it the split still runs
