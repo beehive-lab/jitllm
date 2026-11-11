@@ -15,20 +15,8 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 @FunctionalInterface
 public interface Sampler {
 
-    /** Argmax implementation for FloatTensor. */
-    Sampler TENSOR_ARGMAX =
-            tensor -> {
-                int maxIndex = 0;
-                float maxValue = Float.NEGATIVE_INFINITY;
-                for (int i = 0; i < tensor.size(); i++) {
-                    float value = tensor.get(i);
-                    if (value > maxValue) {
-                        maxValue = value;
-                        maxIndex = i;
-                    }
-                }
-                return maxIndex;
-            };
+    /** Greedy sampling: the highest score, which each {@link Logits} view scans its own way. */
+    Sampler TENSOR_ARGMAX = Logits::argmax;
 
     /**
      * Legacy ARGMAX for backward compatibility.
@@ -101,10 +89,12 @@ public interface Sampler {
                     logits -> {
                         // Temperature scaling, then softmax. Which implementation runs is the
                         // view's business: the host and device paths keep the code they had, so the
-                        // arithmetic and its ordering are unchanged.
-                        logits.divideInPlace(0, logits.size(), temperature);
-                        logits.softmaxInPlace(0, logits.size());
-                        return innerSampler.sampleToken(logits);
+                        // arithmetic and its ordering are unchanged. On the host view, because the
+                        // samplers below read every score one by one.
+                        Logits scores = logits.toHost();
+                        scores.divideInPlace(0, scores.size(), temperature);
+                        scores.softmaxInPlace(0, scores.size());
+                        return innerSampler.sampleToken(scores);
                     };
         }
         return sampler;

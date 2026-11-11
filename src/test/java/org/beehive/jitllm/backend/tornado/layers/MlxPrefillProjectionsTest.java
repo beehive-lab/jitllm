@@ -243,6 +243,80 @@ public class MlxPrefillProjectionsTest {
         assertEquals(0.25f * a[1][4], reconstruct(m, GROUP + 4), 0f);
     }
 
+    /**
+     * Tensors longer than the repack's bulk-copy chunk, back to back: every element, scale and
+     * bias, bit for bit, across the chunk and tensor boundaries.
+     */
+    @Test
+    public void largeTensorsAreRepackedAndDecodedBitForBitAcrossChunks() {
+        java.util.Random random = new java.util.Random(42);
+        int[] lengths = {2 * 4096 + 5, 3};
+        float[][] scales = new float[lengths.length][];
+        byte[][][] values = new byte[lengths.length][][];
+        int[][][] nibbles = new int[lengths.length][][];
+        Q8_0TornadoTensor[] q8 = new Q8_0TornadoTensor[lengths.length];
+        Q4_0TornadoTensor[] q4 = new Q4_0TornadoTensor[lengths.length];
+        for (int t = 0; t < lengths.length; t++) {
+            scales[t] = new float[lengths[t]];
+            values[t] = new byte[lengths[t]][GROUP];
+            nibbles[t] = new int[lengths[t]][GROUP];
+            for (int b = 0; b < lengths[t]; b++) {
+                scales[t][b] = h((random.nextFloat() - 0.5f) * 8f);
+                random.nextBytes(values[t][b]);
+                for (int j = 0; j < GROUP; j++) {
+                    nibbles[t][b][j] = random.nextInt(16);
+                }
+            }
+            q8[t] = q8(scales[t], values[t]);
+            q4[t] = q4(scales[t], nibbles[t]);
+        }
+        HalfFloatArray q8Decoded = MlxPrefillProjections.decode(q8);
+        HalfFloatArray q4Decoded = MlxPrefillProjections.decode(q4);
+        MlxPrefillProjections.Matrix q8Affine = MlxPrefillProjections.affine(q8);
+        MlxPrefillProjections.Matrix q4Affine = MlxPrefillProjections.affine(q4);
+
+        int group = 0;
+        for (int t = 0; t < lengths.length; t++) {
+            for (int b = 0; b < lengths[t]; b++, group++) {
+                float s = scales[t][b];
+                String where = "tensor " + t + " block " + b;
+                assertEquals(
+                        where,
+                        Float.floatToFloat16(s),
+                        q8Affine.scales().get(group).getHalfFloatValue());
+                assertEquals(
+                        where,
+                        Float.floatToFloat16(-128f * s),
+                        q8Affine.biases().get(group).getHalfFloatValue());
+                assertEquals(
+                        where,
+                        Float.floatToFloat16(-8f * s),
+                        q4Affine.biases().get(group).getHalfFloatValue());
+                for (int j = 0; j < GROUP; j++) {
+                    int e = group * GROUP + j;
+                    assertEquals(
+                            where + " element " + j,
+                            Float.floatToFloat16(s * values[t][b][j]),
+                            q8Decoded.get(e).getHalfFloatValue());
+                    assertEquals(
+                            where + " element " + j,
+                            Float.floatToFloat16(s * (nibbles[t][b][j] - 8)),
+                            q4Decoded.get(e).getHalfFloatValue());
+                    assertEquals(
+                            where + " element " + j,
+                            s * values[t][b][j],
+                            reconstruct(q8Affine, e),
+                            0f);
+                    assertEquals(
+                            where + " element " + j,
+                            s * (nibbles[t][b][j] - 8),
+                            reconstruct(q4Affine, e),
+                            0f);
+                }
+            }
+        }
+    }
+
     @Test
     public void anF16MatrixIsTheModelsOwnArrayUnlessMadeContiguous() {
         FP16TornadoTensor wo = fp16(64);

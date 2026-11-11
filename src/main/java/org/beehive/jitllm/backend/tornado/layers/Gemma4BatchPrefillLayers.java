@@ -1,5 +1,7 @@
 package org.beehive.jitllm.backend.tornado.layers;
 
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -54,7 +56,6 @@ import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.WorkerGrid3D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
-import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
@@ -797,16 +798,32 @@ public class Gemma4BatchPrefillLayers
     private static HalfFloatArray narrowToF16(TornadoTensor t, int elements, String name) {
         HalfFloatArray out = new HalfFloatArray(elements);
         switch (t.dataType()) {
-            case F16 -> {
-                var src = t.asHalfFloatArray();
-                for (int i = 0; i < elements; i++) {
-                    out.set(i, src.get(i));
-                }
-            }
+            case F16 ->
+                    // One bulk copy: an element loop costs a MemorySegment access per weight, which
+                    // some native-image builds run through a method handle.
+                    MemorySegment.copy(
+                            t.asHalfFloatArray().getSegment(),
+                            0,
+                            out.getSegment(),
+                            0,
+                            (long) elements * Short.BYTES);
             case F32 -> {
-                var src = t.asFloatArray();
-                for (int i = 0; i < elements; i++) {
-                    out.set(i, new HalfFloat(src.get(i)));
+                // In chunks through heap arrays, for the same reason; Float.floatToFloat16 is the
+                // conversion HalfFloat(float) uses, so the result is bit-identical.
+                MemorySegment src = t.asFloatArray().getSegment();
+                MemorySegment dst = out.getSegment();
+                int chunk = Math.min(elements, 1 << 16);
+                float[] floats = new float[chunk];
+                short[] halves = new short[chunk];
+                for (int start = 0; start < elements; start += chunk) {
+                    int n = Math.min(chunk, elements - start);
+                    MemorySegment.copy(
+                            src, ValueLayout.JAVA_FLOAT, (long) start * Float.BYTES, floats, 0, n);
+                    for (int i = 0; i < n; i++) {
+                        halves[i] = Float.floatToFloat16(floats[i]);
+                    }
+                    MemorySegment.copy(
+                            halves, 0, dst, ValueLayout.JAVA_SHORT, (long) start * Short.BYTES, n);
                 }
             }
             default ->
