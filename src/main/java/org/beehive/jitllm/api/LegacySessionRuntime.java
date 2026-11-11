@@ -77,7 +77,7 @@ final class LegacySessionRuntime implements SessionRuntime {
     public TornadoVMMasterPlan plan() {
         if (plan == null) {
             plan =
-                    InsufficientDeviceMemoryException.whileBuildingAPlan(
+                    InsufficientDeviceMemoryException.whileAllocating(
                             () ->
                                     TornadoVMMasterPlan.initializeTornadoVMPlan(
                                             state, model, RunMetricsSink.installedOrDisabled()));

@@ -2,6 +2,7 @@ package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -226,6 +227,21 @@ public class FacadeLifecycleTest {
                     "state allocation failed",
                     assertThrows(IllegalStateException.class, model::newSession).getMessage());
 
+            GenerationSession session = model.newSession();
+            assertNotNull(session);
+            session.close();
+        }
+    }
+
+    /** A CPU session's failures, the host's direct memory included, pass unchanged. */
+    @Test
+    public void aCpuSessionsMemoryFailurePassesUnchanged() {
+        StubModel stub = new StubModel();
+        try (TextGenerationModel model = new DelegatingModel(stub, Path.of("stub.gguf"), false)) {
+            OutOfMemoryError direct =
+                    new OutOfMemoryError("Cannot reserve 117440528 bytes of direct buffer memory");
+            stub.nextStateFailure = direct;
+            assertSame(direct, assertThrows(OutOfMemoryError.class, model::newSession));
             GenerationSession session = model.newSession();
             assertNotNull(session);
             session.close();

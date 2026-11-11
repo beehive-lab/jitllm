@@ -68,7 +68,9 @@ public final class LocalModels {
         try {
             model = ModelLoader.loadModel(modelFile, contextLength, true, gpu);
         } catch (RuntimeException | OutOfMemoryError exhaustion) {
-            if (gpu && isDeviceMemoryExhaustion(exhaustion)) {
+            if (gpu
+                    && org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException
+                            .isDeviceExhaustion(exhaustion)) {
                 throw deviceMemoryExhausted(modelFile, options, exhaustion);
             }
             throw exhaustion;
@@ -116,35 +118,6 @@ public final class LocalModels {
     }
 
     /**
-     * Whether a load failure is the device running out of memory, in either form it arrives in.
-     *
-     * <p>Two distinct signatures, both observed on a real fixture:
-     *
-     * <ul>
-     *   <li>{@code TornadoOutOfMemoryException} — the backend's configured device budget is
-     *       exhausted while buffers are allocated;
-     *   <li>{@code java.lang.OutOfMemoryError: Cannot reserve … direct buffer memory} — the host
-     *       runs out of direct memory materializing the weights (a BF16 tensor's FP16 copy is made
-     *       there).
-     * </ul>
-     */
-    private static boolean isDeviceMemoryExhaustion(Throwable failure) {
-        for (Throwable t = failure; t != null; t = t.getCause()) {
-            String type = t.getClass().getName();
-            if (type.startsWith("uk.ac.manchester.tornado")
-                    && type.toLowerCase(java.util.Locale.ROOT).contains("outofmemory")) {
-                return true;
-            }
-            if (t instanceof OutOfMemoryError
-                    && t.getMessage() != null
-                    && t.getMessage().contains("direct buffer memory")) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
      * The same failure, told in this project's own terms.
      *
      * <p>What the caller saw before was the backend's message — a byte count and an instruction to
@@ -156,16 +129,8 @@ public final class LocalModels {
             Path modelFile, ModelOptions options, Throwable cause) {
         StringBuilder message =
                 new StringBuilder(
-                                org.beehive.jitllm.runtime.diagnostics.DiagnosticCode
-                                        .DEVICE_MEMORY_INSUFFICIENT
-                                        .prefix())
-                        .append("The device ran out of memory loading ")
-                        .append(modelFile.getFileName())
-                        .append(".\n")
-                        .append(
-                                "  Raise --gpu-memory, reduce the context length, or select a smaller")
-                        .append(" quantization.\n  Backend failure: ")
-                        .append(cause);
+                        org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException.message(
+                                "loading " + modelFile.getFileName(), cause));
         MemoryPlan plan = null;
         try {
             plan = preflight(modelFile, options);

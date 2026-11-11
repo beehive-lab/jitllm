@@ -398,16 +398,24 @@ final class DelegatingModel implements TextGenerationModel {
             }
             KvLease lease = sessions.acquire(contextLength);
             try {
+                java.util.function.Supplier<DelegatingSession> build =
+                        () ->
+                                new DelegatingSession(
+                                        this,
+                                        delegate,
+                                        gpu,
+                                        contextLength,
+                                        lease,
+                                        policy,
+                                        thinking,
+                                        effort);
+                // A GPU session's state, workspace and lowered plan allocate here: memory that
+                // runs out is reported as this API's exception, in the backend's terms or the
+                // host's. A CPU session's failures pass unchanged.
                 session =
-                        new DelegatingSession(
-                                this,
-                                delegate,
-                                gpu,
-                                contextLength,
-                                lease,
-                                policy,
-                                thinking,
-                                effort);
+                        gpu
+                                ? InsufficientDeviceMemoryException.whileAllocating(build)
+                                : build.get();
             } catch (RuntimeException | Error failure) {
                 // Building the session (its state, its plan) can fail after the lease is taken.
                 // Nothing else holds the lease then, so a leak here would keep the slot forever,
@@ -556,18 +564,15 @@ final class DelegatingModel implements TextGenerationModel {
                                 ? org.beehive.jitllm.runtime.tensor.DataType.F16
                                 : org.beehive.jitllm.runtime.tensor.DataType.F32);
         loweredProgram =
-                InsufficientDeviceMemoryException.whileBuildingAPlan(
+                programs.acquire(
+                        key,
                         () ->
-                                programs.acquire(
-                                        key,
-                                        () ->
-                                                org.beehive.jitllm.backend.tornado.lowering
-                                                        .LoweredPlanSelection.lower(
-                                                        delegate,
-                                                        loweredWorkspace,
-                                                        org.beehive.jitllm.auxiliary.metrics
-                                                                .RunMetricsSink
-                                                                .installedOrDisabled())));
+                                org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection
+                                        .lower(
+                                                delegate,
+                                                loweredWorkspace,
+                                                org.beehive.jitllm.auxiliary.metrics.RunMetricsSink
+                                                        .installedOrDisabled()));
         // After the acquire, not inside the supplier: on a cache hit the supplier never runs, and
         // this session took the lowered path just the same. Without it a run through the facade
         // reports no execution_path at all.

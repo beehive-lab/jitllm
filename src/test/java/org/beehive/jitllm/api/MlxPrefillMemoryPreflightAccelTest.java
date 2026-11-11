@@ -21,7 +21,8 @@ import org.junit.Test;
  * Mistral-7B-v0.3 Q8_0, batched prefill of 2048, under a 14 GB budget: on MLX its plan exceeds the
  * budget even at its lower bound, so the device default does not take MLX for it and runs the JIT
  * kernels, which fit. Asked for MLX explicitly, the load is not refused on that prediction: it
- * fails while allocating, with {@code GPUL-MEM-001}, what to change and the plan attached.
+ * fails while allocating MLX's copies in host direct memory, with {@code GPUL-MEM-001} naming the
+ * JVM's direct-memory limit.
  *
  * <p>Before the MLX prefill was accounted, its plan charged nothing for the affine repack of the
  * projections. Metal plans are {@code CONSERVATIVE}; the lower bound — the buffers each counted
@@ -63,14 +64,15 @@ public class MlxPrefillMemoryPreflightAccelTest {
             assertFalse(LocalModels.fitsMemoryBudget(model, mlx, mlx.executionPolicy()));
             assertTrue(LocalModels.fitsMemoryBudget(model, jit, jit.executionPolicy()));
 
-            // Asked for explicitly, MLX is loaded and fails while allocating, not before.
-            RuntimeException failure =
-                    assertThrows(RuntimeException.class, () -> loadAndGenerate(model, mlx));
-            assertTrue(
-                    failure.toString(),
-                    failure.getMessage() != null
-                            && failure.getMessage().startsWith("[GPUL-MEM-001]")
-                            && failure.getMessage().contains("--gpu-memory"));
+            // Asked for explicitly, MLX is loaded and fails while allocating, not before: its
+            // copies are made in host direct memory, so the message names the JVM's limit.
+            InsufficientDeviceMemoryException failure =
+                    assertThrows(
+                            InsufficientDeviceMemoryException.class,
+                            () -> loadAndGenerate(model, mlx));
+            assertTrue(failure.getMessage(), failure.getMessage().startsWith("[GPUL-MEM-001]"));
+            assertTrue(failure.getMessage(), failure.getMessage().contains("direct memory"));
+            assertTrue(failure.getMessage(), failure.getMessage().contains("MaxDirectMemorySize"));
             System.out.println(failure.getMessage());
         } finally {
             restore("use.tornadovm", previousGpu);

@@ -55,39 +55,74 @@ public class DeviceMemoryExhaustedException extends RuntimeException {
         }
     }
 
+    // @formatter:off
     /**
-     * Whether this failure, or anything it wraps, is a device out-of-memory: TornadoVM's, or the
-     * host running out of the direct memory a plan stages device copies in (MLX's forms of the
-     * projections are made there).
+     * Whether this failure, or anything it wraps, is memory running out for the accelerator path:
+     * TornadoVM's device budget, or the host's direct memory, which the JVM limits separately
+     * ({@code -XX:MaxDirectMemorySize}, by default the maximum heap) and where native arrays and
+     * MLX's copies of the projections are made. A heap {@code OutOfMemoryError} is neither.
      *
      * <p>Matched on the type name rather than by catching the TornadoVM class, so that this stays
      * compilable against a TornadoVM whose exception hierarchy has moved — which it has, twice, in
      * the version range this project supports.
      */
-    private static boolean isDeviceExhaustion(Throwable failure) {
+    // @formatter:on
+    public static boolean isDeviceExhaustion(Throwable failure) {
         for (Throwable t = failure; t != null; t = t.getCause()) {
             String type = t.getClass().getName();
-            if (type.startsWith("uk.ac.manchester.tornado")
-                    && type.toLowerCase(java.util.Locale.ROOT).contains("outofmemory")) {
-                return true;
-            }
-            if (t instanceof OutOfMemoryError
-                    && t.getMessage() != null
-                    && t.getMessage().contains("direct buffer memory")) {
+            if ((type.startsWith("uk.ac.manchester.tornado")
+                            && type.toLowerCase(java.util.Locale.ROOT).contains("outofmemory"))
+                    || isDirectMemoryExhaustion(t)) {
                 return true;
             }
         }
         return false;
     }
 
-    /** The message the CLI user sees: what failed and what to change. */
-    private static DeviceMemoryExhaustedException wrap(Throwable cause) {
-        String message =
-                DiagnosticCode.DEVICE_MEMORY_INSUFFICIENT.prefix()
-                        + "The device ran out of memory while building the execution plan.\n"
-                        + "  Raise --gpu-memory, reduce the context length, or select a smaller"
+    /** Whether {@code failure} itself is the JVM refusing direct memory past its limit. */
+    private static boolean isDirectMemoryExhaustion(Throwable failure) {
+        return failure instanceof OutOfMemoryError
+                && failure.getMessage() != null
+                && failure.getMessage().contains("direct buffer memory");
+    }
+
+    // @formatter:off
+    /**
+     * The {@code GPUL-MEM-001} message for {@code cause}, which ran out while {@code doing}: the
+     * host's direct-memory limit, or the device budget, each with what changes it.
+     *
+     * <p>Example: {@code Cannot reserve 117440528 bytes of direct buffer memory} while building a
+     * plan names {@code -XX:MaxDirectMemorySize} and {@code --heap-max}, not {@code --gpu-memory},
+     * which does not change that limit.
+     */
+    // @formatter:on
+    public static String message(String doing, Throwable cause) {
+        boolean host = false;
+        for (Throwable t = cause; t != null; t = t.getCause()) {
+            host |= isDirectMemoryExhaustion(t);
+        }
+        String prefix = DiagnosticCode.DEVICE_MEMORY_INSUFFICIENT.prefix();
+        return host
+                ? prefix
+                        + "The host ran out of direct memory while "
+                        + doing
+                        + ": the JVM's limit on direct and native memory, not the device budget,"
+                        + " so --gpu-memory does not change it.\n"
+                        + "  Raise -XX:MaxDirectMemorySize (by default the maximum heap,"
+                        + " --heap-max), reduce the context length, run without native libraries"
+                        + " (--no-native-libraries), whose copies are made there, or select a"
+                        + " smaller quantization.\n  Host failure: "
+                        + cause
+                : prefix
+                        + "The device ran out of memory while "
+                        + doing
+                        + ".\n  Raise --gpu-memory, reduce the context length, or select a smaller"
                         + " quantization.\n  Backend failure: "
                         + cause;
-        return new DeviceMemoryExhaustedException(message, cause);
+    }
+
+    private static DeviceMemoryExhaustedException wrap(Throwable cause) {
+        return new DeviceMemoryExhaustedException(
+                message("building the execution plan", cause), cause);
     }
 }
