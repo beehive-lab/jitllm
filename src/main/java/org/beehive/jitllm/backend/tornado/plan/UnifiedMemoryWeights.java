@@ -25,7 +25,7 @@ import uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray;
  * <p>Example: on an Apple M4 Pro, Qwen3-8B Q8_0 keeps its 8.7 GB of weights once, as file pages,
  * rather than once in the mapping and once more in Metal buffers.
  *
- * <p>On where the device shares memory with the host, unless declined with {@code
+ * <p>On a device that shares memory with the host, unless declined with {@code
  * -Djitllm.weights.unifiedMemory=false} or the batched prefill runs on MLX, which multiplies
  * host-made FP16 copies of the projections (native libraries are on by default). Only for a family
  * whose graphs all bind their weights through here ({@link
@@ -43,8 +43,7 @@ public final class UnifiedMemoryWeights {
 
     /**
      * Whether a plan of {@code family} under {@code policy}, over a model of {@code weights}
-     * weights, reads them in place. The plan and the memory check both ask this, so the check
-     * charges what the plan does.
+     * weights, reads them in place.
      *
      * <p>Example on an M4 Pro: Qwen3-0.6B Q8_0 runs its batched prefill on MLX and copies its
      * weights; Devstral, which has no MLX path, and Mistral-7B Q8_0, whose MLX copies would not
