@@ -133,10 +133,10 @@ public class Qwen3FP16LayersBatchPrefillMMA
     /** Which of cuBLAS, cuDNN and the JIT kernels runs each region. */
     private final WorkPlan plan;
 
-    /** The plan's record of the weights its steps read, which this class does not need. */
-    private final WeightBindings bindings = new WeightBindings();
-
-    /** The plan's arrays: the tasks this class adds name their buffers themselves. */
+    /**
+     * No arrays: the plan picks only {@link LayerProjections} and {@link LayerAttention}, which
+     * read none, because the tasks this class adds name their buffers themselves.
+     */
     private static final Operands NO_OPERANDS =
             Operands.of(java.util.Map.of(), (role, layer) -> null, List.of());
 
@@ -218,8 +218,9 @@ public class Qwen3FP16LayersBatchPrefillMMA
     private final boolean consumeFromPrimary;
 
     /**
-     * cuDNN attention in THIS family. Always false in the fallback family, which exists precisely
-     * because cuDNN cannot mask the chunks it takes.
+     * cuDNN attention in THIS family: its plan's choice for the attention. Never in the fallback
+     * family, which exists precisely because cuDNN cannot mask the chunks it takes ({@link
+     * #cudnnForm}).
      */
     private final boolean useCudnnAttention;
 
@@ -614,7 +615,6 @@ public class Qwen3FP16LayersBatchPrefillMMA
         this.family = primary.family;
         this.context = new KernelContext();
         this.consumeFromPrimary = true;
-        this.useCudnnAttention = false;
         this.state = primary.state;
         this.packedHalf2Attention = primary.packedHalf2Attention;
         this.weights = primary.weights;
@@ -626,6 +626,7 @@ public class Qwen3FP16LayersBatchPrefillMMA
         this.sdpaShape = primary.sdpaShape;
         this.regions = primary.regions;
         this.plan = plan();
+        this.useCudnnAttention = plan.runs(regions.get(0).attention(), "cuDNN");
         this.layersPerGraph = primary.layersPerGraph;
         this.nHeadKv = primary.nHeadKv;
         this.nEmbdHead = primary.nEmbdHead;
@@ -892,6 +893,8 @@ public class Qwen3FP16LayersBatchPrefillMMA
     private void appendBatchPrefillLayer(
             TaskGraph batchPrefillLayer, int layerIndex, int dim, int hidDim) {
         String tp = taskPrefix(layerIndex);
+        // The plan's one record of who uploads each weight. The adapters picked here add nothing.
+        WeightBindings bindings = state.workspace.weightBindings;
         // Per-layer weights: upload once
         if (consumeFromPrimary) {
             batchPrefillLayer.consumeFromDevice(
@@ -1098,6 +1101,33 @@ public class Qwen3FP16LayersBatchPrefillMMA
     }
 
     /**
+     * The grid of the JIT GEMM {@link #project} added for {@code step}; none for a cuBLAS call.
+     * Example: {@code batchPrefillLayer_3.qkvProj} over the padded rows and q|k|v's columns. A
+     * split-K GEMM's grids replace it in {@link #updateGridScheduler}.
+     */
+    @Override
+    public void addProjectionGrids(
+            GridScheduler scheduler, String graph, Step step, boolean cublas) {
+        if (cublas) {
+            return;
+        }
+        String p = graph + "." + taskPrefix(step.layer());
+        switch (step.first(MatMul.class).weight().role()) {
+            case ATTENTION_QKV ->
+                    scheduler.addWorkerGrid(p + "qkvProj", mmaGrid(paddedBatch, qDim + 2 * kvDim));
+            case ATTENTION_OUTPUT ->
+                    scheduler.addWorkerGrid(p + "woProj", mmaGrid(paddedBatch, config.dim()));
+            case FFN_GATE_UP ->
+                    scheduler.addWorkerGrid(
+                            p + "gateUpProj", mmaGrid(paddedBatch, 2 * config.hiddenDim()));
+            case FFN_DOWN ->
+                    scheduler.addWorkerGrid(p + "w2Proj", mmaGrid(paddedBatch, config.dim()));
+            default ->
+                    throw new IllegalArgumentException("not a projection of this layer: " + step);
+        }
+    }
+
+    /**
      * Whether {@code step}'s attention has a cuDNN form: the primary family's, with an FP16
      * key/value cache, where cuDNN takes this attention shape. The fallback family has none.
      */
@@ -1214,6 +1244,32 @@ public class Qwen3FP16LayersBatchPrefillMMA
                     state.kvBlockCfg,
                     state.kvBlockStride,
                     qDim);
+        }
+    }
+
+    /**
+     * The grids of the attention tasks {@link #attend} added for {@code step}: cuDNN's pack, gather
+     * and scatter (the library call takes none), else the tensor-core attention's, else the paged
+     * flash attention's.
+     */
+    @Override
+    public void addAttentionGrids(GridScheduler scheduler, String graph, Step step, boolean cudnn) {
+        String tp = taskPrefix(step.layer());
+        String p = graph + "." + tp;
+        if (cudnn) {
+            WorkerGrid cudnnWorker = elementwiseGrid(qDim * batchSize);
+            scheduler.addWorkerGrid(p + "cudnn_pack_q", cudnnWorker);
+            scheduler.addWorkerGrid(p + "cudnn_gather_kv", cudnnWorker);
+            scheduler.addWorkerGrid(p + "cudnn_scatter", cudnnWorker);
+        } else if (tcAttention != null) {
+            tcAttention.addGrids(scheduler, graph, tp);
+        } else {
+            // B*nHeads workgroups x min(nEmbdHead,128) threads
+            int attnLocal = Math.min(nEmbdHead, 128);
+            scheduler.addWorkerGrid(
+                    p + "batch_attention",
+                    WorkerGridFactory.genericWorker(
+                            batchSize * config.numberOfHeads() * attnLocal, attnLocal));
         }
     }
 
@@ -1535,16 +1591,6 @@ public class Qwen3FP16LayersBatchPrefillMMA
         while (ropeLocal > 1 && ropeGlobal % ropeLocal != 0) ropeLocal--;
         WorkerGrid ropeWorker = WorkerGridFactory.genericWorker(ropeGlobal, ropeLocal);
 
-        // Attention: B*nHeads workgroups × min(nEmbdHead,128) threads
-        int attnLocal = Math.min(nEmbdHead, 128);
-        WorkerGrid attnWorker =
-                WorkerGridFactory.genericWorker(batchSize * nHeads * attnLocal, attnLocal);
-
-        // MMA grids
-        WorkerGrid mmaQkvWorker = mmaGrid(paddedBatch, qDim + 2 * kvDim); // fused QKV
-        WorkerGrid mmaDimWorker = mmaGrid(paddedBatch, dim); // woProj, w2Proj
-        WorkerGrid mmaGateUpWorker = mmaGrid(paddedBatch, 2 * hidDim); // fused W1/W3
-
         WorkerGrid ewDimWorker = elementwiseGrid(batchSize * dim); // w2Resid
         WorkerGrid ewHidWorker = elementwiseGrid(batchSize * hidDim); // swiglu
 
@@ -1553,38 +1599,18 @@ public class Qwen3FP16LayersBatchPrefillMMA
             String p = graph + "." + taskPrefix(i);
             scheduler.addWorkerGrid(p + "batch_attn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_attn_rms_apply", rmsApplyWorker);
-            if (!nativeProjections) {
-                scheduler.addWorkerGrid(p + "qkvProj", mmaQkvWorker);
-            }
             scheduler.addWorkerGrid(p + "batch_qk_rmsnorm", qkRmsNormWorker);
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
-            if (useCudnnAttention) {
-                WorkerGrid cudnnWorker = elementwiseGrid(qDim * batchSize);
-                scheduler.addWorkerGrid(p + "cudnn_pack_q", cudnnWorker);
-                scheduler.addWorkerGrid(p + "cudnn_gather_kv", cudnnWorker);
-                scheduler.addWorkerGrid(p + "cudnn_scatter", cudnnWorker);
-            } else if (tcAttention != null) {
-                tcAttention.addGrids(scheduler, graph, taskPrefix(i));
-            } else {
-                scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
-            }
-            if (!nativeProjections) {
-                scheduler.addWorkerGrid(p + "woProj", mmaDimWorker);
-            }
             scheduler.addWorkerGrid(p + "batch_ffn_rms", rmsWorker);
             scheduler.addWorkerGrid(p + "batch_ffn_rms_apply", ffnRmsApplyWorker);
-            if (!nativeProjections) {
-                scheduler.addWorkerGrid(p + "gateUpProj", mmaGateUpWorker);
-            }
             scheduler.addWorkerGrid(p + "swiglu", ewHidWorker);
-            if (!nativeProjections) {
-                scheduler.addWorkerGrid(p + "w2Proj", mmaDimWorker);
-            }
             scheduler.addWorkerGrid(p + "w2Resid", ewDimWorker);
         }
-        if (!nativeProjections) {
-            splitK.addGrids(scheduler);
-        }
+        // The projections' and the attention's grids, for what the plan picked for each step
+        // (addProjectionGrids, addAttentionGrids); then the split-K GEMMs', which replace a split
+        // projection's. No split-K GEMM is added when cuBLAS runs the projections.
+        plan.addGrids(scheduler);
+        splitK.addGrids(scheduler);
         if (nativeLibScratchContiguousProjections != null) {
             // The refill tasks' grids; the GEMMs are cuBLAS calls, which take none.
             nativeLibScratchContiguousProjections.addGrids(scheduler);
