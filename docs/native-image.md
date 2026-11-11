@@ -40,9 +40,10 @@ machine, an OpenCL one and a Mac with Metal.
 
 On Metal the image runs, but decodes several times slower than the JVM on the same machine (Qwen3-0.6B
 F16, Apple Silicon: 25 tok/s against 149); CUDA images decode at least as fast as the JVM. The cost is
-per token, in TornadoVM's Metal driver on the host side. F16 models are ready to generate as soon as
-on the JVM; Q8_0 models a little later, since the image decodes their weights for MLX more slowly
-(Llama-3.2-3B Q8_0: 5.4 s against 3.9 s).
+per token, in TornadoVM's Metal driver on the host side. Small F16 models are ready to generate as
+soon as on the JVM. Larger models are ready later: Q8_0 models because the image decodes their weights
+for MLX more slowly (Llama-3.2-3B Q8_0: 5.4 s against 3.9 s), and Qwen3-4B F16 in its host-to-device
+uploads (6.0 s against 4.5 s).
 
 The image is built without the Vector API: GraalVM rejects `-H:+VectorAPISupport` together with shared
 arena support ("Support for Arena.ofShared is not available with Vector API support"), and TornadoVM
