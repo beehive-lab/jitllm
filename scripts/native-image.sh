@@ -19,8 +19,8 @@
 # Running the image: it takes the system properties the launcher would pass, plus the library path.
 # Keep TORNADOVM_HOME exported: TornadoVM keeps its CUDA code cache in $TORNADOVM_HOME/var, and with
 # the variable unset it writes ./null/var/cuda-codecache instead (a cold cache in every directory).
-#   ./target/jitllm -Duse.tornadovm=true -Djava.library.path=$TORNADOVM_HOME/lib -Xmx20g \
-#       -m model.gguf -p "Tell me a joke" --instruct
+#   ./target/jitllm -Duse.tornadovm=true -Djava.library.path=$TORNADOVM_HOME/lib \
+#       -Dtornado.tvm.maxbytecodesize=65536 -Xmx20g -m model.gguf -p "Tell me a joke" --instruct
 set -euo pipefail
 
 : "${TORNADOVM_HOME:?set TORNADOVM_HOME to a TornadoVM jdk22plus SDK}"
@@ -28,7 +28,8 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 MAIN=org.beehive.jitllm.JitllmApp
-JAR=$(ls "$ROOT"/target/jitllm-*-jdk22plus.jar 2>/dev/null | grep -v -- '-sources\|-javadoc' | head -1 || true)
+# The most recently built jar, not the alphabetically first: target/ may still hold one from an older version.
+JAR=$(ls -t "$ROOT"/target/jitllm-*-jdk22plus.jar 2>/dev/null | grep -v -- '-sources\|-javadoc' | head -1 || true)
 [ -n "$JAR" ] || { echo "no target/jitllm-*-jdk22plus.jar: run ./mvnw -DskipTests package on JDK 22+" >&2; exit 2; }
 SHIM=$ROOT/src/main/resources/META-INF/native-image/io.github.beehive-lab/jitllm/tornadovm/reachability-metadata.json
 
@@ -82,7 +83,13 @@ def ours(name):
         or name.startswith("META-INF/services/org.beehive.jitllm.")
 def keep_type(e):
     t = e["type"]
-    return not ours(t if isinstance(t, str) else t["lambda"]["declaringClass"])
+    if isinstance(t, str):
+        return not ours(t)
+    if "lambda" in t:
+        return not ours(t["lambda"].get("declaringClass", ""))
+    if "proxy" in t:
+        return not all(ours(i) for i in t["proxy"])
+    return True
 out = {"comment": "TornadoVM 8 and JDK entries for jitllm native images, recorded by scripts/native-image.sh trace. "
                   "Belongs in TornadoVM's own jars once it ships native-image metadata."}
 out["reflection"] = sorted([e for e in d.get("reflection", []) if keep_type(e)], key=lambda e: json.dumps(e["type"]))

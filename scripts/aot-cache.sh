@@ -24,23 +24,26 @@ set -euo pipefail
 : "${TORNADOVM_HOME:?set TORNADOVM_HOME to a TornadoVM jdk22plus SDK}"
 JAVA=${JAVA_HOME:+$JAVA_HOME/bin/}java
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-JAR=$(ls "$ROOT"/target/jitllm-*-jdk22plus.jar 2>/dev/null | grep -v -- '-sources\|-javadoc' | head -1 || true)
+# The most recently built jar, not the alphabetically first: target/ may still hold one from an older version.
+JAR=$(ls -t "$ROOT"/target/jitllm-*-jdk22plus.jar 2>/dev/null | grep -v -- '-sources\|-javadoc' | head -1 || true)
 [ -n "$JAR" ] || { echo "no target/jitllm-*-jdk22plus.jar: run ./mvnw -DskipTests package on JDK 22+" >&2; exit 2; }
-[ $# -ge 2 ] || { sed -n '8,9p' "$0" | sed 's/^# //' >&2; exit 2; }
+[ $# -ge 2 ] || { sed -n '8,10p' "$0" | sed 's/^# //' >&2; exit 2; }
 mode=$1 cache=$2; shift 2
 
 # The SDK's argfile, minus its "." module path entry: an AOT cache only accepts jars on the module path.
 JARS=$TORNADOVM_HOME/share/java/tornado
 MODS=$(sed -n 's/^--add-modules //p' "$TORNADOVM_HOME/tornado-argfile")
+# Native access for every TornadoVM module (drivers, cuBLAS, MLX make restricted FFM calls too).
+TORNADO_MODS=$(tr ',' '\n' <<<"$MODS" | grep '^tornado\.' | paste -sd, -)
 OPENS=$(sed -n 's/^--add-opens //p' "$TORNADOVM_HOME/tornado-argfile" | sed 's/^/--add-opens=/' | paste -sd' ' -)
 LOADS=$(grep -o '^-Dtornado\.load\.[a-z.]*implementation=[A-Za-z.]*' "$TORNADOVM_HOME/tornado-argfile" | paste -sd' ' -)
 # shellcheck disable=SC2206
 JVM=(-Djava.library.path="$TORNADOVM_HOME/lib" --module-path="$JARS" --add-modules="$MODS,jdk.incubator.vector"
-     --enable-native-access=ALL-UNNAMED,tornado.runtime $OPENS $LOADS -Dtornado.tvm.maxbytecodesize=65536
+     --enable-native-access="ALL-UNNAMED,$TORNADO_MODS" $OPENS $LOADS -Dtornado.tvm.maxbytecodesize=65536
      ${JVM_OPTS:-} -cp "$JAR")
 
 case "$mode" in
   train) exec "$JAVA" "${JVM[@]}" -XX:AOTCacheOutput="$cache" org.beehive.jitllm.JitllmApp "$@" ;;
   run)   exec "$JAVA" "${JVM[@]}" -XX:AOTCache="$cache" org.beehive.jitllm.JitllmApp "$@" ;;
-  *)     sed -n '8,9p' "$0" | sed 's/^# //' >&2; exit 2 ;;
+  *)     sed -n '8,10p' "$0" | sed 's/^# //' >&2; exit 2 ;;
 esac

@@ -17,8 +17,8 @@ export GRAALVM_HOME=<GraalVM for JDK 25 with native-image>
 properties the `jitllm` launcher would pass, plus the library path:
 
 ```bash
-./target/jitllm -Duse.tornadovm=true -Djava.library.path=$TORNADOVM_HOME/lib -Xmx20g \
-    -m model.gguf -p "Tell me a joke" --instruct
+./target/jitllm -Duse.tornadovm=true -Djava.library.path=$TORNADOVM_HOME/lib \
+    -Dtornado.tvm.maxbytecodesize=65536 -Xmx20g -m model.gguf -p "Tell me a joke" --instruct
 ```
 
 The metadata ships in the jar, so any native image with jitllm on its class path (a Quarkus native
