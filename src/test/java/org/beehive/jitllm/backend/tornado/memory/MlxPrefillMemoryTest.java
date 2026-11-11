@@ -180,7 +180,7 @@ public class MlxPrefillMemoryTest {
     }
 
     @Test
-    public void mistral7bQ8MlxIsRefusedBeforeAllocationWhereTheJitKernelsFit() {
+    public void mistral7bQ8MlxExceedsTheBudgetAtItsLowerBoundWhereTheJitKernelsFit() {
         BatchPrefillWorkspace mlx =
                 MlxPrefill.workspace(DataType.Q8_0, MISTRAL_7B, 2048, false, false);
         // Its FP16 copies (13 GiB) exceed the backend's resident allowance, so the residency

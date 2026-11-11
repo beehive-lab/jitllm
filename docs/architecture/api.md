@@ -183,7 +183,8 @@ honest failure surfaces ordering bugs instead of hiding them.
 ## Errors
 
 Failures carry a `DiagnosticCode` in the message, so a cause is identifiable without
-parsing prose: `GPUL-MOD-002` for an unrecognized model, `GPUL-MEM-001` for a load known to
-exceed device capacity, `GPUL-LIFE-001` and `GPUL-LIFE-002` for lifecycle misuse.
+parsing prose: `GPUL-MOD-002` for an unrecognized model, `GPUL-MEM-001` for device memory
+that ran out while loading or building a session's plan, `GPUL-LIFE-001` and `GPUL-LIFE-002`
+for lifecycle misuse.
 Device-memory exhaustion surfaces as `InsufficientDeviceMemoryException` rather than a
 backend exception: backend exception types stop at the backend boundary.

@@ -328,12 +328,12 @@ which backend a session resolved.
 | A representation this family does not retain changes nothing | pass |
 
 Measured on `Llama-3.2-1B-Instruct-Q4_0.gguf`: per-layer weights **547 MB retained against 1034 MB
-materialized**. Before this the preflight reported the second figure for both, which is the
-difference between refusing a 4-bit model and running it.
+materialized**. Before this the preflight reported the second figure for both, which then decided
+whether a 4-bit model was refused or run.
 
 This is the half of Q4_0 residency that is not about arithmetic. Correct kernels make a model
-right; a correct footprint makes it loadable, and a preflight that over-predicts refuses a
-configuration the caller has no way to overrule.
+right; a correct footprint keeps the prediction honest, and a prediction that over-predicts sets
+aside a device default that would have run.
 
 ## Known limitations
 
@@ -342,9 +342,9 @@ configuration the caller has no way to overrule.
   otherwise, because a fused kernel reading two block layouts would read 18-byte blocks as
   34-byte ones. The preflight decides tensor by tensor, so a file mixing Q4_0 with another
   quantization in its layers would be predicted smaller than it loads. No quantizer produces such
-  a file today. The direction is the tolerable one: this prediction is used to *refuse*, and a
-  refusal cannot be overruled, so an over-estimate blocks a configuration that would have run
-  where an under-estimate proceeds to the backend's own allocation error.
+  a file today. The prediction no longer refuses loads; it chooses the device default and the
+  residency of decoded projections, so an under-estimate keeps a default whose load then fails
+  while allocating, with `GPUL-MEM-001`.
 - **The preflight's retention reads the provider's per-tensor declaration.** It is
   `nativeTensorTypes()`, which is separate from the admission set a plan is selected on: a mixed
   model reports one representation and holds several, and reading admission as retention

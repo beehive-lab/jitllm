@@ -367,8 +367,9 @@ public final class TornadoMemoryModel {
         // Its two components are sized from direct allocation evidence, but the driver reservation
         // that evidence sits inside has not been bisected for this path, and the per-layer rule it
         // is added to over-counts a family whose decode graphs consume rather than upload. Both
-        // errors are in the safe direction, and an over-prediction that kept EXACT would be
-        // enforced: only EXACT refuses a load. So this path reports what it is -- conservative.
+        // errors are in the safe direction, and an over-prediction that kept EXACT would be acted
+        // on: an exact plan over budget sets a device default aside. So this path reports what it
+        // is -- conservative.
         // The tensor-core layers' workspace is sized from their own allocation arithmetic, not
         // bisected against measurement, so a plan carrying it is conservative as well.
         MemoryPlan.Confidence confidence =

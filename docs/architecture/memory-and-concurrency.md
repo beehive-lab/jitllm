@@ -124,17 +124,21 @@ resizes nothing.
 
 ## Memory planning
 
-`LocalModels.preflight(...)` predicts device memory before anything is allocated, and a
-load known to exceed capacity throws `GPUL-MEM-001` before the first device buffer rather
-than dying part-allocated.
+`LocalModels.preflight(...)` predicts device memory before anything is allocated. A load uses
+the prediction to choose, never to refuse: which device default to take (native libraries are
+kept only where their copies are predicted to fit) and whether decoded projections stay
+resident. A configuration that does not fit fails while allocating, with `GPUL-MEM-001`
+naming `--gpu-memory` (`InsufficientDeviceMemoryException` from the load,
+`DeviceMemoryExhaustedException` from building a plan); what it allocated is released, and a
+configuration that fits runs afterwards in the same process.
 
-A plan carries a **confidence level**, and admission acts on it. `EXACT` is claimed only
+A plan carries a **confidence level**, and the choices act on it. `EXACT` is claimed only
 where the model has been bisected against measurement on that backend; elsewhere the plan
 is capped at `CONSERVATIVE`. The model multiplies per-layer weight bytes by the number of
 layer-graph families, because the TornadoVM runtime holds object state per task graph and
 so allocates a device buffer per graph that binds an array — getting that count wrong
-under-predicts by roughly the size of the model, and an under-prediction admits a load that
-then dies part-allocated. `GraphTopologyConsistencyTest` pins each layout's declared family
+under-predicts by roughly the size of the model, and an under-prediction keeps a default whose
+load then fails while allocating. `GraphTopologyConsistencyTest` pins each layout's declared family
 count against its graph indices.
 
 The tensor-core batched prefill layers add a per-session workspace — tensor-core attention
@@ -143,8 +147,9 @@ decodes — which each layer class sizes with the arithmetic its constructor all
 (`TornadoPlanProvider.batchPrefillWorkspace`). Each session builds its own plan, so the
 workspace is charged once per session. Whether the decoded projections stay resident is
 decided against the budget at load (`MemoryPreflight.resolveDecodedProjections`) and carried
-to the layers in the execution policy, so the plan builds what was predicted; when not even
-the per-chunk scratch fits beside an exactly predicted remainder, the load is refused. These
+to the layers in the execution policy, so the plan builds what was chosen; when not even the
+per-chunk scratch is predicted to fit, it keeps the per-chunk scratch, the smaller, and the
+allocation decides. These
 components are not bisected against measurement, so a plan that carries them is
 `CONSERVATIVE`.
 
@@ -158,10 +163,10 @@ width 128 and context 4096, the prediction is within 2 MiB above the allocation 
 representation.
 
 A `CONSERVATIVE` plan is report-only, with one exception: when its **logical** bytes — every
-buffer counted once, no duplication or headers — already exceed the configured budget, the
-load is refused before the first device buffer (`MemoryPlan.exceedsConfiguredBudgetAtLowerBound`).
-That is a lower bound, so it cannot refuse a load that would have run. It is what refuses
-Mistral-7B Q8_0 with an MLX prefill of 2048 under 14 GB, which otherwise died part-allocated.
+buffer counted once, no duplication or headers — already exceed the configured budget, a device
+default is set aside (`MemoryPlan.exceedsConfiguredBudgetAtLowerBound`). That is a lower bound,
+so it cannot set aside a default that would have run. It is what keeps Mistral-7B Q8_0 with a
+prefill of 2048 under 14 GB on the JIT kernels rather than MLX.
 
 ## A note on device memory and test forks
 

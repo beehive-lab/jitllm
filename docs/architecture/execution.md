@@ -31,8 +31,9 @@ representation. Which representations a backend accepts, and where a K-quant is 
 is a backend concern — see [`models-and-backends.md`](models-and-backends.md).
 
 A load is preceded by a capacity prediction. `LocalModels.preflight(...)` returns a
-`MemoryPlan` before anything is allocated, and a load known to exceed capacity fails with
-`GPUL-MEM-001` before the first device buffer, rather than dying part-allocated.
+`MemoryPlan` before anything is allocated; the load uses it to choose the device default and
+the residency of decoded projections, not to refuse. A configuration that does not fit fails
+while allocating, with `GPUL-MEM-001`, and releases what it allocated.
 
 ## Sessions
 

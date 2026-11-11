@@ -556,15 +556,18 @@ final class DelegatingModel implements TextGenerationModel {
                                 ? org.beehive.jitllm.runtime.tensor.DataType.F16
                                 : org.beehive.jitllm.runtime.tensor.DataType.F32);
         loweredProgram =
-                programs.acquire(
-                        key,
+                InsufficientDeviceMemoryException.whileBuildingAPlan(
                         () ->
-                                org.beehive.jitllm.backend.tornado.lowering.LoweredPlanSelection
-                                        .lower(
-                                                delegate,
-                                                loweredWorkspace,
-                                                org.beehive.jitllm.auxiliary.metrics.RunMetricsSink
-                                                        .installedOrDisabled()));
+                                programs.acquire(
+                                        key,
+                                        () ->
+                                                org.beehive.jitllm.backend.tornado.lowering
+                                                        .LoweredPlanSelection.lower(
+                                                        delegate,
+                                                        loweredWorkspace,
+                                                        org.beehive.jitllm.auxiliary.metrics
+                                                                .RunMetricsSink
+                                                                .installedOrDisabled())));
         // After the acquire, not inside the supplier: on a cache hit the supplier never runs, and
         // this session took the lowered path just the same. Without it a run through the facade
         // reports no execution_path at all.

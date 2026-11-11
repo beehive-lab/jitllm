@@ -30,7 +30,7 @@ public enum DiagnosticCode {
     CAPABILITY_UNAVAILABLE("GPUL-CFG-003"),
 
     // ── capacity ─────────────────────────────────────────────────────────────
-    /** The predicted device memory exceeds the configured budget. */
+    /** Device memory ran out: the configured budget or the device could not hold an allocation. */
     DEVICE_MEMORY_INSUFFICIENT("GPUL-MEM-001"),
     /** A requested context length exceeds what the loaded model was opened with. */
     CONTEXT_LENGTH_EXCEEDED("GPUL-MEM-002"),

@@ -70,8 +70,9 @@ Rules this integration has already had to learn:
   `spring-boot-starter`.
 - **Thinking is load-time configuration.** jitllm keeps `ThinkingMode` off `GenerationRequest` by
   design; the adapter sets it on `ModelOptions` (`spring.ai.jitllm.chat.thinking`).
-- **Preflight reuses the engine's.** `LocalModels.load` already refuses an `EXACT` over-budget plan;
-  the adapter logs `LocalModels.preflight`'s plan, warns on a `CONSERVATIVE` overrun, and turns
+- **Preflight is a report.** `LocalModels.load` refuses nothing on a prediction; a configuration
+  that does not fit fails while allocating, with `InsufficientDeviceMemoryException`. The adapter
+  logs `LocalModels.preflight`'s plan, warns on a predicted overrun, and turns
   `InsufficientDeviceMemoryException` into a startup error. Those types are `@Experimental`: use
   them inside the adapter only.
 - **One GPU model per JVM.** Closing a GPU model resets TornadoVM state another live GPU model uses

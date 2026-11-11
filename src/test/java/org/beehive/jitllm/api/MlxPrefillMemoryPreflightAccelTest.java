@@ -1,7 +1,7 @@
 package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
@@ -18,18 +18,14 @@ import org.junit.Test;
 
 // @formatter:off
 /**
- * The configuration that used to die part-allocated — Mistral-7B-v0.3 Q8_0, batched prefill of 2048
- * on MLX under a 14 GB budget — is refused by the preflight before the first device buffer.
+ * Mistral-7B-v0.3 Q8_0, batched prefill of 2048, under a 14 GB budget: on MLX its plan exceeds the
+ * budget even at its lower bound, so the device default does not take MLX for it and runs the JIT
+ * kernels, which fit. Asked for MLX explicitly, the load is not refused on that prediction: it
+ * fails while allocating, with {@code GPUL-MEM-001}, what to change and the plan attached.
  *
  * <p>Before the MLX prefill was accounted, its plan charged nothing for the affine repack of the
- * projections, the run started allocating, and TornadoVM failed with {@code Unable to allocate
- * 62390288 bytes} part-way through ({@code GPUL-MEM-001} from the runtime, with no plan attached).
- * The same configuration on the JIT kernels runs in that budget.
- *
- * <p>Metal plans are {@code CONSERVATIVE}, which is report-only; the refusal is on the plan's lower
- * bound — its buffers each counted once — which already exceeds the budget. Nothing here builds a
- * plan or uploads a weight: the refusal is the facade's, and the JIT control asks the preflight
- * directly.
+ * projections. Metal plans are {@code CONSERVATIVE}; the lower bound — the buffers each counted
+ * once — is what the default's choice acts on.
  */
 // @formatter:on
 public class MlxPrefillMemoryPreflightAccelTest {
@@ -38,7 +34,8 @@ public class MlxPrefillMemoryPreflightAccelTest {
     private static final int CONTEXT = 2064;
 
     @Test
-    public void mistral7bQ8OnMlxIsRefusedBeforeAllocation() throws Exception {
+    public void mistral7bQ8OnMlxIsSetAsideByTheDefaultAndFailsClearlyWhenAskedFor()
+            throws Exception {
         Path model = GoldenFixture.locate(Fixture.MISTRAL_7B_Q8_0);
         assumeTrue(
                 "environment absent: " + GoldenFixture.absentMessage(Fixture.MISTRAL_7B_Q8_0),
@@ -53,28 +50,43 @@ public class MlxPrefillMemoryPreflightAccelTest {
         System.setProperty("use.tornadovm", "true");
         System.setProperty("tornado.device.memory", "14GB");
         try {
-            InsufficientDeviceMemoryException refused =
-                    assertThrows(
-                            InsufficientDeviceMemoryException.class,
-                            () -> LocalModels.load(model, options(true)).close());
-            MemoryPlan plan = refused.plan();
-            assertNotNull(
-                    "refused by the runtime during the load rather than predicted before it: "
-                            + refused.getMessage(),
-                    plan);
+            MemoryPlan plan = LocalModels.preflight(model, options(true));
             assertEquals(MemoryPlan.Confidence.CONSERVATIVE, plan.confidence());
             assertTrue(plan.describe(), plan.exceedsConfiguredBudgetAtLowerBound());
             assertTrue(
                     "the plan does not charge the MLX prefill: " + plan.describe(),
                     plan.components().stream()
                             .anyMatch(c -> c.name().startsWith("batched prefill workspace")));
-            assertTrue(refused.getMessage(), refused.getMessage().startsWith("[GPUL-MEM-001]"));
+            // The device default's choice: MLX does not fit, the JIT kernels do.
+            ModelOptions mlx = options(true);
+            ModelOptions jit = options(false);
+            assertFalse(LocalModels.fitsMemoryBudget(model, mlx, mlx.executionPolicy()));
+            assertTrue(LocalModels.fitsMemoryBudget(model, jit, jit.executionPolicy()));
 
-            // The JIT kernels' plan for the same file, width and budget is not refused.
-            MemoryPreflight.refuseIfOverCapacity(model, CONTEXT, options(false));
+            // Asked for explicitly, MLX is loaded and fails while allocating, not before.
+            RuntimeException failure =
+                    assertThrows(RuntimeException.class, () -> loadAndGenerate(model, mlx));
+            assertTrue(
+                    failure.toString(),
+                    failure.getMessage() != null
+                            && failure.getMessage().startsWith("[GPUL-MEM-001]")
+                            && failure.getMessage().contains("--gpu-memory"));
+            System.out.println(failure.getMessage());
         } finally {
             restore("use.tornadovm", previousGpu);
             restore("tornado.device.memory", previousBudget);
+        }
+    }
+
+    private static void loadAndGenerate(Path model, ModelOptions options) throws Exception {
+        try (LocalModel loaded = LocalModels.load(model, options);
+                GenerationSession session = ((TextGenerationModel) loaded).newSession()) {
+            session.generate(
+                    GenerationRequest.builder()
+                            .prompt("The capital of France is")
+                            .maxNewTokens(4)
+                            .temperature(0.0f)
+                            .build());
         }
     }
 

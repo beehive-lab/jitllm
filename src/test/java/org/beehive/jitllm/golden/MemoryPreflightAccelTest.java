@@ -2,12 +2,10 @@ package org.beehive.jitllm.golden;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jitllm.api.InsufficientDeviceMemoryException;
 import org.beehive.jitllm.api.LocalModel;
 import org.beehive.jitllm.api.LocalModels;
 import org.beehive.jitllm.api.ModelOptions;
@@ -68,57 +66,38 @@ public class MemoryPreflightAccelTest {
     }
 
     /**
-     * A known-over-capacity load fails before allocation, and says why — <b>where the backend's
-     * memory model has been validated</b>.
-     *
-     * <p>Metal parity task 13: admission is enforced only at {@code EXACT} confidence, and Metal is
-     * deliberately capped at {@code CONSERVATIVE} — whose documented meaning is "report-only; never
-     * refuses on its own" (`memory-validation.md` §4). Asserting a refusal unconditionally asserted
-     * a CUDA-only fact. On Metal this asserts the contract that actually applies there: the plan
-     * still *reports* that the configuration does not fit, and still names the shortfall, while the
-     * preflight itself does not refuse. That is a real assertion, not an exemption — a Metal build
-     * that silently started refusing (or stopped reporting the shortfall) would fail it.
+     * A configuration predicted over the budget is reported as such, with its shortfall and
+     * dominant component, and its load is not refused on that prediction: the allocation decides.
+     * The budget set here is the prediction's; the test JVM's TornadoVM budget is larger, so the
+     * load allocates and runs.
      */
     @Test
-    public void anOverCapacityLoadIsRefusedBeforeAllocating() throws Exception {
+    public void anOverBudgetPredictionIsReportedAndRefusesNothing() throws Exception {
         Path model = fixture();
-        if (!memoryModelValidatedForThisBackend()) {
-            assertOverCapacityIsReportedButNotRefused(model);
-            return;
-        }
         String previousGpu = System.getProperty(GPU_PROPERTY);
         String previousBudget = System.getProperty(BUDGET);
         System.setProperty(GPU_PROPERTY, "true");
         // Far below the ~2.4 GiB this configuration needs, and a value the backend itself accepts.
         System.setProperty(BUDGET, "512MB");
         try {
-            InsufficientDeviceMemoryException e =
-                    assertThrows(
-                            InsufficientDeviceMemoryException.class,
-                            () ->
-                                    LocalModels.load(
-                                            model,
-                                            ModelOptions.builder().contextLength(512).build()));
-
-            assertFalse("the plan must not claim to fit", e.plan().fitsConfiguredBudget());
-            String message = e.getMessage();
-            assertTrue("it must state the requirement", message.contains("needs about"));
+            ModelOptions options = ModelOptions.builder().contextLength(512).build();
+            MemoryPlan plan = LocalModels.preflight(model, options);
+            assertFalse("the plan must report that it does not fit", plan.fitsConfiguredBudget());
             assertTrue(
-                    "it must state the configured budget", message.contains("configured budget"));
-            assertTrue("it must state the shortfall", message.contains("short by"));
-            assertTrue(
-                    "it must name the dominant component", message.contains("Dominant component:"));
-            assertTrue(
-                    "it must not be mistaken for a free-memory reading",
-                    message.contains("not a measurement of"));
-            System.out.println(message);
+                    "even its buffers counted once exceed the budget",
+                    plan.exceedsConfiguredBudgetAtLowerBound());
+            assertTrue("it must name the dominant component", plan.largestComponent().isPresent());
+            try (LocalModel loaded = LocalModels.load(model, options)) {
+                assertTrue("the model must load", loaded != null);
+            }
+            System.out.println("over budget, reported and not refused:\n" + plan.describe());
         } finally {
             restore(GPU_PROPERTY, previousGpu);
             restore(BUDGET, previousBudget);
         }
     }
 
-    /** A sufficient budget must not be refused — the check has to be a gate, not an obstacle. */
+    /** A sufficient budget loads normally. */
     @Test
     public void aSufficientBudgetLoadsNormally() throws Exception {
         Path model = fixture();
@@ -218,33 +197,6 @@ public class MemoryPreflightAccelTest {
      */
     private static boolean memoryModelValidatedForThisBackend() {
         return TornadoDevices.current().backend() != BackendId.METAL;
-    }
-
-    /**
-     * The {@code CONSERVATIVE} contract: the shortfall is reported, and the load is not refused.
-     */
-    private static void assertOverCapacityIsReportedButNotRefused(Path model) throws Exception {
-        String previousBudget = System.getProperty(BUDGET);
-        System.setProperty(BUDGET, "512MB");
-        try {
-            MemoryPlan plan =
-                    LocalModels.preflight(model, ModelOptions.builder().contextLength(512).build());
-            assertEquals(
-                    "this backend's memory model is unvalidated, so the plan must say so",
-                    MemoryPlan.Confidence.CONSERVATIVE,
-                    plan.confidence());
-            assertFalse(
-                    "the plan must still report that the configuration does not fit,"
-                            + " even though CONSERVATIVE means it will not refuse",
-                    plan.fitsConfiguredBudget());
-            assertTrue(
-                    "and it must still name the dominant component",
-                    plan.largestComponent().isPresent());
-            System.out.println(
-                    "[CONSERVATIVE] over-capacity reported, not refused:\n" + plan.describe());
-        } finally {
-            restore(BUDGET, previousBudget);
-        }
     }
 
     private static Path fixture() {

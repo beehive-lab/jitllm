@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.lowering;
 
+import org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException;
 import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
@@ -314,16 +315,19 @@ public final class LoweredPlanSelection {
 
     /** Validates the program and lowers it, or throws naming what did not match. */
     public static TornadoVMMasterPlan lower(Model model, State state, MetricsSink sink) {
+        // Where a lowered plan allocates its device buffers, so where one that does not fit fails.
         TornadoVMMasterPlan plan =
-                loweringFor(model, executionMode(state))
-                        .lower(
-                                describe(
-                                        model,
-                                        state.executionPolicy(),
-                                        keyValueRepresentation(state)),
-                                state,
-                                model,
-                                sink);
+                DeviceMemoryExhaustedException.whileAllocating(
+                        () ->
+                                loweringFor(model, executionMode(state))
+                                        .lower(
+                                                describe(
+                                                        model,
+                                                        state.executionPolicy(),
+                                                        keyValueRepresentation(state)),
+                                                state,
+                                                model,
+                                                sink));
         LOWERED_PLANS.incrementAndGet();
         return plan;
     }

@@ -337,8 +337,8 @@ Recorded external limitations, each with its named cause:
   call. This family uses the single-workgroup online-softmax kernel, which sizes its shared
   memory from the head width it is given, at the cost of the splits' parallelism.
 - **Memory preflight on Metal** is capped at `CONSERVATIVE`. The multiplicity/header model
-  `EXACT` depends on was bisected against measurement on CUDA only, and admission acts on
-  the confidence level.
+  `EXACT` depends on was bisected against measurement on CUDA only, and the choice of a device
+  default acts on the confidence level.
 
 Batched prefill is **the default on every accelerator backend** where the family builds it: in
 chunks of 512 on CUDA, OpenCL and, for the families listed above, Metal. A model
