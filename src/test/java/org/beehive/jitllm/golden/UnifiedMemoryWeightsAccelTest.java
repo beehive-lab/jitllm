@@ -152,23 +152,31 @@ public class UnifiedMemoryWeightsAccelTest {
                     State.withStorageOptions(
                             storage, () -> State.withPrefillBatchSize(512, model::createNewState));
             int seed = stateA.latestToken;
+            // Each plan built is closed whatever fails: plan A in the outer block unless the test
+            // closed it already, plan B in the inner one.
             TornadoVMMasterPlan planA = TornadoVMMasterPlan.initializeTornadoVMPlan(stateA, model);
-            TornadoVMMasterPlan planB = TornadoVMMasterPlan.initializeTornadoVMPlan(stateB, model);
+            boolean planAOpen = true;
             try {
-                assertRows("plan A", copied.rows(), generate(model, stateA, planA, prompt));
-                assertRows("plan B", copied.rows(), generate(model, stateB, planB, prompt));
+                TornadoVMMasterPlan planB =
+                        TornadoVMMasterPlan.initializeTornadoVMPlan(stateB, model);
+                try {
+                    assertRows("plan A", copied.rows(), generate(model, stateA, planA, prompt));
+                    assertRows("plan B", copied.rows(), generate(model, stateB, planB, prompt));
+                    planAOpen = false;
+                    planA.freeTornadoExecutionPlan();
+                    planB.resetSequenceState();
+                    stateB.latestToken = seed;
+                    assertRows(
+                            "plan B after plan A closed",
+                            copied.rows(),
+                            generate(model, stateB, planB, prompt));
+                } finally {
+                    planB.freeTornadoExecutionPlan();
+                }
             } finally {
-                planA.freeTornadoExecutionPlan();
-            }
-            try {
-                planB.resetSequenceState();
-                stateB.latestToken = seed;
-                assertRows(
-                        "plan B after plan A closed",
-                        copied.rows(),
-                        generate(model, stateB, planB, prompt));
-            } finally {
-                planB.freeTornadoExecutionPlan();
+                if (planAOpen) {
+                    planA.freeTornadoExecutionPlan();
+                }
             }
         } finally {
             for (int i = 0; i < keys.length; i++) {
