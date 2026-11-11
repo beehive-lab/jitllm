@@ -90,6 +90,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -97,6 +98,7 @@ jobs:
         run: scripts/set-tornadovm-release.sh "${{ needs.resolve-version.outputs.version }}"
 
       - name: Open pull request
+        id: cpr
         uses: peter-evans/create-pull-request@v6
         with:
           commit-message: "Depend on TornadoVM release ${{ needs.resolve-version.outputs.version }} for releases"
@@ -110,3 +112,26 @@ jobs:
 
             Verified in CI with an empty local Maven repository: `mvn -P release clean package` against `tornado-api:${{ needs.resolve-version.outputs.version }}-jdk21` (JDK 21) and `tornado-api:${{ needs.resolve-version.outputs.version }}-jdk22plus` (JDK 25).
           labels: dependencies
+
+      # A pull request opened with the workflow's own token starts no workflows, so the bump PR
+      # would get no GPU CI at all. A dispatch is allowed, and runs build-and-run.yml on the bump
+      # branch against the released TornadoVM commit rather than develop's head. That is the
+      # run that tells whether the native-image metadata in the jar still covers the release on
+      # every backend (the native-image job). Its checks attach to the PR's head commit.
+      - name: Run build-and-run.yml on the bump branch against the release
+        if: steps.cpr.outputs.pull-request-head-sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+          BRANCH: ${{ needs.resolve-version.outputs.branch }}
+        run: |
+          set -euo pipefail
+          UPSTREAM=https://github.com/beehive-lab/TornadoVM.git
+          # The commit an annotated tag points at (^{}), else the lightweight tag's own.
+          SHA=$(git ls-remote "$UPSTREAM" "refs/tags/v$VERSION^{}" | cut -f1)
+          [ -n "$SHA" ] || SHA=$(git ls-remote "$UPSTREAM" "refs/tags/v$VERSION" | cut -f1)
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::no tag v$VERSION in $UPSTREAM"; exit 1
+          fi
+          gh workflow run build-and-run.yml --ref "$BRANCH" -f tornadovm_ref="$SHA"
+          echo "Dispatched build-and-run.yml on $BRANCH with TornadoVM v$VERSION ($SHA)"
