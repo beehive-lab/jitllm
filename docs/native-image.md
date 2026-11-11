@@ -29,7 +29,17 @@ application, for one) picks it up:
 | `META-INF/native-image/io.github.beehive-lab/jitllm/native-image.properties` | builder flags: FFM with shared arenas, `-H:-VectorAPISupport` (incompatible with shared arenas; the CPU path's Vector API runs its portable Java code), and `JitllmNativeImageFeature` |
 | `JitllmNativeImageFeature` | scans jitllm's classes at build time: every class loadable by name, every class with task lambdas (`$deserializeLambda$`) registered as lambda-capturing — TornadoVM resolves kernels through `SerializedLambda` |
 | `…/jitllm/reachability-metadata.json` | jitllm's class files as resources: TornadoVM compiles kernels from their bytecode |
-| `…/jitllm/tornadovm/reachability-metadata.json` | what TornadoVM 8 and the JDK need (reflection, resources, FFM downcalls). TornadoVM ships no metadata yet; regenerate with `scripts/native-image.sh trace` after a TornadoVM upgrade |
+| `…/jitllm/tornadovm/reachability-metadata.json` | what TornadoVM 8 and the JDK need (reflection, resources, FFM downcalls), recorded on the CUDA, OpenCL and Metal backends. TornadoVM ships no metadata yet; refresh it with `scripts/native-image.sh trace` after a TornadoVM upgrade |
+
+Every TornadoVM backend calls its native library through FFM downcalls, and an image can only make the
+downcalls it was built with. A backend missing from the metadata fails on its first call
+(`MissingForeignRegistrationError`), which jitllm reports as "no accelerator device is available".
+`trace` merges what one machine's runs record into the file, so run it once on each backend: on a CUDA
+machine, an OpenCL one and a Mac with Metal.
+
+On Metal the image runs, but decodes several times slower than the JVM on the same machine (Qwen3-0.6B
+F16, Apple Silicon: 25 tok/s against 149); CUDA images decode at least as fast as the JVM. The plan and
+the time to the first token are the same, so the cost is in TornadoVM's Metal driver on the host side.
 
 The image is built without the Vector API: GraalVM rejects `-H:+VectorAPISupport` together with shared
 arena support ("Support for Arena.ofShared is not available with Vector API support"), and TornadoVM

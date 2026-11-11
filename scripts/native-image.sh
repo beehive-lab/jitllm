@@ -5,13 +5,17 @@
 #
 # jitllm's own metadata ships in the jar (src/main/resources/META-INF/native-image/
 # io.github.beehive-lab/jitllm/): JitllmNativeImageFeature registers the kernels and task lambdas,
-# native-image.properties carries the builder flags, so `build` needs no tracing run. TornadoVM 8.0.0
+# native-image.properties carries the builder flags, so `build` needs no tracing run. TornadoVM 8
 # ships no metadata of its own; until it does, tornadovm/reachability-metadata.json next to it holds
 # what TornadoVM and the JDK need (reflection, resources, FFM downcalls), recorded by `trace`.
 #
+# Every TornadoVM backend makes its own FFM downcalls, and an image can only make the ones it was
+# built with: `trace` therefore merges into the file instead of replacing it. Run it once on each
+# backend the image must support (CUDA, OpenCL, Metal); delete the file first to start over.
+#
 # Usage:
 #   scripts/native-image.sh build  [-o <output>]     native image of org.beehive.jitllm.JitllmApp
-#   scripts/native-image.sh trace  [models-dir]       re-record tornadovm/reachability-metadata.json
+#   scripts/native-image.sh trace  [models-dir]       record this backend into tornadovm/reachability-metadata.json
 #
 # Needs TORNADOVM_HOME (a jdk22plus SDK) and GRAALVM_HOME (GraalVM for JDK 25 with native-image),
 # and target/jitllm-*-jdk22plus.jar (./mvnw -DskipTests package on JDK 22+).
@@ -73,11 +77,32 @@ trace() {
   run gpu-native   Qwen3-0.6B-f16.gguf       -Duse.tornadovm=true -Djitllm.nativeLibraries=true
   run cpu          Qwen3-0.6B-Q8_0.gguf      -Duse.tornadovm=false
 
-  # Keep TornadoVM's and the JDK's entries; jitllm's own are the feature's and the glob's job.
+  # Keep TornadoVM's and the JDK's entries; jitllm's own are the feature's and the glob's job. Merged
+  # into what the file already holds, so the other backends' entries stay.
   python3 - "$dir/reachability-metadata.json" "$SHIM" <<'EOF'
-import json, sys
+import json, os, sys
 src, dst = sys.argv[1], sys.argv[2]
 d = json.load(open(src))
+old = json.load(open(dst)) if os.path.exists(dst) else {}
+def key(x):
+    return json.dumps(x, sort_keys=True)
+def union(a, b):
+    seen, out = set(), []
+    for x in a + b:
+        if key(x) not in seen:
+            seen.add(key(x))
+            out.append(x)
+    return sorted(out, key=key)
+def merge_type(a, b):
+    m = dict(a)
+    for k, v in b.items():
+        if k not in m:
+            m[k] = v
+        elif isinstance(v, list):
+            m[k] = union(m[k], v)
+        elif isinstance(v, bool):
+            m[k] = m[k] or v
+    return m
 def ours(name):
     return name.startswith("org.beehive.jitllm.") or name.startswith("org/beehive/jitllm/") \
         or name.startswith("META-INF/services/org.beehive.jitllm.")
@@ -90,15 +115,25 @@ def keep_type(e):
     if "proxy" in t:
         return not all(ours(i) for i in t["proxy"])
     return True
-out = {"comment": "TornadoVM 8 and JDK entries for jitllm native images, recorded by scripts/native-image.sh trace. "
+out = {"comment": "TornadoVM 8 and JDK entries for jitllm native images, recorded by scripts/native-image.sh trace "
+                  "on each backend (CUDA, OpenCL, Metal) and merged. "
                   "Belongs in TornadoVM's own jars once it ships native-image metadata."}
-out["reflection"] = sorted([e for e in d.get("reflection", []) if keep_type(e)], key=lambda e: json.dumps(e["type"]))
-out["resources"] = [r for r in d.get("resources", []) if not ours(r.get("glob", r.get("bundle", "")))]
-if "foreign" in d:
-    out["foreign"] = d["foreign"]
-for k in d:
-    if k not in ("reflection", "resources", "foreign"):
-        out[k] = d[k]
+types = {}
+for e in old.get("reflection", []) + [e for e in d.get("reflection", []) if keep_type(e)]:
+    k = key(e["type"])
+    types[k] = merge_type(types[k], e) if k in types else e
+out["reflection"] = [types[k] for k in sorted(types)]
+out["resources"] = union(old.get("resources", []),
+                         [r for r in d.get("resources", []) if not ours(r.get("glob", r.get("bundle", "")))])
+foreign = {}
+for part in (old.get("foreign", {}), d.get("foreign", {})):
+    for k, v in part.items():
+        foreign[k] = union(foreign.get(k, []), v)
+if foreign:
+    out["foreign"] = foreign
+for k in sorted(set(old) | set(d)):
+    if k not in ("comment", "reflection", "resources", "foreign"):
+        out[k] = union(old.get(k, []), d.get(k, []))
 json.dump(out, open(dst, "w"), indent=2)
 open(dst, "a").write("\n")
 print(f"[trace] wrote {dst}: {len(out['reflection'])} reflection, {len(out['resources'])} resources, "
@@ -109,5 +144,5 @@ EOF
 case "${1:-}" in
   build) shift; build "$@" ;;
   trace) shift; trace "$@" ;;
-  *) sed -n '12,14p' "$0" | sed 's/^# //' >&2; exit 2 ;;
+  *) sed -n '16,18p' "$0" | sed 's/^# //' >&2; exit 2 ;;
 esac
