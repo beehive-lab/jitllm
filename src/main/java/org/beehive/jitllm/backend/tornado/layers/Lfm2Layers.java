@@ -782,7 +782,11 @@ public class Lfm2Layers
 
     // ── transfers ─────────────────────────────────────────────────────────────
 
-    /** This layer's weights, uploaded once in the graph that reads them. */
+    /**
+     * This layer's weights, bound in the graph that reads them: read in place from the mapped file
+     * on a device that shares memory with the host, uploaded once otherwise ({@link
+     * org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights}).
+     */
     private void transferLayerWeights(TaskGraph layer, int layerIndex) {
         List<Object> tensors = new ArrayList<>();
         tensors.add(require(weights.rms_att_weightLayered, layerIndex, "attn_norm").asFloatArray());
@@ -811,7 +815,7 @@ public class Lfm2Layers
             tensors.add(
                     deviceArray(require(weights.convOutProj, layerIndex, "shortconv.out_proj")));
         }
-        layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, tensors.toArray());
+        bindLayerWeights(layer, tensors.toArray());
     }
 
     private static Object deviceArray(TornadoTensor tensor) {
