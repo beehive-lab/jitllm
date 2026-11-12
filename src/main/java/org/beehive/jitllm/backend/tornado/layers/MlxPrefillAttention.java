@@ -119,6 +119,46 @@ public final class MlxPrefillAttention {
     }
 
     /**
+     * The same attention over {@code rows} rows, on {@code wider}'s gathered keys and values, which
+     * keep its positions. The queries and the output are its own, {@code rows} long: MLX takes an
+     * array as exactly the matrix the dimensions describe.
+     */
+    private MlxPrefillAttention(MlxPrefillAttention wider, int rows) {
+        this.state = wider.state;
+        this.context = wider.context;
+        this.batchSize = rows;
+        this.heads = wider.heads;
+        this.kvHeads = wider.kvHeads;
+        this.headDim = wider.headDim;
+        this.qDim = wider.qDim;
+        this.kvDim = wider.kvDim;
+        this.scale = wider.scale;
+        this.positions = wider.positions;
+        this.q = new HalfFloatArray(rows * qDim);
+        this.k = wider.k;
+        this.v = wider.v;
+        this.out = new HalfFloatArray(rows * qDim);
+    }
+
+    /**
+     * {@code wider} over its first {@code rows} rows, for {@code family}, the narrow family ({@link
+     * PrefillFamily}), whose own its queries and output are; null where {@code wider} is.
+     */
+    public static MlxPrefillAttention narrowed(
+            MlxPrefillAttention wider, int rows, PrefillFamily family) {
+        if (wider == null) {
+            return null;
+        }
+        if (rows > wider.batchSize) {
+            throw new IllegalArgumentException(rows + " rows is wider than " + wider.batchSize);
+        }
+        MlxPrefillAttention narrow = new MlxPrefillAttention(wider, rows);
+        family.own(narrow.q);
+        family.own(narrow.out);
+        return narrow;
+    }
+
+    /**
      * Declares the buffers in layer graph {@code layerIndex}: uploaded by the first, bound after.
      */
     public void declare(TaskGraph layer, int layerIndex, String predecessor) {

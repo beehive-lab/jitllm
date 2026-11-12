@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.lowering;
 
+import java.lang.foreign.MemorySegment;
 import java.util.Objects;
 import org.beehive.jitllm.backend.tornado.TornadoVMMasterPlan;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoLogits;
@@ -109,13 +110,25 @@ public final class SharedWorkspacePlan implements TornadoVMMasterPlan, Invocatio
             stager.stage(token); // into the domain's carrier, not the session's
             control.set(1, slot); // this session's slot: an invocation value
             FloatArray sharedLogits = shared.tornadoVMForwardDecode(position);
-            for (int i = 0; i < privateLogits.getSize(); i++) {
-                privateLogits.set(i, sharedLogits.get(i));
-            }
+            copyLogits(sharedLogits);
             chosen = deviceSample && sampledToken != null ? sampledToken.get(0) : -1;
         }
         // Unlocked: the caller may now sample and run its callback, holding only its own copies.
         return new Result(privateLogitsView, chosen);
+    }
+
+    /**
+     * One bulk copy of the vocabulary-sized logits, under the lock: an element loop costs a {@code
+     * MemorySegment} access per entry, which some native-image builds run through a method handle,
+     * and every other session waits for it.
+     */
+    private void copyLogits(FloatArray sharedLogits) {
+        MemorySegment.copy(
+                sharedLogits.getSegment(),
+                0,
+                privateLogits.getSegment(),
+                0,
+                (long) privateLogits.getSize() * Float.BYTES);
     }
 
     @Override
@@ -125,9 +138,7 @@ public final class SharedWorkspacePlan implements TornadoVMMasterPlan, Invocatio
             // never bound as a different array.
             control.set(1, slot);
             FloatArray sharedLogits = shared.tornadoVMForwardDecode(position);
-            for (int i = 0; i < privateLogits.getSize(); i++) {
-                privateLogits.set(i, sharedLogits.get(i));
-            }
+            copyLogits(sharedLogits);
         }
         // Outside the lock: the caller may now run its callback, and what it holds is this
         // session's own copy rather than a view of storage the next session will overwrite.

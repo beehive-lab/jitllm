@@ -12,6 +12,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0D
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.LogitsWorkgroupPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -54,9 +55,10 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
         logits.consumeFromDevice(lastTaskGraphID, state.workspace.wrapX);
         logits.transferToDevice(DataTransferMode.EVERY_EXECUTION, state.workspace.tempLogits);
         logits.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
-                context,
-                state.workspace.wrapLogits,
+                DataTransferMode.FIRST_EXECUTION, context, state.workspace.wrapLogits);
+        UnifiedMemoryWeights.upload(
+                logits,
+                state.workspace,
                 weights.wclsByteArray.deviceArray(),
                 weights.rms_final_weight_as_floatArray);
         // === Final RMS Normalization ===

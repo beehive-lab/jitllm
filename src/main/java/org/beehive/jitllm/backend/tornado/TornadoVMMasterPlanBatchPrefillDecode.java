@@ -94,6 +94,10 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
                         device.displayName(),
                         device.id().backend(),
                         device.capabilities());
+                LOGGER.log(
+                        System.Logger.Level.INFO,
+                        "prefill narrow family: {0}",
+                        batchPrefillDecodeForwardPlan.describeNarrowPrefill());
                 var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
                 if (layers instanceof Qwen35BatchPrefillLayers q) {
                     LOGGER.log(
@@ -149,6 +153,13 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
                     layout.fallbackLayerGraphs(),
                     "prefill fallback layers");
         }
+        if (layout.narrowLayerGraphs() > 0) {
+            TaskGraphChainPrinter.label(
+                    roles,
+                    layout.narrowLayerIdx(0),
+                    layout.narrowLayerGraphs(),
+                    "prefill narrow layers");
+        }
         roles.put(layout.decodeActivationIdx(), "decode activation");
         TaskGraphChainPrinter.label(
                 roles, layout.decodeLayerGraphIdx(0), layout.decodeLayerGraphs(), "decode layers");
@@ -192,6 +203,18 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
                                                     layout.fallbackLayerGraphs() - 1)))));
         } else {
             phases.add(new TaskGraphChainPrinter.Phase("prefill chunk", chunk, primary));
+        }
+        if (layout.narrowLayerGraphs() > 0) {
+            phases.add(
+                    new TaskGraphChainPrinter.Phase(
+                            "prefill chunk",
+                            "per chunk of up to " + narrowPrefillRows() + " prompt tokens",
+                            TaskGraphChainPrinter.concat(
+                                    activation,
+                                    TaskGraphChainPrinter.span(
+                                            layout.narrowLayerIdx(0),
+                                            layout.narrowLayerIdx(
+                                                    layout.narrowLayerGraphs() - 1)))));
         }
         phases.add(new TaskGraphChainPrinter.Phase("decode token", "per generated token", decode));
         return new TaskGraphChainPrinter.Chain(
@@ -316,6 +339,48 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
     }
 
     // @formatter:on
+
+    @Override
+    public int narrowPrefillRows() {
+        return batchPrefillDecodeForwardPlan.narrowPrefillRows();
+    }
+
+    /**
+     * Batch prefill through the narrow family: the same layers on fewer rows, for a chunk with no
+     * more tokens than {@link #narrowPrefillRows}, at any start position. The caller has staged the
+     * chunk as for the primary path.
+     */
+    @Override
+    public void tornadoVMForwardBatchPrefillNarrow() {
+        // The chunk's per-chunk arrays into the primary's buffers, which the narrow graphs and
+        // the decode graphs read; an index past the primary's graphs is a fallback graph's.
+        batchPrefillDecodeForwardPlan
+                .narrowRefreshes()
+                .forEach(
+                        (g, arrays) ->
+                                executionPlan
+                                        .withGraph(taskGraphLayout.batchLayerIdx(g))
+                                        .transferToDevice(arrays));
+        var batchAct =
+                executionPlan
+                        .withGraph(taskGraphLayout.batchActivationIdx())
+                        .withGridScheduler(batchPrefillDecodeForwardPlan.getGridScheduler());
+        if (CUDA_GRAPHS) {
+            batchAct.withCUDAGraph();
+        }
+        metrics.report(batchAct.execute());
+
+        for (int g = 0; g < taskGraphLayout.narrowLayerGraphs(); g++) {
+            var layer =
+                    executionPlan
+                            .withGraph(taskGraphLayout.narrowLayerIdx(g))
+                            .withGridScheduler(batchPrefillDecodeForwardPlan.getGridScheduler());
+            if (CUDA_GRAPHS) {
+                layer.withCUDAGraph();
+            }
+            metrics.report(layer.execute());
+        }
+    }
 
     /**
      * Single-token decode: runs graphs N+1.2N+2 (activation + N layers + logits). Caller is

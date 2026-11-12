@@ -22,6 +22,7 @@ import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspace;
 import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
@@ -99,7 +100,7 @@ public class ForwardPlanAssemblyAccelTest {
             Components components = new Components(prepack);
             BatchPrefillDecodeForwardPlan plan =
                     new BatchPrefillDecodeForwardPlan(
-                            model(), components, 128, components.prepacker);
+                            model(), components, 128, components.workspace);
             BatchPrefillDecodeForwardTaskGraphLayout layout = plan.getTaskGraphLayout();
             List<String> names = names(plan.getImmutableTaskGraphs());
 
@@ -228,7 +229,8 @@ public class ForwardPlanAssemblyAccelTest {
      */
     private static final class Components implements BatchPrefillDecodeForwardPlanComponents {
 
-        private final WeightPrepacker prepacker = new WeightPrepacker();
+        private final TornadoWorkspace workspace = new TornadoWorkspace();
+        private final WeightPrepacker prepacker = workspace.prepacker;
         private final boolean prepack;
 
         Components(boolean prepack) {

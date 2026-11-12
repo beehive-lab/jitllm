@@ -115,6 +115,60 @@ public final class WorkPlan {
         return new WorkPlan(instances, steps);
     }
 
+    /** {@link #of}, or {@link #narrowed} from {@code primary} where {@code primary} is not null. */
+    public static WorkPlan of(
+            WorkPlan primary,
+            List<Region> regions,
+            List<Implementation> candidates,
+            Target target,
+            KernelContext context,
+            WeightPrepacking prepacking) {
+        return primary == null
+                ? of(regions, candidates, target, context, prepacking)
+                : narrowed(primary, regions, candidates, target, context, prepacking);
+    }
+
+    /**
+     * {@link #of} for the narrow family ({@code PrefillFamily}): {@code regions} are those of
+     * {@code primary} over fewer rows, and each implementation takes its primary instance's buffers
+     * ({@link Implementation#narrowed}).
+     *
+     * @throws IllegalStateException if an implementation has no instance in {@code primary}
+     */
+    public static WorkPlan narrowed(
+            WorkPlan primary,
+            List<Region> regions,
+            List<Implementation> candidates,
+            Target target,
+            KernelContext context,
+            WeightPrepacking prepacking) {
+        Map<Region, List<Chosen>> steps = splitAll(regions, candidates, target);
+        Map<Implementation, Instance> instances = new LinkedHashMap<>();
+        byImplementation(steps)
+                .forEach(
+                        (implementation, its) ->
+                                instances.put(
+                                        implementation,
+                                        implementation.narrowed(
+                                                primary.instanceOf(implementation.getClass()),
+                                                its,
+                                                target,
+                                                context,
+                                                prepacking)));
+        return new WorkPlan(instances, steps);
+    }
+
+    /** The instance of the implementation of {@code type} this plan created. */
+    private Instance instanceOf(Class<?> type) {
+        for (var entry : instances.entrySet()) {
+            if (entry.getKey().getClass() == type) {
+                return entry.getValue();
+            }
+        }
+        throw new IllegalStateException(
+                "the primary plan has no " + type.getSimpleName() + " to narrow");
+    }
+
     /** The device memory {@link #of} would allocate for {@code regions}, without allocating it. */
     public static BatchPrefillWorkspace needs(
             List<Region> regions, List<Implementation> candidates, Target target) {

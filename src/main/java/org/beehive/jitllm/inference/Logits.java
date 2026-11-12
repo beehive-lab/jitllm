@@ -31,6 +31,34 @@ public interface Logits {
     /** Softmaxes {@code [from, to)} in place. Same reasoning as {@link #divideInPlace}. */
     void softmaxInPlace(int from, int to);
 
+    /**
+     * These scores as a view a sampler can read element by element: a host view is one already and
+     * returns itself; a device view copies its scores to the heap in one transfer and returns that
+     * copy, so {@link #divideInPlace} and {@link #softmaxInPlace} on the result leave the device
+     * array as it was.
+     *
+     * <p>Over a device array, {@link #get} is a {@code MemorySegment} access per element whose
+     * checks only a JIT compiler removes; in a GraalVM native image every pass over the vocabulary
+     * cost about a millisecond, and temperature sampling makes several per token.
+     */
+    default Logits toHost() {
+        return this;
+    }
+
+    /** The index of the highest score, the first one on ties — greedy sampling. */
+    default int argmax() {
+        int maxIndex = 0;
+        float maxValue = Float.NEGATIVE_INFINITY;
+        for (int i = 0, n = size(); i < n; i++) {
+            float value = get(i);
+            if (value > maxValue) {
+                maxValue = value;
+                maxIndex = i;
+            }
+        }
+        return maxIndex;
+    }
+
     /** A view over host logits. */
     static Logits of(FloatTensor tensor) {
         return new Logits() {

@@ -80,8 +80,15 @@ public final class TornadoBatchPrefillPass {
         // The plan only builds that family when the primary uses cuDNN attention; where it does
         // not, the primary already handles every chunk itself.
         boolean useFallbackFamily = startPos != 0 && plan.hasBatchPrefillFallback();
+        // A chunk with no more tokens than the narrow family's rows -- a short prompt, or what is
+        // left of a long one -- takes that family instead, whatever its start position: the same
+        // layers on fewer padded rows. Its attention takes any start position, so it needs no
+        // fallback of its own.
+        boolean useNarrowFamily = chunkSize <= plan.narrowPrefillRows();
         stage(model, state, tokens, startPos, chunkSize);
-        if (useFallbackFamily) {
+        if (useNarrowFamily) {
+            plan.tornadoVMForwardBatchPrefillNarrow();
+        } else if (useFallbackFamily) {
             plan.tornadoVMForwardBatchPrefillFallback();
         } else {
             plan.tornadoVMForwardBatchPrefill();

@@ -9,6 +9,7 @@ import org.beehive.jitllm.backend.tornado.kernels.BatchMmaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.DeepSeek2BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.DeepSeek2State;
 import org.beehive.jitllm.inference.weights.DeepSeek2LayerWeights;
@@ -52,7 +53,8 @@ public class DeepSeek2BatchPrefillLayers implements BatchPrefillTransformerLayer
     private final DeepSeek2TornadoWeights weights;
     private final DeepSeek2LayerWeights<TornadoTensor> w;
     private final DeepSeek2Configuration config;
-    private final KernelContext context = new KernelContext();
+    private final KernelContext context;
+    private final PrefillFamily family;
     private final int firstLayer;
     private final int endLayer;
     private final int batch;
@@ -83,25 +85,32 @@ public class DeepSeek2BatchPrefillLayers implements BatchPrefillTransformerLayer
                             + batchSize);
         }
         this.state = state;
+        this.family = PrefillFamily.of(state);
+        // The narrow family runs its own rows, and takes its primary's context and weight copies.
+        DeepSeek2BatchPrefillLayers primary = family.primary(DeepSeek2BatchPrefillLayers.class);
+        this.context = primary != null ? primary.context : new KernelContext();
         this.fp16Cache = state.usesFp16KeyValueCache();
         this.weights = weights;
         this.w = weights.layers;
         this.config = config;
         this.firstLayer = firstLayer;
         this.endLayer = endLayer;
-        this.batch = state.paddedBatch;
-        this.zeroBias = new FloatArray(Math.max(1, config.expertCount()));
+        this.batch = family.isNarrow() ? batchSize : state.paddedBatch;
+        this.zeroBias =
+                primary != null
+                        ? primary.zeroBias
+                        : new FloatArray(Math.max(1, config.expertCount()));
         int layers = config.numberOfLayers();
-        this.kvAPadded = new ByteArray[layers];
-        this.kBF16 = new HalfFloatArray[layers];
-        this.vBF16 = new HalfFloatArray[layers];
-        for (int l = firstLayer; l < endLayer; l++) {
+        this.kvAPadded = primary != null ? primary.kvAPadded : new ByteArray[layers];
+        this.kBF16 = primary != null ? primary.kBF16 : new HalfFloatArray[layers];
+        this.vBF16 = primary != null ? primary.vBF16 : new HalfFloatArray[layers];
+        for (int l = firstLayer; primary == null && l < endLayer; l++) {
             kvAPadded[l] = padRows(w.kvAMqa()[l].asByteArray(), config.compressedKeyValueDim());
             kBF16[l] = toHalf(w.kB()[l].asByteArray());
             vBF16[l] = toHalf(w.vB()[l].asByteArray());
         }
         for (int first = firstLayer; first < endLayer; first += LAYERS_PER_GRAPH) {
-            TaskGraph graph = new TaskGraph(graphName(first));
+            TaskGraph graph = family.taskGraph(graphName(first));
             int last = Math.min(first + LAYERS_PER_GRAPH, endLayer) - 1;
             for (int l = first; l <= last; l++) {
                 appendLayer(graph, l);
@@ -275,7 +284,7 @@ public class DeepSeek2BatchPrefillLayers implements BatchPrefillTransformerLayer
                 g.transferToDevice(DataTransferMode.EVERY_EXECUTION, ws.batchStartPosHolder);
                 g.transferToDevice(DataTransferMode.FIRST_EXECUTION, scratch());
             } else {
-                String previous = graphName(l - 1);
+                String previous = family.name(graphName(l - 1));
                 g.consumeFromDevice(previous, ws.wrapXBatch, ws.batchStartPosHolder);
                 g.consumeFromDevice(previous, scratch());
             }
@@ -284,7 +293,7 @@ public class DeepSeek2BatchPrefillLayers implements BatchPrefillTransformerLayer
         own.add(kvAPadded[l]);
         own.add(kBF16[l]);
         own.add(vBF16[l]);
-        g.transferToDevice(DataTransferMode.FIRST_EXECUTION, own.toArray());
+        UnifiedMemoryWeights.upload(g, state.workspace, own.toArray());
 
         // ── attention ──
         rmsRows(

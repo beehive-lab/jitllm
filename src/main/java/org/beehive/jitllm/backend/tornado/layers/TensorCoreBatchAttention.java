@@ -111,6 +111,47 @@ public final class TensorCoreBatchAttention {
         this.attn = flash ? null : TornadoWorkspaces.floats(rows * heads * wide);
     }
 
+    /**
+     * The same attention over {@code rows} of {@code wider}'s rows, sharing every array it holds:
+     * the gathered keys and values cover the same positions, and the queries, scores and output use
+     * the leading rows. The passes keep {@code wider}'s heads, so the score arrays fit.
+     */
+    private TensorCoreBatchAttention(TensorCoreBatchAttention wider, int rows) {
+        this.state = wider.state;
+        this.qDim = wider.qDim;
+        this.kvDim = wider.kvDim;
+        this.headSize = wider.headSize;
+        this.heads = wider.heads;
+        this.kvMul = wider.kvMul;
+        this.rows = rows;
+        this.paddedPositions = wider.paddedPositions;
+        this.headsPerPass = wider.headsPerPass;
+        this.wide = wider.wide;
+        this.flash = wider.flash;
+        this.queries = wider.queries;
+        this.keys = wider.keys;
+        this.valuesT = wider.valuesT;
+        this.scores = wider.scores;
+        this.probs = wider.probs;
+        this.attn = wider.attn;
+    }
+
+    /**
+     * This attention over its first {@code rows} rows, a whole number of 128-row tiles no more than
+     * its own, on the same arrays: for the narrow family ({@link PrefillFamily}), whose graphs bind
+     * them from this one's.
+     */
+    public TensorCoreBatchAttention narrowed(int rows) {
+        if (rows % TILE != 0 || rows > this.rows) {
+            throw new IllegalArgumentException(
+                    "a narrower attention takes whole tiles within "
+                            + this.rows
+                            + " rows, not "
+                            + rows);
+        }
+        return new TensorCoreBatchAttention(this, rows);
+    }
+
     /** Whether a head this wide runs the flash kernel. */
     private static boolean flash(int headSize) {
         return headSize == 64 || headSize == 96 || headSize == 128;

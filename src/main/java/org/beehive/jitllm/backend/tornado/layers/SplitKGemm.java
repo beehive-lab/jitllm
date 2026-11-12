@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.Gemma4BatchPrefillKernels;
@@ -43,6 +44,18 @@ public final class SplitKGemm {
     private final KernelContext context;
     private final boolean nativeGemm;
     private final FloatArray partial;
+
+    /** The partial floats a split may use: what a plan of these rows allocates. */
+    private final long capacity;
+
+    /**
+     * The slices chosen for each GEMM shape, by {@code n} and {@code k}: this instance's, or for a
+     * narrowed one its primary's, which it takes instead of choosing.
+     */
+    private final Map<Long, Integer> chosen;
+
+    private final boolean narrowed;
+
     private final Map<String, int[]> splitTasks = new LinkedHashMap<>();
 
     /**
@@ -50,10 +63,47 @@ public final class SplitKGemm {
      * @param widestSplit the widest output a split GEMM may write
      */
     public SplitKGemm(KernelContext context, int rows, int widestSplit, boolean nativeGemm) {
+        this(
+                context,
+                nativeGemm,
+                new FloatArray(Math.toIntExact(partialFloats(rows, widestSplit, nativeGemm))),
+                partialFloats(rows, widestSplit, nativeGemm),
+                new HashMap<>(),
+                false);
+    }
+
+    private SplitKGemm(
+            KernelContext context,
+            boolean nativeGemm,
+            FloatArray partial,
+            long capacity,
+            Map<Long, Integer> chosen,
+            boolean narrowed) {
         this.context = context;
         this.nativeGemm = nativeGemm;
-        this.partial =
-                new FloatArray(Math.toIntExact(partialFloats(rows, widestSplit, nativeGemm)));
+        this.partial = partial;
+        this.capacity = Math.min(capacity, partial.getSize());
+        this.chosen = chosen;
+        this.narrowed = narrowed;
+    }
+
+    /**
+     * These GEMMs over {@code rows}, for the narrow family ({@link PrefillFamily}): each shape
+     * splits as this one split it, into this buffer, which the family's graphs bind from this
+     * one's. Its rows still size the grids, the indexing and the capacity a split may use.
+     *
+     * <p>Example: a projection into a model 2,048 wide has 64 output tiles at 512 rows, and splits
+     * in two; at 128 rows it has 16, and would split in four on its own rows, summing its depth in
+     * another order than the plan does.
+     */
+    public SplitKGemm narrowed(int rows, int widestSplit) {
+        return new SplitKGemm(
+                context,
+                nativeGemm,
+                partial,
+                partialFloats(rows, widestSplit, nativeGemm),
+                chosen,
+                true);
     }
 
     /** The partial-product buffer's floats: none to speak of when cuBLAS runs the GEMMs. */
@@ -76,19 +126,24 @@ public final class SplitKGemm {
         return partial;
     }
 
-    /** The depth slices for an {@code m x n} output over depth {@code k}: 1 for no split. */
+    /**
+     * The depth slices for an {@code m x n} output over depth {@code k}: 1 for no split. A narrowed
+     * instance takes the slices its primary chose for {@code n x k}, 1 where it chose none.
+     */
     int slices(int m, int n, int k) {
-        if (nativeGemm
-                || !ENABLED
-                || m % 128 != 0
-                || (long) m * n * MAX_SLICES > partial.getSize()) {
+        if (nativeGemm || !ENABLED || m % 128 != 0 || (long) m * n * MAX_SLICES > capacity) {
             return 1;
+        }
+        long shape = (long) n << 32 | k;
+        if (narrowed) {
+            return chosen.getOrDefault(shape, 1);
         }
         int blocks = (m / 128) * (n / 128);
         int s = 1;
         while (s < MAX_SLICES && blocks * s < MIN_BLOCKS && (k / (s * 2)) % 16 == 0) {
             s *= 2;
         }
+        chosen.put(shape, s);
         return s;
     }
 

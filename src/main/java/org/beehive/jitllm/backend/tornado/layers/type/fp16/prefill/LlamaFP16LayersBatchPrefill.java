@@ -16,6 +16,7 @@ import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.LlamaPrefillRegions;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillAttention;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections;
+import org.beehive.jitllm.backend.tornado.layers.PrefillFamily;
 import org.beehive.jitllm.backend.tornado.ops.Implementation;
 import org.beehive.jitllm.backend.tornado.ops.Operands;
 import org.beehive.jitllm.backend.tornado.ops.Region;
@@ -25,6 +26,7 @@ import org.beehive.jitllm.backend.tornado.ops.jit.LayerKernels;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxAttention;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxMatMul;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
@@ -79,7 +81,8 @@ public class LlamaFP16LayersBatchPrefill
     /** The width of Q and of the attention output: {@code dim} for Llama, not for Devstral. */
     private final int qDim;
 
-    private final KernelContext context = new KernelContext();
+    private final KernelContext context;
+    private final PrefillFamily family;
     private final int batchSize;
     private final MlxPrefillAttention mlxAttention;
     private final MlxPrefillProjections mlxProjections;
@@ -102,33 +105,41 @@ public class LlamaFP16LayersBatchPrefill
     public LlamaFP16LayersBatchPrefill(
             State state, LlamaTornadoWeights weights, Configuration config, int batchSize) {
         this.state = state;
+        this.family = PrefillFamily.of(state);
+        // The narrow family takes its primary's context, MLX helpers and projections.
+        LlamaFP16LayersBatchPrefill primary = family.primary(LlamaFP16LayersBatchPrefill.class);
+        this.context = primary != null ? primary.context : new KernelContext();
         this.weights = weights;
         this.config = config;
         this.qDim = config.numberOfHeads() * config.headSize();
         this.batchSize = batchSize;
-        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state.executionPolicy(), weights, config);
+        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state, weights, config);
         this.mlxAttention =
-                MlxPrefillAttention.ifPresent(
-                        mlx,
-                        state,
-                        context,
-                        batchSize,
-                        config.contextLength(),
-                        config.numberOfHeads(),
-                        config.numberOfKeyValueHeads(),
-                        config.headSize());
+                primary != null
+                        ? MlxPrefillAttention.narrowed(primary.mlxAttention, batchSize, family)
+                        : MlxPrefillAttention.ifPresent(
+                                mlx,
+                                state,
+                                context,
+                                batchSize,
+                                config.contextLength(),
+                                config.numberOfHeads(),
+                                config.numberOfKeyValueHeads(),
+                                config.headSize());
         this.mlxProjections =
-                MlxPrefillProjections.ifPresent(
-                        mlx,
-                        state,
-                        weights,
-                        context,
-                        batchSize,
-                        config.numberOfLayers(),
-                        config.dim(),
-                        qDim,
-                        config.kvDim(),
-                        config.hiddenDim());
+                primary != null
+                        ? MlxPrefillProjections.narrowed(primary.mlxProjections, batchSize, family)
+                        : MlxPrefillProjections.ifPresent(
+                                mlx,
+                                state,
+                                weights,
+                                context,
+                                batchSize,
+                                config.numberOfLayers(),
+                                config.dim(),
+                                qDim,
+                                config.kvDim(),
+                                config.hiddenDim());
         this.regions =
                 LlamaPrefillRegions.whole(
                         config,
@@ -148,6 +159,7 @@ public class LlamaFP16LayersBatchPrefill
                         : List.of(new LayerKernels(this));
         this.plan =
                 WorkPlan.of(
+                        primary != null ? primary.plan : null,
                         all,
                         candidates,
                         Target.of(state.executionPolicy()),
@@ -184,7 +196,7 @@ public class LlamaFP16LayersBatchPrefill
         String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
 
-        TaskGraph batchPrefillLayer = new TaskGraph(graphName);
+        TaskGraph batchPrefillLayer = family.taskGraph(graphName);
 
         // ── Data Transfers ─────────────────────────────────────────────────────
         if (layerIndex == 0) {
@@ -213,7 +225,7 @@ public class LlamaFP16LayersBatchPrefill
         } else {
             // for the same reasons as above, we should use the explicit uniqueTaskGraph name to
             // consume
-            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
+            String pred = family.batchPrefillLayer(layerIndex - 1);
             batchPrefillLayer.consumeFromDevice(
                     pred,
                     context,
@@ -239,21 +251,22 @@ public class LlamaFP16LayersBatchPrefill
                     DataTransferMode.EVERY_EXECUTION, state.workspace.wrapBlockTable);
         } else {
             batchPrefillLayer.consumeFromDevice(
-                    GraphNames.batchPrefillLayer(layerIndex - 1), state.workspace.wrapBlockTable);
+                    family.batchPrefillLayer(layerIndex - 1), state.workspace.wrapBlockTable);
         }
 
         if (mlxAttention != null) {
             mlxAttention.declare(
-                    batchPrefillLayer, layerIndex, GraphNames.batchPrefillLayer(layerIndex - 1));
+                    batchPrefillLayer, layerIndex, family.batchPrefillLayer(layerIndex - 1));
         }
         if (mlxProjections != null) {
             mlxProjections.declare(
-                    batchPrefillLayer, layerIndex, GraphNames.batchPrefillLayer(layerIndex - 1));
+                    batchPrefillLayer, layerIndex, family.batchPrefillLayer(layerIndex - 1));
         }
 
         // Per-layer weights: upload once
-        batchPrefillLayer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
+        UnifiedMemoryWeights.upload(
+                batchPrefillLayer,
+                state.workspace,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 weights.wqLayered[layerIndex].asHalfFloatArray(),
                 weights.wkLayered[layerIndex].asHalfFloatArray(),
@@ -733,7 +746,7 @@ public class LlamaFP16LayersBatchPrefill
                                 TransformerPagedKvBatchPrefillSimdgroupKernels.THREADS)
                         : WorkerGridFactory.genericWorker(batchSize * nHeads * optLocal, optLocal);
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String p = GraphNames.batchPrefillLayer(i) + ".";
+            String p = family.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
             if (!plan.runs(attention.get(i), "MLX")) {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);

@@ -8,6 +8,7 @@ import org.beehive.jitllm.backend.tornado.kernels.Qwen3PagedKvKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.layers.PrefillFamily;
 import org.beehive.jitllm.backend.tornado.layers.Qwen3PrefillRegions;
 import org.beehive.jitllm.backend.tornado.layers.TensorCoreBatchAttention;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.LlamaFP16LayersBatchPrefillMMA;
@@ -17,6 +18,7 @@ import org.beehive.jitllm.backend.tornado.ops.Operands;
 import org.beehive.jitllm.backend.tornado.ops.Region;
 import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
@@ -73,7 +75,8 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
     private final Qwen3State state;
     private final Qwen3TornadoWeights weights;
     private final Qwen3Configuration config;
-    private final KernelContext context = new KernelContext();
+    private final KernelContext context;
+    private final PrefillFamily family;
     private final int batchSize;
     // GEMM M dimension rounded up to whole 128-row tiles (BM); see the Llama
     // planner for the padding rationale. Non-GEMM kernels use the true batchSize.
@@ -140,6 +143,11 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             Qwen3Configuration config,
             int batchSize) {
         this.state = state;
+        this.family = PrefillFamily.of(state);
+        // The narrow family takes its primary's context, attention and projections.
+        Qwen3Q8_0LayersBatchPrefillMMA primary =
+                family.primary(Qwen3Q8_0LayersBatchPrefillMMA.class);
+        this.context = primary != null ? primary.context : new KernelContext();
         this.weights = weights;
         this.config = config;
         this.batchSize = batchSize;
@@ -159,15 +167,17 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         this.gqa = config.numberOfHeads() / nHeadKv;
         this.tcAttention =
                 TensorCoreBatchAttention.applies(useFp16KVCache(), paddedBatch, nEmbdHead)
-                        ? new TensorCoreBatchAttention(
-                                state,
-                                qDim,
-                                kvDim,
-                                nEmbdHead,
-                                config.numberOfHeads(),
-                                gqa,
-                                paddedBatch,
-                                config.contextLength())
+                        ? primary != null
+                                ? primary.tcAttention.narrowed(paddedBatch)
+                                : new TensorCoreBatchAttention(
+                                        state,
+                                        qDim,
+                                        kvDim,
+                                        nEmbdHead,
+                                        config.numberOfHeads(),
+                                        gqa,
+                                        paddedBatch,
+                                        config.contextLength())
                         : null;
         this.regions =
                 Qwen3PrefillRegions.of(
@@ -178,6 +188,7 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         List<Region> all = Qwen3PrefillRegions.all(regions);
         this.plan =
                 WorkPlan.of(
+                        primary != null ? primary.plan : null,
                         all,
                         Implementations.tensorCorePrefill(),
                         Target.of(state.executionPolicy()),
@@ -232,7 +243,7 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         String graphName = GraphNames.batchPrefillLayer(layerIndex);
         if (layerIndex == config.numberOfLayers() - 1) lastLayerTaskGraphID = graphName;
 
-        TaskGraph batchPrefillLayer = new TaskGraph(graphName);
+        TaskGraph batchPrefillLayer = family.taskGraph(graphName);
         int dim = config.dim();
         int hidDim = config.hiddenDim();
 
@@ -268,7 +279,7 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
             batchPrefillLayer.consumeFromDevice(
                     GraphNames.PREFILL_ACTIVATION, state.workspace.wrapXBatch);
         } else {
-            String pred = GraphNames.batchPrefillLayer(layerIndex - 1);
+            String pred = family.batchPrefillLayer(layerIndex - 1);
             batchPrefillLayer.consumeFromDevice(
                     pred,
                     context,
@@ -294,8 +305,9 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         }
 
         // Per-layer weights: upload once
-        batchPrefillLayer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
+        UnifiedMemoryWeights.upload(
+                batchPrefillLayer,
+                state.workspace,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 weights.wqLayered[layerIndex].deviceArray(),
                 weights.wkLayered[layerIndex].deviceArray(),
@@ -460,11 +472,11 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
                 WorkerGridFactory.genericWorker(batchSize * nHeads * attnLocal, attnLocal);
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String p = GraphNames.batchPrefillLayer(i) + ".";
+            String p = family.batchPrefillLayer(i) + ".";
             scheduler.addWorkerGrid(p + "batch_qk_rmsnorm", qkRmsNormWorker);
             scheduler.addWorkerGrid(p + "batch_rope_kv", ropeWorker);
             if (tcAttention != null) {
-                tcAttention.addGrids(scheduler, GraphNames.batchPrefillLayer(i));
+                tcAttention.addGrids(scheduler, family.batchPrefillLayer(i));
             } else {
                 scheduler.addWorkerGrid(p + "batch_attention", attnWorker);
             }

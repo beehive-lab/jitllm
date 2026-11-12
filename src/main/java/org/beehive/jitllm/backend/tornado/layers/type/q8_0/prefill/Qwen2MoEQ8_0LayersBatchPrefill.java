@@ -1,6 +1,10 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen2MoEBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen2PagedKvKernels;
@@ -10,7 +14,9 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.layers.PrefillFamily;
 import org.beehive.jitllm.backend.tornado.layers.QuantizedBatchProjections;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Qwen2MoEState;
@@ -44,7 +50,8 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
     private final Qwen2MoEState state;
     private final Qwen2MoETornadoWeights weights;
     private final Qwen2MoEConfiguration config;
-    private final KernelContext context = new KernelContext();
+    private final KernelContext context;
+    private final PrefillFamily family;
     private final int batchSize;
     private final int dim;
     private final int kvDim;
@@ -53,12 +60,23 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
     private final List<ImmutableTaskGraph> layerTaskGraphs;
     private String lastLayerTaskGraphID;
 
+    /**
+     * The layer weights this plan reads in place from unified memory. They have no device buffer of
+     * their own, so no graph persists them; the decode graphs read them in place too.
+     */
+    private final Set<Object> readInPlace = Collections.newSetFromMap(new IdentityHashMap<>());
+
     public Qwen2MoEQ8_0LayersBatchPrefill(
             Qwen2MoEState state,
             Qwen2MoETornadoWeights weights,
             Qwen2MoEConfiguration config,
             int batchSize) {
         this.state = state;
+        this.family = PrefillFamily.of(state);
+        // The narrow family takes its primary's context.
+        Qwen2MoEQ8_0LayersBatchPrefill primary =
+                family.primary(Qwen2MoEQ8_0LayersBatchPrefill.class);
+        this.context = primary != null ? primary.context : new KernelContext();
         this.weights = weights;
         this.config = config;
         this.batchSize = batchSize;
@@ -80,32 +98,38 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
             lastLayerTaskGraphID = graphName;
         }
 
-        TaskGraph layer = new TaskGraph(graphName);
+        TaskGraph layer = family.taskGraph(graphName);
         configureDataTransfers(layer, layerIndex);
         configureAttention(layer, layerIndex);
         configureMoE(layer, layerIndex);
         layer.persistOnDevice(
-                state.workspace.wrapXBatch,
-                keyCache(),
-                valueCache(),
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqLayered[layerIndex].asByteArray(),
-                weights.wkLayered[layerIndex].asByteArray(),
-                weights.wvLayered[layerIndex].asByteArray(),
-                weights.woLayered[layerIndex].asByteArray(),
-                weights.q_biasLayered[layerIndex].asFloatArray(),
-                weights.k_biasLayered[layerIndex].asFloatArray(),
-                weights.v_biasLayered[layerIndex].asFloatArray(),
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.routerGateLayered[layerIndex].asFloatArray(),
-                weights.gateExpertsLayered[layerIndex].asByteArray(),
-                weights.upExpertsLayered[layerIndex].asByteArray(),
-                weights.downExpertsLayered[layerIndex].asByteArray(),
-                weights.sharedGateLayered[layerIndex].asByteArray(),
-                weights.sharedUpLayered[layerIndex].asByteArray(),
-                weights.sharedDownLayered[layerIndex].asByteArray(),
-                weights.sharedGateInputLayered[layerIndex].asFloatArray());
+                persisted(
+                        state.workspace.wrapXBatch,
+                        keyCache(),
+                        valueCache(),
+                        weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                        weights.wqLayered[layerIndex].asByteArray(),
+                        weights.wkLayered[layerIndex].asByteArray(),
+                        weights.wvLayered[layerIndex].asByteArray(),
+                        weights.woLayered[layerIndex].asByteArray(),
+                        weights.q_biasLayered[layerIndex].asFloatArray(),
+                        weights.k_biasLayered[layerIndex].asFloatArray(),
+                        weights.v_biasLayered[layerIndex].asFloatArray(),
+                        weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                        weights.routerGateLayered[layerIndex].asFloatArray(),
+                        weights.gateExpertsLayered[layerIndex].asByteArray(),
+                        weights.upExpertsLayered[layerIndex].asByteArray(),
+                        weights.downExpertsLayered[layerIndex].asByteArray(),
+                        weights.sharedGateLayered[layerIndex].asByteArray(),
+                        weights.sharedUpLayered[layerIndex].asByteArray(),
+                        weights.sharedDownLayered[layerIndex].asByteArray(),
+                        weights.sharedGateInputLayered[layerIndex].asFloatArray()));
         return layer;
+    }
+
+    /** {@code objects} without the weights read in place. */
+    private Object[] persisted(Object... objects) {
+        return Arrays.stream(objects).filter(o -> !readInPlace.contains(o)).toArray();
     }
 
     /** Declares layer weights and the batch buffers that remain on the GPU. */
@@ -145,7 +169,7 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
                 layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, nativeScratch());
             }
         } else {
-            String predecessor = GraphNames.batchPrefillLayer(layerIndex - 1);
+            String predecessor = family.batchPrefillLayer(layerIndex - 1);
             layer.consumeFromDevice(
                     predecessor,
                     context,
@@ -175,25 +199,29 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
             }
         }
 
-        layer.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION,
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqLayered[layerIndex].deviceArray(),
-                weights.wkLayered[layerIndex].deviceArray(),
-                weights.wvLayered[layerIndex].deviceArray(),
-                weights.q_biasLayered[layerIndex].asFloatArray(),
-                weights.k_biasLayered[layerIndex].asFloatArray(),
-                weights.v_biasLayered[layerIndex].asFloatArray(),
-                weights.woLayered[layerIndex].deviceArray(),
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.routerGateLayered[layerIndex].asFloatArray(),
-                weights.gateExpertsLayered[layerIndex].deviceArray(),
-                weights.upExpertsLayered[layerIndex].deviceArray(),
-                weights.downExpertsLayered[layerIndex].deviceArray(),
-                weights.sharedGateLayered[layerIndex].deviceArray(),
-                weights.sharedUpLayered[layerIndex].deviceArray(),
-                weights.sharedDownLayered[layerIndex].deviceArray(),
-                weights.sharedGateInputLayered[layerIndex].asFloatArray());
+        Object[] layerWeights = {
+            weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+            weights.wqLayered[layerIndex].deviceArray(),
+            weights.wkLayered[layerIndex].deviceArray(),
+            weights.wvLayered[layerIndex].deviceArray(),
+            weights.q_biasLayered[layerIndex].asFloatArray(),
+            weights.k_biasLayered[layerIndex].asFloatArray(),
+            weights.v_biasLayered[layerIndex].asFloatArray(),
+            weights.woLayered[layerIndex].deviceArray(),
+            weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+            weights.routerGateLayered[layerIndex].asFloatArray(),
+            weights.gateExpertsLayered[layerIndex].deviceArray(),
+            weights.upExpertsLayered[layerIndex].deviceArray(),
+            weights.downExpertsLayered[layerIndex].deviceArray(),
+            weights.sharedGateLayered[layerIndex].deviceArray(),
+            weights.sharedUpLayered[layerIndex].deviceArray(),
+            weights.sharedDownLayered[layerIndex].deviceArray(),
+            weights.sharedGateInputLayered[layerIndex].asFloatArray()
+        };
+        readInPlace.addAll(Arrays.asList(layerWeights));
+        for (Object uploaded : UnifiedMemoryWeights.upload(layer, state.workspace, layerWeights)) {
+            readInPlace.remove(uploaded);
+        }
     }
 
     /** Adds Qwen2 attention tasks for every token in the prefill batch. */
@@ -574,7 +602,7 @@ public final class Qwen2MoEQ8_0LayersBatchPrefill
         WorkerGrid sharedWeightWorker = groupedRowsWorker(batchSize);
 
         for (int layer = 0; layer < config.numberOfLayers(); layer++) {
-            String prefix = GraphNames.batchPrefillLayer(layer) + ".";
+            String prefix = family.batchPrefillLayer(layer) + ".";
             if (nativeLayer(layer)) {
                 addNativeWorkerGrids(scheduler, prefix, layer, qkvWorker);
             }
