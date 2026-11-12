@@ -8,7 +8,6 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
-import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Gemma4State;
@@ -156,9 +155,8 @@ public class Gemma4FP16FFNLayers
                 shared.add(weights.wkLayered[layerIndex].asHalfFloatArray());
                 shared.add(weights.wvLayered[layerIndex].asHalfFloatArray());
             } else {
-                UnifiedMemoryWeights.upload(
-                        unifiedLayer,
-                        state.workspace,
+                unifiedLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION,
                         weights.wkLayered[layerIndex].asHalfFloatArray(),
                         weights.wvLayered[layerIndex].asHalfFloatArray());
             }
@@ -166,9 +164,8 @@ public class Gemma4FP16FFNLayers
                     GraphNames.batchPrefillLayer(layerIndex), shared.toArray());
         } else {
             unifiedLayer.consumeFromDevice(gemma4State.workspace.wrapX);
-            UnifiedMemoryWeights.upload(
-                    unifiedLayer,
-                    state.workspace,
+            unifiedLayer.transferToDevice(
+                    DataTransferMode.FIRST_EXECUTION,
                     weights.wqLayered[layerIndex].asHalfFloatArray(),
                     weights.wkLayered[layerIndex].asHalfFloatArray(),
                     weights.wvLayered[layerIndex].asHalfFloatArray(),
@@ -177,9 +174,8 @@ public class Gemma4FP16FFNLayers
                     weights.w3Layered[layerIndex].asHalfFloatArray(),
                     weights.w2Layered[layerIndex].asHalfFloatArray());
         }
-        UnifiedMemoryWeights.upload(
-                unifiedLayer,
-                state.workspace,
+        unifiedLayer.transferToDevice(
+                DataTransferMode.FIRST_EXECUTION,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 weights.attnQNorm[layerIndex].asFloatArray(),
                 weights.attnKNorm[layerIndex].asFloatArray(),
@@ -190,9 +186,8 @@ public class Gemma4FP16FFNLayers
                 weights.perLayerProj[layerIndex].asHalfFloatArray(),
                 weights.perLayerPostNorm[layerIndex].asFloatArray());
         if (weights.layerOutputScale[layerIndex] != null) {
-            UnifiedMemoryWeights.upload(
-                    unifiedLayer,
-                    state.workspace,
+            unifiedLayer.transferToDevice(
+                    DataTransferMode.FIRST_EXECUTION,
                     weights.layerOutputScale[layerIndex].asFloatArray());
         }
         unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
@@ -691,20 +686,14 @@ public class Gemma4FP16FFNLayers
                     gemma4State.workspace.tempPostAttn,
                     gemma4State.workspace.tempPostFfn,
                     gemma4State.workspace.tempPostPle);
-            UnifiedMemoryWeights.upload(
-                    unifiedLayer, state.workspace, weights.perLayerModelProj.asHalfFloatArray());
+            unifiedLayer.transferToDevice(
+                    DataTransferMode.FIRST_EXECUTION, weights.perLayerModelProj.asHalfFloatArray());
             if (batchedPlan) {
                 // Uploaded by the batch-prefill graphs: the norm by the first, each RoPE pair by
                 // the first layer of its kind; the cache the prefill filled, relayed by the
                 // decode activation.
-                Object[] norm =
-                        UnifiedMemoryWeights.consume(
-                                unifiedLayer,
-                                state.workspace,
-                                weights.perLayerProjNorm.asFloatArray());
-                if (norm.length > 0) {
-                    unifiedLayer.consumeFromDevice("batchPrefillLayer_0", norm);
-                }
+                unifiedLayer.consumeFromDevice(
+                        "batchPrefillLayer_0", weights.perLayerProjNorm.asFloatArray());
                 unifiedLayer.consumeFromDevice(
                         GraphNames.batchPrefillLayer(firstLayerOfKind(true)),
                         weights.freqCisRealSwa.asFloatArray(),
@@ -716,9 +705,8 @@ public class Gemma4FP16FFNLayers
                 unifiedLayer.consumeFromDevice(
                         GraphNames.DECODE_ACTIVATION, keyCache(), valueCache());
             } else {
-                UnifiedMemoryWeights.upload(
-                        unifiedLayer,
-                        state.workspace,
+                unifiedLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION,
                         weights.perLayerProjNorm.asFloatArray(),
                         weights.freqCisRealSwa.asFloatArray(),
                         weights.freqCisImagSwa.asFloatArray(),

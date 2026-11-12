@@ -19,7 +19,6 @@ import org.beehive.jitllm.backend.tornado.ops.Operands;
 import org.beehive.jitllm.backend.tornado.ops.Region;
 import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
-import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
@@ -345,7 +344,7 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         uploadLayerWeights(batchPrefillLayer, layerIndex);
         Object[] extraWeights = extraLayerWeights(layerIndex);
         if (extraWeights.length > 0) {
-            UnifiedMemoryWeights.upload(batchPrefillLayer, state.workspace, extraWeights);
+            batchPrefillLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, extraWeights);
         }
 
         int dim = config.dim();
@@ -504,7 +503,8 @@ public class LlamaFP16LayersBatchPrefillMMA implements BatchPrefillTransformerLa
 
     /** Uploads {@link #layerWeights} to the layer graph once. */
     protected void uploadLayerWeights(TaskGraph batchPrefillLayer, int layerIndex) {
-        UnifiedMemoryWeights.upload(batchPrefillLayer, state.workspace, layerWeights(layerIndex));
+        batchPrefillLayer.transferToDevice(
+                DataTransferMode.FIRST_EXECUTION, layerWeights(layerIndex));
     }
 
     /** The per-layer weights this layer's tasks read, uploaded once. */

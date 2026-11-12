@@ -16,7 +16,6 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0D
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
-import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
@@ -982,17 +981,12 @@ public class Gemma4Q8_0FFNLayers
         for (Object w : projections) {
             (state.workspace.weightBindings.replaced(w) ? own : shared).add(w);
         }
-        // Weights read in place are declared so here too, never bound from another graph.
-        Object[] sharedRest =
-                UnifiedMemoryWeights.consume(unifiedLayer, state.workspace, shared.toArray());
         if (batchedPlan) {
-            if (sharedRest.length > 0) {
-                unifiedLayer.consumeFromDevice(
-                        GraphNames.batchPrefillLayer(layerIndex),
-                        WeightPrepacker.deviceArrays(sharedRest));
-            }
+            unifiedLayer.consumeFromDevice(
+                    GraphNames.batchPrefillLayer(layerIndex),
+                    WeightPrepacker.deviceArrays(shared.toArray()));
         } else {
-            own.addAll(java.util.List.of(sharedRest));
+            own.addAll(shared);
         }
         if (config.hasPerLayerEmbeddings()) {
             own.add(weights.perLayerInpGate[layerIndex]);
@@ -1132,21 +1126,16 @@ public class Gemma4Q8_0FFNLayers
                     gemma4State.workspace.tempPostFfn,
                     gemma4State.workspace.tempPostPle);
             if (config.hasPerLayerEmbeddings()) {
-                UnifiedMemoryWeights.upload(
-                        unifiedLayer, state.workspace, weightArray(weights.perLayerModelProj));
+                unifiedLayer.transferToDevice(
+                        DataTransferMode.FIRST_EXECUTION, weightArray(weights.perLayerModelProj));
                 if (batchedPlan) {
                     // Read by the first batch-prefill graph's own setup, which uploaded it.
-                    Object[] norm =
-                            UnifiedMemoryWeights.consume(
-                                    unifiedLayer,
-                                    state.workspace,
-                                    weights.perLayerProjNorm.asFloatArray());
-                    if (norm.length > 0) {
-                        unifiedLayer.consumeFromDevice("batchPrefillLayer_0", norm);
-                    }
+                    unifiedLayer.consumeFromDevice(
+                            "batchPrefillLayer_0", weights.perLayerProjNorm.asFloatArray());
                 } else {
-                    UnifiedMemoryWeights.upload(
-                            unifiedLayer, state.workspace, weights.perLayerProjNorm.asFloatArray());
+                    unifiedLayer.transferToDevice(
+                            DataTransferMode.FIRST_EXECUTION,
+                            weights.perLayerProjNorm.asFloatArray());
                 }
             }
             unifiedLayer.transferToDevice(

@@ -29,7 +29,6 @@ import org.beehive.jitllm.backend.tornado.ops.jit.LayerKernels;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxAttention;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxMatMul;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
-import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -132,7 +131,7 @@ public class Qwen3Q8_0LayersBatchPrefill
         this.qDim = nEmbdHeadK * config.numberOfHeads();
         this.kvDim = nEmbdHeadV * nHeadKv;
         this.gqa = config.numberOfHeads() / nHeadKv;
-        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state, weights, config);
+        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state.executionPolicy(), weights, config);
         this.mlxAttention =
                 primary != null
                         ? MlxPrefillAttention.narrowed(primary.mlxAttention, batchSize, family)
@@ -290,7 +289,7 @@ public class Qwen3Q8_0LayersBatchPrefill
             weights.w2Layered[layerIndex].deviceArray(),
             weights.w3Layered[layerIndex].deviceArray()
         };
-        UnifiedMemoryWeights.upload(layer, state.workspace, layerWeights);
+        layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
         // The q and k norms are read by this graph's own task, so decode reuses them. The plan's
         // steps record the weights their tasks read.
         state.workspace.weightBindings.record(

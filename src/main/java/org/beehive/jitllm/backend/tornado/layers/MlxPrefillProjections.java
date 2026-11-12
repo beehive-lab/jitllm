@@ -8,7 +8,6 @@ import java.util.function.IntFunction;
 import org.beehive.jitllm.backend.tornado.kernels.MlxPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
-import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -532,7 +531,7 @@ public final class MlxPrefillProjections {
                 }) {
             layerWeights.addAll(List.of(m.arrays()));
         }
-        UnifiedMemoryWeights.upload(layer, state.workspace, layerWeights.toArray());
+        layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights.toArray());
     }
 
     /**

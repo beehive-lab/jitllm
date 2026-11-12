@@ -18,7 +18,6 @@ import org.beehive.jitllm.backend.tornado.ops.Operands;
 import org.beehive.jitllm.backend.tornado.ops.Region;
 import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
-import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen3TornadoWeights;
@@ -305,9 +304,8 @@ public class Qwen3Q8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         }
 
         // Per-layer weights: upload once
-        UnifiedMemoryWeights.upload(
-                batchPrefillLayer,
-                state.workspace,
+        batchPrefillLayer.transferToDevice(
+                DataTransferMode.FIRST_EXECUTION,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 weights.wqLayered[layerIndex].deviceArray(),
                 weights.wkLayered[layerIndex].deviceArray(),

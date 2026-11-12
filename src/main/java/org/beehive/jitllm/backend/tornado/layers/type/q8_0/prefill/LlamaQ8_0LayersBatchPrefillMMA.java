@@ -19,7 +19,6 @@ import org.beehive.jitllm.backend.tornado.ops.Operands;
 import org.beehive.jitllm.backend.tornado.ops.Region;
 import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
-import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
@@ -333,10 +332,11 @@ public class LlamaQ8_0LayersBatchPrefillMMA implements BatchPrefillTransformerLa
         }
 
         // Per-layer weights: upload once
-        UnifiedMemoryWeights.upload(batchPrefillLayer, state.workspace, layerWeights(layerIndex));
+        batchPrefillLayer.transferToDevice(
+                DataTransferMode.FIRST_EXECUTION, layerWeights(layerIndex));
         Object[] extraWeights = extraLayerWeights(layerIndex);
         if (extraWeights.length > 0) {
-            UnifiedMemoryWeights.upload(batchPrefillLayer, state.workspace, extraWeights);
+            batchPrefillLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, extraWeights);
         }
 
         int dim = config.dim();

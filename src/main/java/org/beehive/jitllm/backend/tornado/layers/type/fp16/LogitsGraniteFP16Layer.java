@@ -4,7 +4,6 @@ import org.beehive.jitllm.backend.tornado.kernels.GraniteKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
-import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
@@ -42,10 +41,7 @@ public class LogitsGraniteFP16Layer extends LogitsFP16Layer {
                 DataTransferMode.FIRST_EXECUTION,
                 context,
                 state.workspace.wrapLogits,
-                state.workspace.wrapXbFP16);
-        UnifiedMemoryWeights.upload(
-                logits,
-                state.workspace,
+                state.workspace.wrapXbFP16,
                 weights.wclsByteArray.asHalfFloatArray(),
                 weights.rms_final_weight_as_floatArray.asFloatArray());
 

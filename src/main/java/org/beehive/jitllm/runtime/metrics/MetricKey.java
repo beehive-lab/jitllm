@@ -37,11 +37,7 @@ public enum MetricKey {
     DEVICE_READ_TIME(Unit.NANOSECONDS, Aggregation.SUM),
     BYTES_COPIED_TO_DEVICE(Unit.BYTES, Aggregation.SUM),
     BYTES_COPIED_FROM_DEVICE(Unit.BYTES, Aggregation.SUM),
-    /**
-     * A level, not a total: summing device memory across executions is meaningless. TornadoVM's
-     * count, which leaves out weights read in place from unified memory: they stay in the mapped
-     * file's pages, in system memory.
-     */
+    /** A level, not a total: summing device memory across executions is meaningless. */
     DEVICE_MEMORY_USED(Unit.BYTES, Aggregation.LATEST),
 
     // ── Serving, from the engine ───────────────────────────────────────

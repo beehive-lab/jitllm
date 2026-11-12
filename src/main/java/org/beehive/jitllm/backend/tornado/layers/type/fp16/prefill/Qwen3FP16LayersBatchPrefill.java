@@ -27,7 +27,6 @@ import org.beehive.jitllm.backend.tornado.ops.jit.LayerKernels;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxAttention;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxMatMul;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
-import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -129,7 +128,7 @@ public class Qwen3FP16LayersBatchPrefill
         this.qDim = nEmbdHeadK * config.numberOfHeads();
         this.kvDim = nEmbdHeadV * nHeadKv;
         this.gqa = config.numberOfHeads() / nHeadKv;
-        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state, weights, config);
+        Optional<MlxPrefill> mlx = MlxPrefill.resolve(state.executionPolicy(), weights, config);
         this.mlxAttention =
                 primary != null
                         ? MlxPrefillAttention.narrowed(primary.mlxAttention, batchSize, family)
@@ -266,9 +265,8 @@ public class Qwen3FP16LayersBatchPrefill
         }
 
         // Per-layer weights: upload once
-        UnifiedMemoryWeights.upload(
-                layer,
-                state.workspace,
+        layer.transferToDevice(
+                DataTransferMode.FIRST_EXECUTION,
                 weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                 weights.wqLayered[layerIndex].asHalfFloatArray(),
                 weights.wkLayered[layerIndex].asHalfFloatArray(),

@@ -7,7 +7,6 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0D
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.layers.devstral.DevstralLayerTaskGraphs;
-import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -80,7 +79,7 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
         if (weightSrc != null) {
             bindLayerWeights(unifiedLayer, weightSrc, layerIndex, layerWeights);
         } else {
-            UnifiedMemoryWeights.upload(unifiedLayer, state.workspace, layerWeights);
+            unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
         }
         unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
         bindSharedScratch(unifiedLayer, layerIndex);

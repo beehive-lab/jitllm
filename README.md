@@ -148,8 +148,7 @@ types directly declares `tornado-api` itself, with `provided` scope.
 ### TornadoVM
 
 jitllm compiles against, and runs on, the TornadoVM SDK that `TORNADOVM_HOME` points at. Any SDK
-from **TornadoVM 8.1** on works: 8.1 adds `TaskGraph.consumeFromUnifiedMemory`, with which a plan
-reads the model's weights in place on Apple silicon. A released one, from the
+from **TornadoVM 8.0** on works: a released one, from the
 [official website](https://www.tornadovm.org/downloads) or [SDKMAN!](https://sdkman.io/sdks/tornadovm/)
 (`sdk install tornadovm`), or a local build of TornadoVM `develop`. Its JDK line
 must match the JDK you build with: a `-jdk21` SDK for JDK 21, a `-jdk22plus` SDK for JDK 22 and

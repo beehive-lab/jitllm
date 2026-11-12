@@ -194,16 +194,6 @@ public final class WeightPrepacking {
         return w != null && prepacked.contains(w);
     }
 
-    /** Whether {@code array} is the device array of a selected tensor. */
-    public boolean prepackedArray(Object array) {
-        for (TornadoTensor w : prepacked) {
-            if (w.deviceArray() == array) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /** Whether {@code w} is selected and Q4_0. */
     public boolean prepackedQ4(TornadoTensor w) {
         return prepacked(w) && w.dataType() == DataType.Q4_0;

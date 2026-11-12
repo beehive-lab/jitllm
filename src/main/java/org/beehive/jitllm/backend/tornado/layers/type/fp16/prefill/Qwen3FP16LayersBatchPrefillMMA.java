@@ -29,7 +29,6 @@ import org.beehive.jitllm.backend.tornado.ops.jit.JitLayerProjections;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.CublasLayerProjections;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.CudnnLayerAttention;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.NativePrefillSupport;
-import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.Qwen3State;
@@ -913,9 +912,8 @@ public class Qwen3FP16LayersBatchPrefillMMA
                     weights.w2Layered[layerIndex].asHalfFloatArray(),
                     weights.w3Layered[layerIndex].asHalfFloatArray());
         } else {
-            UnifiedMemoryWeights.upload(
-                    batchPrefillLayer,
-                    state.workspace,
+            batchPrefillLayer.transferToDevice(
+                    DataTransferMode.FIRST_EXECUTION,
                     weights.rms_att_weightLayered[layerIndex].asFloatArray(),
                     weights.wqLayered[layerIndex].asHalfFloatArray(),
                     weights.wkLayered[layerIndex].asHalfFloatArray(),

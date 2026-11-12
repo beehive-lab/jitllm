@@ -18,7 +18,6 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0D
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0Packed;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.plan.FusedOperandSupport;
-import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
@@ -1969,16 +1968,7 @@ public class Qwen35FFNLayers
         }
         String source = weightSourceGraphName(layerIndex);
         if (source != null) {
-            // Mapped weights are read in place here too, as in the graph that provides them:
-            // consumed from it they would be ordinary buffers over the same pages.
-            Object[] provided =
-                    UnifiedMemoryWeights.consume(
-                            layer,
-                            state.workspace,
-                            WeightPrepacker.deviceArrays(tensors.toArray()));
-            if (provided.length > 0) {
-                layer.consumeFromDevice(source, provided);
-            }
+            layer.consumeFromDevice(source, WeightPrepacker.deviceArrays(tensors.toArray()));
         } else {
             state.workspace.prepacker.configureGraphInputs(
                     layer, state.workspace.prepacking, tensors.toArray());
