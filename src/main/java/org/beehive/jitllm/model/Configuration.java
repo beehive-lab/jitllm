@@ -81,7 +81,7 @@ public interface Configuration {
      */
     default long projectionWeights() {
         long dim = dim();
-        long qDim = (long) numberOfHeads() * headSize();
+        long qDim = queryDim();
         long kvDim = kvDim();
         long hidden = hiddenDim();
         long perLayer = dim * (qDim + 2 * kvDim) + qDim * dim + 3 * dim * hidden;
@@ -158,6 +158,15 @@ public interface Configuration {
     int headSize();
 
     int kvDim();
+
+    /**
+     * Query width per token: the query heads times the head width. The query projection's output
+     * and the output projection's input. Example: Qwen3-0.6B, 16 x 128 = 2048, not dim 1024; equal
+     * to dim in the Llama family, whose head width is dim / heads.
+     */
+    default int queryDim() {
+        return numberOfHeads() * headSize();
+    }
 
     int kvMul();
 }

@@ -61,14 +61,6 @@ public record Qwen3Configuration(
         return numberOfHeadsValue * numberOfKeyValueHeads;
     }
 
-    /**
-     * Query width per token: the key head width across the query heads. The query projection's
-     * output and the output projection's input. Example: Qwen3-0.6B, 128 x 16 = 2048, not dim 1024.
-     */
-    public int queryDim() {
-        return numberOfHeadsKey * numberOfHeads;
-    }
-
     @Override
     public int kvMul() {
         throw new UnsupportedOperationException("Not supported for Qwen3.");
