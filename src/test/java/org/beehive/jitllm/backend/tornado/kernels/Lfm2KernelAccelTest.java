@@ -1,11 +1,13 @@
 package org.beehive.jitllm.backend.tornado.kernels;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assume.assumeTrue;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Random;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.inference.op.CpuOperations;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
@@ -124,6 +126,62 @@ public class Lfm2KernelAccelTest {
         return array;
     }
 
+    /** The grid of a SIMD-group expert task over {@code rows} rows. */
+    private static WorkerGrid simdGrid(DataType type, int rows) {
+        if (type == DataType.Q4_K) {
+            int groupRows = TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS;
+            int threads = 32 * TransformerComputeKernelsQ4_K.SIMDGROUPS;
+            return grid(((rows + groupRows - 1) / groupRows) * threads, threads);
+        }
+        int groupRows = TransformerComputeKernelsQ5_K.EXPERT_SIMD_ROWS;
+        return grid(((rows + groupRows - 1) / groupRows) * 32 * groupRows, 32 * groupRows);
+    }
+
+    /** The gate/up task the layers select for {@code type}: SIMD-group, or generic for Q6_K. */
+    private static void addSimdExperts(
+            TaskGraph graph,
+            GridScheduler scheduler,
+            DataType type,
+            KernelContext context,
+            FloatArray dx,
+            FloatArray hb,
+            ByteArray dGate,
+            ByteArray dUp,
+            IntArray selected) {
+        if (type == DataType.Q6_K) {
+            graph.task(
+                    "gateUp",
+                    Lfm2Kernels::expertGateUpSiLUQ6_K,
+                    context,
+                    dx,
+                    hb,
+                    dGate,
+                    dUp,
+                    selected,
+                    DIM,
+                    EXPERT_HIDDEN,
+                    USED,
+                    LOCAL);
+            scheduler.addWorkerGrid("moe.gateUp", grid(USED * EXPERT_HIDDEN * LOCAL, LOCAL));
+            return;
+        }
+        graph.task(
+                "gateUp",
+                type == DataType.Q4_K
+                        ? TransformerComputeKernelsQ4_K::expertGateUpSiLUQ4_KSimdgroup
+                        : TransformerComputeKernelsQ5_K::expertGateUpSiLUQ5_KSimd32,
+                context,
+                dx,
+                hb,
+                dGate,
+                dUp,
+                selected,
+                DIM,
+                EXPERT_HIDDEN,
+                USED);
+        scheduler.addWorkerGrid("moe.gateUp", simdGrid(type, USED * EXPERT_HIDDEN));
+    }
+
     private static FloatTensor host(DataType type, byte[] raw, int elements, Arena arena) {
         MemorySegment segment = arena.allocate(raw.length);
         MemorySegment.copy(raw, 0, segment, ValueLayout.JAVA_BYTE, 0, raw.length);
@@ -158,7 +216,33 @@ public class Lfm2KernelAccelTest {
         assertExpertsMatchHost(DataType.Q8_0);
     }
 
+    /** The SIMD-group kernels the layers select on a device with a 32-lane shuffle. */
+    @Test
+    public void expertsQ4_KSimdgroup() {
+        assertExpertsMatchHost(DataType.Q4_K, true);
+    }
+
+    @Test
+    public void expertsQ5_KSimd32() {
+        assertExpertsMatchHost(DataType.Q5_K, true);
+    }
+
+    /** Q6_K's down projection; its gate/up keeps the generic kernel. */
+    @Test
+    public void expertsQ6_KDownSimd32() {
+        assertExpertsMatchHost(DataType.Q6_K, true);
+    }
+
     private void assertExpertsMatchHost(DataType type) {
+        assertExpertsMatchHost(type, false);
+    }
+
+    private void assertExpertsMatchHost(DataType type, boolean simd) {
+        if (simd) {
+            assumeTrue(
+                    "no 32-lane shuffle on this device",
+                    SchedulerDetectionService.isSubgroupShuffle32Supported());
+        }
         int gateElements = EXPERTS * EXPERT_HIDDEN * DIM;
         byte[] gate = blocks(type, gateElements);
         byte[] up = blocks(type, gateElements);
@@ -194,7 +278,32 @@ public class Lfm2KernelAccelTest {
                                 weights,
                                 hb)
                         .transferToDevice(DataTransferMode.EVERY_EXECUTION, dResidual);
-        switch (type) {
+        GridScheduler scheduler = new GridScheduler();
+        if (simd) {
+            addSimdExperts(graph, scheduler, type, context, dx, hb, dGate, dUp, selected);
+            graph.task(
+                    "down",
+                    switch (type) {
+                        case Q4_K -> TransformerComputeKernelsQ4_K::expertDownResidualQ4_KSimdgroup;
+                        case Q5_K -> TransformerComputeKernelsQ5_K::expertDownResidualQ5_KSimd32;
+                        default -> TransformerComputeKernelsQ6_K::expertDownResidualQ6_KSimd32;
+                    },
+                    context,
+                    hb,
+                    dResidual,
+                    dDown,
+                    selected,
+                    weights,
+                    DIM,
+                    EXPERT_HIDDEN,
+                    USED);
+            scheduler.addWorkerGrid("moe.down", simdGrid(type, DIM));
+        } else {
+            scheduler.addWorkerGrid("moe.gateUp", grid(USED * EXPERT_HIDDEN * LOCAL, LOCAL));
+            scheduler.addWorkerGrid("moe.down", grid(DIM * LOCAL, LOCAL));
+        }
+        switch (simd ? DataType.F32 : type) {
+            case F32 -> {}
             case Q4_K -> {
                 graph.task(
                         "gateUp",
@@ -310,9 +419,6 @@ public class Lfm2KernelAccelTest {
             default -> throw new IllegalArgumentException(type.toString());
         }
         graph.transferToHost(DataTransferMode.EVERY_EXECUTION, dResidual);
-        GridScheduler scheduler = new GridScheduler();
-        scheduler.addWorkerGrid("moe.gateUp", grid(USED * EXPERT_HIDDEN * LOCAL, LOCAL));
-        scheduler.addWorkerGrid("moe.down", grid(DIM * LOCAL, LOCAL));
         run(graph, scheduler);
 
         // Shared: the host expert projection runs its rows on several threads.

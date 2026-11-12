@@ -851,4 +851,117 @@ public final class TransformerComputeKernelsQ6_K {
             }
         }
     }
+
+    /** Expert rows per workgroup of the {@code expert...Simd32} kernels: one SIMD group each. */
+    public static final int EXPERT_SIMD_ROWS = 4;
+
+    /**
+     * One lane's share of row {@code rowId}'s dot product with {@code x} from {@code xOffset}:
+     * every 32nd unit of {@link #rowDotShared}, for a SIMD group to reduce.
+     */
+    private static float rowPartialSimd(
+            int lane, FloatArray x, int xOffset, ByteArray w, int n, int rowId) {
+        int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
+
+        float partialSum = 0.0f;
+        for (int unit = lane; unit < n / 32; unit += 32) {
+            int half = unit / 4;
+            int posInGroup = (unit - half * 4) * 8;
+            int blockIdx = half / 2;
+            int halfIndex = half - blockIdx * 2;
+            int blockByteOffset = rowByteOffset + blockIdx * BLOCK_BYTES;
+            float d = w.getHalfFloat(blockByteOffset + D_OFFSET).getFloat32();
+
+            int scaleAt = blockByteOffset + SCALES_OFFSET + halfIndex * 8 + posInGroup / 16;
+            float dScale0 = d * signedByte(w, scaleAt);
+            float dScale1 = d * signedByte(w, scaleAt + 2);
+            float dScale2 = d * signedByte(w, scaleAt + 4);
+            float dScale3 = d * signedByte(w, scaleAt + 6);
+
+            int qlAt = blockByteOffset + halfIndex * 64 + posInGroup;
+            int qhAt = blockByteOffset + QH_OFFSET + halfIndex * 32 + posInGroup;
+            int xAt = xOffset + blockIdx * QK_K + halfIndex * 128 + posInGroup;
+            float sum0 = 0.0f;
+            float sum1 = 0.0f;
+            float sum2 = 0.0f;
+            float sum3 = 0.0f;
+            for (int k = 0; k < 8; k += 4) {
+                int ql1Word =
+                        (w.getHalfFloat(qlAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int ql2Word =
+                        (w.getHalfFloat(qlAt + 32 + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + 34 + k).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int qhWord =
+                        (w.getHalfFloat(qhAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qhAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int raw0 = (ql1Word & 0x0F0F0F0F) | ((qhWord & 0x03030303) << 4);
+                int raw1 = (ql2Word & 0x0F0F0F0F) | (((qhWord >>> 2) & 0x03030303) << 4);
+                int raw2 = ((ql1Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 4) & 0x03030303) << 4);
+                int raw3 = ((ql2Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 6) & 0x03030303) << 4);
+                for (int b = 0; b < 4; b++) {
+                    int shift = 8 * b;
+                    sum0 += (((raw0 >>> shift) & 0xFF) - 32) * x.get(xAt + k + b);
+                    sum1 += (((raw1 >>> shift) & 0xFF) - 32) * x.get(xAt + 32 + k + b);
+                    sum2 += (((raw2 >>> shift) & 0xFF) - 32) * x.get(xAt + 64 + k + b);
+                    sum3 += (((raw3 >>> shift) & 0xFF) - 32) * x.get(xAt + 96 + k + b);
+                }
+            }
+            partialSum += dScale0 * sum0 + dScale1 * sum1 + dScale2 * sum2 + dScale3 * sum3;
+        }
+
+        return partialSum;
+    }
+
+    /** The sum over a SIMD group's 32 lanes, in lane 0. */
+    private static float simdSum(KernelContext context, float v) {
+        v += context.simdShuffleDown(v, 16);
+        v += context.simdShuffleDown(v, 8);
+        v += context.simdShuffleDown(v, 4);
+        v += context.simdShuffleDown(v, 2);
+        v += context.simdShuffleDown(v, 1);
+        return v;
+    }
+
+    /**
+     * {@code out[r] += Σ_s weights[s] · (down_e[r] · x[s·H ..])}, {@code e = selected[s]}, over a
+     * stacked {@code [experts·d, H]} down tensor: one SIMD group per output row, the slots summed
+     * in selection order before it reduces; {@link #EXPERT_SIMD_ROWS} rows per workgroup of {@code
+     * 32 * EXPERT_SIMD_ROWS} threads. Example: LFM2.5-24B-A2B, 2048 rows over {@code H = 1536}.
+     */
+    public static void expertDownResidualQ6_KSimd32(
+            KernelContext context,
+            FloatArray x,
+            FloatArray out,
+            ByteArray down,
+            IntArray selected,
+            FloatArray weights,
+            int d,
+            int expertHidden,
+            int used) {
+        int lane = context.localIdx & 31;
+        int r = context.groupIdx * EXPERT_SIMD_ROWS + (context.localIdx >> 5);
+        if (r >= d) {
+            return;
+        }
+        float sum = 0.0f;
+        for (int s = 0; s < used; s++) {
+            sum +=
+                    weights.get(s)
+                            * rowPartialSimd(
+                                    lane,
+                                    x,
+                                    s * expertHidden,
+                                    down,
+                                    expertHidden,
+                                    selected.get(s) * d + r);
+        }
+        sum = simdSum(context, sum);
+        if (lane == 0) {
+            out.set(r, out.get(r) + sum);
+        }
+    }
 }

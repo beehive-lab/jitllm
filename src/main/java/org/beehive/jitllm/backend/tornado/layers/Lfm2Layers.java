@@ -11,6 +11,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.plan.FusedOperandSupport;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -659,6 +660,66 @@ public class Lfm2Layers
         requireWholeBlocks(layerIndex, "ffn_gate_exps", gate.dataType(), dim);
         requireWholeBlocks(layerIndex, "ffn_down_exps", down.dataType(), expertHidden);
 
+        if (simdgroupExperts(gate.dataType(), true)) {
+            layer.task(
+                    "moe_gate_up",
+                    gate.dataType() == DataType.Q4_K
+                            ? TransformerComputeKernelsQ4_K::expertGateUpSiLUQ4_KSimdgroup
+                            : TransformerComputeKernelsQ5_K::expertGateUpSiLUQ5_KSimd32,
+                    context,
+                    ws.wrapXb,
+                    ws.wrapHb,
+                    gate.asByteArray(),
+                    up.asByteArray(),
+                    ws.wrapSelectedExperts,
+                    dim,
+                    expertHidden,
+                    used);
+        } else {
+            expertGateUpGeneric(layer, layerIndex, gate, up);
+        }
+        if (simdgroupExperts(down.dataType(), false)) {
+            layer.task(
+                    "moe_down",
+                    switch (down.dataType()) {
+                        case Q4_K -> TransformerComputeKernelsQ4_K::expertDownResidualQ4_KSimdgroup;
+                        case Q5_K -> TransformerComputeKernelsQ5_K::expertDownResidualQ5_KSimd32;
+                        default -> TransformerComputeKernelsQ6_K::expertDownResidualQ6_KSimd32;
+                    },
+                    context,
+                    ws.wrapHb,
+                    ws.wrapX,
+                    down.asByteArray(),
+                    ws.wrapSelectedExperts,
+                    ws.wrapSelectedExpertWeights,
+                    dim,
+                    expertHidden,
+                    used);
+        } else {
+            expertDownGeneric(layer, layerIndex, down);
+        }
+    }
+
+    /**
+     * Whether an expert tensor in {@code type} projects through the SIMD-group kernels on a device
+     * with a 32-lane shuffle, as {@code QuantizedProjections} decides for the dense ones: Q4_K and
+     * Q5_K gate/up, Q4_K, Q5_K and Q6_K down.
+     */
+    private static boolean simdgroupExperts(DataType type, boolean gateUp) {
+        boolean kernel =
+                type == DataType.Q4_K
+                        || type == DataType.Q5_K
+                        || (!gateUp && type == DataType.Q6_K);
+        return kernel && SchedulerDetectionService.isSubgroupShuffle32Supported();
+    }
+
+    /** The selected experts' gate/up with SwiGLU, one workgroup per (slot, row). */
+    private void expertGateUpGeneric(
+            TaskGraph layer, int layerIndex, TornadoTensor gate, TornadoTensor up) {
+        var ws = lfm2State.workspace;
+        final int dim = config.dim();
+        final int expertHidden = config.expertHiddenDim();
+        final int used = config.expertUsedCount();
         switch (gate.dataType()) {
             case Q4_K ->
                     layer.task(
@@ -719,6 +780,16 @@ public class Lfm2Layers
             default ->
                     throw unsupported(layerIndex, "moe_gate_up", "ffn_gate_exps", gate.dataType());
         }
+    }
+
+    /**
+     * The selected experts' down projections weighted into {@code wrapX}, one workgroup per row.
+     */
+    private void expertDownGeneric(TaskGraph layer, int layerIndex, TornadoTensor down) {
+        var ws = lfm2State.workspace;
+        final int dim = config.dim();
+        final int expertHidden = config.expertHiddenDim();
+        final int used = config.expertUsedCount();
         switch (down.dataType()) {
             case Q4_K ->
                     layer.task(
@@ -936,16 +1007,35 @@ public class Lfm2Layers
             if (config.isMoeLayer(layer)) {
                 scheduler.addWorkerGrid(prefix + "moe_router", matVecWorker(config.expertCount()));
                 scheduler.addWorkerGrid(prefix + "moe_select", single);
+                int expertRows = config.expertUsedCount() * config.expertHiddenDim();
                 scheduler.addWorkerGrid(
                         prefix + "moe_gate_up",
-                        matVecWorker(config.expertUsedCount() * config.expertHiddenDim()));
-                scheduler.addWorkerGrid(prefix + "moe_down", matVecWorker(config.dim()));
+                        expertWorker(weights.ffnGateExps[layer].dataType(), true, expertRows));
+                scheduler.addWorkerGrid(
+                        prefix + "moe_down",
+                        expertWorker(weights.ffnDownExps[layer].dataType(), false, config.dim()));
             } else {
                 scheduler.addWorkerGrid(prefix + "ffn_gate_up", matVecWorker(config.hiddenDim()));
                 scheduler.addWorkerGrid(prefix + "ffn_down_proj", matVecWorker(config.dim()));
             }
         }
         return scheduler;
+    }
+
+    /** The grid of an expert projection over {@code rows} rows of a tensor in {@code type}. */
+    private static WorkerGrid expertWorker(DataType type, boolean gateUp, int rows) {
+        if (!simdgroupExperts(type, gateUp)) {
+            return matVecWorker(rows);
+        }
+        if (type == DataType.Q4_K) {
+            int groupRows = TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS;
+            int threads = 32 * TransformerComputeKernelsQ4_K.SIMDGROUPS;
+            return WorkerGridFactory.genericWorker(
+                    ((rows + groupRows - 1) / groupRows) * threads, threads);
+        }
+        int groupRows = TransformerComputeKernelsQ5_K.EXPERT_SIMD_ROWS;
+        return WorkerGridFactory.genericWorker(
+                ((rows + groupRows - 1) / groupRows) * 32 * groupRows, 32 * groupRows);
     }
 
     /** One workgroup per output row, which is how every matrix-vector kernel here is written. */

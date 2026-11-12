@@ -1120,4 +1120,113 @@ public final class TransformerComputeKernelsQ5_K {
             hb.set(rowId, silu * localSums[localWorkGroupSize]);
         }
     }
+
+    /** Expert rows per workgroup of the {@code expert...Simd32} kernels: one SIMD group each. */
+    public static final int EXPERT_SIMD_ROWS = 4;
+
+    /**
+     * One lane's share of row {@code rowId}'s dot product with {@code x} from {@code xOffset}:
+     * every 32nd unit of {@link #rowDotShared}, for a SIMD group to reduce.
+     */
+    private static float rowPartialSimd(
+            int lane, FloatArray x, int xOffset, ByteArray w, int n, int rowId) {
+        int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
+
+        float partialSum = 0.0f;
+        for (int unit = lane; unit < n / 16; unit += 32) {
+            int blockIdx = unit / 16;
+            int unitInBlock = unit - blockIdx * 16;
+            int pairIndex = unitInBlock / 4;
+            int posInRun = (unitInBlock - pairIndex * 4) * 8;
+            partialSum +=
+                    dot8(
+                            w,
+                            rowByteOffset + blockIdx * BLOCK_BYTES,
+                            pairIndex,
+                            posInRun,
+                            x,
+                            xOffset + blockIdx * QK_K + pairIndex * 64 + posInRun);
+        }
+
+        return partialSum;
+    }
+
+    /** The sum over a SIMD group's 32 lanes, in lane 0. */
+    private static float simdSum(KernelContext context, float v) {
+        v += context.simdShuffleDown(v, 16);
+        v += context.simdShuffleDown(v, 8);
+        v += context.simdShuffleDown(v, 4);
+        v += context.simdShuffleDown(v, 2);
+        v += context.simdShuffleDown(v, 1);
+        return v;
+    }
+
+    /**
+     * {@code hb[s·H + r] = silu(gate_e[r]·x) · (up_e[r]·x)}, {@code e = selected[s]}, over stacked
+     * {@code [experts·H, n]} gate and up tensors: one SIMD group per (slot, row), {@link
+     * #EXPERT_SIMD_ROWS} per workgroup of {@code 32 * EXPERT_SIMD_ROWS} threads. Example:
+     * LFM2.5-24B-A2B's first two expert layers, 4 slots × 1536 rows over {@code n = 2048}.
+     */
+    public static void expertGateUpSiLUQ5_KSimd32(
+            KernelContext context,
+            FloatArray x,
+            FloatArray hb,
+            ByteArray gate,
+            ByteArray up,
+            IntArray selected,
+            int n,
+            int expertHidden,
+            int used) {
+        int lane = context.localIdx & 31;
+        int group = context.groupIdx * EXPERT_SIMD_ROWS + (context.localIdx >> 5);
+        if (group >= used * expertHidden) {
+            return;
+        }
+        int slot = group / expertHidden;
+        int row = selected.get(slot) * expertHidden + (group - slot * expertHidden);
+        float g = simdSum(context, rowPartialSimd(lane, x, 0, gate, n, row));
+        float u = simdSum(context, rowPartialSimd(lane, x, 0, up, n, row));
+        if (lane == 0) {
+            hb.set(group, g / (1.0f + TornadoMath.exp(-g)) * u);
+        }
+    }
+
+    /**
+     * {@code out[r] += Σ_s weights[s] · (down_e[r] · x[s·H ..])}, {@code e = selected[s]}, over a
+     * stacked {@code [experts·d, H]} down tensor: one SIMD group per output row, the slots summed
+     * in selection order before it reduces; {@link #EXPERT_SIMD_ROWS} rows per workgroup of {@code
+     * 32 * EXPERT_SIMD_ROWS} threads. Example: LFM2.5-24B-A2B, 2048 rows over {@code H = 1536}.
+     */
+    public static void expertDownResidualQ5_KSimd32(
+            KernelContext context,
+            FloatArray x,
+            FloatArray out,
+            ByteArray down,
+            IntArray selected,
+            FloatArray weights,
+            int d,
+            int expertHidden,
+            int used) {
+        int lane = context.localIdx & 31;
+        int r = context.groupIdx * EXPERT_SIMD_ROWS + (context.localIdx >> 5);
+        if (r >= d) {
+            return;
+        }
+        float sum = 0.0f;
+        for (int s = 0; s < used; s++) {
+            sum +=
+                    weights.get(s)
+                            * rowPartialSimd(
+                                    lane,
+                                    x,
+                                    s * expertHidden,
+                                    down,
+                                    expertHidden,
+                                    selected.get(s) * d + r);
+        }
+        sum = simdSum(context, sum);
+        if (lane == 0) {
+            out.set(r, out.get(r) + sum);
+        }
+    }
 }
