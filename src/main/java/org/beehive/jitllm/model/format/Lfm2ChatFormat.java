@@ -2,6 +2,8 @@ package org.beehive.jitllm.model.format;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import org.beehive.jitllm.tokenizer.Lfm2Tokenizer;
 
 /**
@@ -27,9 +29,22 @@ import org.beehive.jitllm.tokenizer.Lfm2Tokenizer;
  * {@code <think></think>} block Qwen 3's template uses for the same purpose, which the model was
  * not trained against and may ignore.
  *
- * <p>Tool calling is not offered. The template writes calls as a Python-style list between {@code
- * <|tool_call_start|>} and {@code <|tool_call_end|>}, which no parser here reads yet; the inherited
- * check for Qwen's {@code <tool_call>} token already answers no for this vocabulary.
+ * <h2>Tool calling</h2>
+ *
+ * <p>Both templates put the tools in the system turn as {@code List of tools: [...]}, one {@code
+ * tojson} per tool, and the model calls them as a Python-style list between {@code
+ * <|tool_call_start|>} and {@code <|tool_call_end|>} ({@link Lfm2ToolCalls}). Results are turns of
+ * the {@code tool} role. The two templates differ, and the file's own decides ({@link
+ * ToolDialect}):
+ *
+ * <ul>
+ *   <li>{@link ToolDialect#LFM2} (LFM2-8B-A1B): the list between {@code <|tool_list_start|>} and
+ *       {@code <|tool_list_end|>}, each result between {@code <|tool_response_start|>} and {@code
+ *       <|tool_response_end|>}. Its template replays an assistant message's content only, so an
+ *       earlier call is written as content, in the model's output syntax.
+ *   <li>{@link ToolDialect#LFM2_5} (LFM2.5-24B-A2B): the bare list and bare results; earlier calls
+ *       replayed from {@code tool_calls}, as here.
+ * </ul>
  */
 public class Lfm2ChatFormat extends Qwen3ChatFormat {
 
@@ -37,6 +52,19 @@ public class Lfm2ChatFormat extends Qwen3ChatFormat {
 
     /** Whether the file's template opens the assistant's turn with {@code <think>}. */
     private final boolean templateOpensThinking;
+
+    /** Which tool format the file's template writes, if the vocabulary has its markers. */
+    private final ToolDialect toolDialect;
+
+    /** The two LFM2 templates' tool formats; see the class note. */
+    public enum ToolDialect {
+        /** No tool calling: the template writes no tools, or the vocabulary lacks the markers. */
+        NONE,
+        /** LFM2-8B-A1B's template. */
+        LFM2,
+        /** LFM2.5-24B-A2B's template. */
+        LFM2_5
+    }
 
     /**
      * @param chatTemplate the file's {@code tokenizer.chat_template}, or {@code null}; it decides
@@ -46,6 +74,41 @@ public class Lfm2ChatFormat extends Qwen3ChatFormat {
         super(tokenizer, chatTokens);
         this.startOfText = tokenizer.getSpecialTokens().getOrDefault("<|startoftext|>", -1);
         this.templateOpensThinking = opensThinking(chatTemplate);
+        this.toolDialect = toolDialect(chatTemplate, tokenizer.getSpecialTokens());
+    }
+
+    /**
+     * {@link ToolDialect#LFM2} when the template wraps the tools in {@code <|tool_list_start|>},
+     * {@link ToolDialect#LFM2_5} when it writes them bare and renders {@code tool_calls}; each only
+     * when the vocabulary holds the markers that dialect writes.
+     */
+    static ToolDialect toolDialect(String chatTemplate, Map<String, Integer> special) {
+        if (chatTemplate == null
+                || !chatTemplate.contains("List of tools: ")
+                || !special.containsKey(Lfm2ToolCalls.START)
+                || !special.containsKey(Lfm2ToolCalls.END)) {
+            return ToolDialect.NONE;
+        }
+        if (chatTemplate.contains("List of tools: <|tool_list_start|>[")) {
+            return special.containsKey(LIST_START)
+                            && special.containsKey(LIST_END)
+                            && special.containsKey(RESPONSE_START)
+                            && special.containsKey(RESPONSE_END)
+                    ? ToolDialect.LFM2
+                    : ToolDialect.NONE;
+        }
+        return chatTemplate.contains("List of tools: [") && chatTemplate.contains("tool_calls")
+                ? ToolDialect.LFM2_5
+                : ToolDialect.NONE;
+    }
+
+    private static final String LIST_START = "<|tool_list_start|>";
+    private static final String LIST_END = "<|tool_list_end|>";
+    private static final String RESPONSE_START = "<|tool_response_start|>";
+    private static final String RESPONSE_END = "<|tool_response_end|>";
+
+    public ToolDialect toolDialect() {
+        return toolDialect;
     }
 
     /**
@@ -85,6 +148,99 @@ public class Lfm2ChatFormat extends Qwen3ChatFormat {
             tokens.add(thinkEnd);
         }
         return tokens;
+    }
+
+    // ── Tool calling ──────────────────────────────────────────────────────────
+
+    @Override
+    public boolean supportsToolCalling() {
+        return toolDialect != ToolDialect.NONE;
+    }
+
+    /**
+     * {@code <|im_start|>system\n{system}\nList of tools: [{tool}, {tool}]<|im_end|>\n}, the list
+     * between the list markers in {@link ToolDialect#LFM2}; without a system message, the list
+     * alone.
+     */
+    @Override
+    public List<Integer> encodeToolSystemMessage(String systemContent, String toolsJson) {
+        List<String> tools = new ArrayList<>();
+        for (Object tool : ToolJson.parseSequence(toolsJson)) {
+            tools.add(ToolJson.dumps(tool));
+        }
+        boolean markers = toolDialect == ToolDialect.LFM2;
+        List<Integer> tokens = new ArrayList<>();
+        tokens.add(imStart);
+        String system =
+                systemContent == null || systemContent.isEmpty() ? "" : systemContent + "\n";
+        tokens.addAll(tokenizer.encodeOrdinaryAsList("system\n" + system + "List of tools: "));
+        if (markers) {
+            tokens.add(special(LIST_START));
+        }
+        tokens.addAll(tokenizer.encodeOrdinaryAsList("[" + String.join(", ", tools) + "]"));
+        if (markers) {
+            tokens.add(special(LIST_END));
+        }
+        tokens.addAll(endOfTurn());
+        return tokens;
+    }
+
+    /**
+     * {@code <|im_start|>assistant\n<|tool_call_start|>[call, call]<|tool_call_end|><|im_end|>\n}.
+     */
+    @Override
+    public List<Integer> encodeToolCallAssistantTurn(List<ToolCallExtract> toolCalls) {
+        if (toolCalls.isEmpty()) {
+            return List.of();
+        }
+        List<Integer> tokens = new ArrayList<>();
+        tokens.add(imStart);
+        tokens.addAll(tokenizer.encodeOrdinaryAsList("assistant\n"));
+        tokens.add(special(Lfm2ToolCalls.START));
+        tokens.addAll(tokenizer.encodeOrdinaryAsList(Lfm2ToolCalls.render(toolCalls)));
+        tokens.add(special(Lfm2ToolCalls.END));
+        tokens.addAll(endOfTurn());
+        return tokens;
+    }
+
+    /**
+     * One {@code tool} turn per result, as the templates write them; between the response markers
+     * in {@link ToolDialect#LFM2}.
+     */
+    @Override
+    public List<Integer> encodeToolResults(List<ToolResult> results) {
+        boolean markers = toolDialect == ToolDialect.LFM2;
+        List<Integer> tokens = new ArrayList<>();
+        for (ToolResult result : results) {
+            tokens.add(imStart);
+            tokens.addAll(tokenizer.encodeOrdinaryAsList("tool\n"));
+            if (markers) {
+                tokens.add(special(RESPONSE_START));
+            }
+            tokens.addAll(tokenizer.encodeOrdinaryAsList(result.content()));
+            if (markers) {
+                tokens.add(special(RESPONSE_END));
+            }
+            tokens.addAll(endOfTurn());
+        }
+        return tokens;
+    }
+
+    @Override
+    public Optional<ToolCallExtract> extractToolCall(String responseText) {
+        return extractAllToolCalls(responseText).stream().findFirst();
+    }
+
+    /**
+     * Every call in the response's {@code <|tool_call_start|>} blocks; see {@link Lfm2ToolCalls}.
+     */
+    @Override
+    public List<ToolCallExtract> extractAllToolCalls(String responseText) {
+        return Lfm2ToolCalls.parse(responseText);
+    }
+
+    private int special(String spelling) {
+        return tokenizer.getSpecialTokens().get(spelling);
     }
 
     /** {@code general.sampling.temp} in the LFM2.5 files. */

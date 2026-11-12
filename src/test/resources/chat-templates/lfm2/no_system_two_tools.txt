@@ -1,0 +1,5 @@
+<|startoftext|><|im_start|>system
+List of tools: <|tool_list_start|>[{"type": "function", "function": {"name": "getWeather", "description": "Returns the current weather for a city.", "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "The city name"}}, "required": ["city"]}}}, {"type": "function", "function": {"name": "get_current_time", "description": "Returns the current time.", "parameters": {"type": "object", "properties": {}, "required": []}}}]<|tool_list_end|><|im_end|>
+<|im_start|>user
+Hi<|im_end|>
+<|im_start|>assistant

@@ -67,7 +67,7 @@ compare the encoder's output with that template rendered by Jinja2
 | Qwen 1.5 / Qwen 2 MoE | no | no tools in the template, no `<tool_call>` in the vocabulary |
 | Phi-3 mini | no | no tools in the template (GGUF or upstream) |
 | GLM-4.7-Flash (`deepseek2`) | no | `Glm4ChatFormat` implements no tool format |
-| LFM2 / LFM2.5 MoE (`lfm2moe`) | no, for now | the model writes calls as a Python-style list between `<\|tool_call_start\|>` and `<\|tool_call_end\|>`, which no parser here reads yet |
+| LFM2 / LFM2.5 MoE (`lfm2moe`) | yes | `List of tools: [...]` in the system turn; calls as a Python-style list of keyword calls between `<\|tool_call_start\|>` and `<\|tool_call_end\|>`; `tool` turns. LFM2-8B-A1B wraps the list in `<\|tool_list_start\|>…<\|tool_list_end\|>` and each result in `<\|tool_response_start\|>…<\|tool_response_end\|>` |
 | Mistral v0.3, Devstral | no, for now | the Mistral v0.3 GGUF template has no tools; the upstream one does (`[AVAILABLE_TOOLS]`), but it needs this format's non-tool turns reworked first |
 
 Granite's two dialects are told apart by the file's own template. A Granite file whose template

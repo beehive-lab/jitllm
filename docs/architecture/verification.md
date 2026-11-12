@@ -451,10 +451,11 @@ see [`kv-cache-support.md`](kv-cache-support.md#matrix). On CUDA (RTX 5090 Lapto
 classes pass: FP32-cache parity rel L2 ≤ 5.1e-5, the batched prefill's tiled FP32 kernels 4.7e-5
 at widths 7, 64 and 512 with identical numbers at every width. On OpenCL over the same device the
 parity numbers match CUDA's; the batched prefill is refused there, since OpenCL miscompiles the
-32-lane shuffles its router and selection reduce with. The family
-has no tool calling
-(the model writes calls as a Python-style list between `<|tool_call_start|>` and
-`<|tool_call_end|>`, which no parser reads yet), and no `InferenceProgram`, as `qwen35`.
+32-lane shuffles its router and selection reduce with. Tool calling
+(`ToolCallingFamiliesAccelTest`, greedy): LFM2.5-24B-A2B passes all four exchanges on CUDA;
+LFM2-8B-A1B passes the call, the answer and the two calls on Metal, and writes the no-argument call
+as `getCurrent Time()`, which is not a tool name and stays text. The family has no
+`InferenceProgram`, as `qwen35`.
 
 **Memory preflight on Metal** is capped at `CONSERVATIVE`; the bisection that would justify
 `EXACT` there has not been run.

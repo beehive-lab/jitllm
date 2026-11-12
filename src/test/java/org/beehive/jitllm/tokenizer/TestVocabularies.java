@@ -34,6 +34,43 @@ public final class TestVocabularies {
     public static final List<String> QWEN_MARKERS =
             List.of("<tool_call>", "</tool_call>", "<tool_response>", "</tool_response>");
 
+    /** LFM2-8B-A1B's tool markers. */
+    public static final List<String> LFM2_MARKERS =
+            List.of(
+                    "<|tool_list_start|>",
+                    "<|tool_list_end|>",
+                    "<|tool_call_start|>",
+                    "<|tool_call_end|>",
+                    "<|tool_response_start|>",
+                    "<|tool_response_end|>");
+
+    /** LFM2.5-24B-A2B's tool markers: its vocabulary has no response pair. */
+    public static final List<String> LFM2_5_MARKERS = LFM2_MARKERS.subList(0, 4);
+
+    /**
+     * The bytes, then {@code <|pad|>} — where the LFM2 tokenizer's special block starts, as in the
+     * LFM2.5 vocabulary — the text and ChatML tokens, the given tool markers and the think pair.
+     */
+    public static Lfm2Tokenizer lfm2(List<String> toolMarkers) {
+        List<String> tokens = new ArrayList<>(bytes(Qwen3Tokenizer.BYTE_ENCODER));
+        int ordinary = tokens.size();
+        tokens.addAll(
+                List.of(
+                        "<|pad|>",
+                        "<|startoftext|>",
+                        "<|endoftext|>",
+                        "<|im_start|>",
+                        "<|im_end|>"));
+        tokens.addAll(toolMarkers);
+        tokens.addAll(List.of("<think>", "</think>"));
+        int[] types = new int[tokens.size()];
+        Arrays.fill(types, 1);
+        Arrays.fill(types, ordinary, types.length, 3);
+        return new Lfm2Tokenizer(
+                Map.of("tokenizer.ggml.merges", new String[0], "tokenizer.ggml.token_type", types),
+                new Vocabulary(tokens.toArray(String[]::new), null));
+    }
+
     /**
      * {@code <|end_of_text|>} at id 0 (the metadata default for BOS and EOS), the role markers,
      * then the given tool markers.

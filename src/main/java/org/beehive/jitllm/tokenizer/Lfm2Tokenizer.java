@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
+import java.util.Set;
 import java.util.regex.Pattern;
 import org.beehive.jitllm.auxiliary.Pair;
 
@@ -47,12 +48,20 @@ public class Lfm2Tokenizer extends Qwen3Tokenizer {
     /** The token a pair merges into. */
     private final Map<Pair<Integer, Integer>, Integer> merged;
 
+    /** {@code <|tool_call_start|>} and {@code <|tool_call_end|>}, where the vocabulary has them. */
+    private final Set<Integer> toolCallMarkers;
+
     public Lfm2Tokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
         super(metadata, vocabulary, "<|pad|>", LLAMA3_PATTERN);
         this.vocabulary = vocabulary;
         String[] mergeLines = (String[]) metadata.get("tokenizer.ggml.merges");
         this.ranks = new HashMap<>(mergeLines.length * 2);
         this.merged = new HashMap<>(mergeLines.length * 2);
+        List<Integer> markers = new ArrayList<>();
+        for (String marker : List.of("<|tool_call_start|>", "<|tool_call_end|>")) {
+            vocabulary.getIndex(marker).ifPresent(markers::add);
+        }
+        this.toolCallMarkers = Set.copyOf(markers);
         for (int rank = 0; rank < mergeLines.length; rank++) {
             String[] parts = mergeLines[rank].split(" ");
             int first = vocabulary.getIndex(parts[0]).orElseThrow();
@@ -63,6 +72,15 @@ public class Lfm2Tokenizer extends Qwen3Tokenizer {
                 merged.put(pair, vocabulary.getIndex(parts[0] + parts[1]).orElseThrow());
             }
         }
+    }
+
+    /**
+     * What Qwen's tokenizer displays, and the tool-call markers: they are control tokens in the
+     * LFM2 files, but a call is read back from the response text, so the markers have to reach it.
+     */
+    @Override
+    public boolean shouldDisplayToken(int token) {
+        return super.shouldDisplayToken(token) || toolCallMarkers.contains(token);
     }
 
     @Override
