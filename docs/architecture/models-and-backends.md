@@ -26,8 +26,8 @@ an identity nobody registered is reported as unrecognized (`GPUL-MOD-002`). It i
 mapped to the nearest family.
 
 Registered architectures today: Llama, Mistral, Qwen2, Qwen2-MoE, Qwen3, DeepSeek-R1-Distill-Qwen,
-Granite, Phi-3, Gemma-4, Devstral, Qwen3.5 / 3.6 / 3.8 (`qwen35`), Qwen3.6 MoE (`qwen35moe`) and
-GLM-4.7-Flash (`deepseek2`).
+Granite, Phi-3, Gemma-4, Devstral, Qwen3.5 / 3.6 / 3.8 (`qwen35`), Qwen3.6 MoE (`qwen35moe`),
+GLM-4.7-Flash (`deepseek2`) and LFM2-8B-A1B / LFM2.5-24B-A2B (`lfm2moe`).
 
 `qwen35` needed no recognition case at all — the file declares that architecture, nothing
 else claims the name, and the pass-through branch resolved it. A provider class and one
@@ -67,6 +67,7 @@ compare the encoder's output with that template rendered by Jinja2
 | Qwen 1.5 / Qwen 2 MoE | no | no tools in the template, no `<tool_call>` in the vocabulary |
 | Phi-3 mini | no | no tools in the template (GGUF or upstream) |
 | GLM-4.7-Flash (`deepseek2`) | no | `Glm4ChatFormat` implements no tool format |
+| LFM2 / LFM2.5 MoE (`lfm2moe`) | no, for now | the model writes calls as a Python-style list between `<\|tool_call_start\|>` and `<\|tool_call_end\|>`, which no parser here reads yet |
 | Mistral v0.3, Devstral | no, for now | the Mistral v0.3 GGUF template has no tools; the upstream one does (`[AVAILABLE_TOOLS]`), but it needs this format's non-tool turns reworked first |
 
 Granite's two dialects are told apart by the file's own template. A Granite file whose template
@@ -193,9 +194,9 @@ batched; greedy text is identical in every row:
 | Qwen3.5-0.8B Q4_0 | 60 | 2057 |
 | Gemma-4-E2B Q8_0 | 69 | 1067 |
 
-On CUDA every family has a batched prefill on the tensor cores: Llama (F16, Q8_0, Q4_0),
-Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Phi-3, Granite, Devstral (F16, Q8_0, Q4_K),
-Qwen2-MoE, Gemma 4, Qwen3.5 / 3.6 / 3.8 and deepseek2. It is the default,
+On CUDA every family but `lfm2moe` has a batched prefill on the tensor cores: Llama (F16, Q8_0,
+Q4_0), Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Phi-3, Granite, Devstral (F16, Q8_0,
+Q4_K), Qwen2-MoE, Gemma 4, Qwen3.5 / 3.6 / 3.8 and deepseek2. It is the default,
 in chunks of 512, wherever the family's batched prefill builds on the device; elsewhere the
 single-token plan runs. `--with-prefill-decode --batch-prefill-size N` chooses the chunk, and an
 explicit request the device cannot build is refused with `GPUL-CFG-002`, naming the flag to drop. The Llama-shaped families share

@@ -41,7 +41,7 @@ Serve it behind an **OpenAI-compatible API**, embed it in **LangChain4j** or **Q
 - 🌍 **Write once, run on any GPU.** NVIDIA (CUDA), Intel & AMD (OpenCL), Apple Silicon (Metal). Backend is auto-detected from your TornadoVM SDK — switch with a flag, not a rebuild.
 - 🔌 **Drop-in for the Java AI stack.** Official [LangChain4j](https://docs.langchain4j.dev/integrations/language-models/gpullama3-java) provider (since v1.7.1) and [Quarkus](https://docs.quarkiverse.io/quarkus-langchain4j/dev/gpullama3-chat-model.html) inference engine.
 - ⚡ **Built to serve.** OpenAI-compatible HTTP server, llama-bench-style benchmarking, and tensor-core (MMA) batch prefill (see [Serving](#-serving-openai-compatible-preview)).
-- 📦 **Many models, one runtime.** Llama 3, Mistral, Devstral, Qwen 2.5 / Qwen 3 / Qwen 3.5–3.8 (dense and MoE), Qwen2-MoE, Gemma 4, Phi-3, IBM Granite 3.3 / 4.0, GLM-4.7-Flash, DeepSeek-R1-Distill — all in GGUF.
+- 📦 **Many models, one runtime.** Llama 3, Mistral, Devstral, Qwen 2.5 / Qwen 3 / Qwen 3.5–3.8 (dense and MoE), Qwen2-MoE, Gemma 4, Phi-3, IBM Granite 3.3 / 4.0, GLM-4.7-Flash, LFM2 / LFM2.5 MoE, DeepSeek-R1-Distill — all in GGUF.
 
 -----------
 
@@ -303,8 +303,9 @@ single-token path, so their logits differ slightly from single-token prefill; us
 `--no-batch-prefill` when you need the single-token numbers. A model split across GPUs
 (`--devices`) keeps single-token prefill unless you ask for batches.
 
-Every model family has a batched prefill on CUDA: Llama, Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen,
-Qwen3, Qwen3.5 / 3.6 / 3.8, Phi-3, Granite, Gemma 4, Devstral, Qwen2-MoE and GLM-4.7-Flash.
+Every model family but LFM2 has a batched prefill on CUDA: Llama, Mistral, Qwen2 /
+DeepSeek-R1-Distill-Qwen, Qwen3, Qwen3.5 / 3.6 / 3.8, Phi-3, Granite, Gemma 4, Devstral, Qwen2-MoE
+and GLM-4.7-Flash. LFM2 (`lfm2moe`) reads the prompt one token at a time.
 Attention runs as tensor-core GEMMs over the FP16 key/value cache; Q8_0, Q4_0 and Q4_K weights are
 decoded to FP16 for the projection GEMMs (kept decoded when the model's FP16 weights fit in 6 GB
 and, under a configured `--gpu-memory` budget, one copy per session fits beside everything else;

@@ -439,6 +439,15 @@ unsupported, with its own diagnostic. The rest of its acceptance — teacher-for
 logit parity, reset and multi-turn behaviour, memory-preflight accuracy — is **unrun**, and
 Devstral is not claimed as verified. It blocks nothing.
 
+**LFM2 MoE (`lfm2moe`).** LFM2-8B-A1B and LFM2.5-24B-A2B run on Metal in `STANDARD` and
+sequential `PREFILL_DECODE`, with their weights read in place and the FP16 key/value cache. Against
+the CPU reference with an FP32 cache on both sides, both files meet the Q8_0 bounds in both modes
+(rel L2 ≤ 4.7e-5 on the 8B, ≤ 3.4e-6 on the 24B, argmax 63/63); with the FP16 cache on both sides,
+see [`kv-cache-support.md`](kv-cache-support.md#matrix). Not run: CUDA and OpenCL, where the FP16
+cache is refused by name until measured. The family has no batched prefill and no tool calling
+(the model writes calls as a Python-style list between `<|tool_call_start|>` and
+`<|tool_call_end|>`, which no parser reads yet), and no `InferenceProgram`, as `qwen35`.
+
 **Memory preflight on Metal** is capped at `CONSERVATIVE`; the bisection that would justify
 `EXACT` there has not been run.
 
