@@ -22,27 +22,19 @@ public class InsufficientDeviceMemoryException extends RuntimeException {
     }
 
     /**
-     * Runs {@code build}, which builds a GPU session's state or plan, and reports memory running
-     * out there — the device budget or the host's direct memory, already translated by the backend
-     * or raw — as this public type, its message saying which; the original failure stays the cause.
-     * Anything else, a heap {@code OutOfMemoryError} included, passes unchanged.
+     * {@code failure}, memory running out while a GPU session's state, workspace or plan was built,
+     * as this public type, with {@code failure} as the cause. The backend's translation keeps its
+     * message; a raw failure gets one naming the host's direct memory or the device budget. Callers
+     * ({@code DelegatingModel.newSession}, the legacy runtime's plan) check {@code
+     * DeviceMemoryExhaustedException.isDeviceExhaustion} first and rethrow anything else unchanged.
      */
-    static <T> T whileAllocating(java.util.function.Supplier<T> build) {
-        try {
-            return build.get();
-        } catch (org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException exhausted) {
-            throw new InsufficientDeviceMemoryException(exhausted.getMessage(), exhausted, null);
-        } catch (RuntimeException | OutOfMemoryError failure) {
-            if (org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException
-                    .isDeviceExhaustion(failure)) {
-                throw new InsufficientDeviceMemoryException(
-                        org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException.message(
-                                "building a session", failure),
-                        failure,
-                        null);
-            }
-            throw failure;
-        }
+    static InsufficientDeviceMemoryException buildingSession(Throwable failure) {
+        String message =
+                failure instanceof org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException
+                        ? failure.getMessage()
+                        : org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException.message(
+                                "building a session", failure);
+        return new InsufficientDeviceMemoryException(message, failure, null);
     }
 
     /** The stable code for this failure: {@code GPUL-MEM-001}. */
