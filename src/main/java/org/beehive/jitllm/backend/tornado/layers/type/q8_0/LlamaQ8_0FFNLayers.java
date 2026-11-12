@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.layers.AbstractTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.layers.QuantizedProjections;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.RmsReductionPolicy;
@@ -183,6 +184,7 @@ public class LlamaQ8_0FFNLayers
             weights.w3Layered[layerIndex]
         };
         String weightSrc = weightSourceGraphName(layerIndex);
+        layerWeights = UnifiedMemoryWeights.consume(unifiedLayer, state.workspace, layerWeights);
         Object[][] binding = weightBinding(weightSrc, layerIndex, layerWeights);
         if (binding[0].length > 0) {
             unifiedLayer.consumeFromDevice(weightSrc, WeightPrepacker.deviceArrays(binding[0]));

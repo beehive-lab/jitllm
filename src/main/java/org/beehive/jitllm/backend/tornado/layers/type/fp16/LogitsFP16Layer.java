@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvReductionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.Fp16GemvUnrollPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
@@ -140,8 +141,10 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
                 // Output buffer
                 state.workspace.wrapLogits,
                 // Intermediate FP16 buffer
-                state.workspace.wrapXbFP16,
-                // Weights
+                state.workspace.wrapXbFP16);
+        UnifiedMemoryWeights.upload(
+                logits,
+                state.workspace,
                 weights.wclsByteArray.asHalfFloatArray(),
                 weights.rms_final_weight_as_floatArray.asFloatArray());
 
