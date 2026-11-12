@@ -4,7 +4,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException;
@@ -14,10 +13,11 @@ import uk.ac.manchester.tornado.api.exceptions.TornadoOutOfMemoryException;
 
 /**
  * What a GPU session's construction reports when memory runs out ({@link
- * InsufficientDeviceMemoryException#whileAllocating}, which {@code DelegatingModel.newSession} and
- * the legacy runtime's lazy plan go through): this API's exception with {@code GPUL-MEM-001} and
- * the original failure as cause, worded for the host's direct memory or the device budget; any
- * other failure unchanged.
+ * InsufficientDeviceMemoryException#buildingSession}, which {@code DelegatingModel.newSession} and
+ * the legacy runtime's lazy plan throw for a failure {@code
+ * DeviceMemoryExhaustedException.isDeviceExhaustion} recognises): this API's exception with {@code
+ * GPUL-MEM-001} and the original failure as cause, worded for the host's direct memory or the
+ * device budget. Anything else is rethrown unchanged by those callers.
  */
 public class InsufficientDeviceMemoryExceptionTest {
 
@@ -28,7 +28,8 @@ public class InsufficientDeviceMemoryExceptionTest {
 
     @Test
     public void rawDirectMemoryExhaustionNamesTheHostLimit() {
-        InsufficientDeviceMemoryException failure = thrownBy(DIRECT);
+        InsufficientDeviceMemoryException failure =
+                InsufficientDeviceMemoryException.buildingSession(DIRECT);
         assertSame(DIRECT, failure.getCause());
         assertEquals(DiagnosticCode.DEVICE_MEMORY_INSUFFICIENT, failure.code());
         assertTrue(failure.getMessage(), failure.getMessage().startsWith("[GPUL-MEM-001]"));
@@ -42,7 +43,8 @@ public class InsufficientDeviceMemoryExceptionTest {
     public void rawDeviceExhaustionNamesGpuMemory() {
         TornadoOutOfMemoryException device =
                 new TornadoOutOfMemoryException("Unable to allocate 33554448 bytes of memory.");
-        InsufficientDeviceMemoryException failure = thrownBy(device);
+        InsufficientDeviceMemoryException failure =
+                InsufficientDeviceMemoryException.buildingSession(device);
         assertSame(device, failure.getCause());
         assertTrue(failure.getMessage(), failure.getMessage().contains("Raise --gpu-memory"));
     }
@@ -50,52 +52,21 @@ public class InsufficientDeviceMemoryExceptionTest {
     @Test
     public void theBackendsTranslationKeepsItsMessageAndBecomesTheCause() {
         DeviceMemoryExhaustedException backend =
-                assertThrows(
-                        DeviceMemoryExhaustedException.class,
-                        () ->
-                                DeviceMemoryExhaustedException.whileAllocating(
-                                        () -> {
-                                            throw DIRECT;
-                                        }));
-        InsufficientDeviceMemoryException failure = thrownBy(backend);
+                DeviceMemoryExhaustedException.buildingPlan(DIRECT);
+        InsufficientDeviceMemoryException failure =
+                InsufficientDeviceMemoryException.buildingSession(backend);
         assertSame(backend, failure.getCause());
         assertEquals(backend.getMessage(), failure.getMessage());
     }
 
     @Test
-    public void heapExhaustionAndOtherFailuresPassUnchanged() {
-        OutOfMemoryError heap = new OutOfMemoryError("Java heap space");
-        assertSame(
-                heap,
-                assertThrows(
-                        OutOfMemoryError.class,
-                        () ->
-                                InsufficientDeviceMemoryException.whileAllocating(
-                                        () -> {
-                                            throw heap;
-                                        })));
-        IllegalStateException other = new IllegalStateException("not memory");
-        assertSame(
-                other,
-                assertThrows(
-                        IllegalStateException.class,
-                        () ->
-                                InsufficientDeviceMemoryException.whileAllocating(
-                                        () -> {
-                                            throw other;
-                                        })));
-    }
-
-    private static InsufficientDeviceMemoryException thrownBy(Throwable failure) {
-        return assertThrows(
-                InsufficientDeviceMemoryException.class,
-                () ->
-                        InsufficientDeviceMemoryException.whileAllocating(
-                                () -> {
-                                    if (failure instanceof Error error) {
-                                        throw error;
-                                    }
-                                    throw (RuntimeException) failure;
-                                }));
+    public void heapExhaustionAndOtherFailuresAreNotTranslated() {
+        // The callers translate only what this recognises, and rethrow the rest unchanged.
+        assertFalse(
+                DeviceMemoryExhaustedException.isDeviceExhaustion(
+                        new OutOfMemoryError("Java heap space")));
+        assertFalse(
+                DeviceMemoryExhaustedException.isDeviceExhaustion(
+                        new IllegalStateException("not memory")));
     }
 }

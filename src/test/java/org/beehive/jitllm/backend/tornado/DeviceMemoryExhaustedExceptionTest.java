@@ -2,7 +2,6 @@ package org.beehive.jitllm.backend.tornado;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -43,15 +42,8 @@ public class DeviceMemoryExhaustedExceptionTest {
     }
 
     @Test
-    public void recognisedFailuresAreWrappedWithTheirCause() {
-        DeviceMemoryExhaustedException host =
-                assertThrows(
-                        DeviceMemoryExhaustedException.class,
-                        () ->
-                                DeviceMemoryExhaustedException.whileAllocating(
-                                        () -> {
-                                            throw DIRECT;
-                                        }));
+    public void aPlanBuildFailureIsReportedWithItsCause() {
+        DeviceMemoryExhaustedException host = DeviceMemoryExhaustedException.buildingPlan(DIRECT);
         assertSame(DIRECT, host.getCause());
         assertTrue(host.getMessage(), host.getMessage().contains("direct memory"));
         assertTrue(
@@ -64,27 +56,12 @@ public class DeviceMemoryExhaustedExceptionTest {
     }
 
     @Test
-    public void heapExhaustionAndOtherFailuresPassUnchanged() {
-        OutOfMemoryError heap = new OutOfMemoryError("Java heap space");
-        assertFalse(DeviceMemoryExhaustedException.isDeviceExhaustion(heap));
-        assertSame(
-                heap,
-                assertThrows(
-                        OutOfMemoryError.class,
-                        () ->
-                                DeviceMemoryExhaustedException.whileAllocating(
-                                        () -> {
-                                            throw heap;
-                                        })));
-        IllegalStateException other = new IllegalStateException("not memory");
-        assertSame(
-                other,
-                assertThrows(
-                        IllegalStateException.class,
-                        () ->
-                                DeviceMemoryExhaustedException.whileAllocating(
-                                        () -> {
-                                            throw other;
-                                        })));
+    public void heapExhaustionAndOtherFailuresAreNotRecognised() {
+        assertFalse(
+                DeviceMemoryExhaustedException.isDeviceExhaustion(
+                        new OutOfMemoryError("Java heap space")));
+        assertFalse(
+                DeviceMemoryExhaustedException.isDeviceExhaustion(
+                        new IllegalStateException("not memory")));
     }
 }

@@ -72,7 +72,14 @@ public interface TornadoVMMasterPlan {
         // Plan construction is where the device buffers are actually allocated, so it is where an
         // over-budget configuration fails — on the lowered path and the legacy one alike, which is
         // why the boundary is the whole method rather than the construction sites inside it.
-        return DeviceMemoryExhaustedException.whileAllocating(() -> buildPlan(state, model, sink));
+        try {
+            return buildPlan(state, model, sink);
+        } catch (RuntimeException | OutOfMemoryError failure) {
+            if (DeviceMemoryExhaustedException.isDeviceExhaustion(failure)) {
+                throw DeviceMemoryExhaustedException.buildingPlan(failure);
+            }
+            throw failure;
+        }
     }
 
     private static TornadoVMMasterPlan buildPlan(State state, Model model, MetricsSink sink) {

@@ -398,29 +398,29 @@ final class DelegatingModel implements TextGenerationModel {
             }
             KvLease lease = sessions.acquire(contextLength);
             try {
-                java.util.function.Supplier<DelegatingSession> build =
-                        () ->
-                                new DelegatingSession(
-                                        this,
-                                        delegate,
-                                        gpu,
-                                        contextLength,
-                                        lease,
-                                        policy,
-                                        thinking,
-                                        effort);
-                // A GPU session's state, workspace and lowered plan allocate here: memory that
-                // runs out is reported as this API's exception, in the backend's terms or the
-                // host's. A CPU session's failures pass unchanged.
                 session =
-                        gpu
-                                ? InsufficientDeviceMemoryException.whileAllocating(build)
-                                : build.get();
+                        new DelegatingSession(
+                                this,
+                                delegate,
+                                gpu,
+                                contextLength,
+                                lease,
+                                policy,
+                                thinking,
+                                effort);
             } catch (RuntimeException | Error failure) {
                 // Building the session (its state, its plan) can fail after the lease is taken.
                 // Nothing else holds the lease then, so a leak here would keep the slot forever,
                 // and with one slot the model could never open another session (issue #182).
                 lease.close();
+                // A GPU session's state, workspace and lowered plan allocate here: memory that
+                // runs out is reported as this API's exception, in the backend's terms or the
+                // host's. A CPU session's failures pass unchanged.
+                if (gpu
+                        && org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException
+                                .isDeviceExhaustion(failure)) {
+                    throw InsufficientDeviceMemoryException.buildingSession(failure);
+                }
                 throw failure;
             }
             openSessions.add(session);

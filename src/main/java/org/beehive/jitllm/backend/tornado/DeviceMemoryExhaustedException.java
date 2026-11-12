@@ -39,20 +39,14 @@ public class DeviceMemoryExhaustedException extends RuntimeException {
     }
 
     /**
-     * Runs {@code build}, a step that allocates a plan's device buffers, and reports a device
-     * out-of-memory it raises as this exception; any other failure passes unchanged. Both ways a
-     * plan is built go through here: {@code TornadoVMMasterPlan.initializeTornadoVMPlan} and the
-     * lowered plans a session builds.
+     * {@code cause}, memory running out while a plan was built ({@link #isDeviceExhaustion}), as
+     * this exception, worded for the host's direct memory or the device budget. Example: {@code
+     * TornadoVMMasterPlan.initializeTornadoVMPlan} catches what building the plan threw and
+     * rethrows anything else unchanged.
      */
-    public static <T> T whileAllocating(java.util.function.Supplier<T> build) {
-        try {
-            return build.get();
-        } catch (RuntimeException | OutOfMemoryError failure) {
-            if (isDeviceExhaustion(failure)) {
-                throw wrap(failure);
-            }
-            throw failure;
-        }
+    public static DeviceMemoryExhaustedException buildingPlan(Throwable cause) {
+        return new DeviceMemoryExhaustedException(
+                message("building the execution plan", cause), cause);
     }
 
     // @formatter:off
@@ -119,10 +113,5 @@ public class DeviceMemoryExhaustedException extends RuntimeException {
                         + ".\n  Raise --gpu-memory, reduce the context length, or select a smaller"
                         + " quantization.\n  Backend failure: "
                         + cause;
-    }
-
-    private static DeviceMemoryExhaustedException wrap(Throwable cause) {
-        return new DeviceMemoryExhaustedException(
-                message("building the execution plan", cause), cause);
     }
 }
