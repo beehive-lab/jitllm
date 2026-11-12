@@ -66,6 +66,13 @@ public class Lfm2Layers
     /** The dense projections, each weight's kernel chosen from its representation. */
     private final QuantizedProjections projections;
 
+    /**
+     * Whether these are the decode layers of a batched-prefill plan: layer 0 then binds the
+     * key/value store, the block table and the convolution windows from the decode activation,
+     * which relays them from the prompt's graphs, instead of uploading empty copies.
+     */
+    private final boolean afterBatchPrefill;
+
     public Lfm2Layers(
             Lfm2State state,
             Lfm2TornadoWeights weights,
@@ -80,7 +87,19 @@ public class Lfm2Layers
             Lfm2Configuration config,
             SchedulerType schedulerType,
             String activationGraphName) {
+        this(state, weights, config, schedulerType, activationGraphName, false);
+    }
+
+    /** {@link #afterBatchPrefill} where {@code afterBatchPrefill}. */
+    public Lfm2Layers(
+            Lfm2State state,
+            Lfm2TornadoWeights weights,
+            Lfm2Configuration config,
+            SchedulerType schedulerType,
+            String activationGraphName,
+            boolean afterBatchPrefill) {
         super(state, weights, config, schedulerType);
+        this.afterBatchPrefill = afterBatchPrefill;
         this.lfm2State = state;
         this.activationGraphName = activationGraphName;
         this.projections = new QuantizedProjections(context, state.workspace, MATVEC_LOCAL);
@@ -782,7 +801,31 @@ public class Lfm2Layers
     @Override
     protected TaskGraph configureLayerDataTransfers(TaskGraph layer, int layerIndex) {
         var ws = lfm2State.workspace;
-        if (layerIndex == 0) {
+        if (layerIndex == 0 && afterBatchPrefill) {
+            layer.transferToDevice(
+                    DataTransferMode.EVERY_EXECUTION, ws.positionHolder, ws.temp, ws.tempFFN);
+            layer.consumeFromDevice(
+                    activationGraphName,
+                    keyStore(),
+                    valueStore(),
+                    ws.wrapBlockTable,
+                    ws.wrapConvState);
+            layer.transferToDevice(
+                    DataTransferMode.FIRST_EXECUTION,
+                    context,
+                    ws.wrapXb,
+                    ws.wrapQ,
+                    ws.wrapK,
+                    ws.wrapV,
+                    ws.wrapAtt,
+                    ws.wrapHb,
+                    ws.wrapHb2,
+                    ws.wrapSsmQkv,
+                    ws.wrapSsmConvOut,
+                    ws.wrapRouterLogits,
+                    ws.wrapSelectedExperts,
+                    ws.wrapSelectedExpertWeights);
+        } else if (layerIndex == 0) {
             layer.transferToDevice(
                     DataTransferMode.EVERY_EXECUTION,
                     ws.positionHolder,

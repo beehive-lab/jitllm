@@ -35,6 +35,17 @@ public class Lfm2Fp16KvParityAccelTest extends CpuGpuParity {
         assertParityPrefillDecode(Fixture.LFM2_8B_A1B_Q4_K_XL, FP16_KEY_VALUE);
     }
 
+    /** The batched prefill at its default width, over the same FP16 cache. */
+    @Test
+    public void lfm2_8b_a1b_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.LFM2_8B_A1B_Q4_K_XL, FP16_KEY_VALUE, 512);
+    }
+
+    @Test
+    public void lfm2_5_24b_a2b_batchedPrefillParity() throws Exception {
+        assertParityBatched(Fixture.LFM2_5_24B_A2B_Q4_K_XL, FP16_KEY_VALUE, 512);
+    }
+
     @Test
     public void lfm2_5_24b_a2b_cpuGpuParity() throws Exception {
         assertParity(Fixture.LFM2_5_24B_A2B_Q4_K_XL, FP16_KEY_VALUE);

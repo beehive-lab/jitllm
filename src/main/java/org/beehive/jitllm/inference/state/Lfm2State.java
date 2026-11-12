@@ -221,5 +221,53 @@ public final class Lfm2State extends State {
                 TornadoWorkspaces.floats(1 + ((config.dim() + localSize - 1) / localSize));
 
         fillKvFields(fields, config, kvDim, config.keyValueLayerCount(), true);
+        allocateBatchWorkspace(config);
+    }
+
+    // @formatter:off
+    /**
+     * The chunk-wide buffers of a batched prefill beyond those every family has, when this state
+     * was built for one ({@code prefillBatchWidth > 1}).
+     *
+     * <ul>
+     *   <li>The normalized chunk, the short convolution's {@code B ‖ C ‖ x} and its output.
+     *   <li>The mixture's routing per row ({@code k} assignments each), the assignments sorted by
+     *       expert with the tile table, and their hidden and output rows. The up projection's rows
+     *       share the output rows, which the down projection overwrites only after the SwiGLU has
+     *       read them.
+     * </ul>
+     *
+     * <p>Example: LFM2.5-24B-A2B at 512 rows holds 2048 assignments: 12.6 MB of hidden rows and
+     * 16.8 MB of output rows.
+     */
+    // @formatter:on
+    private void allocateBatchWorkspace(Lfm2Configuration config) {
+        int batch = prefillBatchWidth;
+        if (batch <= 1) {
+            return;
+        }
+        int dim = config.dim();
+        int used = config.expertUsedCount();
+        int assignments = batch * used;
+        int expertHidden = config.expertHiddenDim();
+        workspace.wrapNormedBatch = TornadoWorkspaces.floats(batch * dim);
+        workspace.wrapSsmQkvBatch =
+                TornadoWorkspaces.floats(batch * config.shortConvProjectionDim());
+        workspace.wrapSsmConvOutBatch = TornadoWorkspaces.floats(batch * dim);
+        workspace.wrapMoeLogitsBatch = TornadoWorkspaces.floats(batch * config.expertCount());
+        workspace.wrapMoeIdsBatch = TornadoWorkspaces.ints(assignments);
+        workspace.wrapMoeWeightsBatch = TornadoWorkspaces.floats(assignments);
+        workspace.wrapMoeSortedToken = TornadoWorkspaces.ints(assignments);
+        workspace.wrapMoePosition = TornadoWorkspaces.ints(assignments);
+        workspace.wrapMoeTiles =
+                TornadoWorkspaces.ints(
+                        1
+                                + 3
+                                        * org.beehive.jitllm.backend.tornado.kernels
+                                                .Qwen35MoeBatchKernels.maxTiles(
+                                                assignments, config.expertCount()));
+        workspace.wrapMoeHiddenBatch = TornadoWorkspaces.floats(assignments * expertHidden);
+        workspace.wrapMoeOutBatch =
+                TornadoWorkspaces.floats(assignments * Math.max(dim, expertHidden));
     }
 }

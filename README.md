@@ -67,7 +67,7 @@ jitLLM is growing into a **serving engine** — the vLLM-style path for the JVM:
 
 - 🌐 **OpenAI-compatible server** — `jitllm serve` exposes `/v1/chat/completions` and `/v1/completions` with streaming and zero external dependencies. `/v1/models` reports the served context length, so clients size their prompts instead of guessing. Point any OpenAI client at `localhost`.
 - 🎯 **Tensor-core batch prefill on CUDA for every model family**, on each family's supported weight types (F16, Q8_0, Q4_0, Q4_K) — on by default with `--gpu`, cuBLAS projections included where cuBLAS is installed. Llama-3.2-1B Q8_0 prompt processing 4.9k → 29k tok/s on an A100, past llama.cpp; Qwen3-0.6B F16 54k tok/s with cuDNN attention. See [Fast prompt processing on CUDA](#fast-prompt-processing-on-cuda).
-- 🍎 **SIMD-group matrix batch prefill on Apple Metal**, on by default for Llama, Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Qwen3.5, Phi-3, Granite and Gemma 4 in F16 and Q8_0 (and Q4_0 for Llama and Qwen3.5) — e.g. Llama-3.2-1B F16 prompt processing 40 → 2372 tok/s, Qwen3-0.6B F16 4171 tok/s on an M4 Pro.
+- 🍎 **SIMD-group matrix batch prefill on Apple Metal**, on by default for Llama, Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Qwen3.5, Phi-3, Granite and Gemma 4 in F16 and Q8_0 (and Q4_0 for Llama and Qwen3.5), and for LFM2 MoE with its experts as grouped GEMMs — e.g. Llama-3.2-1B F16 prompt processing 40 → 2372 tok/s, Qwen3-0.6B F16 4171 tok/s on an M4 Pro.
 - 📈 **llama-bench-style benchmarking** — `jitllm --bench` reports a pp/tg matrix with avg±stddev in md/csv/json/jsonl/sql. See [Running the CLI](#-running-the-cli) for the flag.
 - 🧮 **On-device greedy sampling** — with `-Djitllm.deviceSample=true` and temperature 0, argmax runs on the GPU and keeps logits device-side, cutting device→host traffic by ~500× per token. ([PR #134](https://github.com/beehive-lab/jitllm/pull/134))
 - 📚 **Batched decode** — B independent sequences per step for up to **41× aggregate throughput** (Llama & Qwen3 FP16, CUDA), served through the experimental `jitllm serve --continuous-batching`. See [BATCHED_DECODE.md](BATCHED_DECODE.md). ([PR #129](https://github.com/beehive-lab/jitllm/pull/129))
@@ -305,7 +305,8 @@ single-token path, so their logits differ slightly from single-token prefill; us
 
 Every model family but LFM2 has a batched prefill on CUDA: Llama, Mistral, Qwen2 /
 DeepSeek-R1-Distill-Qwen, Qwen3, Qwen3.5 / 3.6 / 3.8, Phi-3, Granite, Gemma 4, Devstral, Qwen2-MoE
-and GLM-4.7-Flash. LFM2 (`lfm2moe`) reads the prompt one token at a time.
+and GLM-4.7-Flash. LFM2 (`lfm2moe`) has its batched prefill on Metal only, so far; on CUDA it
+reads the prompt one token at a time.
 Attention runs as tensor-core GEMMs over the FP16 key/value cache; Q8_0, Q4_0 and Q4_K weights are
 decoded to FP16 for the projection GEMMs (kept decoded when the model's FP16 weights fit in 6 GB
 and, under a configured `--gpu-memory` budget, one copy per session fits beside everything else;

@@ -422,7 +422,8 @@ FP16 through the tensor cores. The gap and the options for it are in
 
 **Batched prefill on Metal** is verified on an Apple M4 Pro for every family it is enabled for:
 greedy text identical to single-token prefill for Qwen3, Llama (F16, Q8_0, Q4_0), Qwen2.5,
-DeepSeek-R1-Distill-Qwen, Mistral, Phi-3, Granite 3.2 / 4.0, Qwen3.5 Q4_0 and Gemma 4 Q8_0;
+DeepSeek-R1-Distill-Qwen, Mistral, Phi-3, Granite 3.2 / 4.0, Qwen3.5 Q4_0, Gemma 4 Q8_0 and LFM2
+MoE (`Lfm2BatchedPrefillParityAccelTest`, widths 7, 64 and 512);
 `LlamaBatchedPrefillParityAccelTest`, `Qwen3BatchedPrefillParityAccelTest` and
 `Gemma4Q8_0BatchedPrefillParityAccelTest` pass. The SIMD-group kernels are checked against host
 references: `TransformerBatchPrefillSimdgroupKernelsAccelTest` (projections, exact or within
@@ -439,12 +440,14 @@ unsupported, with its own diagnostic. The rest of its acceptance — teacher-for
 logit parity, reset and multi-turn behaviour, memory-preflight accuracy — is **unrun**, and
 Devstral is not claimed as verified. It blocks nothing.
 
-**LFM2 MoE (`lfm2moe`).** LFM2-8B-A1B and LFM2.5-24B-A2B run on Metal in `STANDARD` and
-sequential `PREFILL_DECODE`, with their weights read in place and the FP16 key/value cache. Against
+**LFM2 MoE (`lfm2moe`).** LFM2-8B-A1B and LFM2.5-24B-A2B run on Metal in all three modes, with
+their weights read in place and the FP16 key/value cache; the batched prefill groups each chunk's
+expert assignments and runs a GEMM per tile of one expert's rows, and stays within the FP16 bounds
+at widths 7 to 512 (rel L2 ≤ 7.6e-4). Against
 the CPU reference with an FP32 cache on both sides, both files meet the Q8_0 bounds in both modes
 (rel L2 ≤ 4.7e-5 on the 8B, ≤ 3.4e-6 on the 24B, argmax 63/63); with the FP16 cache on both sides,
 see [`kv-cache-support.md`](kv-cache-support.md#matrix). Not run: CUDA and OpenCL, where the FP16
-cache is refused by name until measured. The family has no batched prefill and no tool calling
+cache and the batched prefill are refused by name until measured. The family has no tool calling
 (the model writes calls as a Python-style list between `<|tool_call_start|>` and
 `<|tool_call_end|>`, which no parser reads yet), and no `InferenceProgram`, as `qwen35`.
 
