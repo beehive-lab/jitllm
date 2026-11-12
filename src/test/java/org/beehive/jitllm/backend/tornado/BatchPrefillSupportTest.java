@@ -72,6 +72,38 @@ public class BatchPrefillSupportTest {
                         .isPresent());
     }
 
+    /** LFM2's grouped experts run on Metal and CUDA for K-quant files; a Q8_0 file's do not. */
+    @Test
+    public void lfm2moeBatchesKQuantFilesOffOpenCl() {
+        for (BackendId backend : new BackendId[] {BackendId.METAL, BackendId.CUDA}) {
+            assertEquals(
+                    Optional.empty(),
+                    check(
+                            "lfm2moe",
+                            DataType.Q4_K,
+                            ExecutionMode.BATCH_PREFILL_DECODE,
+                            backend,
+                            false));
+            assertTrue(
+                    check(
+                                    "lfm2moe",
+                                    DataType.Q8_0,
+                                    ExecutionMode.BATCH_PREFILL_DECODE,
+                                    backend,
+                                    false)
+                            .orElseThrow()
+                            .contains("Q8_0"));
+        }
+        assertTrue(
+                check(
+                                "lfm2moe",
+                                DataType.Q4_K,
+                                ExecutionMode.BATCH_PREFILL_DECODE,
+                                BackendId.OPENCL,
+                                false)
+                        .isPresent());
+    }
+
     @Test
     public void theRefusalSaysEitherCacheAndTheWayOut() {
         var combination =

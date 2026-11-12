@@ -29,8 +29,8 @@ import org.beehive.jitllm.runtime.tensor.DataType;
  *       norms, routers and convolution taps.
  * </ul>
  *
- * <p>{@code STANDARD} and sequential {@code PREFILL_DECODE}, which is the same layer graphs with
- * the logits graph skipped. Batched prefill has no graphs for this family and is not declared.
+ * <p>All three modes. Batched prefill groups each chunk's rows by expert and runs one GEMM per
+ * expert, for Q4_K, Q5_K and Q6_K experts.
  */
 // @formatter:on
 public final class Lfm2PlanProvider implements TornadoPlanProvider {
@@ -59,15 +59,21 @@ public final class Lfm2PlanProvider implements TornadoPlanProvider {
     }
 
     /**
-     * The batched prefill on Metal (SIMD-group GEMMs) and CUDA (tiled batch kernels); OpenCL
-     * miscompiles the shuffles its router and selection reduce with.
+     * The batched prefill on Metal (SIMD-group GEMMs) and CUDA (tiled batch kernels), for K-quant
+     * experts. OpenCL miscompiles the shuffles its router and selection reduce with, and a Q8_0
+     * file's experts are Q8_0, which has no grouped GEMM.
      */
     @Override
     public Optional<String> batchPrefillUnsupported(Combination c) {
-        return BackendId.OPENCL.equals(c.backend())
+        if (BackendId.OPENCL.equals(c.backend())) {
+            return Optional.of(
+                    "the lfm2moe batched prefill reduces with 32-lane shuffles, which the"
+                            + " OpenCL backend miscompiles");
+        }
+        return c.weights() == DataType.Q8_0
                 ? Optional.of(
-                        "the lfm2moe batched prefill reduces with 32-lane shuffles, which the"
-                                + " OpenCL backend miscompiles")
+                        "the lfm2moe batched prefill groups Q4_K, Q5_K and Q6_K experts only, and a"
+                                + " Q8_0 file's experts are Q8_0")
                 : Optional.empty();
     }
 

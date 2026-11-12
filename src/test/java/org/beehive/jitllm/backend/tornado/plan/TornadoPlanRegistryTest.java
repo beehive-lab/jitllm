@@ -154,6 +154,18 @@ public class TornadoPlanRegistryTest {
                 qwen35.supportedDataTypes());
     }
 
+    /**
+     * {@code lfm2moe} is admitted on the two representations its files report, Q4_K and Q8_0; F16,
+     * BF16 and model-wide Q5_K or Q6_K files are refused by name, not run on kernels never measured
+     * for them.
+     */
+    @Test
+    public void lfm2moeAdmitsQ4KAndQ8Only() {
+        var lfm2 = provider("lfm2moe");
+        assertEquals(Set.of(DataType.Q4_K, DataType.Q8_0), lfm2.supportedDataTypes());
+        assertEquals(Set.of(ExecutionMode.values()), lfm2.supportedModes());
+    }
+
     private static TornadoPlanProvider provider(String architecture) {
         ArchitectureId id = ArchitectureId.of(architecture);
         return TornadoPlanRegistry.discover().stream()
