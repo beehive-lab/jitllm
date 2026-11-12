@@ -203,7 +203,10 @@ public class Lfm2ModelLoader extends AbstractModelLoader<Lfm2, Lfm2Configuration
                 config,
                 tokenizer,
                 weights,
-                new Lfm2ChatFormat((Lfm2Tokenizer) tokenizer, chatTokens));
+                new Lfm2ChatFormat(
+                        (Lfm2Tokenizer) tokenizer,
+                        chatTokens,
+                        (String) gguf.getMetadata().get("tokenizer.chat_template")));
     }
 
     // @formatter:off

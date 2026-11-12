@@ -14,9 +14,10 @@ import org.beehive.jitllm.tokenizer.Lfm2Tokenizer;
  * <ul>
  *   <li><b>A beginning-of-text token.</b> The template opens with {@code bos_token}, {@code
  *       <|startoftext|>}; Qwen has none.
- *   <li><b>The reasoning block is opened by the prompt.</b> The template's generation prompt is
- *       {@code <|im_start|>assistant\n<think>}, so asking for thinking writes {@code <think>} after
- *       the header rather than leaving it to the model.
+ *   <li><b>The reasoning block is opened by the prompt.</b> LFM2.5's template's generation prompt
+ *       is {@code <|im_start|>assistant\n<think>}, so the default turn and a turn that asks for
+ *       thinking both write {@code <think>} after the header; LFM2's template has none, and its
+ *       default turn writes nothing.
  *   <li><b>Its sampling defaults</b>, from {@code general.sampling.temp} in the file.
  * </ul>
  *
@@ -34,9 +35,35 @@ public class Lfm2ChatFormat extends Qwen3ChatFormat {
 
     private final int startOfText;
 
-    public Lfm2ChatFormat(Lfm2Tokenizer tokenizer, ChatTokens chatTokens) {
+    /** Whether the file's template opens the assistant's turn with {@code <think>}. */
+    private final boolean templateOpensThinking;
+
+    /**
+     * @param chatTemplate the file's {@code tokenizer.chat_template}, or {@code null}; it decides
+     *     whether the default turn opens a reasoning block
+     */
+    public Lfm2ChatFormat(Lfm2Tokenizer tokenizer, ChatTokens chatTokens, String chatTemplate) {
         super(tokenizer, chatTokens);
         this.startOfText = tokenizer.getSpecialTokens().getOrDefault("<|startoftext|>", -1);
+        this.templateOpensThinking = opensThinking(chatTemplate);
+    }
+
+    /**
+     * Whether {@code chatTemplate}'s generation prompt ends in {@code <think>}: the literal {@code
+     * <|im_start|>assistant\n<think>}, with the newline as the template spells it (an escape in the
+     * Jinja string) or as a character.
+     */
+    static boolean opensThinking(String chatTemplate) {
+        return chatTemplate != null
+                && (chatTemplate.contains("<|im_start|>assistant\\n<think>")
+                        || chatTemplate.contains("<|im_start|>assistant\n<think>"));
+    }
+
+    /** {@code <think>} where the file's template opens the turn with it. */
+    @Override
+    public List<Integer> defaultGenerationPrimer() {
+        int thinkStart = tokenizer.getThinkStartToken();
+        return templateOpensThinking && thinkStart != -1 ? List.of(thinkStart) : List.of();
     }
 
     @Override
