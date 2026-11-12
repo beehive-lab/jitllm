@@ -36,7 +36,7 @@
 
     <properties>
         <!-- CI-friendly version: resolved by flatten-maven-plugin at build time -->
-        <revision>2.0.0</revision>
+        <revision>3.0.0</revision>
         <!-- Development builds compile against the TornadoVM SDK that TORNADOVM_HOME points at:
                  its jars, as the named modules the runtime loads them as, so the build and the
                  jitllm launchers see the same TornadoVM. There is no version to keep in step here,
