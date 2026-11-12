@@ -58,14 +58,17 @@ public final class Lfm2PlanProvider implements TornadoPlanProvider {
         return new Lfm2PlanComponents(typed, model);
     }
 
-    /** The batched prefill's grouped expert GEMMs are SIMD-group matrices: Metal for now. */
+    /**
+     * The batched prefill on Metal (SIMD-group GEMMs) and CUDA (tiled batch kernels); OpenCL
+     * miscompiles the shuffles its router and selection reduce with.
+     */
     @Override
     public Optional<String> batchPrefillUnsupported(Combination c) {
-        return BackendId.METAL.equals(c.backend())
-                ? Optional.empty()
-                : Optional.of(
-                        "the lfm2moe batched prefill runs its expert GEMMs on Metal SIMD-group"
-                                + " matrices, which this backend does not have");
+        return BackendId.OPENCL.equals(c.backend())
+                ? Optional.of(
+                        "the lfm2moe batched prefill reduces with 32-lane shuffles, which the"
+                                + " OpenCL backend miscompiles")
+                : Optional.empty();
     }
 
     /** The batched prefill is the default on Metal, where its GEMMs are tuned. */

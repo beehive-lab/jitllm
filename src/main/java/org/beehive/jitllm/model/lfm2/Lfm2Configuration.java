@@ -172,4 +172,14 @@ public record Lfm2Configuration(
     public long recurrentStateBytes() {
         return (long) convLayerCount() * convStateSize() * Float.BYTES;
     }
+
+    /**
+     * One: the batched plan's decode graphs consume the weights the batch-prefill graphs uploaded
+     * (or read them in place, as those do), so a plan holds the model once. Predicted twice, the
+     * 24B's 13.9 GiB would keep it off a 24 GB GPU it runs on.
+     */
+    @Override
+    public int weightBindingFamilies(int layerGraphFamilies) {
+        return 1;
+    }
 }

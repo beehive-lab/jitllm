@@ -8,13 +8,18 @@ import org.beehive.jitllm.backend.tornado.kernels.Lfm2BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
+import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Lfm2State;
 import org.beehive.jitllm.inference.weights.tornado.Lfm2TornadoWeights;
 import org.beehive.jitllm.model.lfm2.Lfm2Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -37,12 +42,21 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * ({@link GroupedExpertSimdgroupKernels}), so each selected expert's weights are read once per tile
  * rather than once per token: a chunk of 512 tokens over 64 experts gives each about 32 rows.
  *
- * <p>Metal only, for now: the GEMMs are SIMD-group matrices. The narrow chunk family is declined.
+ * <p>On Metal the GEMMs are SIMD-group matrices; elsewhere they are the tiled batch kernels,
+ * decoding each weight once per eight rows, with the experts' as grouped tiled kernels. The narrow
+ * chunk family is declined.
  */
 // @formatter:on
 public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskGraphs {
 
     private static final int ELEMENTWISE_LOCAL = 128;
+
+    /** Lanes of a tiled (non-SIMD-group) batch projection or grouped expert GEMM. */
+    private static final int TILED_LOCAL = 128;
+
+    /** Whether the GEMMs are SIMD-group matrices (Metal) rather than tiled batch kernels. */
+    private final boolean simdgroup = BatchPrefillGemmPolicy.simdgroup();
+
     private static final int ATTENTION_LOCAL = Qwen35BatchKernels.ATTENTION_STAGE_LANES;
 
     private final Lfm2State state;
@@ -71,7 +85,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
         this.batchSize = batchSize;
         this.projections =
                 new QuantizedBatchProjections(
-                        context, state.workspace, batchSize, true, false, ELEMENTWISE_LOCAL);
+                        context, state.workspace, batchSize, simdgroup, true, TILED_LOCAL);
         this.graphs =
                 IntStream.range(0, config.numberOfLayers())
                         .mapToObj(this::buildLayer)
@@ -216,33 +230,30 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
         final int dim = config.dim();
         final int kvDim = config.kvDim();
         final int headDim = config.headSize();
-        projections.projection(
+        store(
                 layer,
                 "attn_q_proj",
                 ws.wrapNormedBatch,
                 ws.wrapQBatch,
                 require(weights.wqLayered, layerIndex, "attn_q"),
                 dim,
-                dim,
-                false);
-        projections.projection(
+                dim);
+        store(
                 layer,
                 "attn_k_proj",
                 ws.wrapNormedBatch,
                 ws.wrapKBatch,
                 require(weights.wkLayered, layerIndex, "attn_k"),
                 dim,
-                kvDim,
-                false);
-        projections.projection(
+                kvDim);
+        store(
                 layer,
                 "attn_v_proj",
                 ws.wrapNormedBatch,
                 ws.wrapVBatch,
                 require(weights.wvLayered, layerIndex, "attn_v"),
                 dim,
-                kvDim,
-                false);
+                kvDim);
         layer.task(
                 "attn_qk_norm",
                 Qwen35BatchKernels::fusedQKRmsNormBatchGroup,
@@ -348,18 +359,43 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 true);
     }
 
+    /**
+     * {@code out = w · x} over the chunk. A Q8_0 weight off SIMD-group matrices has only the tiled
+     * GEMM that adds into its output, so the output is zeroed first.
+     */
+    private void store(
+            TaskGraph layer,
+            String name,
+            FloatArray x,
+            FloatArray out,
+            TornadoTensor w,
+            int n,
+            int d) {
+        if (!simdgroup && w.dataType() == DataType.Q8_0) {
+            layer.task(
+                    name + "_zero",
+                    Lfm2BatchKernels::zeroRows,
+                    context,
+                    state.workspace.batchStartPosHolder,
+                    out,
+                    d);
+            projections.projection(layer, name, x, out, w, n, d, true);
+        } else {
+            projections.projection(layer, name, x, out, w, n, d, false);
+        }
+    }
+
     /** The gated short convolution over the chunk, rows in order, into {@code wrapXBatch}. */
     private void shortConvBranch(TaskGraph layer, int layerIndex) {
         var ws = state.workspace;
-        projections.projection(
+        store(
                 layer,
                 "conv_in_proj",
                 ws.wrapNormedBatch,
                 ws.wrapSsmQkvBatch,
                 require(weights.convInProj, layerIndex, "shortconv.in_proj"),
                 config.dim(),
-                config.shortConvProjectionDim(),
-                false);
+                config.shortConvProjectionDim());
         layer.task(
                 "conv",
                 Lfm2BatchKernels::shortConvBatch,
@@ -470,6 +506,29 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
             int n,
             int d) {
         var ws = state.workspace;
+        if (!simdgroup) {
+            layer.task(
+                    name,
+                    switch (w.dataType()) {
+                        case Q4_K -> TransformerComputeKernelsQ4_K::groupedExpertTiledBatchQ4_K;
+                        case Q5_K -> TransformerComputeKernelsQ5_K::groupedExpertTiledBatchQ5_K;
+                        case Q6_K -> TransformerComputeKernelsQ6_K::groupedExpertTiledBatchQ6_K;
+                        default ->
+                                throw new UnsupportedOperationException(
+                                        "no batched lfm2moe expert GEMM for " + w.dataType());
+                    },
+                    context,
+                    in,
+                    out,
+                    w.asByteArray(),
+                    ws.wrapMoeTiles,
+                    ws.wrapMoeSortedToken,
+                    gather,
+                    n,
+                    d,
+                    TILED_LOCAL);
+            return;
+        }
         layer.task(
                 name,
                 switch (w.dataType()) {
@@ -579,6 +638,23 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
 
     // ── worker grids ──────────────────────────────────────────────────────────
 
+    /** The grid of a grouped expert GEMM to {@code d} outputs of a tensor in {@code type}. */
+    private WorkerGrid groupedWorker(DataType type, int d, int maxTiles) {
+        if (simdgroup) {
+            int threads = GroupedExpertSimdgroupKernels.THREADS;
+            return WorkerGridFactory.genericWorker(((d + 63) / 64) * maxTiles * threads, threads);
+        }
+        int colTile =
+                switch (type) {
+                    case Q4_K -> TransformerComputeKernelsQ4_K.colTile();
+                    case Q5_K -> TransformerComputeKernelsQ5_K.colTile();
+                    default -> TransformerComputeKernelsQ6_K.colTile();
+                };
+        int subTiles = TransformerComputeKernelsQ4_K.GROUPED_SUB_TILES;
+        return WorkerGridFactory.genericWorker(
+                maxTiles * subTiles * ((d + colTile - 1) / colTile) * TILED_LOCAL, TILED_LOCAL);
+    }
+
     @Override
     public void updateGridScheduler(GridScheduler scheduler) {
         WorkerGrid rmsReduce =
@@ -621,13 +697,13 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
         WorkerGrid group =
                 WorkerGridFactory.genericWorker(
                         Qwen35MoeBatchKernels.GROUP_THREADS, Qwen35MoeBatchKernels.GROUP_THREADS);
-        int threads = GroupedExpertSimdgroupKernels.THREADS;
         int hidden = config.expertHiddenDim();
-        WorkerGrid gateUp =
-                WorkerGridFactory.genericWorker(((hidden + 63) / 64) * maxTiles * threads, threads);
-        WorkerGrid down =
+        WorkerGrid zero =
                 WorkerGridFactory.genericWorker(
-                        ((config.dim() + 63) / 64) * maxTiles * threads, threads);
+                        ((batchSize * Math.max(config.dim(), config.shortConvProjectionDim()) + 255)
+                                        / 256)
+                                * 256,
+                        256);
         WorkerGrid swiglu =
                 WorkerGridFactory.genericWorker(((assignments * hidden + 255) / 256) * 256, 256);
         WorkerGrid combine =
@@ -649,6 +725,9 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 scheduler.addWorkerGrid(
                         prefix + "attn_v_proj",
                         projections.worker(weights.wvLayered[layer], config.kvDim()));
+                for (String store : new String[] {"attn_q_proj", "attn_k_proj", "attn_v_proj"}) {
+                    scheduler.addWorkerGrid(prefix + store + "_zero", zero);
+                }
                 scheduler.addWorkerGrid(prefix + "attn_qk_norm", qkNorm);
                 scheduler.addWorkerGrid(prefix + "attn_rope", rope);
                 scheduler.addWorkerGrid(prefix + "attn_kv_append", kvAppend);
@@ -661,6 +740,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                         prefix + "conv_in_proj",
                         projections.worker(
                                 weights.convInProj[layer], config.shortConvProjectionDim()));
+                scheduler.addWorkerGrid(prefix + "conv_in_proj_zero", zero);
                 scheduler.addWorkerGrid(prefix + "conv", conv);
                 scheduler.addWorkerGrid(
                         prefix + "conv_out_proj",
@@ -671,17 +751,31 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 scheduler.addWorkerGrid(prefix + "moe_router", router);
                 scheduler.addWorkerGrid(prefix + "moe_select", select);
                 scheduler.addWorkerGrid(prefix + "moe_group", group);
+                WorkerGrid gateUp =
+                        groupedWorker(weights.ffnGateExps[layer].dataType(), hidden, maxTiles);
                 scheduler.addWorkerGrid(prefix + "moe_gate", gateUp);
                 scheduler.addWorkerGrid(prefix + "moe_up", gateUp);
                 scheduler.addWorkerGrid(prefix + "moe_swiglu", swiglu);
-                scheduler.addWorkerGrid(prefix + "moe_down", down);
+                scheduler.addWorkerGrid(
+                        prefix + "moe_down",
+                        groupedWorker(
+                                weights.ffnDownExps[layer].dataType(), config.dim(), maxTiles));
                 scheduler.addWorkerGrid(prefix + "moe_combine", combine);
             } else {
                 TornadoTensor w1 = weights.w1Layered[layer];
-                if (projections.fusedGateUp(w1, weights.w3Layered[layer])) {
+                if (projections.fusedGateUp(w1, weights.w3Layered[layer]) && simdgroup) {
                     scheduler.addWorkerGrid(
                             prefix + "batch_ffn_gate_up",
                             projections.gateUpWorker(w1, config.hiddenDim()));
+                } else if (projections.fusedGateUp(w1, weights.w3Layered[layer])) {
+                    // The tiled fused kernels: Q8_0's applies the norm as it stages, the others
+                    // after the norm's own task.
+                    if (w1.dataType() != DataType.Q8_0) {
+                        scheduler.addWorkerGrid(prefix + "batch_ffn_rms_apply", rmsApply);
+                    }
+                    scheduler.addWorkerGrid(
+                            prefix + "batch_ffn_gate_up",
+                            projections.worker(w1, config.hiddenDim()));
                 } else {
                     scheduler.addWorkerGrid(prefix + "batch_ffn_rms_apply", rmsApply);
                     scheduler.addWorkerGrid(

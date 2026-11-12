@@ -215,8 +215,104 @@ public class Lfm2BatchKernelAccelTest {
 
     private void assertMixtureMatchesHost(DataType gateType, DataType downType) {
         assumeTrue(
-                "no 32-lane shuffle on this device",
+                "no SIMD-group matrices on this device",
                 SchedulerDetectionService.isSubgroupShuffle32Supported());
+        assertMixtureMatchesHost(gateType, downType, false);
+    }
+
+    /** The grouped tiled kernels the batched prefill takes off Metal (CUDA). */
+    @Test
+    public void mixtureTiledQ4_K() {
+        assertMixtureMatchesHost(DataType.Q4_K, DataType.Q4_K, true);
+    }
+
+    @Test
+    public void mixtureTiledQ5_KGateUpQ6_KDown() {
+        assertMixtureMatchesHost(DataType.Q5_K, DataType.Q6_K, true);
+    }
+
+    @Test
+    public void mixtureTiledQ4_KGateUpQ5_KDown() {
+        assertMixtureMatchesHost(DataType.Q4_K, DataType.Q5_K, true);
+    }
+
+    private static void addGrouped(
+            TaskGraph graph,
+            KernelContext context,
+            String name,
+            DataType type,
+            FloatArray in,
+            FloatArray out,
+            ByteArray w,
+            IntArray tiles,
+            IntArray sorted,
+            int gather,
+            int n,
+            int d,
+            boolean tiled) {
+        if (tiled) {
+            graph.task(
+                    name,
+                    switch (type) {
+                        case Q4_K -> TransformerComputeKernelsQ4_K::groupedExpertTiledBatchQ4_K;
+                        case Q5_K -> TransformerComputeKernelsQ5_K::groupedExpertTiledBatchQ5_K;
+                        default -> TransformerComputeKernelsQ6_K::groupedExpertTiledBatchQ6_K;
+                    },
+                    context,
+                    in,
+                    out,
+                    w,
+                    tiles,
+                    sorted,
+                    gather,
+                    n,
+                    d,
+                    TILED_LOCAL);
+        } else {
+            graph.task(
+                    name,
+                    switch (type) {
+                        case Q4_K -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ4_K;
+                        case Q5_K -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ5_K;
+                        default -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ6_K;
+                    },
+                    context,
+                    in,
+                    out,
+                    w,
+                    tiles,
+                    sorted,
+                    gather,
+                    n,
+                    d);
+        }
+    }
+
+    private static final int TILED_LOCAL = 128;
+
+    private static WorkerGrid groupedGrid(DataType type, int d, int maxTiles, boolean tiled) {
+        if (!tiled) {
+            int threads = GroupedExpertSimdgroupKernels.THREADS;
+            return grid(((d + 63) / 64) * maxTiles * threads, threads);
+        }
+        int colTile =
+                switch (type) {
+                    case Q4_K -> TransformerComputeKernelsQ4_K.colTile();
+                    case Q5_K -> TransformerComputeKernelsQ5_K.colTile();
+                    default -> TransformerComputeKernelsQ6_K.colTile();
+                };
+        return grid(
+                maxTiles
+                        * TransformerComputeKernelsQ4_K.GROUPED_SUB_TILES
+                        * ((d + colTile - 1) / colTile)
+                        * TILED_LOCAL,
+                TILED_LOCAL);
+    }
+
+    private void assertMixtureMatchesHost(DataType gateType, DataType downType, boolean tiled) {
+        assumeTrue(
+                "the router and selection reduce with 32-lane shuffles",
+                org.beehive.jitllm.backend.tornado.layers.Lfm2Layers.shuffle32());
         int gateElements = EXPERTS * HIDDEN * DIM;
         byte[] gate = blocks(gateType, gateElements);
         byte[] up = blocks(gateType, gateElements);
@@ -292,82 +388,37 @@ public class Lfm2BatchKernelAccelTest {
                                 tiles,
                                 EXPERTS,
                                 USED,
-                                ROWS)
-                        .task(
-                                "gate",
-                                switch (gateType) {
-                                    case Q4_K ->
-                                            GroupedExpertSimdgroupKernels::groupedExpertGemmQ4_K;
-                                    case Q5_K ->
-                                            GroupedExpertSimdgroupKernels::groupedExpertGemmQ5_K;
-                                    default -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ6_K;
-                                },
-                                context,
-                                dx,
-                                hidden,
-                                dGate,
-                                tiles,
-                                sorted,
-                                1,
-                                DIM,
-                                HIDDEN)
-                        .task(
-                                "up",
-                                switch (gateType) {
-                                    case Q4_K ->
-                                            GroupedExpertSimdgroupKernels::groupedExpertGemmQ4_K;
-                                    case Q5_K ->
-                                            GroupedExpertSimdgroupKernels::groupedExpertGemmQ5_K;
-                                    default -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ6_K;
-                                },
-                                context,
-                                dx,
-                                hiddenUp,
-                                dUp,
-                                tiles,
-                                sorted,
-                                1,
-                                DIM,
-                                HIDDEN)
-                        .task(
-                                "swiglu",
-                                Lfm2BatchKernels::siluMultiplyAssignments,
-                                context,
-                                info,
-                                hidden,
-                                hiddenUp,
-                                HIDDEN,
-                                USED)
-                        .task(
-                                "down",
-                                switch (downType) {
-                                    case Q4_K ->
-                                            GroupedExpertSimdgroupKernels::groupedExpertGemmQ4_K;
-                                    case Q5_K ->
-                                            GroupedExpertSimdgroupKernels::groupedExpertGemmQ5_K;
-                                    default -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ6_K;
-                                },
-                                context,
-                                hidden,
-                                expertOut,
-                                dDown,
-                                tiles,
-                                sorted,
-                                0,
-                                HIDDEN,
-                                DIM)
-                        .task(
-                                "combine",
-                                Lfm2BatchKernels::combineBatch,
-                                context,
-                                info,
-                                expertOut,
-                                position,
-                                mix,
-                                dResidual,
-                                DIM,
-                                USED)
-                        .transferToHost(DataTransferMode.EVERY_EXECUTION, dResidual, ids, mix);
+                                ROWS);
+        addGrouped(
+                graph, context, "gate", gateType, dx, hidden, dGate, tiles, sorted, 1, DIM, HIDDEN,
+                tiled);
+        addGrouped(
+                graph, context, "up", gateType, dx, hiddenUp, dUp, tiles, sorted, 1, DIM, HIDDEN,
+                tiled);
+        graph.task(
+                "swiglu",
+                Lfm2BatchKernels::siluMultiplyAssignments,
+                context,
+                info,
+                hidden,
+                hiddenUp,
+                HIDDEN,
+                USED);
+        addGrouped(
+                graph, context, "down", downType, hidden, expertOut, dDown, tiles, sorted, 0,
+                HIDDEN, DIM, tiled);
+        graph.task(
+                        "combine",
+                        Lfm2BatchKernels::combineBatch,
+                        context,
+                        info,
+                        expertOut,
+                        position,
+                        mix,
+                        dResidual,
+                        DIM,
+                        USED)
+                .transferToHost(DataTransferMode.EVERY_EXECUTION, dResidual, ids, mix);
         GridScheduler scheduler = new GridScheduler();
         int routerJobs = ROWS * EXPERTS;
         scheduler.addWorkerGrid(
@@ -389,11 +440,10 @@ public class Lfm2BatchKernelAccelTest {
         scheduler.addWorkerGrid(
                 "moe.group",
                 grid(Qwen35MoeBatchKernels.GROUP_THREADS, Qwen35MoeBatchKernels.GROUP_THREADS));
-        int threads = GroupedExpertSimdgroupKernels.THREADS;
-        scheduler.addWorkerGrid("moe.gate", grid((HIDDEN / 64) * maxTiles * threads, threads));
-        scheduler.addWorkerGrid("moe.up", grid((HIDDEN / 64) * maxTiles * threads, threads));
+        scheduler.addWorkerGrid("moe.gate", groupedGrid(gateType, HIDDEN, maxTiles, tiled));
+        scheduler.addWorkerGrid("moe.up", groupedGrid(gateType, HIDDEN, maxTiles, tiled));
         scheduler.addWorkerGrid("moe.swiglu", grid(assignments * HIDDEN, 256));
-        scheduler.addWorkerGrid("moe.down", grid((DIM / 64) * maxTiles * threads, threads));
+        scheduler.addWorkerGrid("moe.down", groupedGrid(downType, DIM, maxTiles, tiled));
         scheduler.addWorkerGrid("moe.combine", grid(ROWS * DIM, 256));
         run(graph, scheduler);
 

@@ -54,11 +54,11 @@ public class Lfm2BatchedPrefillParityAccelTest extends CpuGpuParity {
         assertParityBatched(Fixture.LFM2_5_24B_A2B_Q4_K_XL, FP16, 512);
     }
 
-    /** The batched prefill is Metal's so far; the provider refuses it elsewhere by name. */
+    /** The batched prefill runs on Metal and CUDA; the provider refuses OpenCL by name. */
     private static void assumeBatchedPrefillHere() {
         org.junit.Assume.assumeTrue(
-                "the lfm2moe batched prefill runs on Metal",
-                org.beehive.jitllm.runtime.backend.BackendId.METAL.equals(
+                "the lfm2moe batched prefill does not run on OpenCL",
+                !org.beehive.jitllm.runtime.backend.BackendId.OPENCL.equals(
                         org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
                                 .backend()));
     }

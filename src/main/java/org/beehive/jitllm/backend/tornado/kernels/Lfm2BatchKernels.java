@@ -190,6 +190,19 @@ public final class Lfm2BatchKernels {
     }
 
     /**
+     * {@code out[i] = 0} over the chunk's {@code rows · width} elements: the store a tiled batch
+     * GEMM that only accumulates is turned into, where no overwriting form exists.
+     */
+    public static void zeroRows(
+            KernelContext context, IntArray batchInfo, FloatArray out, int width) {
+        int i = context.globalIdx;
+        if (i >= batchInfo.get(1) * width) {
+            return;
+        }
+        out.set(i, 0.0f);
+    }
+
+    /**
      * {@code gate[a·H + i] = silu(gate[a·H + i]) · up[a·H + i]} over the chunk's {@code rows ·
      * used} assignments, in sorted order: a lane per element.
      */

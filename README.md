@@ -303,10 +303,9 @@ single-token path, so their logits differ slightly from single-token prefill; us
 `--no-batch-prefill` when you need the single-token numbers. A model split across GPUs
 (`--devices`) keeps single-token prefill unless you ask for batches.
 
-Every model family but LFM2 has a batched prefill on CUDA: Llama, Mistral, Qwen2 /
-DeepSeek-R1-Distill-Qwen, Qwen3, Qwen3.5 / 3.6 / 3.8, Phi-3, Granite, Gemma 4, Devstral, Qwen2-MoE
-and GLM-4.7-Flash. LFM2 (`lfm2moe`) has its batched prefill on Metal only, so far; on CUDA it
-reads the prompt one token at a time.
+Every model family has a batched prefill on CUDA: Llama, Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen,
+Qwen3, Qwen3.5 / 3.6 / 3.8, Phi-3, Granite, Gemma 4, Devstral, Qwen2-MoE, GLM-4.7-Flash and LFM2
+(`lfm2moe`), whose batched prefill on CUDA runs tiled FP32 kernels rather than the tensor cores.
 Attention runs as tensor-core GEMMs over the FP16 key/value cache; Q8_0, Q4_0 and Q4_K weights are
 decoded to FP16 for the projection GEMMs (kept decoded when the model's FP16 weights fit in 6 GB
 and, under a configured `--gpu-memory` budget, one copy per session fits beside everything else;
