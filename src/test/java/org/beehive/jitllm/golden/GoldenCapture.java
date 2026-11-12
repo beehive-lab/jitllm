@@ -66,10 +66,18 @@ public final class GoldenCapture {
         /**
          * For a batched plan whose layer graphs are {@code batchPrefillLayer_<i>} (Qwen3), the
          * kernel each layer's graph compiles for the projection tasks of {@link
-         * #PREFILL_PROJECTION_WEIGHTS}, by layer and then task. Empty otherwise.
+         * #PREFILL_PROJECTION_WEIGHTS}, by layer and then task. Empty otherwise. These are the
+         * primary family's graphs; a chunk of up to {@link #narrowPrefillRows} tokens runs on the
+         * narrow family's instead.
          */
         public final java.util.Map<Integer, java.util.Map<String, String>>
                 prefillProjectionKernels = new java.util.TreeMap<>();
+
+        /**
+         * For a batched plan, the rows of its narrow prefill family, which runs every chunk of up
+         * to that many tokens; 0 when it has none. Example: 128 at batch 512.
+         */
+        public int narrowPrefillRows;
 
         /**
          * For a plan whose decode layer graphs are {@code layer_<g>} (Qwen3.5), the kernel each
@@ -244,7 +252,9 @@ public final class GoldenCapture {
                                 .gridSchedulerIfAvailable(plan);
                 if (plan
                         instanceof
-                        org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode) {
+                        org.beehive.jitllm.backend.tornado.TornadoVMMasterPlanBatchPrefillDecode
+                                        batched) {
+                    result.narrowPrefillRows = batched.narrowPrefillRows();
                     // Only the tasks this family's batched graphs hold: another family records
                     // nothing under a qwen35 task name rather than failing the capture.
                     for (String task : RECORDED_BATCHED_TASKS) {
