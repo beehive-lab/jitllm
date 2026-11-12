@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.workspace;
 import org.beehive.jitllm.backend.tornado.kv.TornadoKvStore;
 import org.beehive.jitllm.runtime.kv.KvLease;
 import org.beehive.jitllm.runtime.kv.KvStorage;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
@@ -76,17 +77,8 @@ public final class TornadoWorkspaces {
     public static void privateKeyValueFP32(TornadoWorkspace workspace, int elements) {
         workspace.wrapKeyCache = new FloatArray(elements);
         workspace.wrapValueCache = new FloatArray(elements);
-        workspace.wrapKeyCache.init(0.f);
-        workspace.wrapValueCache.init(0.f);
     }
 
-    /**
-     * A zeroed float array.
-     *
-     * <p>Here rather than {@code floats(n).init(0)} at the call site for the reason every allocator
-     * in this class is here: naming a TornadoVM type outside the backend is Rule 1, and its
-     * allowlist is empty. A family says how large; the backend says what with.
-     */
     /**
      * The Q8-block activation the packed-integer projections read, four quants per int with one
      * scale and one sum of quants per block of 32, sized for the widest activation any of them
@@ -98,10 +90,17 @@ public final class TornadoWorkspaces {
         workspace.wrapXbSums = ints(widest / 32);
     }
 
+    /**
+     * A zeroed float array. A new TornadoVM array is already zeroed, since its memory comes from
+     * {@code Arena.allocate}; writing the zeros again costs a {@code MemorySegment} store per
+     * element, which some native-image builds run through a method handle.
+     *
+     * <p>Here rather than {@code floats(n).init(0)} at the call site for the reason every allocator
+     * in this class is here: naming a TornadoVM type outside the backend is Rule 1, and its
+     * allowlist is empty. A family says how large; the backend says what with.
+     */
     public static FloatArray zeroedFloats(int size) {
-        FloatArray array = new FloatArray(size);
-        array.init(0.f);
-        return array;
+        return new FloatArray(size);
     }
 
     /**
@@ -120,24 +119,16 @@ public final class TornadoWorkspaces {
         }
     }
 
-    /** Zeroes an already-allocated key/value pair — the families that re-zero after binding. */
-    public static void zeroKeyValue(TornadoWorkspace workspace) {
-        workspace.wrapKeyCache.init(0.f);
-        workspace.wrapValueCache.init(0.f);
-    }
-
     /** Sets the active batch size an MoE plan reads. */
     public static void activeBatchSize(TornadoWorkspace workspace, int size) {
         workspace.activeBatchSizeHolder.init(size);
     }
 
     /**
-     * A zeroed half-precision array. The zero is a {@code HalfFloat}, which is backend vocabulary.
+     * A zeroed half-precision array; already zeroed when new, as {@link #zeroedFloats} explains.
      */
     public static HalfFloatArray zeroedHalfFloats(int size) {
-        HalfFloatArray array = new HalfFloatArray(size);
-        array.init(new uk.ac.manchester.tornado.api.types.HalfFloat(0.f));
-        return array;
+        return new HalfFloatArray(size);
     }
 
     /** The staging activation for an FP16 model. */
@@ -151,6 +142,19 @@ public final class TornadoWorkspaces {
         int q8BlockBytes = 34;
         int blocksNeeded = (size + blockSize - 1) / blockSize;
         workspace.embeddingX = new ByteArray(blocksNeeded * q8BlockBytes);
+    }
+
+    /**
+     * Makes a Q8_0 model's byte staging row hold an {@code embedding} row of {@code size} values:
+     * F16 needs 2 bytes per value, more than a Q8_0 row, and a UD-Q8_K_XL file keeps its embeddings
+     * in F16 beside Q8_0 layers. Called by the graphs that bind the row, before they bind it.
+     */
+    public static void stagingHolds(TornadoWorkspace workspace, DataType embedding, int size) {
+        if (embedding == DataType.F16
+                && workspace.embeddingX instanceof ByteArray bytes
+                && bytes.getSize() < size * Short.BYTES) {
+            workspace.embeddingX = new ByteArray(size * Short.BYTES);
+        }
     }
 
     /**

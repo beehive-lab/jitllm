@@ -138,8 +138,7 @@ public class Qwen3 extends AbstractModel {
     /** Qwen3's cache is sized by its value-head dimension, not by {@code dim}. */
     @Override
     public int kvCacheDim() {
-        Qwen3Configuration config = configuration();
-        return config.numberOfHeadsValue() * config.numberOfKeyValueHeads();
+        return configuration().kvDim();
     }
 
     @Override
@@ -151,12 +150,6 @@ public class Qwen3 extends AbstractModel {
         state.latestToken =
                 tokenizer.getSpecialTokens().get(chatFormat.chatTokens().tStartHeader());
         return state;
-    }
-
-    /** Its layer graphs chain the KV buffers by predecessor name, so a shared table stays fresh. */
-    @Override
-    public boolean supportsSharedKvStorage() {
-        return true;
     }
 
     /** Its own identity, stated rather than derived. */

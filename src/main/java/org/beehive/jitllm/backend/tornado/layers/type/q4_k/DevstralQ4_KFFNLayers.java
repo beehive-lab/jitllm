@@ -4,8 +4,11 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayer
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.layers.devstral.DevstralLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
+import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
@@ -42,19 +45,18 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
 
     public DevstralQ4_KFFNLayers(
-            String taskGraphName,
             State state,
             LlamaTornadoWeights weights,
             DevstralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         setupFFNLayers();
     }
 
     // @formatter:off
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        var layerTaskGraphName = "layer_" + layerIndex;
+        var layerTaskGraphName = GraphNames.layer(layerIndex);
         TaskGraph unifiedLayer = new TaskGraph(layerTaskGraphName);
 
         String wrapXSrc = predecessorGraphName(layerIndex);
@@ -65,20 +67,20 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
         }
         Object[] layerWeights = {
             weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-            weights.wqLayered[layerIndex].asByteArray(),
-            weights.wkLayered[layerIndex].asByteArray(),
-            weights.wvLayered[layerIndex].asByteArray(),
-            weights.woLayered[layerIndex].asByteArray(),
+            weights.wqLayered[layerIndex].deviceArray(),
+            weights.wkLayered[layerIndex].deviceArray(),
+            weights.wvLayered[layerIndex].deviceArray(),
+            weights.woLayered[layerIndex].deviceArray(),
             weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-            weights.w1Layered[layerIndex].asByteArray(),
-            weights.w2Layered[layerIndex].asByteArray(),
-            weights.w3Layered[layerIndex].asByteArray()
+            weights.w1Layered[layerIndex].deviceArray(),
+            weights.w2Layered[layerIndex].deviceArray(),
+            weights.w3Layered[layerIndex].deviceArray()
         };
         String weightSrc = weightSourceGraphName(layerIndex);
         if (weightSrc != null) {
-            unifiedLayer.consumeFromDevice(weightSrc, layerWeights);
+            bindLayerWeights(unifiedLayer, weightSrc, layerIndex, layerWeights);
         } else {
-            unifiedLayer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights);
+            UnifiedMemoryWeights.upload(unifiedLayer, state.workspace, layerWeights);
         }
         unifiedLayer = configureLayerDataTransfers(unifiedLayer, layerIndex);
         bindSharedScratch(unifiedLayer, layerIndex);
@@ -229,6 +231,19 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
                     config.dim(),
                     config.hiddenDim(),
                     PACKED_LOCAL);
+        } else if (simdgroup(weights.w1Layered[layerIndex])
+                && simdgroup(weights.w3Layered[layerIndex])) {
+            // Both Q4_K on Metal: gate, up and SwiGLU in one launch, the activation read once.
+            unifiedLayer.task(
+                    "ffn_gate_up",
+                    TransformerComputeKernelsQ4_K::fusedFFNGateUpSiLUQ4_KSimdgroup,
+                    context,
+                    state.workspace.wrapXb,
+                    state.workspace.wrapHb,
+                    weights.w1Layered[layerIndex].asByteArray(),
+                    weights.w3Layered[layerIndex].asByteArray(),
+                    config.dim(),
+                    config.hiddenDim());
         } else {
             // Gate and up separately, for the same reason as q/k/v, then SwiGLU as its own task.
             matvec(
@@ -346,32 +361,39 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
                 packed
                         ? PackedActivationTasks.quantizeWorker(config.dim())
                         : WorkerGridFactory.createRmsNormWorker(config.dim(), 256);
-        WorkerGrid dimRowsWorker = WorkerGridFactory.genericWorker(config.dim() * local, local);
         WorkerGrid hiddenRowsWorker =
                 WorkerGridFactory.genericWorker(config.hiddenDim() * local, local);
-        WorkerGrid qProjWorker = WorkerGridFactory.genericWorker(config.qDim() * local, local);
-        WorkerGrid kvProjWorker = WorkerGridFactory.genericWorker(config.kvDim() * local, local);
         // SwiGLU is elementwise over the hidden dimension, one thread per element.
         WorkerGrid siluWorker = WorkerGridFactory.genericWorker(config.hiddenDim(), 256);
 
         for (int i = 0; i < config.numberOfLayers(); i++) {
-            String l = "layer_" + i + ".";
+            String l = GraphNames.layer(i) + ".";
             tornadoForwardScheduler.addWorkerGrid(l + "attn_rms_apply", rmsApplyWorker);
-            tornadoForwardScheduler.addWorkerGrid(l + "q_proj", qProjWorker);
-            tornadoForwardScheduler.addWorkerGrid(l + "k_proj", kvProjWorker);
-            tornadoForwardScheduler.addWorkerGrid(l + "v_proj", kvProjWorker);
-            tornadoForwardScheduler.addWorkerGrid(l + "attn_output_proj", dimRowsWorker);
+            tornadoForwardScheduler.addWorkerGrid(
+                    l + "q_proj", worker(weights.wqLayered[i], config.qDim(), local));
+            tornadoForwardScheduler.addWorkerGrid(
+                    l + "k_proj", worker(weights.wkLayered[i], config.kvDim(), local));
+            tornadoForwardScheduler.addWorkerGrid(
+                    l + "v_proj", worker(weights.wvLayered[i], config.kvDim(), local));
+            tornadoForwardScheduler.addWorkerGrid(
+                    l + "attn_output_proj", worker(weights.woLayered[i], config.dim(), local));
             // This path applies the FFN norm as its own task rather than folding it into the
             // gate/up kernel, so it needs its own worker grid — the same one attn_rms_apply uses.
             tornadoForwardScheduler.addWorkerGrid(l + "ffn_rms_apply", rmsApplyWorker);
             if (fusedGateUp(i)) {
                 tornadoForwardScheduler.addWorkerGrid(l + "ffn_gate_up", hiddenRowsWorker);
+            } else if (simdgroup(weights.w1Layered[i]) && simdgroup(weights.w3Layered[i])) {
+                tornadoForwardScheduler.addWorkerGrid(
+                        l + "ffn_gate_up", worker(weights.w1Layered[i], config.hiddenDim(), local));
             } else {
-                tornadoForwardScheduler.addWorkerGrid(l + "ffn_gate", hiddenRowsWorker);
-                tornadoForwardScheduler.addWorkerGrid(l + "ffn_up", hiddenRowsWorker);
+                tornadoForwardScheduler.addWorkerGrid(
+                        l + "ffn_gate", worker(weights.w1Layered[i], config.hiddenDim(), local));
+                tornadoForwardScheduler.addWorkerGrid(
+                        l + "ffn_up", worker(weights.w3Layered[i], config.hiddenDim(), local));
                 tornadoForwardScheduler.addWorkerGrid(l + "ffn_silu", siluWorker);
             }
-            tornadoForwardScheduler.addWorkerGrid(l + "ffn_down_proj", dimRowsWorker);
+            tornadoForwardScheduler.addWorkerGrid(
+                    l + "ffn_down_proj", worker(weights.w2Layered[i], config.dim(), local));
             if (packed) {
                 tornadoForwardScheduler.addWorkerGrid(
                         l + "attn_out_quantize",
@@ -383,6 +405,28 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
         }
 
         return tornadoForwardScheduler;
+    }
+
+    /**
+     * Whether {@code w} runs the SIMD-group Q4_K kernel: a Q4_K weight, the floating-point path, on
+     * a device with a verified 32-lane shuffle (Metal).
+     */
+    private boolean simdgroup(TornadoTensor w) {
+        return !packed()
+                && w.dataType() == DataType.Q4_K
+                && SchedulerDetectionService.isSubgroupShuffle32Supported();
+    }
+
+    /** The grid of a projection of {@code w} into {@code rows} outputs. */
+    private WorkerGrid worker(TornadoTensor w, int rows, int local) {
+        if (simdgroup(w)) {
+            int groups =
+                    (rows + TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS - 1)
+                            / TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS;
+            int threads = 32 * TransformerComputeKernelsQ4_K.SIMDGROUPS;
+            return WorkerGridFactory.genericWorker(groups * threads, threads);
+        }
+        return WorkerGridFactory.genericWorker(rows * local, local);
     }
 
     /**
@@ -447,7 +491,17 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
             }
             return;
         }
-        if (type == DataType.Q4_K) {
+        if (simdgroup(w)) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsQ4_K::matrixVectorQ4_KSimdgroup,
+                    context,
+                    x,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d);
+        } else if (type == DataType.Q4_K) {
             graph.task(
                     name,
                     TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_K,
@@ -539,7 +593,17 @@ public class DevstralQ4_KFFNLayers extends DevstralLayerTaskGraphs {
             }
             return;
         }
-        if (type == DataType.Q4_K) {
+        if (simdgroup(w)) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsQ4_K::matrixVectorWithResidualQ4_KSimdgroup,
+                    context,
+                    x,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d);
+        } else if (type == DataType.Q4_K) {
             graph.task(
                     name,
                     TransformerComputeKernelsQ4_K::matrixVectorGenericWithResidualQ4_K,

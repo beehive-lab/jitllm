@@ -16,9 +16,9 @@ import org.beehive.jitllm.runtime.tensor.DataType;
  * <ul>
  *   <li>{@link #supportedDataTypes()} is admission: the representation the model reports, that of
  *       its short-convolution projections, which is Q4_K in the 24B.
- *   <li>{@link #nativeTensorTypes()} is what the graphs decode per tensor without materializing:
- *       K-quant experts, Q8_0 attention, dense layers and vocabulary, F32 norms, routers and
- *       convolution taps.
+ *   <li>Every tensor is kept as the file stores it, and each task is selected by the
+ *       representation of the tensor it reads: K-quant experts, Q8_0 attention, dense layers and
+ *       vocabulary, F32 norms, routers and convolution taps.
  * </ul>
  *
  * <p>{@code STANDARD} and sequential {@code PREFILL_DECODE}, which is the same layer graphs with
@@ -37,11 +37,6 @@ public final class Lfm2PlanProvider implements TornadoPlanProvider {
     @Override
     public Set<DataType> supportedDataTypes() {
         return Set.of(DataType.Q4_K, DataType.Q8_0);
-    }
-
-    @Override
-    public Set<DataType> nativeTensorTypes() {
-        return Set.of(DataType.F32, DataType.Q4_K, DataType.Q5_K, DataType.Q6_K, DataType.Q8_0);
     }
 
     @Override

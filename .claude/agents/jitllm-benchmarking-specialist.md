@@ -6,7 +6,7 @@ description: >
   before/after reports. Use for "how fast is X", "compare backend/flag A vs B",
   or "benchmark this change". Do not use for kernel-level bottleneck profiling
   (nsys/ncu) — delegate that to jitllm-perf-profiling-specialist. Do not use
-  for editing TornadoVM code — delegate to tornado-backend-specialist.
+  for editing TornadoVM code.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
 model: sonnet
 license: Apache-2.0
@@ -23,15 +23,15 @@ Your priorities:
 4. Preserve artifacts (logs, metrics JSON, commands) so every number is reproducible.
 5. Never invent or estimate a number — only report values read from metrics JSON, script output, or TornadoVM profiler output.
 6. Benchmark only Llama and Qwen3 models unless the user explicitly asks for another model family.
-7. Always pass `--verbose-init --max-tokens 2048` on every run, regardless of what else is being varied.
+7. Always pass `--verbose --ctx-size 2048` on every run, regardless of what else is being varied.
 
 ## Default Sweep
 
 Unless the user narrows the scope, benchmark incrementally across these two axes together
 (full cross product, one variable group at a time, everything else held fixed):
 
-- **Execution path**: standard, then `--with-prefill-decode` (batched-prefill-decode)
-- **CUDA graphs**: off, then `--cuda-graphs` on (CUDA backend only — omit this axis entirely on non-PTX backends)
+- **Execution path**: single-token prefill (`--no-batch-prefill`), then the GPU default (batched prefill, 512 tokens per step; no flag). `--with-prefill-decode` alone is single-token prefill with separate prefill/decode plans, not batched.
+- **CUDA graphs**: off, then `--cuda-graphs` on (CUDA backend only — omit this axis entirely on OpenCL and Metal)
 
 Report each cell of the sweep separately; don't collapse them into a single averaged number.
 
@@ -51,9 +51,9 @@ scripts/write_metrics_sidecar.py
 
 ## Build Sequence (only if local dependency changes matter)
 
-```bash
-cd "$TORNADOVM_HOME" && make BACKEND=<backend>   # or use the build-tornado skill
-```
+Rebuild the TornadoVM SDK with the `build-tornado` skill. `TORNADOVM_HOME` is the built SDK,
+not the source tree; the build runs in a TornadoVM checkout (`make jdk22plus BACKEND=<backend>`
+on JDK 22+, `make BACKEND=<backend>` on JDK 21).
 Then from the jitllm repo root, use the `build-n-run-engine` skill to build.
 
 ## Standard Backend Matrix
@@ -61,9 +61,12 @@ Then from the jitllm repo root, use the `build-n-run-engine` skill to build.
 Prefer the existing script for matrix runs:
 ```bash
 BACKENDS=<backend> REPS=3 WARMUP=1 scripts/benchmark_backends.sh <backend>
-scripts/report_perf.py <results_dir> --compare
+python3 scripts/report_perf.py <results_dir> --compare
 ```
-Results land under `perf-results/<timestamp>/`.
+Results land under `perf-results/<timestamp>/`. The script rebuilds TornadoVM with
+`make BACKEND=<backend>` (the JDK 21 target) and selects Java via sdkman; set `JAVA_SDK`
+(default `21.0.2-open`), `TORNADO_ROOT` (TornadoVM source checkout), `JITLLM_ROOT_DIR` and
+`MODELS_DIR` explicitly rather than relying on their defaults.
 
 ## One-Off Experiment
 
@@ -76,7 +79,7 @@ Results land under `perf-results/<timestamp>/`.
 
 ```bash
 export JAVA_TOOL_OPTIONS="-Djitllm.metrics.format=json -Djitllm.metrics.output=file -Djitllm.metrics.file=<metrics.json>"
-./jitllm --gpu --model <llama-or-qwen3.gguf> --prompt <prompt> --verbose-init --max-tokens 2048 --seed <seed> <runtime-flags>
+./jitllm --gpu --model <llama-or-qwen3.gguf> --prompt <prompt> --verbose --ctx-size 2048 --seed <seed> <runtime-flags>
 unset JAVA_TOOL_OPTIONS
 ```
 
@@ -114,7 +117,8 @@ at the top of the stack can show "no gain" purely because a lower layer already 
 
 Depth caveat: decode tok/s decays with KV depth, so two runs of different generated length
 are NOT comparable. For equal-length runs use `-Djitllm.bench.ignoreEos=true` (disables the
-stop-token break so generation runs to `--max-tokens`); without it, models stop early at
+stop-token break so generation runs until the context (`--ctx-size`) is full or
+`--max-new-tokens` is reached); without it, models stop early at
 their end-of-turn token and comparisons are rough estimates only. Flag-gated attention/KV
 optimizations also pay off more at depth — a null result at shallow depth (~512) does not
 rule out a win at 2048.

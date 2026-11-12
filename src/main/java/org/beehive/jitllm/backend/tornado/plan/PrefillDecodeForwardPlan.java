@@ -7,6 +7,7 @@ import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.plan.components.PrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.layout.PrefillDecodeForwardTaskGraphLayout;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.model.Model;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -18,40 +19,45 @@ import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
  * <p>Graph layout:
  *
  * <pre>
- *   [0]      activation   ← prefillDecodeActivation()
- *   [1.N]   layers       ← prefillDecodeTransformerLayers()
- *   [N+1]    logits       ← decodeLogits(String)
+ *   [0 .. P-1]     prepacking   ← the session's prepacker, only with weight prepacking
+ *   [P]            activation   ← prefillDecodeActivation()
+ *   [P+1 .. P+N]   layers       ← prefillDecodeTransformerLayers()
+ *   [P+N+1]        logits       ← decodeLogits(String)
  * </pre>
  *
- * <p>During prefill, the master plan executes graphs 0.N (skipping logits). During decode, all N+2
- * graphs run.
+ * <p>The prepacking graphs initialize the plan, once. During prefill, the master plan executes the
+ * activation and the layers (skipping logits); during decode, all N+2 inference graphs. The indices
+ * come from {@link PrefillDecodeForwardTaskGraphLayout}.
  */
 // @formatter:on
 public class PrefillDecodeForwardPlan extends ForwardPlan {
 
     private final PrefillDecodeForwardTaskGraphLayout taskGraphLayout;
 
-    public PrefillDecodeForwardPlan(Model model, PrefillDecodeForwardPlanComponents components) {
+    public PrefillDecodeForwardPlan(
+            Model model, PrefillDecodeForwardPlanComponents components, WeightPrepacker prepacker) {
+        super(prepacker);
         int N = model.configuration().numberOfLayers();
-        this.taskGraphLayout = new PrefillDecodeForwardTaskGraphLayout(N);
-
-        List<ImmutableTaskGraph> all = new ArrayList<>(N + 2);
+        List<ImmutableTaskGraph> inference = new ArrayList<>(N + 2);
         GridScheduler scheduler = new GridScheduler();
 
         ActivationTaskGraph act = components.prefillDecodeActivation();
-        all.add(act.getImmutableTaskGraph());
+        inference.add(act.getImmutableTaskGraph());
         act.updateGridScheduler(scheduler);
 
         TransformerLayerTaskGraphs layers = components.prefillDecodeTransformerLayers();
-        all.addAll(layers.getFFNLayerImmutableTaskGraphs());
+        inference.addAll(layers.getFFNLayerImmutableTaskGraphs());
         layers.updateGridScheduler(scheduler);
 
         AbstractLogitsTaskGraph logits =
                 components.decodeLogits(layers.getLastFFNLayerTaskGraphID());
-        all.add(logits.getImmutableTaskGraph());
+        inference.add(logits.getImmutableTaskGraph());
         logits.updateGridScheduler(scheduler);
 
-        setGraphs(all, scheduler);
+        // The prepacking graphs, when the plan uses weight prepacking, come first: built from the
+        // weights the layer graphs above registered. The layout puts every inference index after.
+        int prepackingGraphs = assembleGraphs(inference, scheduler);
+        this.taskGraphLayout = new PrefillDecodeForwardTaskGraphLayout(N, prepackingGraphs);
     }
 
     public PrefillDecodeForwardTaskGraphLayout getTaskGraphLayout() {

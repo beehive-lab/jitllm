@@ -4,6 +4,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedQ8_0LogitsLayer;
 import org.beehive.jitllm.backend.tornado.layers.Qwen35BatchDecodeActivation;
 import org.beehive.jitllm.backend.tornado.layers.Qwen35BatchFeedForward;
@@ -57,7 +58,7 @@ public class Qwen35PlanComponents
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
@@ -68,26 +69,24 @@ public class Qwen35PlanComponents
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new PackedQ8_0LogitsLayer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new PackedQ8_0LogitsLayer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── Sequential prefill/decode ─────────────────────────────────────────────
 
     @Override
     public ActivationTaskGraph prefillDecodeActivation() {
-        return new Activation("decodeActivation", state, weights, config);
+        return new Activation(GraphNames.DECODE_ACTIVATION, state, weights, config);
     }
 
     @Override
     public TransformerLayerTaskGraphs prefillDecodeTransformerLayers() {
         return new Qwen35FFNLayers(
-                "qwen35FFN",
                 state,
                 weights,
                 config,
                 schedulerType,
-                "decodeActivation",
+                GraphNames.DECODE_ACTIVATION,
                 0,
                 config.numberOfLayers(),
                 feedForward());
@@ -105,9 +104,10 @@ public class Qwen35PlanComponents
      *
      * <p>A Q8_0 or Q4_0 embedding is decoded on the device: the host copies each token's raw row,
      * which costs nothing next to decoding the chunk in Java before the JIT has compiled that loop.
-     * Any other embedding the host decodes straight into the FP32 batch carrier, and this graph
-     * transfers it and runs the shared pass-through, which exists to give TornadoVM a task to
-     * attach the transfer to.
+     * An F16 file's F16 embedding is copied raw too, into the FP16 carrier, and converted on the
+     * device, as {@code TornadoBatchPrefillPass.stage} stages it. Any other embedding the host
+     * decodes straight into the FP32 batch carrier, and this graph transfers it and runs the shared
+     * pass-through, which exists to give TornadoVM a task to attach the transfer to.
      */
     @Override
     public ActivationTaskGraph batchPrefillActivation(int batchSize) {
@@ -115,7 +115,8 @@ public class Qwen35PlanComponents
         if (embedding == DataType.Q8_0 || embedding == DataType.Q4_0) {
             return new BatchPrefillQ8DeviceActivation(state, config, batchSize, embedding);
         }
-        return new BatchPrefillActivation(state, config, batchSize, true);
+        boolean f16Staged = embedding == DataType.F16 && "FP16".equals(config.quantization());
+        return new BatchPrefillActivation(state, config, batchSize, !f16Staged);
     }
 
     @Override
@@ -138,14 +139,7 @@ public class Qwen35PlanComponents
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
         return new Qwen35FFNLayersBatchDecode(
-                "qwen35FFN",
-                state,
-                weights,
-                config,
-                schedulerType,
-                0,
-                config.numberOfLayers(),
-                feedForward());
+                state, weights, config, schedulerType, 0, config.numberOfLayers(), feedForward());
     }
 
     // ── A family built on this one ────────────────────────────────────────────
@@ -169,12 +163,11 @@ public class Qwen35PlanComponents
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers(int firstLayer, int endLayer) {
         return new Qwen35FFNLayersGrouped(
-                "qwen35FFN",
                 state,
                 weights,
                 config,
                 schedulerType,
-                "activationUpdate",
+                GraphNames.ACTIVATION_UPDATE,
                 firstLayer,
                 endLayer,
                 feedForward());
@@ -196,13 +189,6 @@ public class Qwen35PlanComponents
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers(int firstLayer, int endLayer) {
         return new Qwen35FFNLayersBatchDecode(
-                "decode",
-                state,
-                weights,
-                config,
-                schedulerType,
-                firstLayer,
-                endLayer,
-                feedForward());
+                state, weights, config, schedulerType, firstLayer, endLayer, feedForward());
     }
 }

@@ -11,14 +11,18 @@ import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
-import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.layers.MlxPrefillProjections.LayerWeights;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor;
-import org.beehive.jitllm.backend.tornado.tensor.PackedTiles;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.inference.state.LlamaState;
+import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
@@ -40,6 +44,10 @@ public class MlxPrefillProjectionsTest {
 
     private static final int GROUP = MlxPrefill.GROUP;
 
+    /** The smallest Llama a session state can be built for. */
+    private static final LlamaConfiguration TINY_LLAMA =
+            new LlamaConfiguration("Q8_0", 32, 32, 1, 1, 1, 32, 16, 1e-5f, 10000f);
+
     // ── fixtures: GGUF blocks written by hand ────────────────────────────────
 
     /** Q8_0 blocks: an FP16 scale and 32 signed bytes each. */
@@ -55,7 +63,7 @@ public class MlxPrefillProjectionsTest {
                 bytes.set(b * 34 + 2 + j, values[b][j]);
             }
         }
-        return new Q8_0TornadoTensor(bytes);
+        return new Q8_0TornadoTensor(bytes, Shape.of(scales.length * GROUP));
     }
 
     /**
@@ -74,7 +82,7 @@ public class MlxPrefillProjectionsTest {
                 bytes.set(b * 18 + 2 + j, (byte) (nibbles[b][j] | (nibbles[b][j + 16] << 4)));
             }
         }
-        return new Q4_0TornadoTensor(bytes);
+        return new Q4_0TornadoTensor(bytes, Shape.of(scales.length * GROUP));
     }
 
     /** Every signed byte at least once across the blocks, extremes first. */
@@ -216,10 +224,10 @@ public class MlxPrefillProjectionsTest {
         }
     }
 
-    // ── stacking ─────────────────────────────────────────────────────────────
+    // ── contiguous copies ────────────────────────────────────────────────────
 
     @Test
-    public void stackedTensorsKeepTheirOrderAndGroups() {
+    public void contiguousTensorsKeepTheirOrderAndGroups() {
         byte[][] a = signedRamp(2);
         byte[][] b = new byte[1][GROUP];
         Arrays.fill(b[0], (byte) 5);
@@ -228,24 +236,98 @@ public class MlxPrefillProjectionsTest {
                         MlxPrefill.Projections.AFFINE,
                         q8(new float[] {0.5f, 0.25f}, a),
                         q8(new float[] {2f}, b));
-        assertEquals("three groups, in the order stacked", 3, m.scales().getSize());
+        assertEquals("three groups, in the order copied", 3, m.scales().getSize());
         assertEquals(2f, m.scales().get(2).getFloat32(), 0f);
         assertEquals(10f, reconstruct(m, 2 * GROUP + 7), 0f);
         assertEquals(0.5f * a[0][1], reconstruct(m, 1), 0f);
         assertEquals(0.25f * a[1][4], reconstruct(m, GROUP + 4), 0f);
     }
 
+    /**
+     * Tensors longer than the repack's bulk-copy chunk, back to back: every element, scale and
+     * bias, bit for bit, across the chunk and tensor boundaries.
+     */
     @Test
-    public void anF16MatrixIsTheModelsOwnArrayUnlessStacked() {
+    public void largeTensorsAreRepackedAndDecodedBitForBitAcrossChunks() {
+        java.util.Random random = new java.util.Random(42);
+        int[] lengths = {2 * 4096 + 5, 3};
+        float[][] scales = new float[lengths.length][];
+        byte[][][] values = new byte[lengths.length][][];
+        int[][][] nibbles = new int[lengths.length][][];
+        Q8_0TornadoTensor[] q8 = new Q8_0TornadoTensor[lengths.length];
+        Q4_0TornadoTensor[] q4 = new Q4_0TornadoTensor[lengths.length];
+        for (int t = 0; t < lengths.length; t++) {
+            scales[t] = new float[lengths[t]];
+            values[t] = new byte[lengths[t]][GROUP];
+            nibbles[t] = new int[lengths[t]][GROUP];
+            for (int b = 0; b < lengths[t]; b++) {
+                scales[t][b] = h((random.nextFloat() - 0.5f) * 8f);
+                random.nextBytes(values[t][b]);
+                for (int j = 0; j < GROUP; j++) {
+                    nibbles[t][b][j] = random.nextInt(16);
+                }
+            }
+            q8[t] = q8(scales[t], values[t]);
+            q4[t] = q4(scales[t], nibbles[t]);
+        }
+        HalfFloatArray q8Decoded = MlxPrefillProjections.decode(q8);
+        HalfFloatArray q4Decoded = MlxPrefillProjections.decode(q4);
+        MlxPrefillProjections.Matrix q8Affine = MlxPrefillProjections.affine(q8);
+        MlxPrefillProjections.Matrix q4Affine = MlxPrefillProjections.affine(q4);
+
+        int group = 0;
+        for (int t = 0; t < lengths.length; t++) {
+            for (int b = 0; b < lengths[t]; b++, group++) {
+                float s = scales[t][b];
+                String where = "tensor " + t + " block " + b;
+                assertEquals(
+                        where,
+                        Float.floatToFloat16(s),
+                        q8Affine.scales().get(group).getHalfFloatValue());
+                assertEquals(
+                        where,
+                        Float.floatToFloat16(-128f * s),
+                        q8Affine.biases().get(group).getHalfFloatValue());
+                assertEquals(
+                        where,
+                        Float.floatToFloat16(-8f * s),
+                        q4Affine.biases().get(group).getHalfFloatValue());
+                for (int j = 0; j < GROUP; j++) {
+                    int e = group * GROUP + j;
+                    assertEquals(
+                            where + " element " + j,
+                            Float.floatToFloat16(s * values[t][b][j]),
+                            q8Decoded.get(e).getHalfFloatValue());
+                    assertEquals(
+                            where + " element " + j,
+                            Float.floatToFloat16(s * (nibbles[t][b][j] - 8)),
+                            q4Decoded.get(e).getHalfFloatValue());
+                    assertEquals(
+                            where + " element " + j,
+                            s * values[t][b][j],
+                            reconstruct(q8Affine, e),
+                            0f);
+                    assertEquals(
+                            where + " element " + j,
+                            s * (nibbles[t][b][j] - 8),
+                            reconstruct(q4Affine, e),
+                            0f);
+                }
+            }
+        }
+    }
+
+    @Test
+    public void anF16MatrixIsTheModelsOwnArrayUnlessMadeContiguous() {
         FP16TornadoTensor wo = fp16(64);
         assertSame(
                 "a single F16 tensor is multiplied as it is",
                 wo.asHalfFloatArray(),
                 MlxPrefillProjections.matrix(MlxPrefill.Projections.FP16, wo).fp16());
-        HalfFloatArray stacked =
+        HalfFloatArray contiguous =
                 MlxPrefillProjections.matrix(MlxPrefill.Projections.FP16, fp16(64), fp16(32))
                         .fp16();
-        assertEquals(96, stacked.getSize());
+        assertEquals(96, contiguous.getSize());
     }
 
     // ── which model weights the prefill graphs bind ──────────────────────────
@@ -258,11 +340,11 @@ public class MlxPrefillProjectionsTest {
                         MlxPrefillProjections.notBound(
                                 new MlxPrefill(DataType.F16, MlxPrefill.Projections.FP16), layer));
         for (TornadoTensor t : List.of(layer.qkv()[0], layer.qkv()[1], layer.qkv()[2])) {
-            assertTrue("stacked QKV is a copy", notBound.containsKey(t));
+            assertTrue("contiguous QKV is a copy", notBound.containsKey(t));
             assertTrue("as its native array too", notBound.containsKey(t.asHalfFloatArray()));
         }
         for (TornadoTensor t : layer.gateUp()) {
-            assertTrue("stacked gate/up is a copy", notBound.containsKey(t.asHalfFloatArray()));
+            assertTrue("contiguous gate/up is a copy", notBound.containsKey(t.asHalfFloatArray()));
         }
         assertTrue("wo is bound as it is", !notBound.containsKey(layer.wo().asHalfFloatArray()));
         assertTrue("w2 is bound as it is", !notBound.containsKey(layer.w2().asHalfFloatArray()));
@@ -306,11 +388,12 @@ public class MlxPrefillProjectionsTest {
 
     @Test
     public void packedProjectionsAreRefusedByName() {
-        Q4_0TornadoTensor packed =
-                new Q4_0TornadoTensor(new ByteArray(18 * 4), new PackedTiles(4, 32));
+        Q4_0TornadoTensor packed = new Q4_0TornadoTensor(new ByteArray(18 * 4), Shape.of(32, 4));
         LayerWeights layer =
                 new LayerWeights(
                         new TornadoTensor[] {packed}, packed, new TornadoTensor[] {packed}, packed);
+        State state = new LlamaState(TINY_LLAMA, -1);
+        state.workspace.prepacking = WeightPrepacking.of(List.of(packed));
         UnsupportedOperationException e =
                 assertThrows(
                         UnsupportedOperationException.class,
@@ -318,7 +401,7 @@ public class MlxPrefillProjectionsTest {
                                 MlxPrefillProjections.of(
                                         new MlxPrefill(
                                                 DataType.Q4_0, MlxPrefill.Projections.AFFINE),
-                                        null,
+                                        state,
                                         null,
                                         null,
                                         16,
@@ -345,7 +428,7 @@ public class MlxPrefillProjectionsTest {
                 () ->
                         MlxPrefillProjections.of(
                                 new MlxPrefill(DataType.Q8_0, MlxPrefill.Projections.AFFINE),
-                                null,
+                                new LlamaState(TINY_LLAMA, -1),
                                 null,
                                 null,
                                 16,
@@ -374,7 +457,7 @@ public class MlxPrefillProjectionsTest {
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private static FP16TornadoTensor fp16(int elements) {
-        return new FP16TornadoTensor(new HalfFloatArray(elements));
+        return new FP16TornadoTensor(new HalfFloatArray(elements), Shape.of(elements));
     }
 
     private static LayerWeights llamaStyle(DataType type) {

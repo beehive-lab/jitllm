@@ -17,7 +17,11 @@ runs:
       run: |
         source "$HOME/.sdkman/bin/sdkman-init.sh"
         if ! sdk list java | grep -q "${{ inputs.java_version }}"; then
-          sdk install java "${{ inputs.java_version }}"
+          # `sdk install` asks whether to make the new JDK the default. A runner has no one to
+          # answer, and under `bash -e` the read failing on end of input ends the step after the
+          # JDK is installed. Answer no: the runner's default JDK stays as it is, and the
+          # `sdk use` below selects this one for the job.
+          echo n | sdk install java "${{ inputs.java_version }}"
         fi
         sdk use java "${{ inputs.java_version }}"
         echo "JAVA_HOME=$HOME/.sdkman/candidates/java/${{ inputs.java_version }}" >> $GITHUB_ENV

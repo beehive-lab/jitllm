@@ -36,7 +36,9 @@ public enum GGMLType {
     IQ4_NL(Integer.MAX_VALUE),
     IQ3_S(Integer.MAX_VALUE),
     IQ2_S(Integer.MAX_VALUE),
-    IQ4_XS(Integer.MAX_VALUE),
+    IQ4_XS(
+            GGMLType.FLOAT16_BYTES + Short.BYTES + GGMLType.QK_K / 64 + GGMLType.QK_K / 2,
+            GGMLType.QK_K),
 
     I8(Byte.BYTES),
     I16(Short.BYTES),

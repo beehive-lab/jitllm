@@ -2,9 +2,11 @@ package org.beehive.jitllm.backend.tornado.memory;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.beehive.jitllm.backend.tornado.NativePrefillSupport;
+import org.beehive.jitllm.backend.tornado.layers.FP16Projections;
+import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.plan.layout.TornadoGraphTopology;
+import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.backend.Device;
@@ -14,6 +16,7 @@ import org.beehive.jitllm.runtime.memory.MemoryComponent;
 import org.beehive.jitllm.runtime.memory.MemoryPlan;
 import org.beehive.jitllm.runtime.memory.WeightFootprint;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
+import org.beehive.jitllm.runtime.policy.StorageOptions;
 
 /**
  * The Tornado backend's memory-plan model — <b>the only place that knows what a task graph
@@ -50,24 +53,15 @@ import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
  * this table was first bisected). Its decode graphs now consume the copy the prefill graphs
  * uploaded, so the families that <b>bind</b> weights is one, not two — {@code
  * Configuration.weightBindingFamilies} — and what batched prefill adds is its staging, padded to
- * 128-row tensor-core tiles. A native (library) prefill family still keeps stacked projection
- * copies beside the originals; those are their own component.
+ * 128-row tensor-core tiles. A native (library) prefill family also needs copies of its projection
+ * weights beside the originals, kept for the session or refilled per chunk; they are part of the
+ * batched prefill workspace.
  */
 public final class TornadoMemoryModel {
 
     /** Layer graph families for this policy — <b>read from the layout, not declared here</b>. */
     private static int layerGraphFamilies(ExecutionPolicy policy, int layers) {
-        return TornadoGraphTopology.layerGraphFamilies(executionMode(policy), layers);
-    }
-
-    /** The backend's execution mode for a policy — the same mapping plan selection makes. */
-    private static ExecutionMode executionMode(ExecutionPolicy policy) {
-        if (policy.phaseStrategy() != ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
-            return ExecutionMode.STANDARD;
-        }
-        return policy.prefillBatchSize() > 1
-                ? ExecutionMode.BATCH_PREFILL_DECODE
-                : ExecutionMode.PREFILL_DECODE;
+        return TornadoGraphTopology.layerGraphFamilies(ExecutionMode.of(policy), layers);
     }
 
     private TornadoMemoryModel() {}
@@ -94,8 +88,8 @@ public final class TornadoMemoryModel {
      */
     // @formatter:on
     private static boolean nativePrefillSelected(ExecutionPolicy policy) {
-        return executionMode(policy) == ExecutionMode.BATCH_PREFILL_DECODE
-                && NativePrefillSupport.nativeProjections(policy);
+        return ExecutionMode.of(policy) == ExecutionMode.BATCH_PREFILL_DECODE
+                && Target.of(policy).cublas();
     }
 
     /**
@@ -120,8 +114,7 @@ public final class TornadoMemoryModel {
                 device,
                 configuredBudgetBytes,
                 KeyValueReservation.singlePrivate(
-                        org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties()
-                                .usesFp16KeyValueCache()));
+                        StorageOptions.fromSystemProperties().usesFp16KeyValueCache()));
     }
 
     /**
@@ -164,6 +157,28 @@ public final class TornadoMemoryModel {
             long configuredBudgetBytes,
             KeyValueReservation keyValue,
             java.util.Optional<BatchPrefillWorkspace> prefill) {
+        return predict(
+                weights, config, policy, device, configuredBudgetBytes, keyValue, prefill, 0);
+    }
+
+    /**
+     * {@link #predict(WeightFootprint, Configuration, ExecutionPolicy, Device, long,
+     * KeyValueReservation, java.util.Optional)} for a model whose plans prepack projections: each
+     * session's plan prepacks them on the device through one scratch buffer as large as the largest
+     * ({@code WeightPrepacker}), and keeps it for the plan's lifetime.
+     *
+     * @param prepackScratchBytes the largest prepacked projection's bytes, or 0 when the plan
+     *     prepacks none
+     */
+    public static MemoryPlan predict(
+            WeightFootprint weights,
+            Configuration config,
+            ExecutionPolicy policy,
+            Device device,
+            long configuredBudgetBytes,
+            KeyValueReservation keyValue,
+            java.util.Optional<BatchPrefillWorkspace> prefill,
+            long prepackScratchBytes) {
         long header = device.nativeArrayHeaderBytes();
         int layoutFamilies = layerGraphFamilies(policy, config.numberOfLayers());
         // How many of those families upload the weights, which is what costs memory. A family
@@ -235,9 +250,22 @@ public final class TornadoMemoryModel {
                             2 * header));
         }
 
+        // ── the prepack scratch, for a plan that prepacks its projections ────
+        // One per session, because each session's plan appends its own prepacking graphs; the
+        // scratch
+        // and the flag that makes a second prepack a no-op stay on the device with the plan.
+        if (prepackScratchBytes > 0) {
+            components.add(
+                    new MemoryComponent(
+                            "weight prepack scratch",
+                            BufferClass.ACTIVATION_WORKSPACE,
+                            prepackScratchBytes + Integer.BYTES,
+                            keyValue.sessions(),
+                            2L * keyValue.sessions() * header));
+        }
+
         // ── batch staging, only when a batched capacity is configured ────────
-        if (policy.phaseStrategy() == ExecutionPolicy.PhaseStrategy.PREFILL_DECODE
-                && policy.prefillBatchSize() > 1) {
+        if (ExecutionMode.of(policy) == ExecutionMode.BATCH_PREFILL_DECODE) {
             components.add(
                     new MemoryComponent(
                             "batch staging",
@@ -257,31 +285,22 @@ public final class TornadoMemoryModel {
         //   decode layer graphs      0.1 -> 560.1 MiB   (+560.0, five weights x 28 layers)
         //   fallback family         absent -> 0.0 MiB   (three carriers, nothing uploaded)
         //
-        // The stacked copies do not show up as growth in the prefill family because they displace
+        // Kept copies do not show up as growth in the prefill family because they displace
         // exactly the five originals it stopped reading. Those five reappear in the decode family,
         // which now uploads them itself -- so the cost of the native path is one extra copy of the
-        // projection weights, plus the staging, and that is what these two components describe.
+        // projection weights, plus the staging. The copies are the family's batched-prefill
+        // workspace (kept for the session, or one scratch refilled per chunk); the staging is here.
         boolean nativePrefill = nativePrefillSelected(policy);
-        long stackedPerLayer = config.nativeStackedProjectionBytesPerLayer();
-        if (nativePrefill && stackedPerLayer > 0) {
+        long staging =
+                nativePrefill ? config.nativeAttentionStagingBytes(policy.prefillBatchSize()) : 0;
+        if (staging > 0) {
             components.add(
                     new MemoryComponent(
-                            "stacked projection weights (native prefill)",
-                            BufferClass.WEIGHTS_PER_LAYER,
-                            stackedPerLayer * config.numberOfLayers(),
+                            "fused attention staging (native prefill)",
+                            BufferClass.BATCH_STAGING,
+                            staging,
                             1,
-                            // Two stacked arrays per layer, each its own device buffer.
-                            2L * config.numberOfLayers() * header));
-            long staging = config.nativeAttentionStagingBytes(policy.prefillBatchSize());
-            if (staging > 0) {
-                components.add(
-                        new MemoryComponent(
-                                "fused attention staging (native prefill)",
-                                BufferClass.BATCH_STAGING,
-                                staging,
-                                1,
-                                4 * header));
-            }
+                            4 * header));
         }
 
         // ── control and result carriers ──────────────────────────────────────
@@ -304,7 +323,7 @@ public final class TornadoMemoryModel {
         // Tensor-core attention operands, split-K partial products and the FP16 projections a
         // Q8_0 (or native F16) prefill decodes: a resident copy of every one, or one scratch
         // decoded again for each chunk, whichever the residency resolves to.
-        boolean batched = executionMode(policy) == ExecutionMode.BATCH_PREFILL_DECODE;
+        boolean batched = ExecutionMode.of(policy) == ExecutionMode.BATCH_PREFILL_DECODE;
         java.util.Optional<BatchPrefillWorkspace> workspace =
                 batched ? prefill : java.util.Optional.empty();
         if (workspace.isPresent()) {
@@ -322,7 +341,7 @@ public final class TornadoMemoryModel {
             BatchPrefillWorkspace ws = workspace.get();
             components.add(
                     new MemoryComponent(
-                            ws.decodesProjections()
+                            ws.hasResidencyChoice()
                                     ? (resident
                                             ? "batched prefill workspace (decoded projections"
                                                     + " resident)"
@@ -348,8 +367,9 @@ public final class TornadoMemoryModel {
         // Its two components are sized from direct allocation evidence, but the driver reservation
         // that evidence sits inside has not been bisected for this path, and the per-layer rule it
         // is added to over-counts a family whose decode graphs consume rather than upload. Both
-        // errors are in the safe direction, and an over-prediction that kept EXACT would be
-        // enforced: only EXACT refuses a load. So this path reports what it is -- conservative.
+        // errors are in the safe direction, and an over-prediction that kept EXACT would be acted
+        // on: an exact plan over budget sets a device default aside. So this path reports what it
+        // is -- conservative.
         // The tensor-core layers' workspace is sized from their own allocation arithmetic, not
         // bisected against measurement, so a plan carrying it is conservative as well.
         MemoryPlan.Confidence confidence =
@@ -357,7 +377,7 @@ public final class TornadoMemoryModel {
                                 && !nativePrefill
                                 && workspace.isEmpty()
                                 && TornadoGraphTopology.verify(
-                                        executionMode(policy), config.numberOfLayers()))
+                                        ExecutionMode.of(policy), config.numberOfLayers()))
                         ? MemoryPlan.Confidence.EXACT
                         : MemoryPlan.Confidence.CONSERVATIVE;
         return new MemoryPlan(
@@ -373,7 +393,7 @@ public final class TornadoMemoryModel {
                         + "; kv "
                         + (keyValue.fp16() ? "FP16" : "FP32")
                         + keyValueAssumption(keyValue)
-                        + (nativePrefill && stackedPerLayer > 0 ? "; native prefill" : "")
+                        + (staging > 0 ? "; native prefill" : "")
                         + "; native-array header "
                         + header
                         + " B");
@@ -418,9 +438,7 @@ public final class TornadoMemoryModel {
         // scratch is the larger, so it is now sized from what is actually allocated.
         long scalarAttention = (long) config.numberOfHeads() * config.contextLength();
         long splitKvAttention =
-                (long) config.numberOfHeads()
-                        * org.beehive.jitllm.inference.state.State.SPLIT_KV
-                        * (config.headSize() + 2L);
+                (long) config.numberOfHeads() * State.SPLIT_KV * (config.headSize() + 2L);
         long floats =
                 dim * 6 // x, xb, xb2, q, and two spare dim-sized activations
                         + hidden * 2 // hb, hb2
@@ -482,12 +500,10 @@ public final class TornadoMemoryModel {
             long others,
             long configuredBudgetBytes,
             int sessions) {
-        if (!workspace.decodesProjections()) {
+        if (!workspace.hasResidencyChoice()) {
             return false;
         }
-        boolean allowed =
-                org.beehive.jitllm.backend.tornado.layers.FP16Projections.resident(
-                        policy, workspace.decodedWeights());
+        boolean allowed = FP16Projections.resident(policy, workspace.residentContiguousSize());
         if (!allowed || policy.decodedProjections() != ExecutionPolicy.DecodedProjections.BACKEND) {
             return allowed;
         }

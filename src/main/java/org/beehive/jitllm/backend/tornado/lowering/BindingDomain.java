@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado.lowering;
 
 import java.util.Objects;
+import org.beehive.jitllm.inference.state.State;
 
 /**
  * The identity of the physical arrays a compiled program is bound to.
@@ -20,10 +21,10 @@ import java.util.Objects;
 public final class BindingDomain {
 
     private final String label;
-    private final org.beehive.jitllm.inference.state.State workspace;
+    private final State workspace;
     private final Object invocationLock = new Object();
 
-    private BindingDomain(String label, org.beehive.jitllm.inference.state.State workspace) {
+    private BindingDomain(String label, State workspace) {
         this.label = label;
         this.workspace = workspace;
     }
@@ -46,8 +47,7 @@ public final class BindingDomain {
      * wrong output rather than an error. That combination is unconstructible here rather than
      * merely discouraged: this refuses it (option 1).
      */
-    public static BindingDomain shareable(
-            String label, org.beehive.jitllm.inference.state.State workspace) {
+    public static BindingDomain shareable(String label, State workspace) {
         Objects.requireNonNull(label, "label");
         Objects.requireNonNull(workspace, "workspace");
         if (workspace.kvLease == null || workspace.kvLease.storage() == null) {
@@ -60,7 +60,7 @@ public final class BindingDomain {
     }
 
     /** The fixed device workspace every session borrowing this domain's program executes in. */
-    public org.beehive.jitllm.inference.state.State workspace() {
+    public State workspace() {
         if (workspace == null) {
             throw new IllegalStateException(
                     "this domain has no workspace; it was minted for a key");

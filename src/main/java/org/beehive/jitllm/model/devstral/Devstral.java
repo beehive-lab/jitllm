@@ -102,12 +102,6 @@ public class Devstral extends AbstractModel {
                 tornadoVMPlan);
     }
 
-    /** Its layer classes bind the paged kernels and chain their buffers by predecessor name. */
-    @Override
-    public boolean supportsSharedKvStorage() {
-        return true;
-    }
-
     /** A state whose KV lives in the lease's shared storage. */
     @Override
     public State createNewState(org.beehive.jitllm.runtime.kv.KvLease lease) {

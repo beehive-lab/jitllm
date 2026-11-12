@@ -11,6 +11,7 @@ import org.beehive.jitllm.runtime.backend.Device;
 import org.beehive.jitllm.runtime.backend.DeviceCapabilities;
 import org.beehive.jitllm.runtime.backend.DeviceId;
 import org.beehive.jitllm.runtime.backend.DeviceResolver;
+import org.beehive.jitllm.runtime.backend.DeviceResolvers;
 import org.junit.Test;
 
 /**
@@ -109,10 +110,14 @@ public class LocalModelsAcceleratorSelectionTest {
 
     @Test
     public void explicitCudaFailsBeforeAnyFileIsTouched() {
-        // On this machine only Metal resolves, so CUDA is always a mismatch — the point under test
-        // is that the failure is UnsupportedOperationException, not a file-system error, which is
-        // only possible if useGpu() ran (and threw) before ModelLoader ever opened NONEXISTENT.
-        ModelOptions options = ModelOptions.builder().backend(BackendId.CUDA).build();
+        // Request a backend other than the one that resolves here, so it is always a mismatch:
+        // CUDA, or OpenCL on a machine whose CUDA device resolves. The point under test is that
+        // the failure is UnsupportedOperationException, not a file-system error, which is only
+        // possible if useGpu() ran (and threw) before ModelLoader ever opened NONEXISTENT.
+        BackendId resolved =
+                DeviceResolvers.discovered().map(r -> r.resolve().backend()).orElse(null);
+        BackendId mismatched = BackendId.CUDA.equals(resolved) ? BackendId.OPENCL : BackendId.CUDA;
+        ModelOptions options = ModelOptions.builder().backend(mismatched).build();
         assertThrows(
                 UnsupportedOperationException.class, () -> LocalModels.load(NONEXISTENT, options));
     }

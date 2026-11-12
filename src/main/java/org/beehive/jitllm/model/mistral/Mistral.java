@@ -119,11 +119,6 @@ public class Mistral extends AbstractModel {
                 tornadoVMPlan);
     }
 
-    @Override
-    public boolean supportsSharedKvStorage() {
-        return true;
-    }
-
     /** A state whose KV lives in the lease's shared storage. */
     @Override
     public State createNewState(org.beehive.jitllm.runtime.kv.KvLease lease) {

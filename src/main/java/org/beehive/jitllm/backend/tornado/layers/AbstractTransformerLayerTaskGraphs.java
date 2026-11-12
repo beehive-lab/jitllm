@@ -2,19 +2,19 @@ package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.stream.IntStream;
-import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
+import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
 import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
-import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -49,23 +49,14 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
      */
     protected final boolean scalarFp16KeyValueReads;
 
-    /**
-     * The MLX batched prefill of this session, when it runs on one ({@link MlxPrefill#resolve}):
-     * the same answer the batched-prefill layers built their graphs from, which is what tells a
-     * decode graph the model weights those graphs do not bind ({@link
-     * #weightsNotProvidedBySource}).
-     */
-    protected final Optional<MlxPrefill> mlxPrefill;
-
     protected AbstractTransformerLayerTaskGraphs(
-            String taskGraphName, State state, W weights, C config, SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config);
+            State state, W weights, C config, SchedulerType schedulerType) {
+        super(state, weights, config);
         this.packedHalf2Attention = state.executionPolicy().packedHalf2Attention();
         this.scalarFp16KeyValueReads = state.executionPolicy().scalarFp16KeyValueReads();
         this.weights = weights;
         this.config = config;
         this.schedulerType = schedulerType;
-        this.mlxPrefill = MlxPrefill.resolve(state.executionPolicy(), weights.dataType(), config);
         // the ffnLayerITGs is initialized on subclasses
         // due to some model-specific values (i.e. in Qwen3)
     }
@@ -115,7 +106,7 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
 
     /** The graph holding {@code layerIndex}, named for the first layer in it. */
     protected String layerGraphName(int layerIndex) {
-        return "layer_" + (layerIndex - (layerIndex - firstLayer) % layersPerGraph());
+        return GraphNames.layer(layerIndex - (layerIndex - firstLayer) % layersPerGraph());
     }
 
     /**
@@ -228,6 +219,19 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
     }
 
     /**
+     * Gives the {@code attn_rms_finalize} and {@code ffn_rms_finalize} tasks of one layer, named
+     * {@code prefix + "attn_rms_finalize"}, their one thread, when the layer has them. The kernel
+     * works on thread 0 only.
+     */
+    protected void addRmsFinalizeWorkers(GridScheduler scheduler, String prefix) {
+        if (shouldUseFinalNormalization()) {
+            WorkerGrid single = WorkerGridFactory.createSingleWorker();
+            scheduler.addWorkerGrid(prefix + "attn_rms_finalize", single);
+            scheduler.addWorkerGrid(prefix + "ffn_rms_finalize", single);
+        }
+    }
+
+    /**
      * RMS-reduction kernel for the {@code *_rms_reduce} tasks.
      *
      * <p>{@code reductionOneBlockWithLayer} splits the sum of squares across workgroups and then
@@ -286,30 +290,6 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
 
     // ── Binding a layer's weights from the batched-prefill graph that uploaded them ──────────
 
-    /**
-     * Weights that {@code weightSourceGraphName} names as the producer but that no task in that
-     * graph reads, so it never uploads them and this graph has to.
-     *
-     * <p>Empty unless the batched prefill runs on MLX. Its graphs then read MLX's forms of the
-     * projections — stacked F16 copies, or the affine repack or FP16 copies of Q8_0 and Q4_0 — and
-     * bind the model's own projection only where they multiply it as it is; see {@link
-     * MlxPrefillProjections#notBound}. Everything else the producer still reads: the norms, and a
-     * family's biases and Q/K norms.
-     */
-    protected Object[] weightsNotProvidedBySource(int layerIndex) {
-        return mlxPrefill
-                .map(mlx -> MlxPrefillProjections.notBound(mlx, mlxLayerWeights(layerIndex)))
-                .orElse(NO_WEIGHTS);
-    }
-
-    /**
-     * Layer {@code layerIndex}'s projections in the grouping the MLX prefill multiplies them in.
-     * Llama's by default: separate Q, K, V, gate and up tensors.
-     */
-    protected MlxPrefillProjections.LayerWeights mlxLayerWeights(int layerIndex) {
-        return MlxPrefillProjections.LayerWeights.of((TornadoWeights) weights, layerIndex);
-    }
-
     // @formatter:off
     /**
      * {@code layerWeights} split into the ones this graph binds from {@code source}, the graph that
@@ -318,9 +298,10 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
      * <p>{@code consumeFromDevice} only aliases a buffer the producer graph really has. TornadoVM
      * builds a graph out of its tasks' argument lists, so a weight the producer declares but passes
      * to no task is never allocated or uploaded there, and consuming it here yields a buffer
-     * nothing ever wrote — silently, with no diagnostic. Whatever {@link
-     * #weightsNotProvidedBySource} names is therefore uploaded here instead. A weight matches by
-     * identity, as a tensor or as its native array.
+     * nothing ever wrote — silently, with no diagnostic. A weight the prefill graphs replaced with
+     * their own copy ({@link WeightBindings#replaced}) is therefore uploaded here instead. Example:
+     * under MLX, Q8_0 projections are read as FP16 copies, so this graph uploads {@code wq}. A
+     * weight matches by identity, as a tensor or as its native array.
      *
      * @param source the producer graph, or {@code null} when this graph uploads every weight
      */
@@ -329,18 +310,11 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
         if (source == null) {
             return new Object[][] {NO_WEIGHTS, layerWeights};
         }
-        Object[] notProvided = weightsNotProvidedBySource(layerIndex);
+        WeightBindings bindings = state.workspace.weightBindings;
         List<Object> consumed = new ArrayList<>(layerWeights.length);
-        List<Object> uploaded = new ArrayList<>(notProvided.length);
+        List<Object> uploaded = new ArrayList<>();
         for (Object w : layerWeights) {
-            boolean provided = true;
-            for (Object n : notProvided) {
-                if (n == w) {
-                    provided = false;
-                    break;
-                }
-            }
-            (provided ? consumed : uploaded).add(w);
+            (bindings.replaced(w) ? uploaded : consumed).add(w);
         }
         return new Object[][] {consumed.toArray(), uploaded.toArray()};
     }
@@ -351,6 +325,7 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
      */
     protected final void bindLayerWeights(
             TaskGraph graph, String source, int layerIndex, Object[] layerWeights) {
+        layerWeights = UnifiedMemoryWeights.consume(graph, state.workspace, layerWeights);
         Object[][] binding = weightBinding(source, layerIndex, layerWeights);
         if (binding[0].length > 0) {
             graph.consumeFromDevice(source, binding[0]);
@@ -359,6 +334,37 @@ public abstract class AbstractTransformerLayerTaskGraphs<W extends Weights, C ex
             graph.transferToDevice(
                     uk.ac.manchester.tornado.api.enums.DataTransferMode.FIRST_EXECUTION,
                     binding[1]);
+        }
+    }
+
+    /**
+     * Adds {@code layerWeights} to {@code graph}. A weight another graph already uploaded (see
+     * {@link org.beehive.jitllm.backend.tornado.plan.WeightBindings}) is reused from that graph;
+     * the others are uploaded here and recorded.
+     *
+     * <p>Example: with batched prefill, decode reuses the weights {@code batchPrefillLayer_<i>}
+     * uploaded. Under MLX, prefill does not record the projections MLX replaces with its own
+     * copies, so decode uploads those itself.
+     */
+    protected final void bindLayerWeights(TaskGraph graph, Object[] layerWeights) {
+        layerWeights = UnifiedMemoryWeights.consume(graph, state.workspace, layerWeights);
+        var bindings = state.workspace.weightBindings;
+        java.util.Map<String, List<Object>> consumed = new java.util.LinkedHashMap<>();
+        List<Object> uploaded = new ArrayList<>();
+        for (Object w : layerWeights) {
+            String owner = bindings.owner(w);
+            if (owner == null) {
+                uploaded.add(w);
+            } else {
+                consumed.computeIfAbsent(owner, o -> new ArrayList<>()).add(w);
+            }
+        }
+        consumed.forEach((owner, weights) -> graph.consumeFromDevice(owner, weights.toArray()));
+        if (!uploaded.isEmpty()) {
+            graph.transferToDevice(
+                    uk.ac.manchester.tornado.api.enums.DataTransferMode.FIRST_EXECUTION,
+                    uploaded.toArray());
+            uploaded.forEach(w -> bindings.record(w, graph.getTaskGraphName()));
         }
     }
 

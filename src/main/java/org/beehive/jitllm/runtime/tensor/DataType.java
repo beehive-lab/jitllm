@@ -57,14 +57,14 @@ public enum DataType {
 
     /**
      * 4-bit block quantization, 32 values to a block with one scale. Like the K-quants it is
-     * decoded during compute on the CPU and materialized as {@link #Q8_0} for the GPU.
+     * decoded during compute on the CPU and kept as it is on the GPU, read by its own kernels.
      */
     Q4_0(true),
 
     /**
      * 4-bit block quantization with a per-block minimum as well as a scale: {@code d * q + m}, 32
-     * values to a block. Like {@link #Q4_0} it is decoded during compute on the CPU and
-     * materialized as {@link #Q8_0} for the GPU.
+     * values to a block. Like {@link #Q4_0} it is decoded during compute on the CPU and kept as it
+     * is on the GPU.
      *
      * <p>Here because Qwen3.8-27B mixes it into an otherwise Q4_0 file — the first eight layers'
      * {@code ffn_down} tensors of `Qwen3.8-27B-Q4_0.gguf` are Q4_1.
@@ -72,19 +72,33 @@ public enum DataType {
     Q4_1(true),
 
     /**
-     * 4-bit K-quantization. CPU only, decoded during compute; the GPU materializes {@link #Q8_0}.
+     * 5-bit block quantization, 32 values to a block with one scale: {@code d * (q - 16)}, the
+     * fifth bit of each value packed apart from the low nibbles. Like {@link #Q4_0} it is decoded
+     * during compute on the CPU and kept as it is on the GPU.
+     *
+     * <p>Here because quantizers mix it into K-quant files: `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf`
+     * holds its q, k, output, gate and up projections as Q5_0.
      */
+    Q5_0(true),
+
+    /** 4-bit K-quantization, decoded during compute on the CPU and kept as it is on the GPU. */
     Q4_K(true),
 
-    /**
-     * 5-bit K-quantization. CPU only, decoded during compute; the GPU materializes {@link #Q8_0}.
-     */
+    /** 5-bit K-quantization, decoded during compute on the CPU and kept as it is on the GPU. */
     Q5_K(true),
 
+    /** 6-bit K-quantization, decoded during compute on the CPU and kept as it is on the GPU. */
+    Q6_K(true),
+
     /**
-     * 6-bit K-quantization. CPU only, decoded during compute; the GPU materializes {@link #Q8_0}.
+     * 4-bit non-linear quantization, 256 values to a block in groups of 32 with 6-bit scales:
+     * {@code d * (ls - 32) * kvalues_iq4nl[q]}. Decoded during compute on the CPU and kept as it is
+     * on the GPU.
+     *
+     * <p>Here because quantizers mix it into K-quant files: {@code Qwen3-0.6B-UD-Q4_K_XL.gguf}
+     * holds five layers' q, k, gate and up projections as IQ4_XS.
      */
-    Q6_K(true);
+    IQ4_XS(true);
 
     private final boolean quantized;
 

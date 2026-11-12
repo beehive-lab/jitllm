@@ -1,7 +1,9 @@
 package org.beehive.jitllm.backend.tornado.tensor;
 
 import java.lang.foreign.MemorySegment;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.format.GGMLType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 
 /**
@@ -17,8 +19,7 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
  *   offset 208   d       (fp16)   super-block scale
  * </pre>
  *
- * <p>Decoded inside the dot product by {@link
- * org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K}.
+ * <p>Decoded inside the dot product by {@link TransformerComputeKernelsQ6_K}.
  *
  * <p><b>Why this exists</b>: retaining Q4_K alone was not enough, because a "Q4_K_M" file mixes
  * formats per tensor and per layer — Devstral holds attn_v and ffn_down as Q6_K in half its layers.
@@ -35,12 +36,13 @@ public class Q6_KTornadoTensor extends TornadoTensor {
 
     private final ByteArray tornadoNativeArray;
 
-    public Q6_KTornadoTensor(ByteArray byteArray) {
+    public Q6_KTornadoTensor(ByteArray byteArray, Shape shape) {
+        super(shape);
         this.tornadoNativeArray = byteArray;
     }
 
-    public static Q6_KTornadoTensor fromTornadoMemorySegment(MemorySegment segment) {
-        return new Q6_KTornadoTensor(ByteArray.fromSegmentShallow(segment));
+    public static Q6_KTornadoTensor fromTornadoMemorySegment(MemorySegment segment, Shape shape) {
+        return new Q6_KTornadoTensor(ByteArray.fromSegmentShallow(segment), shape);
     }
 
     @Override

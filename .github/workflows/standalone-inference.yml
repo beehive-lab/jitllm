@@ -159,17 +159,6 @@ jobs:
           configuration: standard
           metrics_file: ${{ runner.temp }}/metrics-${{ inputs.backend }}-qwen2-5-1-5b-fp16-standard.json
 
-      - name: FP16 - Run Phi-3-mini-4k-instruct-fp16.gguf
-        uses: ./.github/actions/run-inference
-        with:
-          backend: ${{ inputs.backend }}
-          model_file: Phi-3-mini-4k-instruct-fp16.gguf
-          model: Phi-3-mini-4k-instruct
-          quantization: F16
-          configuration: standard
-          max_tokens: 32
-          metrics_file: ${{ runner.temp }}/metrics-${{ inputs.backend }}-phi3-mini-fp16-standard.json
-
       - name: FP16 - Run Granite-3.2-2b-instruct-f16.gguf
         # TODO: not yet provisioned under /opt/models on the Mac runner; re-enable once it is.
         if: inputs.backend != 'metal'
@@ -261,17 +250,6 @@ jobs:
           configuration: batch-prefill-decode
           flags: --with-prefill-decode --batch-prefill-size 32
           metrics_file: ${{ runner.temp }}/metrics-${{ inputs.backend }}-qwen3-0-6b-q8-batch-prefill-decode.json
-
-      - name: Q8 - Run Phi-3-mini-4k-instruct-Q8_0.gguf
-        uses: ./.github/actions/run-inference
-        with:
-          backend: ${{ inputs.backend }}
-          model_file: Phi-3-mini-4k-instruct-Q8_0.gguf
-          model: Phi-3-mini-4k-instruct
-          quantization: Q8_0
-          configuration: standard
-          max_tokens: 32
-          metrics_file: ${{ runner.temp }}/metrics-${{ inputs.backend }}-phi3-mini-q8-standard.json
 
       - name: Q8 - Run Qwen2.5-1.5b-instruct-q8_0.gguf
         uses: ./.github/actions/run-inference

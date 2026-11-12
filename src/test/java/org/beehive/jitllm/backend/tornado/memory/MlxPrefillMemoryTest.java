@@ -5,7 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Optional;
-import org.beehive.jitllm.backend.tornado.MlxPrefill;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.model.mistral.MistralConfiguration;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
@@ -32,10 +32,10 @@ import org.junit.Test;
  * allocations, MLX on ({@code --with-native-libraries}) against the JIT kernels:
  *
  * <pre>
- *   weights  representation       JIT        MLX     delta   of which in the decode family
- *   F16      stacked QKV/gate-up  1591.2   2171.2   +580.0   560.1 (wq wk wv w1 w3, 28 layers)
- *   Q8_0     resident FP16        1057.8   1918.1   +860.3   446.4 (every projection)
- *   Q8_0     affine               1057.8   1550.6   +492.8   446.4 (every projection)
+ *   weights  representation           JIT        MLX     delta   of which in the decode family
+ *   F16      contiguous QKV/gate-up   1591.2   2171.2   +580.0   560.1 (wq wk wv w1 w3, 28 layers)
+ *   Q8_0     resident FP16            1057.8   1918.1   +860.3   446.4 (every projection)
+ *   Q8_0     affine                   1057.8   1550.6   +492.8   446.4 (every projection)
  * </pre>
  *
  * <p>The decode family's growth is the model weights the prefill graphs stopped binding, and it is
@@ -107,14 +107,14 @@ public class MlxPrefillMemoryTest {
     @Test
     public void projectionWeightsAreEveryLayersFourProjections() {
         // 28 x (1024 x (2048 + 2 x 1024) + 2048 x 1024 + 3 x 1024 x 3072)
-        assertEquals(440_401_920L, MlxPrefill.projectionWeights(QWEN3_0_6B));
+        assertEquals(440_401_920L, QWEN3_0_6B.projectionWeights());
     }
 
     @Test
-    public void f16StackedCopiesAndStagingMatchTheMeasurement() {
+    public void f16JoinedCopiesAndStagingMatchTheMeasurement() {
         BatchPrefillWorkspace ws =
                 MlxPrefill.workspace(DataType.F16, QWEN3_0_6B, 128, false, false);
-        assertFalse("F16 decodes nothing, so residency is not a choice", ws.decodesProjections());
+        assertFalse("F16 decodes nothing, so residency is not a choice", ws.hasResidencyChoice());
         assertPredicts("Qwen3-0.6B F16 MLX workspace", 580.0, ws.residentBytes());
     }
 
@@ -122,8 +122,8 @@ public class MlxPrefillMemoryTest {
     public void quantizedFormsMatchTheMeasurement() {
         BatchPrefillWorkspace ws =
                 MlxPrefill.workspace(DataType.Q8_0, QWEN3_0_6B, 128, false, false);
-        assertTrue(ws.decodesProjections());
-        assertEquals(MlxPrefill.projectionWeights(QWEN3_0_6B), ws.decodedWeights());
+        assertTrue(ws.hasResidencyChoice());
+        assertEquals(QWEN3_0_6B.projectionWeights(), ws.residentContiguousSize());
         assertPredicts("Qwen3-0.6B Q8_0 resident FP16", 860.3, ws.bytes(true));
         assertPredicts("Qwen3-0.6B Q8_0 affine", 492.8, ws.bytes(false));
     }
@@ -141,7 +141,7 @@ public class MlxPrefillMemoryTest {
         long fused =
                 MlxPrefill.workspace(DataType.F16, QWEN3_0_6B, 128, true, true).residentBytes();
         assertEquals(
-                "the stacked copies, 560 MiB, are all the difference",
+                "the contiguous copies, 560 MiB, are all the difference",
                 560.0,
                 mib(split - fused),
                 0.01);
@@ -154,7 +154,7 @@ public class MlxPrefillMemoryTest {
     /** Mistral-7B-v0.3 Q8_0: per-layer projections and norms, and the two vocabulary tables. */
     private static final WeightFootprint MISTRAL_7B_Q8_0 =
             new WeightFootprint(
-                    MlxPrefill.projectionWeights(MISTRAL_7B) * 34 / 32 + 32L * 2 * 4096 * 4,
+                    MISTRAL_7B.projectionWeights() * 34 / 32 + 32L * 2 * 4096 * 4,
                     32 * 9,
                     2L * 32768 * 4096 * 34 / 32,
                     3);
@@ -180,7 +180,7 @@ public class MlxPrefillMemoryTest {
     }
 
     @Test
-    public void mistral7bQ8MlxIsRefusedBeforeAllocationWhereTheJitKernelsFit() {
+    public void mistral7bQ8MlxExceedsTheBudgetAtItsLowerBoundWhereTheJitKernelsFit() {
         BatchPrefillWorkspace mlx =
                 MlxPrefill.workspace(DataType.Q8_0, MISTRAL_7B, 2048, false, false);
         // Its FP16 copies (13 GiB) exceed the backend's resident allowance, so the residency

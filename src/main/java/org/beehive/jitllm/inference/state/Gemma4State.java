@@ -185,7 +185,7 @@ public final class Gemma4State extends State {
                                     * org.beehive.jitllm.backend.tornado.kernels
                                             .Gemma4AttentionKernels.TC_STAGE_HALVES);
         }
-        this.workspace.weightsF16Scratch =
+        this.workspace.contiguousF16WeightsScratch =
                 TornadoWorkspaces.halfFloats(2 * config.maxFeedForwardLength() * config.dim());
         // A chunk's activation in int8 blocks for the int8 GEMMs over Q8_0 weights: a byte per
         // element and a scale per 32, at the widest input any projection reads.
@@ -348,9 +348,8 @@ public final class Gemma4State extends State {
             workspace.wrapKeyCacheFP16 = TornadoWorkspaces.zeroedHalfFloats(totalCacheElements);
             workspace.wrapValueCacheFP16 = TornadoWorkspaces.zeroedHalfFloats(totalCacheElements);
         } else {
-            workspace.wrapKeyCache = TornadoWorkspaces.floats(totalCacheElements);
-            workspace.wrapValueCache = TornadoWorkspaces.floats(totalCacheElements);
-            TornadoWorkspaces.zeroKeyValue(workspace);
+            workspace.wrapKeyCache = TornadoWorkspaces.zeroedFloats(totalCacheElements);
+            workspace.wrapValueCache = TornadoWorkspaces.zeroedFloats(totalCacheElements);
         }
         // An activation in Q8 blocks, for the packed-integer projections: four quants per int, one
         // scale and one sum of quants per block of 32. Sized for the widest activation any of them

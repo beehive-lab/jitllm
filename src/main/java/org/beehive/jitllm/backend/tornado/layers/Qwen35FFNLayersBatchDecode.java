@@ -31,12 +31,11 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
 
     public Qwen35FFNLayersBatchDecode(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
             SchedulerType schedulerType) {
-        super(taskGraphName, state, weights, config, schedulerType, "decodeActivation");
+        super(state, weights, config, schedulerType, GraphNames.DECODE_ACTIVATION);
     }
 
     /**
@@ -44,14 +43,13 @@ public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
      * Graphs group layers counted from the stage's first one.
      */
     public Qwen35FFNLayersBatchDecode(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
             SchedulerType schedulerType,
             int firstLayer,
             int endLayer) {
-        this(taskGraphName, state, weights, config, schedulerType, firstLayer, endLayer, null);
+        this(state, weights, config, schedulerType, firstLayer, endLayer, null);
     }
 
     /**
@@ -59,7 +57,6 @@ public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
      * one.
      */
     public Qwen35FFNLayersBatchDecode(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
@@ -68,12 +65,11 @@ public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
             int endLayer,
             Qwen35FeedForward feedForward) {
         super(
-                taskGraphName,
                 state,
                 weights,
                 config,
                 schedulerType,
-                "decodeActivation",
+                GraphNames.DECODE_ACTIVATION,
                 firstLayer,
                 endLayer,
                 feedForward);
@@ -96,7 +92,7 @@ public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
     /** The batch-prefill graph for the same block already uploaded these weights. */
     @Override
     protected String weightSourceGraphName(int layerIndex) {
-        return "batchLayer_" + layerIndex;
+        return GraphNames.batchLayer(layerIndex);
     }
 
     @Override
@@ -153,7 +149,7 @@ public class Qwen35FFNLayersBatchDecode extends Qwen35FFNLayers {
      */
     private String cacheSource() {
         return firstLayer == 0
-                ? "decodeActivation"
-                : "batchLayer_" + (endLayer(config.numberOfLayers()) - 1);
+                ? GraphNames.DECODE_ACTIVATION
+                : GraphNames.batchLayer(endLayer(config.numberOfLayers()) - 1);
     }
 }

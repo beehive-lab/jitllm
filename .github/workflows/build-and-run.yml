@@ -207,6 +207,183 @@ jobs:
       - name: Build and unit-test jitllm
         run: ./mvnw clean install
 
+  # GraalVM native image of the CLI (docs/native-image.md), built and run on every backend.
+  #
+  # The image can only make the FFM downcalls recorded in the jar's
+  # META-INF/native-image/.../tornadovm/reachability-metadata.json, and every TornadoVM backend
+  # makes its own. A backend missing from that file still builds; the image then fails on its
+  # first device call and jitllm exits with "no accelerator device is available". A TornadoVM
+  # upgrade can add or change downcalls, so the metadata goes stale without any build failing:
+  # this job is what notices. It runs on every run of this workflow, which follows TornadoVM
+  # develop, and on the TornadoVM release a bump PR names (bump-tornadovm-version.yml dispatches
+  # this workflow on its branch with the release's commit).
+  #
+  # One matrix job, not one per OS like the build jobs: nothing depends on it, so a Mac runner
+  # that is not available holds up only its own cell.
+  #
+  # Not required yet (continue-on-error): make it required once it has been stable.
+  native-image:
+    if: github.repository == 'beehive-lab/jitllm'
+    runs-on: [self-hosted, "${{ matrix.os }}"]
+    needs: [code-quality, resolve-tornadovm]
+    continue-on-error: true
+    # The Mac usually builds the JDK 25 Metal SDK here first: build-macos only prepares JDK 21.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: Linux
+            backend: cuda
+          - os: Linux
+            backend: opencl
+          - os: macOS
+            backend: metal
+
+    steps:
+      - name: Checkout jitllm
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      # JDK 25 only: the image needs a jdk22plus TornadoVM SDK.
+      - name: Set up Java
+        uses: ./.github/actions/setup-java
+        with:
+          java_version: ${{ env.JAVA_VERSION_25 }}
+
+      - name: Setup TornadoVM
+        uses: ./.github/actions/setup-tornadovm
+        with:
+          ref: ${{ needs.resolve-tornadovm.outputs.sha }}
+          backend: ${{ matrix.backend }}
+          jdk: '25'
+
+      - name: Build the jar
+        run: |
+          set -euo pipefail
+          # clean: the workspace is shared with the other jobs this runner takes, and their
+          # target/ may hold a JDK 21 build.
+          ./mvnw -B -DskipTests clean package
+          # The JDK that built the jar runs the JVM side of the comparison below; a GraalVM set
+          # up by the next steps may take over JAVA_HOME.
+          echo "JVM_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+
+      # GraalVM for JDK 25 with native-image: one preinstalled on the runner (an exported
+      # GRAALVM_HOME, or SDKMAN's newest 25*-graalce), else graalvm/setup-graalvm.
+      - name: Find a preinstalled GraalVM
+        id: graalvm
+        run: |
+          set -uo pipefail
+          FOUND=""
+          for CANDIDATE in "${GRAALVM_HOME:-}" $(ls -d "$HOME"/.sdkman/candidates/java/25*-graalce 2>/dev/null | sort -rV); do
+            [ -n "$CANDIDATE" ] && [ -x "$CANDIDATE/bin/native-image" ] || continue
+            if "$CANDIDATE/bin/java" -version 2>&1 | grep -q 'version "25'; then
+              FOUND=$CANDIDATE
+              break
+            fi
+          done
+          if [ -n "$FOUND" ]; then
+            echo "GRAALVM_HOME=$FOUND" >> "$GITHUB_ENV"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "Using the preinstalled GraalVM at $FOUND"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No GraalVM for JDK 25 on this runner; installing GraalVM CE"
+          fi
+
+      - name: Install GraalVM CE for JDK 25
+        if: steps.graalvm.outputs.found != 'true'
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: graalvm-community
+
+      - name: Build the native image
+        run: |
+          set -euo pipefail
+          if [ ! -x scripts/native-image.sh ]; then
+            echo "::error::scripts/native-image.sh is missing: this revision has no native-image support"
+            exit 1
+          fi
+          "$GRAALVM_HOME/bin/native-image" --version
+          # About 45 s and 4-5 GB peak RSS with GraalVM CE.
+          scripts/native-image.sh build -o target/jitllm
+
+      - name: Run the image and the JVM, compare their output
+        run: |
+          # errexit off: GitHub runs this with `bash -e`, which would end the step at the first
+          # failing run, before its log is printed and its cause named.
+          set +e
+          set -uo pipefail
+          MODEL="$MODELS_DIR/Qwen3-0.6B-Q8_0.gguf"
+          if [ ! -f "$MODEL" ]; then
+            echo "::error::$MODEL is not provisioned on this runner"; exit 1
+          fi
+          JAR=$(ls -t target/jitllm-*-jdk22plus.jar | grep -v -- '-sources\|-javadoc' | head -1)
+          OUT="$RUNNER_TEMP/native-image-smoke"
+          rm -rf "$OUT" && mkdir -p "$OUT"
+          # Greedy, so the two runs must produce the same text. Only the generated text goes to
+          # stdout; the metrics go to stderr.
+          ARGS=(-m "$MODEL" -p "What is the capital of France?" --instruct
+                --temperature 0 --seed 1 --max-new-tokens 16 --ctx-size 512)
+          FAILED=0
+
+          run() {  # label, command...
+            local label=$1; shift
+            echo "::group::$label"
+            # Bounded with perl's alarm, which both runner OSes have (stock macOS has no
+            # `timeout`): a hung run must not hold the shared GPU runner for the whole job.
+            perl -e 'alarm shift; exec @ARGV or die "exec: $!\n"' 600 "$@" \
+              > "$OUT/$label.out" 2> "$OUT/$label.err"
+            local rc=$?
+            cat "$OUT/$label.out"; echo; cat "$OUT/$label.err"
+            echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then
+              FAILED=1
+              if grep -q "no accelerator device is available" "$OUT/$label.err"; then
+                echo "::error::$label found no ${{ matrix.backend }} device. For the image this means the TornadoVM FFM downcalls of this backend are missing from META-INF/native-image/io.github.beehive-lab/jitllm/tornadovm/reachability-metadata.json: run 'scripts/native-image.sh trace' on a ${{ matrix.backend }} machine (see docs/native-image.md)."
+              elif [ "$rc" -eq 142 ]; then
+                echo "::error::$label timed out after 600 s"
+              else
+                echo "::error::$label exited with status $rc"
+              fi
+            elif [ ! -s "$OUT/$label.out" ]; then
+              FAILED=1
+              echo "::error::$label exited 0 but generated no text"
+            fi
+          }
+
+          # The image takes the system properties the launcher would pass, plus the library path.
+          # TORNADOVM_HOME stays exported (setup-tornadovm put it in the environment): TornadoVM
+          # keeps its code cache under it.
+          export TORNADOVM_HOME
+          run image ./target/jitllm -Duse.tornadovm=true \
+            -Djava.library.path="$TORNADOVM_HOME/lib" -Dtornado.tvm.maxbytecodesize=65536 \
+            "${ARGS[@]}"
+          # The same jar and properties on the JVM, with the SDK's own module setup.
+          run jvm "$JVM_JAVA_HOME/bin/java" @"$TORNADOVM_HOME/tornado-argfile" \
+            --add-modules jdk.incubator.vector -Duse.tornadovm=true \
+            -Dtornado.tvm.maxbytecodesize=65536 \
+            -cp "$JAR" org.beehive.jitllm.JitllmApp "${ARGS[@]}"
+          [ "$FAILED" -eq 0 ] || exit 1
+
+          if ! cmp -s "$OUT/image.out" "$OUT/jvm.out"; then
+            echo "::error::the native image and the JVM generated different text on ${{ matrix.backend }}"
+            diff "$OUT/jvm.out" "$OUT/image.out" || true
+            exit 1
+          fi
+          echo "native image and JVM generated the same text on ${{ matrix.backend }}:"
+          cat "$OUT/image.out"
+
+      - name: Upload the smoke-test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-image-${{ matrix.backend }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-image-smoke
+          if-no-files-found: ignore
+
   standalone-inference-linux:
     if: github.repository == 'beehive-lab/jitllm'
     needs: [build-linux, resolve-tornadovm]
@@ -228,9 +405,8 @@ jobs:
       backend: metal
       tornadovm_ref: ${{ needs.resolve-tornadovm.outputs.sha }}
       runner_os: macOS
-      # The same 22 rows take far longer on the Mac than on the CUDA/OpenCL machine --
-      # Phi-3-mini in FP16 alone ran past the 40-minute wall there, cancelling the job
-      # after seven rows had verified. The budget is per machine, not per matrix.
+      # The same rows take far longer on the Mac than on the CUDA/OpenCL machine, so the
+      # budget is per machine, not per matrix.
       timeout_minutes: 120
 
   # Test integration with Quarkus-langchain4j
@@ -571,6 +747,8 @@ jobs:
 
           for attempt in 1 2 3; do
             git pull --rebase origin main && git push && break || {
+              # Leave no half-finished rebase behind, or the next pull refuses to run
+              git rebase --abort 2>/dev/null || true
               if [ $attempt -lt 3 ]; then
                 echo "Attempt $attempt failed, retrying in $((attempt * 5))s..."
                 sleep $((attempt * 5))

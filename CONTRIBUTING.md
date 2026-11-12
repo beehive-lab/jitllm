@@ -37,7 +37,7 @@ You can also run the checks manually with
     ```
 5. **Push** your work to your repository:
     ```bash
-    $ git push -u myRepo feat/my/branch
+    $ git push -u myRepo fix/my/branch
     ```
 6. Create a **Pull Request** (PR) to the `main` branch.
 7. When you open PR, there are a few GitHub actions. One of them is the checker for the **Contributor License Agreement**, [CLA](https://cla-assistant.io/beehive-lab/jitllm), if you haven't signed before, you will be prompted with the link to sign the CLA. Use the same email as you commit email. 

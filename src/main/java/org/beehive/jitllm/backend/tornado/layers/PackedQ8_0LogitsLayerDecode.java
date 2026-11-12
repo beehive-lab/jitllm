@@ -13,13 +13,12 @@ import org.beehive.jitllm.model.Configuration;
 public class PackedQ8_0LogitsLayerDecode extends LogitsQ8_0LayerDecode {
 
     public PackedQ8_0LogitsLayerDecode(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config, lastTaskGraphID, schedulerType);
+        super(state, weights, config, lastTaskGraphID, schedulerType);
     }
 
     @Override

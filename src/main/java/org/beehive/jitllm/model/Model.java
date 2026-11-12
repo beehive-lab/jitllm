@@ -60,6 +60,11 @@ public interface Model {
         return createNewState();
     }
 
+    /** Whether this family may lease shared KV storage; see {@link Configuration}. */
+    default boolean supportsSharedKvStorage() {
+        return configuration().supportsSharedKvStorage();
+    }
+
     /**
      * KV values stored per token, per layer — the {@code kvDim} the KV kernels index by.
      *
@@ -67,16 +72,6 @@ public interface Model {
      * Qwen3 sizes its cache from its own head dimensions instead, which is why this is a question
      * the model answers rather than one the cache derives.
      */
-    /**
-     * Whether this family may lease <b>shared</b> KV storage, as opposed to merely addressing its
-     * own through a block table.
-     *
-     * <p>Asked of the model rather than kept as a list of families elsewhere [Rule 15].
-     */
-    default boolean supportsSharedKvStorage() {
-        return false;
-    }
-
     default int kvCacheDim() {
         Configuration config = configuration();
         return config.dim() * config.numberOfKeyValueHeads() / config.numberOfHeads();

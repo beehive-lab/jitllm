@@ -81,25 +81,11 @@ public interface Configuration {
      */
     default long projectionWeights() {
         long dim = dim();
-        long qDim = (long) numberOfHeads() * headSize();
+        long qDim = queryDim();
         long kvDim = kvDim();
         long hidden = hiddenDim();
         long perLayer = dim * (qDim + 2 * kvDim) + qDim * dim + 3 * dim * hidden;
         return perLayer * numberOfLayers();
-    }
-
-    // @formatter:off
-    /**
-     * Bytes of <b>stacked</b> projection weights a native batch-prefill family keeps per layer.
-     *
-     * <p>Zero unless a family rewrites its projections as single library GEMMs over operands that
-     * have to be contiguous, which makes the stacked forms copies rather than views. The originals
-     * are not freed — other graphs still read them — so this is additional to the weight footprint
-     * and not a redistribution of it.
-     */
-    // @formatter:on
-    default long nativeStackedProjectionBytesPerLayer() {
-        return 0L;
     }
 
     // @formatter:off
@@ -142,6 +128,18 @@ public interface Configuration {
         return 0L;
     }
 
+    /**
+     * Whether this family may lease <b>shared</b> KV storage, as opposed to merely addressing its
+     * own through a block table.
+     *
+     * <p>Asked of the family rather than kept as a list of families elsewhere [Rule 15], and of its
+     * configuration rather than its model so the memory preflight can answer it from the file's
+     * metadata, before any model exists.
+     */
+    default boolean supportsSharedKvStorage() {
+        return false;
+    }
+
     /** Size of the vocabulary (token set) */
     int vocabularySize();
 
@@ -160,6 +158,15 @@ public interface Configuration {
     int headSize();
 
     int kvDim();
+
+    /**
+     * Query width per token: the query heads times the head width. The query projection's output
+     * and the output projection's input. Example: Qwen3-0.6B, 16 x 128 = 2048, not dim 1024; equal
+     * to dim in the Llama family, whose head width is dim / heads.
+     */
+    default int queryDim() {
+        return numberOfHeads() * headSize();
+    }
 
     int kvMul();
 }

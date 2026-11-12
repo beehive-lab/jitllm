@@ -31,6 +31,10 @@ record ServerOptions(
             throw new IllegalArgumentException(
                     "Continuous batching does not support prefill chunking or CUDA graphs");
         }
+        if (batchSlots > 1 && System.getProperty("jitllm.cudaGraphs") == null) {
+            // CUDA graphs are on by default on CUDA; continuous batching does not support them.
+            System.setProperty("jitllm.cudaGraphs", "false");
+        }
         if (batchSlots > 1
                 && Boolean.getBoolean(
                         org.beehive.jitllm.runtime.policy.ExecutionPolicy
@@ -113,6 +117,10 @@ record ServerOptions(
                                         + " an FP32 cache");
                 case "--cuda-graphs" -> {
                     System.setProperty("jitllm.cudaGraphs", "true");
+                    continue;
+                }
+                case "--no-cuda-graphs" -> {
+                    System.setProperty("jitllm.cudaGraphs", "false");
                     continue;
                 }
                 case "--with-prefill-decode" -> {

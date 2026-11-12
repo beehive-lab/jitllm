@@ -12,11 +12,11 @@ import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
  * silent under-prediction.
  *
  * <p><b>Families are not graphs.</b> A family may build one graph per layer or fewer, so the check
- * is {@code totalGraphs == sum(layerFamilyGraphCounts) + nonLayerGraphs} together with {@code
- * layerFamilyGraphCounts.length == layerGraphFamilies}. The older form, {@code families × N +
- * nonLayerGraphs}, is the special case where every family builds a graph per layer, and it is still
- * asserted for the layouts that do. Neither form says anything about weight memory: a family that
- * consumes another's upload costs graphs and not gigabytes, which {@code
+ * is {@code inferenceGraphCount == sum(layerFamilyGraphCounts) + nonLayerGraphs} together with
+ * {@code layerFamilyGraphCounts.length == layerGraphFamilies}. The older form, {@code families × N
+ * + nonLayerGraphs}, is the special case where every family builds a graph per layer, and it is
+ * still asserted for the layouts that do. Neither form says anything about weight memory: a family
+ * that consumes another's upload costs graphs and not gigabytes, which {@code
  * Configuration.weightBindingFamilies} decides.
  *
  * <p><b>Exhaustive by construction.</b> The switch has no {@code default}, so a new {@link
@@ -61,13 +61,14 @@ public final class TornadoGraphTopology {
         };
     }
 
-    /** Total graphs for {@code mode}. */
-    public static int totalGraphs(ExecutionMode mode, int layers) {
+    /** Inference graphs for {@code mode}: the prepacking graphs a plan may add are not counted. */
+    public static int inferenceGraphCount(ExecutionMode mode, int layers) {
         return switch (mode) {
-            case STANDARD -> new SingleTokenForwardTaskGraphLayout(layers).totalGraphs();
-            case PREFILL_DECODE -> new PrefillDecodeForwardTaskGraphLayout(layers).totalGraphs();
+            case STANDARD -> new SingleTokenForwardTaskGraphLayout(layers).inferenceGraphCount();
+            case PREFILL_DECODE ->
+                    new PrefillDecodeForwardTaskGraphLayout(layers).inferenceGraphCount();
             case BATCH_PREFILL_DECODE ->
-                    new BatchPrefillDecodeForwardTaskGraphLayout(layers).totalGraphs();
+                    new BatchPrefillDecodeForwardTaskGraphLayout(layers).inferenceGraphCount();
         };
     }
 
@@ -84,7 +85,7 @@ public final class TornadoGraphTopology {
             }
             layerGraphs += count;
         }
-        return totalGraphs(mode, layers) == layerGraphs + nonLayerGraphs(mode, layers);
+        return inferenceGraphCount(mode, layers) == layerGraphs + nonLayerGraphs(mode, layers);
     }
 
     /**

@@ -66,4 +66,10 @@ public record DevstralConfiguration(
     public int headSize() {
         return headDim;
     }
+
+    /** Its layer classes bind the paged kernels and chain their buffers by predecessor name. */
+    @Override
+    public boolean supportsSharedKvStorage() {
+        return true;
+    }
 }

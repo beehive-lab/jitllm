@@ -1,18 +1,21 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q4_0.prefill;
 
-import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
-import org.beehive.jitllm.backend.tornado.layers.DequantizingFP16LayersBatchPrefillMMA;
-import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import java.util.List;
+import org.beehive.jitllm.backend.tornado.layers.type.fp16.prefill.LlamaFP16LayersBatchPrefillMMA;
+import org.beehive.jitllm.backend.tornado.ops.DequantizingMatMul;
+import org.beehive.jitllm.backend.tornado.ops.Implementation;
+import org.beehive.jitllm.backend.tornado.ops.Implementations;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.LlamaTornadoWeights;
 import org.beehive.jitllm.model.llama.LlamaConfiguration;
 import uk.ac.manchester.tornado.api.TaskGraph;
 
 /**
- * Llama's Q4_0 batched prefill on the tensor cores without native libraries: each Q4_0 projection
- * decoded into FP16 before its GEMM.
+ * Llama's Q4_0 batched prefill on the tensor cores: each Q4_0 projection decoded into FP16 before
+ * its GEMM, cuBLAS's under native libraries and the JIT one otherwise. Builds the whole model or
+ * one pipeline stage's layers.
  */
-public class LlamaQ4_0LayersBatchPrefillMMA extends DequantizingFP16LayersBatchPrefillMMA {
+public class LlamaQ4_0LayersBatchPrefillMMA extends LlamaFP16LayersBatchPrefillMMA {
 
     public LlamaQ4_0LayersBatchPrefillMMA(
             State state, LlamaTornadoWeights weights, LlamaConfiguration config, int batchSize) {
@@ -20,15 +23,28 @@ public class LlamaQ4_0LayersBatchPrefillMMA extends DequantizingFP16LayersBatchP
     }
 
     /**
-     * Uploads the weights through the session's repack, as the decode layers that bind them expect:
-     * on a device that runs the packed int8 kernels the Q4_0 projections are repacked into tiles on
-     * upload.
+     * The layers {@code [firstLayer, endLayer)} only: one stage of a model split across devices.
+     */
+    public LlamaQ4_0LayersBatchPrefillMMA(
+            State state,
+            LlamaTornadoWeights weights,
+            LlamaConfiguration config,
+            int batchSize,
+            int firstLayer,
+            int endLayer) {
+        super(state, weights, config, batchSize, firstLayer, endLayer);
+    }
+
+    /**
+     * Declares the layer's weights through the session's prepacker, as the decode layers that bind
+     * them expect: the Q4_0 projections the plan prepacks are consumed from their prepacking graph.
      */
     @Override
     protected void uploadLayerWeights(TaskGraph batchPrefillLayer, int layerIndex) {
         LlamaTornadoWeights w = (LlamaTornadoWeights) weights;
-        state.workspace.packedRepack.upload(
+        state.workspace.prepacker.configureGraphInputs(
                 batchPrefillLayer,
+                state.workspace.prepacking,
                 w.rms_att_weightLayered[layerIndex].asFloatArray(),
                 w.wqLayered[layerIndex],
                 w.wkLayered[layerIndex],
@@ -42,50 +58,9 @@ public class LlamaQ4_0LayersBatchPrefillMMA extends DequantizingFP16LayersBatchP
                 w.freq_cis_imagFlat.asFloatArray());
     }
 
-    /**
-     * Decodes {@code w}: Q4_0, from the file's blocks or the packed tiles, or Q4_1 where the file
-     * kept a tensor in it (some {@code ffn_down}).
-     */
+    /** Each projection decoded into one scratch, then one GEMM ({@link DequantizingMatMul}). */
     @Override
-    protected void decode(TaskGraph layer, String task, TornadoTensor w, int destOffset, int n) {
-        if (w.isPacked()) {
-            layer.task(
-                    task,
-                    TransformerComputeKernelsQ4_0::dequantizeQ4_0PackedToFP16,
-                    context,
-                    w.asByteArray(),
-                    scratch(),
-                    destOffset,
-                    n,
-                    w.packedTiles().cols());
-            return;
-        }
-        switch (w.dataType()) {
-            case Q4_0 ->
-                    layer.task(
-                            task,
-                            TransformerComputeKernelsQ4_0::dequantizeQ4_0ToFP16,
-                            context,
-                            w.asByteArray(),
-                            scratch(),
-                            destOffset,
-                            n);
-            case Q4_1 ->
-                    layer.task(
-                            task,
-                            TransformerComputeKernelsQ4_0::dequantizeQ4_1ToFP16,
-                            context,
-                            w.asByteArray(),
-                            scratch(),
-                            destOffset,
-                            n);
-            default ->
-                    throw new UnsupportedOperationException(
-                            "the llama Q4_0 batched prefill has no decoder for "
-                                    + w.dataType()
-                                    + " ("
-                                    + task
-                                    + "); the projections must be Q4_0 or Q4_1");
-        }
+    protected List<Implementation> candidates() {
+        return Implementations.dequantizingTensorCorePrefill();
     }
 }

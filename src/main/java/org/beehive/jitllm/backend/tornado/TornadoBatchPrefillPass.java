@@ -8,6 +8,13 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.tensor.standard.FloatTensor;
+import org.beehive.jitllm.tensor.standard.Q4_1FloatTensor;
+import org.beehive.jitllm.tensor.standard.Q4_KFloatTensor;
+import org.beehive.jitllm.tensor.standard.Q5_0FloatTensor;
+import org.beehive.jitllm.tensor.standard.Q5_KFloatTensor;
+import org.beehive.jitllm.tensor.standard.Q6_KFloatTensor;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 /** The accelerated <b>batched prefill</b> pass and its decode step. */
 public final class TornadoBatchPrefillPass {
@@ -65,7 +72,7 @@ public final class TornadoBatchPrefillPass {
         // zero and the padded rows are defined.
         //
         // So a chunk past position 0 goes to the fallback family instead: the same layer
-        // pipeline, the same native projections over the same stacked weights, with the batched
+        // pipeline, the same native projections over the same weight copies, with the batched
         // JIT paged attention that takes an arbitrary start position. It binds every buffer from
         // the primary family, so it costs graphs and no memory, and it stays batched -- one graph
         // set per chunk, not per token.
@@ -73,8 +80,15 @@ public final class TornadoBatchPrefillPass {
         // The plan only builds that family when the primary uses cuDNN attention; where it does
         // not, the primary already handles every chunk itself.
         boolean useFallbackFamily = startPos != 0 && plan.hasBatchPrefillFallback();
+        // A chunk with no more tokens than the narrow family's rows -- a short prompt, or what is
+        // left of a long one -- takes that family instead, whatever its start position: the same
+        // layers on fewer padded rows. Its attention takes any start position, so it needs no
+        // fallback of its own.
+        boolean useNarrowFamily = chunkSize <= plan.narrowPrefillRows();
         stage(model, state, tokens, startPos, chunkSize);
-        if (useFallbackFamily) {
+        if (useNarrowFamily) {
+            plan.tornadoVMForwardBatchPrefillNarrow();
+        } else if (useFallbackFamily) {
             plan.tornadoVMForwardBatchPrefillFallback();
         } else {
             plan.tornadoVMForwardBatchPrefill();
@@ -151,6 +165,23 @@ public final class TornadoBatchPrefillPass {
         // wrong output.
         switch (weights.getTokenEmbeddingTable().dataType()) {
             case F16 -> {
+                if (!"FP16".equals(config.quantization())) {
+                    // F16 embeddings beside Q8_0 layers (a UD-Q8_K_XL file): the Q8_0 activation
+                    // reads the FP32 carrier the host fills, as for the kept types below.
+                    HalfFloatArray table = weights.getTokenEmbeddingTable().asHalfFloatArray();
+                    int dim = config.dim();
+                    IntStream.range(0, chunkSize)
+                            .parallel()
+                            .forEach(
+                                    b -> {
+                                        int row = tokens[b] * dim;
+                                        for (int j = 0; j < dim; j++) {
+                                            state.workspace.wrapXBatch.set(
+                                                    b * dim + j, table.get(row + j).getFloat32());
+                                        }
+                                    });
+                    break;
+                }
                 MemorySegment embTable =
                         weights.getTokenEmbeddingTable().asHalfFloatArray().getSegment();
                 long dimBytes = (long) config.dim() * Short.BYTES;
@@ -249,6 +280,37 @@ public final class TornadoBatchPrefillPass {
                                     }
                                 });
             }
+            case Q4_1, Q5_0, Q4_K, Q5_K, Q6_K -> {
+                // Kept as the file stores it: decoded here into the FP32 batch carrier through the
+                // CPU tensor for that format, rows in parallel, as the branches above decode
+                // theirs.
+                var embTable = weights.getTokenEmbeddingTable();
+                MemorySegment rows = embTable.asByteArray().getSegment();
+                FloatTensor table =
+                        switch (embTable.dataType()) {
+                            case Q4_1 ->
+                                    new Q4_1FloatTensor((int) (rows.byteSize() / 20 * 32), rows);
+                            case Q5_0 ->
+                                    new Q5_0FloatTensor((int) (rows.byteSize() / 22 * 32), rows);
+                            case Q4_K ->
+                                    new Q4_KFloatTensor((int) (rows.byteSize() / 144 * 256), rows);
+                            case Q5_K ->
+                                    new Q5_KFloatTensor((int) (rows.byteSize() / 176 * 256), rows);
+                            default ->
+                                    new Q6_KFloatTensor((int) (rows.byteSize() / 210 * 256), rows);
+                        };
+                int dim = config.dim();
+                IntStream.range(0, chunkSize)
+                        .parallel()
+                        .forEach(
+                                b -> {
+                                    int rowStart = tokens[b] * dim;
+                                    for (int j = 0; j < dim; j++) {
+                                        state.workspace.wrapXBatch.set(
+                                                b * dim + j, table.getFloat(rowStart + j));
+                                    }
+                                });
+            }
             default ->
                     throw new IllegalArgumentException(
                             "Unsupported embedding weight type: "
@@ -330,6 +392,26 @@ public final class TornadoBatchPrefillPass {
                 long bytesPerToken = (long) blocksPerToken * Q4_0_BLOCK_BYTES;
                 MemorySegment.copy(
                         embTable,
+                        (long) token * bytesPerToken,
+                        state.workspace.embeddingX.getSegment(),
+                        0L,
+                        bytesPerToken);
+            }
+            case Q4_1, Q5_0, Q4_K, Q5_K, Q6_K -> {
+                // Kept as the file stores it, decoded on the device: 20 bytes per 32 weights
+                // (Q4_1), 22 (Q5_0), or 144, 176 or 210 per 256 (Q4_K, Q5_K, Q6_K).
+                MemorySegment tokenEmbeddings =
+                        weights.getTokenEmbeddingTable().asByteArray().getSegment();
+                long bytesPerToken =
+                        switch (weights.getTokenEmbeddingTable().dataType()) {
+                            case Q4_1 -> (long) (config.dim() / 32) * 20;
+                            case Q5_0 -> (long) (config.dim() / 32) * 22;
+                            case Q4_K -> (long) (config.dim() / 256) * 144;
+                            case Q5_K -> (long) (config.dim() / 256) * 176;
+                            default -> (long) (config.dim() / 256) * 210;
+                        };
+                MemorySegment.copy(
+                        tokenEmbeddings,
                         (long) token * bytesPerToken,
                         state.workspace.embeddingX.getSegment(),
                         0L,

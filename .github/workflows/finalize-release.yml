@@ -108,7 +108,7 @@ jobs:
             // Add installation instructions (JDK 21 and JDK 22+ artifacts are published separately)
             releaseNotes += `\n\n---\n\n### 📦 Installation\n\n`;
             releaseNotes += `**Maven**\n\n`;
-            releaseNotes += `JDK 21 (\`jdk21\` profile, auto-activates for JDK \`[21,25)\`):\n\`\`\`xml\n<dependency>\n    <groupId>io.github.beehive-lab</groupId>\n    <artifactId>jitllm</artifactId>\n    <version>${version}-jdk21</version>\n</dependency>\n\`\`\`\n\n`;
+            releaseNotes += `JDK 21 (\`jdk21\` profile, auto-activates for JDK \`[21,22)\`):\n\`\`\`xml\n<dependency>\n    <groupId>io.github.beehive-lab</groupId>\n    <artifactId>jitllm</artifactId>\n    <version>${version}-jdk21</version>\n</dependency>\n\`\`\`\n\n`;
             releaseNotes += `JDK 22+ (\`jdk22plus\` profile, auto-activates for JDK \`[22,)\`):\n\`\`\`xml\n<dependency>\n    <groupId>io.github.beehive-lab</groupId>\n    <artifactId>jitllm</artifactId>\n    <version>${version}-jdk22plus</version>\n</dependency>\n\`\`\`\n\n`;
             releaseNotes += `**Gradle**\n\n`;
             releaseNotes += `JDK 21:\n\`\`\`groovy\nimplementation 'io.github.beehive-lab:jitllm:${version}-jdk21'\n\`\`\`\n\n`;

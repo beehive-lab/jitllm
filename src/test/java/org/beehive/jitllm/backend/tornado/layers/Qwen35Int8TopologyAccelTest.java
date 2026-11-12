@@ -10,25 +10,31 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
+import org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.FP32TornadoTensor;
-import org.beehive.jitllm.backend.tornado.tensor.PackedTiles;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q4_1TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q5_KTornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.Q6_KTornadoTensor;
+import org.beehive.jitllm.backend.tornado.tensor.Q8_0TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Qwen35State;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
 import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
+import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import org.junit.After;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
+import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 // @formatter:off
 /**
@@ -90,7 +96,7 @@ public class Qwen35Int8TopologyAccelTest {
     }
 
     private static TornadoTensor f32(int elements) {
-        return new FP32TornadoTensor(new FloatArray(elements));
+        return new FP32TornadoTensor(new FloatArray(elements), Shape.of(elements));
     }
 
     private static TornadoTensor blocked(DataType type, int elements) {
@@ -110,31 +116,21 @@ public class Qwen35Int8TopologyAccelTest {
                 };
         ByteArray bytes = new ByteArray(elements / blockSize * blockBytes);
         return switch (type) {
-            case Q4_0 -> new Q4_0TornadoTensor(bytes);
-            case Q4_1 -> new Q4_1TornadoTensor(bytes);
-            case Q5_K -> new Q5_KTornadoTensor(bytes);
-            case Q6_K -> new Q6_KTornadoTensor(bytes);
+            case Q4_0 -> new Q4_0TornadoTensor(bytes, Shape.of(elements));
+            case Q4_1 -> new Q4_1TornadoTensor(bytes, Shape.of(elements));
+            case Q5_K -> new Q5_KTornadoTensor(bytes, Shape.of(elements));
+            case Q6_K -> new Q6_KTornadoTensor(bytes, Shape.of(elements));
             default -> throw new IllegalArgumentException(type.toString());
         };
     }
 
-    /**
-     * A Q4_0 projection of {@code rows} outputs over {@code cols} inputs, in packed tiles when
-     * {@code packed} is set and the shape packs, as the loader decides.
-     */
-    private static TornadoTensor q40(int rows, int cols, boolean packed) {
-        if (packed && PackedTiles.fits(rows, cols)) {
-            return new Q4_0TornadoTensor(
-                    new ByteArray(rows * cols / 32 * 18), new PackedTiles(rows, cols));
-        }
-        return blocked(DataType.Q4_0, rows * cols);
+    /** A Q4_0 projection of {@code rows} outputs over {@code cols} inputs. */
+    private static TornadoTensor q40(int rows, int cols) {
+        return new Q4_0TornadoTensor(new ByteArray(rows * cols / 32 * 18), Shape.of(cols, rows));
     }
 
-    /**
-     * Q4_0 everywhere but block 0's down projection, which is Q4_1 as on the 27B's first eight; the
-     * Q4_0 projections whose shape packs are packed when {@code packed} is set.
-     */
-    private static Qwen35TornadoWeights weights(Qwen35Configuration config, boolean packed) {
+    /** Q4_0 everywhere but block 0's down projection, which is Q4_1 as on the 27B's first eight. */
+    private static Qwen35TornadoWeights weights(Qwen35Configuration config) {
         final int DIM = config.dim();
         final int HIDDEN = config.hiddenDim();
         final int BLOCKS = TRUNK_LAYERS + NEXTN_LAYERS;
@@ -164,12 +160,12 @@ public class Qwen35Int8TopologyAccelTest {
         for (int l = 0; l < BLOCKS; l++) {
             attnNorm[l] = f32(DIM);
             ffnNorm[l] = f32(DIM);
-            ffnGate[l] = q40(HIDDEN, DIM, packed);
-            ffnUp[l] = q40(HIDDEN, DIM, packed);
-            ffnDown[l] = l == 0 ? blocked(DataType.Q4_1, HIDDEN * DIM) : q40(DIM, HIDDEN, packed);
+            ffnGate[l] = q40(HIDDEN, DIM);
+            ffnUp[l] = q40(HIDDEN, DIM);
+            ffnDown[l] = l == 0 ? blocked(DataType.Q4_1, HIDDEN * DIM) : q40(DIM, HIDDEN);
             if (l < TRUNK_LAYERS && config.isRecurrentLayer(l)) {
-                ssmQkv[l] = q40(config.deltaNetConvDim(), DIM, packed);
-                ssmGate[l] = q40(config.deltaNetValueDim(), DIM, packed);
+                ssmQkv[l] = q40(config.deltaNetConvDim(), DIM);
+                ssmGate[l] = q40(config.deltaNetValueDim(), DIM);
                 ssmConv[l] = f32(config.deltaNetConvDim() * CONV_KERNEL);
                 ssmAlpha[l] = f32(DIM * VALUE_HEADS);
                 ssmBeta[l] = f32(DIM * VALUE_HEADS);
@@ -178,10 +174,10 @@ public class Qwen35Int8TopologyAccelTest {
                 ssmNorm[l] = f32(config.headValueDim());
                 ssmOut[l] = blocked(DataType.Q5_K, config.deltaNetValueDim() * DIM);
             } else {
-                wq[l] = q40(queryGate, DIM, packed);
-                wk[l] = q40(kvDim, DIM, packed);
-                wv[l] = q40(kvDim, DIM, packed);
-                wo[l] = q40(DIM, attnDim, packed);
+                wq[l] = q40(queryGate, DIM);
+                wk[l] = q40(kvDim, DIM);
+                wv[l] = q40(kvDim, DIM);
+                wo[l] = q40(DIM, attnDim);
                 qNorm[l] = f32(HEAD_DIM);
                 kNorm[l] = f32(HEAD_DIM);
             }
@@ -221,11 +217,34 @@ public class Qwen35Int8TopologyAccelTest {
     }
 
     private static Qwen35BatchPrefillLayers build(Qwen35Configuration config, boolean packed) {
+        return build(config, weights(config), packed, null);
+    }
+
+    private static Qwen35BatchPrefillLayers build(
+            Qwen35Configuration config,
+            Qwen35TornadoWeights weights,
+            boolean packed,
+            Qwen35BatchFeedForward feedForward) {
         System.setProperty("use.tornadovm", "true");
         System.setProperty("jitllm.qwen35.tensorCores", "true");
         Qwen35State state =
                 (Qwen35State) State.withPrefillBatchSize(WIDTH, () -> new Qwen35State(config, -1));
-        return new Qwen35BatchPrefillLayers(state, weights(config, packed), config, WIDTH);
+        if (packed) {
+            // The Q4_0 projections whose shape divides into tiles, as a plan that packs holds them.
+            List<TornadoTensor> tiled = new ArrayList<>();
+            for (TornadoTensor[] role : weights.projections()) {
+                for (TornadoTensor w : role) {
+                    if (w != null
+                            && w.dataType() == DataType.Q4_0
+                            && WeightPrepacking.fits(w.shape())) {
+                        tiled.add(w);
+                    }
+                }
+            }
+            state.workspace.prepacking = WeightPrepacking.of(tiled);
+        }
+        return new Qwen35BatchPrefillLayers(
+                state, weights, config, WIDTH, 0, config.numberOfLayers(), feedForward);
     }
 
     /** Task name to kernel method name, for the tasks of one batched layer graph. */
@@ -445,5 +464,213 @@ public class Qwen35Int8TopologyAccelTest {
         assertTrue(order.indexOf("attn_output_gate") < order.indexOf("attn_output_q8"));
         assertTrue(order.indexOf("attn_output_q8") < order.indexOf("attn_output_proj"));
         assertTrue(order.indexOf("attn_output_proj") < order.indexOf("attn_output_residual"));
+    }
+
+    /** An F16 weight of {@code rows} outputs over {@code cols} inputs. */
+    private static TornadoTensor f16(int rows, int cols) {
+        return new FP16TornadoTensor(new HalfFloatArray(rows * cols), Shape.of(cols, rows));
+    }
+
+    /** A Q8_0 weight of {@code rows} outputs over {@code cols} inputs. */
+    private static TornadoTensor q8(int rows, int cols) {
+        return new Q8_0TornadoTensor(new ByteArray(rows * cols / 32 * 34), Shape.of(cols, rows));
+    }
+
+    /** Every projection of the mixer branch (attention or recurrent) of {@code weights} as F16. */
+    private static void mixerF16(Qwen35Configuration config, Qwen35TornadoWeights weights) {
+        int dim = config.dim();
+        for (int l = 0; l < TRUNK_LAYERS + NEXTN_LAYERS; l++) {
+            if (l < TRUNK_LAYERS && config.isRecurrentLayer(l)) {
+                weights.ssmQkv[l] = f16(config.deltaNetConvDim(), dim);
+                weights.ssmGate[l] = f16(config.deltaNetValueDim(), dim);
+                weights.ssmAlpha[l] = f16(VALUE_HEADS, dim);
+                weights.ssmBeta[l] = f16(VALUE_HEADS, dim);
+                weights.ssmOut[l] = f16(dim, config.deltaNetValueDim());
+            } else {
+                weights.wqLayered[l] = f16(config.queryGateDim(), dim);
+                weights.wkLayered[l] = f16(config.kvDim(), dim);
+                weights.wvLayered[l] = f16(config.kvDim(), dim);
+                weights.woLayered[l] = f16(dim, config.attentionOutputInputDim());
+            }
+        }
+    }
+
+    /** Every dense feed-forward projection of {@code weights} as F16. */
+    private static void feedForwardF16(Qwen35Configuration config, Qwen35TornadoWeights weights) {
+        for (int l = 0; l < TRUNK_LAYERS + NEXTN_LAYERS; l++) {
+            weights.w1Layered[l] = f16(config.hiddenDim(), config.dim());
+            weights.w3Layered[l] = f16(config.hiddenDim(), config.dim());
+            weights.w2Layered[l] = f16(config.dim(), config.hiddenDim());
+        }
+    }
+
+    private static boolean quantizes(LinkedHashMap<String, String> kernels) {
+        return kernels.containsValue("quantizeActivationsQ8Warp");
+    }
+
+    /**
+     * A whole F16 model at a width that allocates the int8 scratch: no task reads the scratch, so
+     * no layer quantizes and no grid names a quantization, while the FP16 copies the projections
+     * read stay. With and without native libraries, since cuBLAS and the JIT GEMM read the same
+     * copy.
+     */
+    @Test
+    public void f16LayersQuantizeNothing() throws Exception {
+        assumeInt8();
+        String previous = System.getProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY);
+        try {
+            for (boolean nativeLibraries : List.of(false, true)) {
+                System.setProperty(
+                        ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY,
+                        Boolean.toString(nativeLibraries));
+                Qwen35Configuration config = config(1024, 3584);
+                Qwen35TornadoWeights weights = weights(config);
+                mixerF16(config, weights);
+                feedForwardF16(config, weights);
+                Qwen35BatchPrefillLayers layers = build(config, weights, false, null);
+                GridScheduler scheduler = new GridScheduler();
+                layers.updateGridScheduler(scheduler);
+                for (int layer = 0; layer < TRUNK_LAYERS; layer++) {
+                    String at = "native=" + nativeLibraries + " layer " + layer;
+                    LinkedHashMap<String, String> k = kernels(layers, layer);
+                    assertFalse(at + " quantized for no reader: " + k, quantizes(k));
+                    assertEquals(at, "convertNormedToFP16", k.get("attn_rms_apply_fp16"));
+                    assertEquals(at, "convertNormedToFP16", k.get("ffn_rms_apply_fp16"));
+                    // A cuBLAS projection is a library task, which this map does not list.
+                    assertEquals(at, nativeLibraries ? null : "gemmMMA", k.get("ffn_gate_proj"));
+                    for (String grid : names(scheduler, layer)) {
+                        assertFalse(at + " kept the grid of " + grid, grid.endsWith("_q8"));
+                    }
+                }
+            }
+        } finally {
+            if (previous == null) {
+                System.clearProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY);
+            } else {
+                System.setProperty(ExecutionPolicy.NATIVE_LIBRARIES_PROPERTY, previous);
+            }
+        }
+    }
+
+    /**
+     * The decision follows each norm's own readers. An F16 mixer with prepacked Q4_0 gate and up
+     * drops the mixer norm's quantization only, and the feed-forward norm's still precedes its int8
+     * reader; the reverse keeps the mixer norm's, and the int8 down projection still quantizes its
+     * own input.
+     */
+    @Test
+    public void eachNormQuantizesForItsOwnInt8Readers() throws Exception {
+        assumeInt8();
+        Qwen35Configuration config = config(1024, 3584);
+
+        Qwen35TornadoWeights f16Mixer = weights(config);
+        mixerF16(config, f16Mixer);
+        Qwen35BatchPrefillLayers layers = build(config, f16Mixer, true, null);
+        for (int layer = 0; layer < TRUNK_LAYERS; layer++) {
+            LinkedHashMap<String, String> k = kernels(layers, layer);
+            List<String> order = new ArrayList<>(k.keySet());
+            assertFalse("layer " + layer, k.containsKey("attn_rms_apply_q8"));
+            assertEquals("layer " + layer, "gemmInt8Q4_0Packed", k.get("ffn_gate_proj"));
+            assertTrue(order.indexOf("ffn_rms_apply") < order.indexOf("ffn_rms_apply_q8"));
+            assertTrue(order.indexOf("ffn_rms_apply_q8") < order.indexOf("ffn_gate_proj"));
+        }
+
+        Qwen35TornadoWeights f16FeedForward = weights(config);
+        feedForwardF16(config, f16FeedForward);
+        layers = build(config, f16FeedForward, true, null);
+        for (int layer = 0; layer < TRUNK_LAYERS; layer++) {
+            LinkedHashMap<String, String> k = kernels(layers, layer);
+            List<String> order = new ArrayList<>(k.keySet());
+            String reader = config.isRecurrentLayer(layer) ? "ssm_qkv_proj" : "attn_q_proj";
+            assertFalse("layer " + layer, k.containsKey("ffn_rms_apply_q8"));
+            assertEquals("layer " + layer, "gemmInt8Q4_0Packed", k.get(reader));
+            assertTrue(order.indexOf("attn_rms_apply") < order.indexOf("attn_rms_apply_q8"));
+            assertTrue(order.indexOf("attn_rms_apply_q8") < order.indexOf(reader));
+        }
+
+        Qwen35TornadoWeights int8Down = weights(config);
+        feedForwardF16(config, int8Down);
+        mixerF16(config, int8Down);
+        for (int l = 0; l < TRUNK_LAYERS + NEXTN_LAYERS; l++) {
+            int8Down.w2Layered[l] = q40(config.dim(), config.hiddenDim());
+        }
+        layers = build(config, int8Down, true, null);
+        for (int layer = 0; layer < TRUNK_LAYERS; layer++) {
+            LinkedHashMap<String, String> k = kernels(layers, layer);
+            List<String> order = new ArrayList<>(k.keySet());
+            assertFalse("layer " + layer, k.containsKey("ffn_rms_apply_q8"));
+            assertEquals("layer " + layer, "gemmInt8Q4_0Packed", k.get("ffn_down_proj"));
+            assertTrue(order.indexOf("ffn_swiglu") < order.indexOf("ffn_down_q8"));
+            assertTrue(order.indexOf("ffn_down_q8") < order.indexOf("ffn_down_proj"));
+        }
+    }
+
+    /**
+     * One int8 reader is enough. A single prepacked Q4_0 query projection among F16 attention
+     * projections, and Q8_0 alpha and beta among F16 recurrent projections, which fuse only against
+     * the chunk the norm quantized.
+     */
+    @Test
+    public void oneInt8ReaderKeepsTheNormsQuantization() throws Exception {
+        assumeInt8();
+        Qwen35Configuration config = config(1024, 3584);
+        Qwen35TornadoWeights weights = weights(config);
+        mixerF16(config, weights);
+        feedForwardF16(config, weights);
+        for (int l = 0; l < TRUNK_LAYERS + NEXTN_LAYERS; l++) {
+            if (l < TRUNK_LAYERS && config.isRecurrentLayer(l)) {
+                weights.ssmAlpha[l] = q8(VALUE_HEADS, config.dim());
+                weights.ssmBeta[l] = q8(VALUE_HEADS, config.dim());
+            } else {
+                weights.wqLayered[l] = q40(config.queryGateDim(), config.dim());
+            }
+        }
+        Qwen35BatchPrefillLayers layers = build(config, weights, true, null);
+        for (int layer = 0; layer < TRUNK_LAYERS; layer++) {
+            LinkedHashMap<String, String> k = kernels(layers, layer);
+            List<String> order = new ArrayList<>(k.keySet());
+            String reader = config.isRecurrentLayer(layer) ? "ssm_alpha_beta" : "attn_q_proj";
+            assertEquals(
+                    "layer " + layer,
+                    config.isRecurrentLayer(layer) ? "alphaBetaQ8_0" : "gemmInt8Q4_0Packed",
+                    k.get(reader));
+            assertTrue(order.indexOf("attn_rms_apply") < order.indexOf("attn_rms_apply_q8"));
+            assertTrue(order.indexOf("attn_rms_apply_q8") < order.indexOf(reader));
+            assertFalse("layer " + layer, k.containsKey("ffn_rms_apply_q8"));
+        }
+    }
+
+    /** A family's own feed-forward reads the quantized chunk, whatever the dense weights are. */
+    @Test
+    public void aFamilysFeedForwardKeepsItsQuantization() throws Exception {
+        assumeInt8();
+        Qwen35Configuration config = config(1024, 3584);
+        Qwen35TornadoWeights weights = weights(config);
+        mixerF16(config, weights);
+        feedForwardF16(config, weights);
+        Qwen35BatchFeedForward readsTheQuantizedChunk =
+                new Qwen35BatchFeedForward() {
+                    @Override
+                    public void appendTasks(TaskGraph layer, KernelContext context, int index) {}
+
+                    @Override
+                    public List<Object> layerWeights(int index) {
+                        return List.of();
+                    }
+
+                    @Override
+                    public Object[] scratch() {
+                        return new Object[] {new FloatArray(1)};
+                    }
+
+                    @Override
+                    public void addWorkerGrids(GridScheduler scheduler, String prefix) {}
+                };
+        Qwen35BatchPrefillLayers layers = build(config, weights, false, readsTheQuantizedChunk);
+        for (int layer = 0; layer < TRUNK_LAYERS; layer++) {
+            LinkedHashMap<String, String> k = kernels(layers, layer);
+            assertEquals("layer " + layer, "quantizeActivationsQ8Warp", k.get("ffn_rms_apply_q8"));
+            assertFalse("layer " + layer, k.containsKey("attn_rms_apply_q8"));
+        }
     }
 }

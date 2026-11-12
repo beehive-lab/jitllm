@@ -1,12 +1,16 @@
 package org.beehive.jitllm.backend.tornado;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.layers.PrefillFamily;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.pipeline.PipelineTransport;
 import org.beehive.jitllm.backend.tornado.pipeline.StageOwnership;
@@ -14,9 +18,11 @@ import org.beehive.jitllm.backend.tornado.plan.ExecutionMode;
 import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
 import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.StagedForwardPlanComponents;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepackingTaskGraphs;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.DeviceSplit;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -52,12 +58,65 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 // @formatter:on
 public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan {
 
+    /**
+     * One stage: its layers, state, device and plan, and {@code recurrentStateGraph}, the graph
+     * that takes its recurrent state ({@link StageGraphs#recurrentStateGraph}).
+     */
     private record Stage(
             int firstLayer,
             int endLayer,
             State state,
             TornadoDevice device,
-            TornadoExecutionPlan plan) {}
+            TornadoExecutionPlan plan,
+            int recurrentStateGraph) {}
+
+    // @formatter:off
+    /**
+     * Where a stage's programs, and the graph that binds its recurrent state, are in its graph
+     * list. The stage builders record these positions as they add the stage's inference graphs; the
+     * prepacking graphs, created afterwards, go first, so {@link #shifted} moves every position by
+     * their count, once.
+     *
+     * <pre>
+     *   [0 .. P-1]   prepacking graphs (P of them, 0 without weight prepacking)
+     *   [P]          activation, or the receive of a later stage
+     *   [P+1 ..]     the stage's layer graphs, then its send or logits
+     * </pre>
+     *
+     * @param prefill the prefill program, in order; null for a single-token stage
+     * @param token the program one generated token runs, in order
+     * @param recurrentStateGraph the graph that binds the stage's recurrent state: its first layer
+     *     graph, recorded by the builder when it adds it
+     */
+    // @formatter:on
+    record StageGraphs(
+            int[] prefill,
+            int[] token,
+            int recurrentStateGraph,
+            int[] narrowPrefill,
+            Map<Integer, Object[]> narrowRefreshes) {
+
+        /** A stage without a narrow prefill family. */
+        StageGraphs(int[] prefill, int[] token, int recurrentStateGraph) {
+            this(prefill, token, recurrentStateGraph, null, Map.of());
+        }
+
+        /** The same positions once {@code prepackingGraphs} prepacking graphs come first. */
+        StageGraphs shifted(int prepackingGraphs) {
+            Map<Integer, Object[]> refreshes = new LinkedHashMap<>();
+            narrowRefreshes.forEach((g, arrays) -> refreshes.put(g + prepackingGraphs, arrays));
+            return new StageGraphs(
+                    prefill == null ? null : shifted(prefill, prepackingGraphs),
+                    shifted(token, prepackingGraphs),
+                    recurrentStateGraph + prepackingGraphs,
+                    narrowPrefill == null ? null : shifted(narrowPrefill, prepackingGraphs),
+                    refreshes);
+        }
+
+        private static int[] shifted(int[] positions, int by) {
+            return java.util.Arrays.stream(positions).map(p -> p + by).toArray();
+        }
+    }
 
     private final State state;
     private final Stage[] stages;
@@ -81,8 +140,19 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
     private final int[][] prefillGraphs;
 
     /**
+     * Per stage, the prefill program on the narrow family ({@link PrefillFamily}), and the
+     * per-chunk arrays it reads from primary graphs, by graph; null where a stage has none.
+     */
+    private final int[][] narrowPrefillGraphs;
+
+    private final List<Map<Integer, Object[]>> narrowRefreshes = new ArrayList<>();
+
+    /** The narrow family's rows, or 0 unless every stage has one. */
+    private int narrowPrefillRows;
+
+    /**
      * Per stage, the graph indices one generated token runs, in order: the decode program of a
-     * batched plan, every graph but the repack ones of a single-token plan.
+     * batched plan, every graph but the prepacking ones of a single-token plan.
      */
     private final int[][] tokenGraphs;
 
@@ -114,11 +184,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                             throw new UnsupportedOperationException(
                                     PlanSupport.refusal(architecture, model, reason));
                         });
-        this.batched =
-                policy.phaseStrategy()
-                                == org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy
-                                        .PREFILL_DECODE
-                        && policy.prefillBatchSize() > 1;
+        this.batched = ExecutionMode.of(policy) == ExecutionMode.BATCH_PREFILL_DECODE;
         this.batchSize = batched ? policy.prefillBatchSize() : 1;
         ExecutionMode mode = batched ? ExecutionMode.BATCH_PREFILL_DECODE : ExecutionMode.STANDARD;
 
@@ -127,8 +193,16 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
         this.stages = new Stage[stageCount];
         this.plans = new TornadoExecutionPlan[stageCount];
         this.prefillGraphs = batched ? new int[stageCount][] : null;
+        this.narrowPrefillGraphs = new int[stageCount][];
+        this.narrowPrefillRows =
+                batched
+                        ? BatchPrefillTransformerLayerTaskGraphs.narrowRows(
+                                (batchSize + 127) & ~127)
+                        : 0;
         this.tokenGraphs = new int[stageCount][];
-        var repack = new org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs[stageCount];
+        // Per stage, the run of its prepacking graphs; null where it does not use weight
+        // prepacking.
+        var prepacking = new Runnable[stageCount];
 
         int[] bounds = split.layerBounds(layers, ForwardPlanFactory.stageLayerAlignment(model));
         this.transport = PipelineTransport.create(split.transport(), devices);
@@ -144,14 +218,18 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                         mode,
                         transport,
                         devices,
-                        repack);
+                        prepacking);
             }
             this.wholePlanTokens =
-                    !batched && java.util.Arrays.stream(repack).allMatch(java.util.Objects::isNull);
+                    !batched
+                            && java.util.Arrays.stream(prepacking)
+                                    .allMatch(java.util.Objects::isNull);
             // Before the warm-up, which is the first execution of the graphs that read the
             // weights.
-            for (int s = 0; s < stageCount; s++) {
-                org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(plans[s], repack[s]);
+            for (Runnable stagePrepacking : prepacking) {
+                if (stagePrepacking != null) {
+                    stagePrepacking.run();
+                }
             }
             forceCopyInReadOnlyData();
         } catch (RuntimeException e) {
@@ -165,9 +243,9 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
 
     /**
      * One stage of the single-token plan: [embedding | receive], its layers, [send | logits]. A
-     * step runs the whole plan.
+     * step runs every graph built here. Returns their positions among the stage's inference graphs.
      */
-    private void addSingleTokenStage(
+    private StageGraphs addSingleTokenStage(
             PipelineTransport transport,
             int s,
             int first,
@@ -179,11 +257,12 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
         if (s == 0) {
             add(components.singleTokenActivation(), graphs, scheduler);
         } else {
-            TaskGraph receive = new TaskGraph("activationUpdate");
+            TaskGraph receive = new TaskGraph(GraphNames.ACTIVATION_UPDATE);
             transport.addTokenReceive(receive, s, stageState.workspace.wrapX, s - 1);
             graphs.add(receive.snapshot());
         }
         TransformerLayerTaskGraphs layers = components.singleTokenTransformerLayers(first, end);
+        int recurrentStateGraph = graphs.size();
         graphs.addAll(layers.getFFNLayerImmutableTaskGraphs());
         layers.updateGridScheduler(scheduler);
         handOff(
@@ -195,6 +274,8 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                 "handoff_out",
                 graphs,
                 scheduler);
+        return new StageGraphs(
+                null, IntStream.range(0, graphs.size()).toArray(), recurrentStateGraph);
     }
 
     // @formatter:off
@@ -211,7 +292,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
      * layer takes the cache from the stage's last prefill layer.
      */
     // @formatter:on
-    private void addBatchedStage(
+    private StageGraphs addBatchedStage(
             PipelineTransport transport,
             int s,
             int first,
@@ -234,24 +315,72 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                 state.workspace.embeddingQ8Batch = stageState.workspace.embeddingQ8Batch;
             }
         } else {
-            TaskGraph receive = new TaskGraph("prefillActivation");
+            TaskGraph receive = new TaskGraph(GraphNames.PREFILL_ACTIVATION);
             transport.addReceive(receive, s, stageState.workspace.wrapXBatch, s - 1);
             graphs.add(receive.snapshot());
         }
-        BatchPrefillTransformerLayerTaskGraphs prefill =
-                staged.batchPrefillTransformerLayers(batchSize, first, end);
+        int entry = graphs.size() - 1;
+        BatchPrefillTransformerLayerTaskGraphs prefill;
+        BatchPrefillTransformerLayerTaskGraphs narrow = null;
+        Map<Integer, Object[]> refreshes = Map.of();
+        int recurrentStateGraph = graphs.size();
+        PrefillFamily primary = PrefillFamily.primary();
+        prefill =
+                primary.build(
+                        stageState.workspace,
+                        () -> staged.batchPrefillTransformerLayers(batchSize, first, end));
         graphs.addAll(prefill.getLayerImmutableTaskGraphs());
         prefill.updateGridScheduler(scheduler);
+        // The narrow family of this stage's layers; its graphs bind the primary's buffers, so the
+        // stage's send takes its output from the primary's last layer as before.
+        if (narrowPrefillRows > 0) {
+            PrefillFamily family = primary.narrow(narrowPrefillRows, prefill);
+            try {
+                narrow =
+                        family.build(
+                                stageState.workspace,
+                                () ->
+                                        staged.batchPrefillTransformerLayers(
+                                                narrowPrefillRows, first, end));
+                narrow.updateGridScheduler(scheduler);
+                refreshes = family.refreshes(prefill.getLayerImmutableTaskGraphs());
+            } catch (PrefillFamily.Declined e) {
+                narrow = null;
+            }
+        }
         if (s == 0) {
             prefillProjections = prefill.describeProjections();
         }
         String lastPrefill = prefill.getLastLayerTaskGraphID();
+        int send = -1;
         if (s < stages.length - 1) {
-            TaskGraph send = new TaskGraph("prefillHandoff");
-            transport.addSend(send, s, lastPrefill, stageState.workspace.wrapXBatch, s + 1);
-            graphs.add(send.snapshot());
+            TaskGraph handoff = new TaskGraph("prefillHandoff");
+            transport.addSend(handoff, s, lastPrefill, stageState.workspace.wrapXBatch, s + 1);
+            send = graphs.size();
+            graphs.add(handoff.snapshot());
         }
-        prefillGraphs[s] = IntStream.range(0, graphs.size()).toArray();
+        int[] prefillProgram = IntStream.range(0, graphs.size()).toArray();
+        int[] narrowProgram = null;
+        Map<Integer, Object[]> narrowRefresh = new LinkedHashMap<>();
+        if (narrow == null) {
+            // One stage without the narrow family leaves every chunk on the primary.
+            narrowPrefillRows = 0;
+        } else {
+            int narrowFirst = graphs.size();
+            graphs.addAll(narrow.getLayerImmutableTaskGraphs());
+            IntStream.Builder program = IntStream.builder();
+            for (int g = 0; g <= entry; g++) {
+                program.add(g);
+            }
+            for (int g = narrowFirst; g < graphs.size(); g++) {
+                program.add(g);
+            }
+            if (send >= 0) {
+                program.add(send);
+            }
+            narrowProgram = program.build().toArray();
+            refreshes.forEach((g, arrays) -> narrowRefresh.put(recurrentStateGraph + g, arrays));
+        }
 
         int decodeStart = graphs.size();
         if (s == 0) {
@@ -259,7 +388,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
         } else {
             // Only the hidden state: the first decode layer takes this stage's cache straight
             // from its last prefill layer.
-            TaskGraph receive = new TaskGraph("decodeActivation");
+            TaskGraph receive = new TaskGraph(GraphNames.DECODE_ACTIVATION);
             transport.addTokenReceive(receive, s, stageState.workspace.wrapX, s - 1);
             graphs.add(receive.snapshot());
         }
@@ -275,7 +404,12 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                 "decodeHandoff",
                 graphs,
                 scheduler);
-        tokenGraphs[s] = IntStream.range(decodeStart, graphs.size()).toArray();
+        return new StageGraphs(
+                prefillProgram,
+                IntStream.range(decodeStart, graphs.size()).toArray(),
+                recurrentStateGraph,
+                narrowProgram,
+                narrowRefresh);
     }
 
     /** The end of a stage's token program: a send to the next stage, or on the last the logits. */
@@ -320,12 +454,12 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
             ExecutionMode mode,
             PipelineTransport created,
             TornadoDevice[] devices,
-            org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs[] repack) {
+            Runnable[] prepacking) {
         TornadoDevices.building(
                 TornadoDevices.of(devices[s]),
                 () -> {
                     buildStageOnItsDevice(
-                            s, first, end, model, state, mode, created, devices, repack);
+                            s, first, end, model, state, mode, created, devices, prepacking);
                     return null;
                 });
     }
@@ -339,7 +473,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
             ExecutionMode mode,
             PipelineTransport created,
             TornadoDevice[] devices,
-            org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs[] repack) {
+            Runnable[] prepacking) {
         State stageState = ForwardPlanFactory.stageState(model, state, first, end, batchSize);
         StagedForwardPlanComponents components =
                 ForwardPlanFactory.stageComponents(mode, stageState, model);
@@ -348,43 +482,60 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
             stageState.workspace.embeddingX = state.workspace.embeddingX;
         }
 
-        List<ImmutableTaskGraph> graphs = new ArrayList<>();
+        // The stage's inference graphs, as its builders add them and record their positions.
+        List<ImmutableTaskGraph> inference = new ArrayList<>();
         GridScheduler scheduler = new GridScheduler();
+        StageGraphs built;
         if (batched) {
-            addBatchedStage(
-                    created,
-                    s,
-                    first,
-                    end,
-                    stageState,
-                    (BatchPrefillDecodeForwardPlanComponents) components,
-                    components,
-                    graphs,
-                    scheduler);
+            built =
+                    addBatchedStage(
+                            created,
+                            s,
+                            first,
+                            end,
+                            stageState,
+                            (BatchPrefillDecodeForwardPlanComponents) components,
+                            components,
+                            inference,
+                            scheduler);
         } else {
-            addSingleTokenStage(created, s, first, end, stageState, components, graphs, scheduler);
+            built =
+                    addSingleTokenStage(
+                            created, s, first, end, stageState, components, inference, scheduler);
         }
+        // Initialization, when the stage uses weight prepacking: built now, after the layer graphs
+        // that register its weights, but listed first and run once at load; no program includes it.
+        WeightPrepackingTaskGraphs stagePrepacking =
+                stageState.workspace.prepacker.buildTaskGraphs();
         created.updateGridScheduler(s, scheduler);
-        if (!batched) {
-            tokenGraphs[s] = IntStream.range(0, graphs.size()).toArray();
+        stagePrepacking.updateGridScheduler(scheduler);
+
+        List<ImmutableTaskGraph> graphs = new ArrayList<>(stagePrepacking.getImmutableTaskGraphs());
+        graphs.addAll(inference);
+        StageGraphs positions = built.shifted(stagePrepacking.graphCount());
+        if (batched) {
+            prefillGraphs[s] = positions.prefill();
+            narrowPrefillGraphs[s] = positions.narrowPrefill();
+            narrowRefreshes.add(positions.narrowRefreshes());
         }
-        // Graphs that repack this stage's packed weights, run once at load; no program
-        // includes them.
-        repack[s] = stageState.workspace.packedRepack.appendGraphs(graphs, scheduler);
+        tokenGraphs[s] = positions.token();
 
         TornadoExecutionPlan plan =
                 new TornadoExecutionPlan(graphs.toArray(new ImmutableTaskGraph[0]));
+        if (stagePrepacking.graphCount() > 0) {
+            prepacking[s] = () -> stagePrepacking.run(plan, scheduler);
+        }
         // Owned before it is configured: configuring can fail, and the wrappers the calls below
         // return share this plan's executor and device buffers.
         plans[s] = plan;
         ownership.own(plan::freeDeviceMemory, plan::close);
         plan.withDevice(devices[s]).withGridScheduler(scheduler);
-        if (TornadoVMMasterPlan.CUDA_GRAPHS && !batched && repack[s] == null) {
+        if (TornadoVMMasterPlan.CUDA_GRAPHS && !batched && stagePrepacking.graphCount() == 0) {
             plan.withCUDAGraph();
         } else if (TornadoVMMasterPlan.CUDA_GRAPHS) {
             // The token program only: a graph's capture is decided when its bytecode is
             // compiled, so it is enabled here, graph by graph, before precompilation. The
-            // prefill program and the repack keep launching their kernels directly.
+            // prefill program and the prepacking graphs keep launching their kernels directly.
             for (int graph : tokenGraphs[s]) {
                 plan.withGraph(graph).withCUDAGraph();
             }
@@ -392,7 +543,9 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
         }
         plan.withStagedTransfers();
         plan.withPreCompilation();
-        stages[s] = new Stage(first, end, stageState, devices[s], plan);
+        stages[s] =
+                new Stage(
+                        first, end, stageState, devices[s], plan, positions.recurrentStateGraph());
     }
 
     /** The split's {@code backend:device} indices as TornadoVM devices, in stage order. */
@@ -408,7 +561,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
     }
 
     @Override
-    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
+    public ExecutionInfo executionInfo() {
         StringBuilder description =
                 new StringBuilder(
                         "pipeline ("
@@ -461,6 +614,10 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
         }
         if (batched) {
             transport.execute(plans, prefillGraphs, TornadoVMMasterPlan.CUDA_GRAPHS);
+            // After the primary, whose buffers the narrow graphs bind.
+            if (narrowPrefillRows > 0) {
+                transport.execute(plans, narrowPrefillGraphs, TornadoVMMasterPlan.CUDA_GRAPHS);
+            }
         }
         executeToken();
     }
@@ -482,6 +639,33 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
             stageControls(chunk, stage.state().workspace.batchStartPosHolder, stage.state().kvSlot);
         }
         transport.execute(plans, prefillGraphs, TornadoVMMasterPlan.CUDA_GRAPHS);
+    }
+
+    @Override
+    public int narrowPrefillRows() {
+        return narrowPrefillRows;
+    }
+
+    /**
+     * The staged chunk through every stage's narrow family, as {@link
+     * #tornadoVMForwardBatchPrefill}.
+     */
+    @Override
+    public void tornadoVMForwardBatchPrefillNarrow() {
+        int[] chunk = state.workspace.batchStartPosHolder.toHeapArray();
+        for (int s = 0; s < stages.length; s++) {
+            stageControls(
+                    chunk,
+                    stages[s].state().workspace.batchStartPosHolder,
+                    stages[s].state().kvSlot);
+            refreshNarrow(s, plans[s]);
+        }
+        transport.execute(plans, narrowPrefillGraphs, TornadoVMMasterPlan.CUDA_GRAPHS);
+    }
+
+    /** Stage {@code s}'s per-chunk arrays into the primary buffers its narrow family reads. */
+    private void refreshNarrow(int s, TornadoExecutionPlan plan) {
+        narrowRefreshes.get(s).forEach((g, arrays) -> plan.withGraph(g).transferToDevice(arrays));
     }
 
     /** Index of the key/value slot in a chunk's controls, after its start position and rows. */
@@ -556,8 +740,15 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                     stageControls(
                             chunk, stageState.workspace.batchStartPosHolder, stageState.kvSlot);
                     try {
+                        // A chunk of up to the narrow family's rows takes it, as a single one does.
+                        boolean narrow = chunk[1] <= narrowPrefillRows;
+                        if (narrow) {
+                            refreshNarrow(stage, plan);
+                        }
                         PipelineTransport.executeGraphs(
-                                plan, prefillGraphs[stage], TornadoVMMasterPlan.CUDA_GRAPHS);
+                                plan,
+                                narrow ? narrowPrefillGraphs[stage] : prefillGraphs[stage],
+                                TornadoVMMasterPlan.CUDA_GRAPHS);
                     } catch (RuntimeException | Error e) {
                         if (stage == 0) {
                             for (var future : staged) {
@@ -589,16 +780,16 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
 
     @Override
     public void resetSequenceState() {
-        // Zero each stage's recurrent state on the host and on its device. Graph 1 is every
-        // stage's first layer graph (graph 0 is its activation or receive graph), which binds the
-        // buffers. A family with only a key/value cache keeps none: the cache is overwritten
-        // position by position.
+        // Zero each stage's recurrent state on the host and on its device, through the graph that
+        // binds the buffers: the stage's first layer graph, whose position its builder recorded
+        // (StageGraphs), after any prepacking graphs. A family with only a key/value cache keeps
+        // none: the cache is overwritten position by position.
         for (int s = 0; s < stages.length; s++) {
             State stageState = stages[s].state();
             stageState.resetSequenceState();
             Object[] recurrent = stageState.recurrentDeviceBuffers();
             if (recurrent.length > 0) {
-                plans[s].withGraph(1).transferToDevice(recurrent);
+                plans[s].withGraph(stages[s].recurrentStateGraph()).transferToDevice(recurrent);
             }
         }
     }

@@ -17,6 +17,16 @@ public record MistralConfiguration(
         float ropeTheta)
         implements Configuration {
 
+    /**
+     * One: the decode graphs of a batched plan consume the weights the prefill graphs uploaded, so
+     * the plan holds them once. Measured: Mistral-7B Q8_0 (7.2 GiB file) peaks at 8.1 GiB of GPU
+     * memory batched on CUDA.
+     */
+    @Override
+    public int weightBindingFamilies(int layerGraphFamilies) {
+        return 1;
+    }
+
     @Override
     public String quantization() {
         return quantization;
@@ -42,5 +52,10 @@ public record MistralConfiguration(
 
     public int headSize() {
         return dim / numberOfHeads;
+    }
+
+    @Override
+    public boolean supportsSharedKvStorage() {
+        return true;
     }
 }

@@ -3,6 +3,8 @@ package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 import org.beehive.jitllm.backend.tornado.kernels.GraniteKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
@@ -19,20 +21,19 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class LogitsGraniteFP16Layer extends LogitsFP16Layer {
 
     public LogitsGraniteFP16Layer(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config, lastTaskGraphID, schedulerType);
+        super(state, weights, config, lastTaskGraphID, schedulerType);
     }
 
     // @formatter:off
     @Override
     protected TaskGraph setupLogitsTaskGraph(TornadoWeights weights, Configuration config) {
         GraniteConfiguration graniteCfg = (GraniteConfiguration) config;
-        var logits = new TaskGraph("logits");
+        var logits = new TaskGraph(GraphNames.LOGITS);
 
         // === Data Setup ===
         logits.consumeFromDevice(lastTaskGraphID, state.workspace.wrapX);
@@ -41,7 +42,10 @@ public class LogitsGraniteFP16Layer extends LogitsFP16Layer {
                 DataTransferMode.FIRST_EXECUTION,
                 context,
                 state.workspace.wrapLogits,
-                state.workspace.wrapXbFP16,
+                state.workspace.wrapXbFP16);
+        UnifiedMemoryWeights.upload(
+                logits,
+                state.workspace,
                 weights.wclsByteArray.asHalfFloatArray(),
                 weights.rms_final_weight_as_floatArray.asFloatArray());
 

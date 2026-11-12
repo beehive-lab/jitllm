@@ -12,7 +12,6 @@ import java.nio.channels.FileChannel;
 import java.util.Map;
 import java.util.function.IntFunction;
 import org.beehive.jitllm.auxiliary.Pair;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
 import org.beehive.jitllm.format.DataTypeMapping;
@@ -28,7 +27,6 @@ import org.beehive.jitllm.model.gemma4.Gemma4;
 import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
 import org.beehive.jitllm.runtime.tensor.DataType;
-import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.runtime.tensor.LongIndexedTensor;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
 import org.beehive.jitllm.tensor.standard.FloatTensor;
@@ -207,101 +205,66 @@ public class Gemma4ModelLoader extends AbstractModelLoader<Gemma4, Gemma4Configu
             GGMLTensorEntry outputWeight) {
         final int nl = config.numberOfLayers();
         final boolean ple = config.hasPerLayerEmbeddings();
-        // What the trunk projections actually are, which is not what the output projection is: a
-        // Q4_0 file holds Q4_0 projections and a Q4_K token_embd, so asking the output tensor gives
-        // the plan the wrong representation to be admitted on.
-        DataType projections = projectionType(tensorEntries, config);
-        boolean retain = projections == DataType.Q4_0;
-        // The cuBLAS projections under native libraries read no packed tiles (the plan provider
-        // refuses a session that asks for them over packed weights).
-        boolean pack =
-                retain
-                        && PackedWeights.packQ4(
-                                PackedWeights.packedIntegerDotOn("jitllm.gemma4.packedIntegerDot")
-                                        && !PackedWeights.loadPolicy().nativeLibraries());
-        DataType weightType =
-                retain
-                        ? DataType.Q4_0
-                        : DataTypeMapping.materializedType(
-                                outputWeight.ggmlType(), ExecutionTarget.GPU);
+        // Every tensor stays as the file stores it: the quantized layers read each one by its own
+        // type, so the projections need not agree, and the model reports its projections' type.
         RopeTables ropeTables = computeRopeTables(tensorEntries, config);
+
+        TornadoTensor[] wq =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_q.weight"));
+        TornadoTensor[] wk =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_k.weight"));
+        // Absent on the 31B's global layers, whose values are their keys.
+        TornadoTensor[] wv =
+                loadOptionalProjections(nl, i -> tensorEntries.get("blk." + i + ".attn_v.weight"));
+        TornadoTensor[] wo =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_output.weight"));
+        TornadoTensor[] w1 =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_gate.weight"));
+        TornadoTensor[] w3 =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_up.weight"));
+        TornadoTensor[] w2 =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_down.weight"));
+        DataType weightType = keptType(wq, wk, wo, w1, w3, w2);
 
         Gemma4TornadoWeights weights =
                 new Gemma4TornadoWeights(
-                        loadTornadoTensor(tokenEmbeddings),
-                        loadArrayOfTornadoTensors(
+                        loadTornadoTensorNative(tokenEmbeddings),
+                        loadArrayOfTornadoTensorsNative(
                                 nl, i -> tensorEntries.get("blk." + i + ".attn_norm.weight")),
-                        packQ4(
-                                loadProjections(
-                                        retain,
-                                        nl,
-                                        i -> tensorEntries.get("blk." + i + ".attn_q.weight")),
-                                i -> tensorEntries.get("blk." + i + ".attn_q.weight"),
-                                pack),
-                        packQ4(
-                                loadProjections(
-                                        retain,
-                                        nl,
-                                        i -> tensorEntries.get("blk." + i + ".attn_k.weight")),
-                                i -> tensorEntries.get("blk." + i + ".attn_k.weight"),
-                                pack),
-                        // Absent on the 31B's global layers, whose values are their keys.
-                        packQ4(
-                                loadOptionalProjections(
-                                        retain,
-                                        nl,
-                                        i -> tensorEntries.get("blk." + i + ".attn_v.weight")),
-                                i -> tensorEntries.get("blk." + i + ".attn_v.weight"),
-                                pack),
-                        packQ4(
-                                loadProjections(
-                                        retain,
-                                        nl,
-                                        i -> tensorEntries.get("blk." + i + ".attn_output.weight")),
-                                i -> tensorEntries.get("blk." + i + ".attn_output.weight"),
-                                pack),
-                        loadArrayOfTornadoTensors(
+                        wq,
+                        wk,
+                        wv,
+                        wo,
+                        loadArrayOfTornadoTensorsNative(
                                 nl, i -> tensorEntries.get("blk." + i + ".attn_q_norm.weight")),
-                        loadArrayOfTornadoTensors(
+                        loadArrayOfTornadoTensorsNative(
                                 nl, i -> tensorEntries.get("blk." + i + ".attn_k_norm.weight")),
-                        loadArrayOfTornadoTensors(
+                        loadArrayOfTornadoTensorsNative(
                                 nl,
                                 i -> tensorEntries.get("blk." + i + ".post_attention_norm.weight")),
-                        loadArrayOfTornadoTensors(
+                        loadArrayOfTornadoTensorsNative(
                                 nl, i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")),
-                        packQ4(
-                                loadProjections(
-                                        retain,
-                                        nl,
-                                        i -> tensorEntries.get("blk." + i + ".ffn_gate.weight")),
-                                i -> tensorEntries.get("blk." + i + ".ffn_gate.weight"),
-                                pack),
-                        packQ4(
-                                loadProjections(
-                                        retain,
-                                        nl,
-                                        i -> tensorEntries.get("blk." + i + ".ffn_up.weight")),
-                                i -> tensorEntries.get("blk." + i + ".ffn_up.weight"),
-                                pack),
-                        packQ4(
-                                loadProjections(
-                                        retain,
-                                        nl,
-                                        i -> tensorEntries.get("blk." + i + ".ffn_down.weight")),
-                                i -> tensorEntries.get("blk." + i + ".ffn_down.weight"),
-                                pack),
-                        loadArrayOfTornadoTensors(
+                        w1,
+                        w3,
+                        w2,
+                        loadArrayOfTornadoTensorsNative(
                                 nl, i -> tensorEntries.get("blk." + i + ".post_ffw_norm.weight")),
                         ple
-                                ? loadArrayOfTornadoTensors(
+                                ? loadArrayOfTornadoTensorsNative(
                                         nl, i -> tensorEntries.get("blk." + i + ".inp_gate.weight"))
                                 : new TornadoTensor[nl],
                         ple
-                                ? loadArrayOfTornadoTensors(
+                                ? loadArrayOfTornadoTensorsNative(
                                         nl, i -> tensorEntries.get("blk." + i + ".proj.weight"))
                                 : new TornadoTensor[nl],
                         ple
-                                ? loadArrayOfTornadoTensors(
+                                ? loadArrayOfTornadoTensorsNative(
                                         nl,
                                         i -> tensorEntries.get("blk." + i + ".post_norm.weight"))
                                 : new TornadoTensor[nl],
@@ -314,19 +277,19 @@ public class Gemma4ModelLoader extends AbstractModelLoader<Gemma4, Gemma4Configu
                                                 tensorEntries.get("per_layer_token_embd.weight")))
                                 : null,
                         ple
-                                ? loadTornadoTensor(
+                                ? loadTornadoTensorNative(
                                         tensorEntries.get("per_layer_model_proj.weight"))
                                 : null,
                         ple
-                                ? loadTornadoTensor(tensorEntries.get("per_layer_proj_norm.weight"))
+                                ? loadTornadoTensorNative(
+                                        tensorEntries.get("per_layer_proj_norm.weight"))
                                 : null,
-                        loadTornadoTensor(tensorEntries.get("output_norm.weight")),
+                        loadTornadoTensorNative(tensorEntries.get("output_norm.weight")),
                         TornadoTensorLoader.fromFloats(ropeTables.realSwa),
                         TornadoTensorLoader.fromFloats(ropeTables.imagSwa),
                         TornadoTensorLoader.fromFloats(ropeTables.realFull),
                         TornadoTensorLoader.fromFloats(ropeTables.imagFull),
-                        loadOutput(
-                                retain,
+                        loadTornadoTensorNative(
                                 tensorEntries.containsKey("output.weight")
                                         ? tensorEntries.get("output.weight")
                                         : tokenEmbeddings),
@@ -335,17 +298,6 @@ public class Gemma4ModelLoader extends AbstractModelLoader<Gemma4, Gemma4Configu
     }
 
     // @formatter:on
-
-    /**
-     * The output projection. Next to Q4_0 projections it stays Q4_K, read by the packed-integer
-     * Q4_K kernel, rather than becoming a Q8_0 copy of nearly twice the bytes.
-     */
-    private static TornadoTensor loadOutput(boolean retain, GGMLTensorEntry entry) {
-        if (retain) {
-            return loadTornadoTensorRetainingQ4_K(entry);
-        }
-        return loadTornadoTensor(entry);
-    }
 
     /**
      * Tensor entries produced by {@link GGUF#loadTensorsTornado} prefix every {@code
@@ -368,27 +320,27 @@ public class Gemma4ModelLoader extends AbstractModelLoader<Gemma4, Gemma4Configu
     }
 
     /**
-     * Like {@link ModelLoader#loadArrayOfTornadoTensors}, but tolerates missing entries (Gemma4's
-     * optional per-layer output scale).
+     * Like {@link ModelLoader#loadArrayOfTornadoTensorsNative}, but tolerates missing entries
+     * (Gemma4's optional per-layer output scale).
      */
     private static TornadoTensor[] loadArrayOfTornadoTensorsNullable(
             int size, IntFunction<GGMLTensorEntry> getTensorEntry) {
         TornadoTensor[] array = new TornadoTensor[size];
         for (int i = 0; i < size; i++) {
             GGMLTensorEntry entry = getTensorEntry.apply(i);
-            array[i] = (entry == null) ? null : loadTornadoTensor(entry);
+            array[i] = (entry == null) ? null : loadTornadoTensorNative(entry);
         }
         return array;
     }
 
-    /** {@link #loadProjections} where a layer may not carry the tensor: null at that layer. */
+    /** Per-layer projections where a layer may not carry the tensor: null at that layer. */
     private static TornadoTensor[] loadOptionalProjections(
-            boolean retain, int size, IntFunction<GGMLTensorEntry> getTensorEntry) {
+            int size, IntFunction<GGMLTensorEntry> getTensorEntry) {
         TornadoTensor[] array = new TornadoTensor[size];
         for (int i = 0; i < size; i++) {
             GGMLTensorEntry entry = getTensorEntry.apply(i);
             if (entry != null) {
-                array[i] = retain ? loadTornadoTensorNative(entry) : loadTornadoTensor(entry);
+                array[i] = loadTornadoTensorNative(entry);
             }
         }
         return array;
@@ -403,65 +355,6 @@ public class Gemma4ModelLoader extends AbstractModelLoader<Gemma4, Gemma4Configu
             array[i] = entry == null ? null : loadTensor(entry);
         }
         return array;
-    }
-
-    /**
-     * Loads a per-layer projection either as the file holds it or materialized, by one decision
-     * taken for the whole trunk.
-     */
-    private static TornadoTensor[] loadProjections(
-            boolean retain, int size, IntFunction<GGMLTensorEntry> getTensorEntry) {
-        return retain
-                ? loadArrayOfTornadoTensorsNative(size, getTensorEntry)
-                : loadArrayOfTornadoTensors(size, getTensorEntry);
-    }
-
-    /**
-     * The representation this file's trunk projections agree on.
-     *
-     * <p>{@code ffn_down} is deliberately excluded from the agreement. A real Q4_0 quantizer leaves
-     * it Q4_1 on the first few blocks — four of thirty-five here — and those tasks read it through
-     * a kernel chosen from that tensor's own type, so a disagreement there is expected rather than
-     * a malformed file. Everything else must agree, because the plan is admitted on one
-     * representation and the two block layouts are 18 and 20 bytes: reading one as the other yields
-     * weights of plausible magnitude and fluent, wrong text.
-     */
-    private static DataType projectionType(
-            Map<String, GGMLTensorEntry> entries, Gemma4Configuration config) {
-        DataType agreed = null;
-        String agreedName = null;
-        for (int l = 0; l < config.numberOfLayers(); l++) {
-            for (String kind :
-                    new String[] {
-                        "attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up"
-                    }) {
-                String name = "blk." + l + "." + kind + ".weight";
-                GGMLTensorEntry entry = entries.get(name);
-                if (entry == null) {
-                    continue;
-                }
-                DataType type = DataTypeMapping.sourceType(entry.ggmlType());
-                if (agreed == null) {
-                    agreed = type;
-                    agreedName = name;
-                } else if (agreed != type) {
-                    throw new ModelLoadException(
-                            DiagnosticCode.MODEL_MALFORMED.prefix()
-                                    + "gemma4 projections disagree about their representation: "
-                                    + agreedName
-                                    + " is "
-                                    + agreed
-                                    + " and "
-                                    + name
-                                    + " is "
-                                    + type
-                                    + ". They are read by tasks with different block layouts, and"
-                                    + " there is no model-wide representation to admit a plan on."
-                                    + " Neither is converted to the other.");
-                }
-            }
-        }
-        return agreed;
     }
 
     private record RopeTables(

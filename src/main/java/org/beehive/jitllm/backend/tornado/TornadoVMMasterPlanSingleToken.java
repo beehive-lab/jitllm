@@ -5,8 +5,8 @@ import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
 import org.beehive.jitllm.backend.tornado.plan.SingleTokenForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.layout.SingleTokenForwardTaskGraphLayout;
 import org.beehive.jitllm.inference.state.State;
-import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -29,14 +29,13 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
             System.getLogger(TornadoVMMasterPlanSingleToken.class.getName());
 
     @Override
-    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
+    public ExecutionInfo executionInfo() {
         return PlanDiagnostics.describe(
                 state, "single-token", 1, "JIT kernels (no tensor-core MMA)", "JIT kernels");
     }
 
     private final State state;
     private final Model model;
-    private final Configuration config;
 
     SingleTokenForwardPlan tornadoVMForwardPlan;
     SingleTokenForwardTaskGraphLayout taskGraphLayout;
@@ -54,34 +53,43 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
 
         this.state = state;
         this.model = model;
-        this.config = model.configuration();
         this.metrics = new TornadoMetricsReporter(sink);
 
         long startTime = System.nanoTime();
         this.executionPlan = createExecutionPlan();
-        // Before compilation and the weight upload, so a plan that fails either still prints.
-        TaskGraphChainPrinter.printIfRequested(taskGraphChain(), model);
-        metrics.enableOn(executionPlan);
-        long planCreationTime = System.nanoTime();
+        try {
+            // Before compilation and the weight upload, so a plan that fails either still prints.
+            TaskGraphChainPrinter.printIfRequested(taskGraphChain(), model);
+            metrics.enableOn(executionPlan);
+            long planCreationTime = System.nanoTime();
 
-        if (CUDA_GRAPHS) {
-            executionPlan.withAllGraphs().withCUDAGraph();
+            if (CUDA_GRAPHS) {
+                executionPlan.withAllGraphs().withCUDAGraph();
+            }
+            // Large one-shot uploads (the weights, below) chunked through pinned staging buffers
+            // instead of pinning each whole segment: measured 2.6 s off a 14.3 s cold start of the
+            // 27B model on CUDA, steady-state throughput unchanged; a no-op on the other backends.
+            executionPlan.withStagedTransfers();
+            executionPlan.withPreCompilation();
+            long warmupTime = System.nanoTime();
+
+            tornadoVMForwardPlan.runWeightPrepacking(executionPlan);
+            forceCopyInReadOnlyData();
+            long copyTime = System.nanoTime();
+
+            RunMetrics.setTornadoMetrics(
+                    planCreationTime - startTime,
+                    warmupTime - planCreationTime,
+                    copyTime - warmupTime);
+            metrics.reportSetUp(
+                    planCreationTime - startTime,
+                    warmupTime - planCreationTime,
+                    copyTime - warmupTime);
+        } catch (RuntimeException | Error failure) {
+            // Nobody else holds this plan yet, so nobody else can free its device memory.
+            ExecutionPlanRelease.closeAfter(failure, executionPlan);
+            throw failure;
         }
-        // Large one-shot uploads (the weights, below) chunked through pinned staging buffers
-        // instead of pinning each whole segment: measured 2.6 s off a 14.3 s cold start of the
-        // 27B model on CUDA, steady-state throughput unchanged; a no-op on the other backends.
-        executionPlan.withStagedTransfers();
-        executionPlan.withPreCompilation();
-        long warmupTime = System.nanoTime();
-
-        org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(executionPlan, packedRepack);
-        forceCopyInReadOnlyData();
-        long copyTime = System.nanoTime();
-
-        RunMetrics.setTornadoMetrics(
-                planCreationTime - startTime, warmupTime - planCreationTime, copyTime - warmupTime);
-        metrics.reportSetUp(
-                planCreationTime - startTime, warmupTime - planCreationTime, copyTime - warmupTime);
     }
 
     /** The graphs, when they run, and what each is, for {@code --print-taskgraph-chain}. */
@@ -97,14 +105,18 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
                         TaskGraphChainPrinter.span(
                                 layout.layerIdx(0), layout.layerIdx(layout.N() - 1)),
                         java.util.List.of(layout.logitsIdx()));
+        var phases =
+                new java.util.ArrayList<>(
+                        TaskGraphChainPrinter.prepacking(roles, layout.prepackingGraphs()));
+        phases.add(new TaskGraphChainPrinter.Phase("warm-up", "once, at plan build", token));
+        phases.add(
+                new TaskGraphChainPrinter.Phase(
+                        "token", "per prompt token and per generated token", token));
         return new TaskGraphChainPrinter.Chain(
                 "single-token",
                 tornadoVMForwardPlan.getImmutableTaskGraphs(),
                 tornadoVMForwardPlan.getGridScheduler(),
-                java.util.List.of(
-                        new TaskGraphChainPrinter.Phase("warm-up", "once, at plan build", token),
-                        new TaskGraphChainPrinter.Phase(
-                                "token", "per prompt token and per generated token", token)),
+                phases,
                 roles);
     }
 
@@ -113,15 +125,9 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
         DataType weightType = model.weights().dataType();
         this.tornadoVMForwardPlan = ForwardPlanFactory.createSingleToken(weightType, state, model);
         this.taskGraphLayout = tornadoVMForwardPlan.getTaskGraphLayout();
-        var taskGraphs = new java.util.ArrayList<>(tornadoVMForwardPlan.getImmutableTaskGraphs());
-        packedRepack =
-                state.workspace.packedRepack.appendGraphs(
-                        taskGraphs, tornadoVMForwardPlan.getGridScheduler());
-        return new TornadoExecutionPlan(taskGraphs.toArray(new ImmutableTaskGraph[0]));
+        return new TornadoExecutionPlan(
+                tornadoVMForwardPlan.getImmutableTaskGraphs().toArray(new ImmutableTaskGraph[0]));
     }
-
-    /** The graphs that repack the packed weights on the GPU before the warm-up, or null. */
-    private org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs packedRepack;
 
     // @formatter:off
     @Override
@@ -200,15 +206,6 @@ public class TornadoVMMasterPlanSingleToken implements TornadoVMMasterPlan {
 
     @Override
     public void freeTornadoExecutionPlan() {
-        // Free the buffers, then close the plan. freeDeviceMemory() alone returns the device
-        // allocations but leaves the plan — and its compiled code and task graphs — alive, so a
-        // process that opens and closes several plans keeps accumulating them until the device
-        // budget runs out. A session that has been closed must cost nothing.
-        executionPlan.freeDeviceMemory();
-        try {
-            executionPlan.close();
-        } catch (Exception e) {
-            throw new IllegalStateException("failed to close the TornadoVM execution plan", e);
-        }
+        ExecutionPlanRelease.close(executionPlan);
     }
 }

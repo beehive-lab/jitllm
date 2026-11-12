@@ -1,23 +1,23 @@
 ### 🚧 Work-in-progress Features
 
-- [Pending Merge] **LangChain4j integration**
-- [ ] **Additional quantization formats**
+- [x] **LangChain4j integration** (since LangChain4j 1.7.1)
+- [x] **Additional quantization formats**
   - [x] Q8 
-  - [ ] Q4
+  - [x] Q4 (Q4_0, Q4_K)
   - [x] INT8 native support for GPUs
 - [ ] **Additional architectures and model format**
   - [x] Mistral/Mixtral models
   - [x] Qwen
   - [x] Phi-3
-  - [ ] Gemma/Gemma2 models
+  - [x] Gemma 4 models
   - [ ] TinyLlamas
   - [ ] SafeTensors format
   - [ ] PyTorch checkpoint loading
   - [ ] Automatic model conversion utilities
 - [ ] **Advanced inference capabilities**
-  - [ ] Batch inference support
+  - [x] Batch inference support (batched decode, experimental `jitllm serve --continuous-batching`)
   - [ ] Speculative decoding
-- [ ] **Performance optimizations**
-  - [ ] Multi-GPU support
+- [x] **Performance optimizations**
+  - [x] Multi-GPU support (`--devices`, `--tensor-split`)
   - [X] Memory-efficient attention mechanisms
   - [x] More Kernel fusion improvements

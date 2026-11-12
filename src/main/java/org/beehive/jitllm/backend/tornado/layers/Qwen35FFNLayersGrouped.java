@@ -29,7 +29,6 @@ public class Qwen35FFNLayersGrouped extends Qwen35FFNLayers {
     }
 
     public Qwen35FFNLayersGrouped(
-            String taskGraphName,
             Qwen35State state,
             Qwen35TornadoWeights weights,
             Qwen35Configuration config,
@@ -39,7 +38,6 @@ public class Qwen35FFNLayersGrouped extends Qwen35FFNLayers {
             int endLayer,
             Qwen35FeedForward feedForward) {
         super(
-                taskGraphName,
                 state,
                 weights,
                 config,

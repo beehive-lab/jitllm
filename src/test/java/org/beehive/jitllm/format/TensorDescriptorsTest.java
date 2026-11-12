@@ -25,7 +25,7 @@ public class TensorDescriptorsTest {
                         entry("blk.0.attn_q.weight", GGMLType.Q4_K, 2048, 2048),
                         ExecutionTarget.GPU);
 
-        assertSame("the device has no K-quant kernel", DataType.Q8_0, descriptor.dataType());
+        assertSame("the device keeps the K-quant as it is", DataType.Q4_K, descriptor.dataType());
         assertEquals(TensorRole.ATTENTION_QUERY, descriptor.role());
         assertEquals(2048L * 2048, descriptor.elementCount());
         assertTrue(descriptor.layout() instanceof TensorLayout.BlockQuantized);

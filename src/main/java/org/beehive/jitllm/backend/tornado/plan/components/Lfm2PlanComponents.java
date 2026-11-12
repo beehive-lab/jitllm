@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.plan.components;
 
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Lfm2Layers;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
@@ -41,30 +42,30 @@ public class Lfm2PlanComponents implements PrefillDecodeForwardPlanComponents {
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new Lfm2Layers("lfm2", state, weights, config, schedulerType);
+        return new Lfm2Layers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsQ8_0Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsQ8_0Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── Sequential prefill/decode ─────────────────────────────────────────────
 
     @Override
     public ActivationTaskGraph prefillDecodeActivation() {
-        return new Activation("decodeActivation", state, weights, config);
+        return new Activation(GraphNames.DECODE_ACTIVATION, state, weights, config);
     }
 
     @Override
     public TransformerLayerTaskGraphs prefillDecodeTransformerLayers() {
-        return new Lfm2Layers("lfm2", state, weights, config, schedulerType, "decodeActivation");
+        return new Lfm2Layers(
+                state, weights, config, schedulerType, GraphNames.DECODE_ACTIVATION);
     }
 
     @Override

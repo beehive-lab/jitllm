@@ -24,8 +24,8 @@ compiler and runtime.
 | JDKs | 21 and 22+ (CI builds the latter on 25). Each publishes its own artifact — `jitllm:<version>-jdk21` and `-jdk22plus` — against the TornadoVM line of the same name. A JDK older than 21 fails the build |
 | Backends | CPU (plain Java, Vector API), and through TornadoVM: CUDA, OpenCL and Metal |
 | Platforms | Linux on NVIDIA (CUDA and OpenCL), macOS on Apple silicon (Metal) |
-| Model formats | GGUF, in F32, F16, BF16, Q8_0, Q4_0, Q4_K, Q5_K and Q6_K |
-| Families | Llama, Mistral, Qwen2, Qwen3, DeepSeek-R1-Distill-Qwen, Granite, Phi-3, Gemma-4, Devstral |
+| Model formats | GGUF, in F32, F16, BF16, Q8_0, Q4_0, Q4_1, Q4_K, Q5_K and Q6_K |
+| Families | Llama, Mistral, Qwen2, Qwen2-MoE, Qwen3, DeepSeek-R1-Distill-Qwen, Granite, Phi-3, Gemma-4, Devstral, Qwen3.5 / 3.6 / 3.8, Qwen3.6 MoE, GLM-4.7-Flash |
 
 ## The system in one paragraph
 

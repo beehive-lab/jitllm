@@ -31,8 +31,9 @@ representation. Which representations a backend accepts, and where a K-quant is 
 is a backend concern — see [`models-and-backends.md`](models-and-backends.md).
 
 A load is preceded by a capacity prediction. `LocalModels.preflight(...)` returns a
-`MemoryPlan` before anything is allocated, and a load known to exceed capacity fails with
-`GPUL-MEM-001` before the first device buffer, rather than dying part-allocated.
+`MemoryPlan` before anything is allocated; the load uses it to choose the device default and
+the residency of decoded projections, not to refuse. A configuration that does not fit fails
+while allocating, with `GPUL-MEM-001`, and releases what it allocated.
 
 ## Sessions
 
@@ -144,9 +145,9 @@ compilation occurs.
 
 | Mode | Prompt ingestion | Notes |
 | --- | --- | --- |
-| `STANDARD` | one token at a time | the default |
+| `STANDARD` | one token at a time | the default on the CPU and where batched prefill is not built |
 | `PREFILL_DECODE` | sequential prefill, then single-token decode | token-identical to `STANDARD` |
-| `BATCH_PREFILL_DECODE` | a chunk of prompt tokens per invocation, then decode | **default-off**; see below |
+| `BATCH_PREFILL_DECODE` | a chunk of prompt tokens per invocation, then decode | **the GPU default**, 512 tokens per chunk; see below |
 
 A family whose layers carry state across tokens — `qwen35`'s recurrent three quarters — cannot
 treat a chunk's rows as independent. Its batched layer graphs scan the chunk in token order inside
@@ -157,7 +158,8 @@ Policy is resolved **once per generation**, never per token, and reaches the pla
 remain as defaults for the CLI; they are not read from inside the execution path.
 
 **Batched prefill is the default on every accelerator backend** where the family builds it
-(`BatchPrefillSupport.defaultFor`, resolved once the model is loaded), and native libraries are
+(`BatchPrefillSupport.defaultFor`, resolved once the model is loaded), in chunks of 512 tokens;
+on Metal only the families and formats `BatchPrefillSupport` lists. Native libraries are
 the default where they are implemented and installed (`NativeLibrarySupport.defaultFor`). A
 default the configuration then refuses is dropped, never reported: the caller asked for nothing.
 The CPU path and models split across devices keep single-token prefill. `--no-batch-prefill` and

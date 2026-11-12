@@ -13,7 +13,9 @@
 # Finally it prints a comparison table (eval / prompt-eval tok/s, mean ± std,
 # plus one-time JIT).
 #
-# The cuda-graphs configurations are CUDA-only (mirrors the workflow).
+# The cuda-graphs configurations are CUDA-only (mirrors the workflow). CUDA graphs are on by
+# default on CUDA, so on that backend every other configuration runs with --no-cuda-graphs and
+# keeps measuring without them.
 #
 # Usage:
 #   scripts/benchmark_backends.sh [backend ...]
@@ -114,13 +116,16 @@ build_tornadovm() {
 # rep so repeats sample genuine run-to-run variance. $5=seed, $6=flags.
 run_inference() {
     local backend="$1" model_file="$2" metrics_file="$3" run_log="$4" seed="$5" flags="$6"
+    if [ "$backend" = "cuda" ] && [[ " $flags " != *" --cuda-graphs "* ]]; then
+        flags="$flags --no-cuda-graphs"
+    fi
     export JAVA_TOOL_OPTIONS="-Djitllm.metrics.format=json -Djitllm.metrics.output=file -Djitllm.metrics.file=$metrics_file"
     # shellcheck disable=SC2086
     ( cd "$JITLLM_ROOT_DIR" && \
       ./jitllm --gpu \
         --model "$MODELS_DIR/$model_file" \
         --prompt "$PROMPT" \
-        --max-tokens "$MAX_TOKENS" \
+        --max-new-tokens "$MAX_TOKENS" \
         --seed "$seed" \
         --gpu-memory "$GPU_MEMORY" \
         $flags ) \

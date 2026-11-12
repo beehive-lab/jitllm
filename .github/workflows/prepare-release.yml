@@ -145,7 +145,7 @@ jobs:
 
           SNIPPET_FILE="${{ runner.temp }}/dependency_snippet.md"
           cat > "$SNIPPET_FILE" <<EOF
-          **JDK 21** (\`jdk21\` profile, auto-activates for JDK \`[21,25)\`):
+          **JDK 21** (\`jdk21\` profile, auto-activates for JDK \`[21,22)\`):
           \`\`\`xml
           <dependency>
               <groupId>io.github.beehive-lab</groupId>

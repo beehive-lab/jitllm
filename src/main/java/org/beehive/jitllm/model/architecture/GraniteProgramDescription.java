@@ -227,7 +227,7 @@ public final class GraniteProgramDescription {
                                         weight(TensorRole.ATTENTION_QUERY),
                                         activation(XB),
                                         activation(Q),
-                                        dim,
+                                        config.queryDim(),
                                         dim,
                                         weightDataType)),
                         leaf(
@@ -269,17 +269,12 @@ public final class GraniteProgramDescription {
                                         kvDataType)),
                         leaf(
                                 "attention" + suffix,
-                                new Attention(
+                                attention(
+                                        config,
                                         activation(Q),
                                         activation(KEY_STORE),
                                         activation(VALUE_STORE),
                                         activation(XB),
-                                        config.numberOfHeads(),
-                                        config.numberOfKeyValueHeads(),
-                                        headSize,
-                                        config.attentionScale(),
-                                        Attention.ScoreScaling.MULTIPLY,
-                                        OptionalInt.empty(),
                                         kvDataType)),
                         leaf(
                                 "attnOut" + suffix,
@@ -288,7 +283,7 @@ public final class GraniteProgramDescription {
                                         activation(XB),
                                         activation(XB2),
                                         dim,
-                                        dim,
+                                        config.queryDim(),
                                         weightDataType)),
                         leaf(
                                 "attnResidualScale" + suffix,
@@ -453,6 +448,32 @@ public final class GraniteProgramDescription {
                             index, ResultId.SAMPLED_TOKEN, ValueType.I32, sampled, 0, 1));
         }
         return entries;
+    }
+
+    /**
+     * Granite's attention, for every description of its layer: scores multiplied by the file's
+     * attention multiplier ({@code attentionScale()}, the µP factor) instead of divided by the
+     * square root of the head size. Example: Granite 3.2 2B's {@code granite.attention.scale}.
+     */
+    public static Attention attention(
+            GraniteConfiguration config,
+            OperandRef query,
+            OperandRef keys,
+            OperandRef values,
+            OperandRef output,
+            DataType dataType) {
+        return new Attention(
+                query,
+                keys,
+                values,
+                output,
+                config.numberOfHeads(),
+                config.numberOfKeyValueHeads(),
+                config.headSize(),
+                config.attentionScale(),
+                Attention.ScoreScaling.MULTIPLY,
+                OptionalInt.empty(),
+                dataType);
     }
 
     private static ProgramComponent leaf(

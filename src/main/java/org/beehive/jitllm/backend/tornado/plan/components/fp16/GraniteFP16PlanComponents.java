@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.ActivationGranite;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.granite.GraniteBatchDecodeActivation;
 import org.beehive.jitllm.backend.tornado.layers.granite.GraniteFP16FFNLayersDecode;
@@ -38,18 +39,17 @@ public class GraniteFP16PlanComponents implements BatchPrefillDecodeForwardPlanC
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new ActivationGranite("activationUpdate", state, weights, config);
+        return new ActivationGranite(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new GraniteFP16FFNLayers("graniteFFN", state, weights, config, schedulerType);
+        return new GraniteFP16FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsGraniteFP16Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new LogitsGraniteFP16Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     /** Sequential prefill/decode has no Granite layers. */
@@ -76,7 +76,7 @@ public class GraniteFP16PlanComponents implements BatchPrefillDecodeForwardPlanC
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new GraniteFP16FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new GraniteFP16FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
@@ -90,6 +90,6 @@ public class GraniteFP16PlanComponents implements BatchPrefillDecodeForwardPlanC
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
         return new LogitsGraniteFP16LayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+                state, weights, config, previousGraphId, schedulerType);
     }
 }

@@ -5,7 +5,7 @@ description: >
   timeline and decide where the time goes: generated kernels, launch overhead,
   synchronization, host-device transfers, or GPU idle.
 tags:
-  - gpullama
+  - jitllm
   - nsys
   - profiling
 license: Apache-2.0
@@ -33,11 +33,14 @@ Choose flags that reach the phase you are studying:
 
 | Studying | Flags |
 | --- | --- |
-| decode | a short prompt and a large `-n` |
-| prefill | a long prompt and a small `-n` |
-| sequential prefill | `--with-prefill-decode` |
-| batched prefill | `--with-prefill-decode --batch-prefill-size N` (default-off otherwise) |
+| decode | a short prompt and a large `--max-new-tokens` (raise `--ctx-size` to hold it) |
+| prefill | a long prompt and a small `--max-new-tokens` |
+| sequential prefill | `--no-batch-prefill` |
+| batched prefill | the GPU default (512 tokens per step); `--batch-prefill-size N` changes the chunk |
+| generated kernels instead of cuBLAS/cuDNN | `--no-native-libraries` (native libraries are used by default where implemented and installed) |
 | launch overhead on CUDA | with and without `--cuda-graphs` |
+
+`-n`/`--max-tokens` is a deprecated alias of `--ctx-size`, not a generated-token count.
 
 ## 2. Separate warm-up from steady state
 
@@ -48,7 +51,7 @@ Two ways, in order of preference:
 
 1. Give the run enough tokens that the steady state dominates, then restrict the reports
    to that range with `nsys stats --filter-time <start>/<end>`.
-2. Run once with `--verbose-init` first, read the load and JIT timings, and subtract them
+2. Run once with `--verbose` (`-v`) first, read the load and JIT timings, and subtract them
    when reading the totals.
 
 Compilation should happen once. If kernel compilation appears repeatedly in the timeline,
@@ -68,8 +71,8 @@ nsys profile \
   --trace=cuda,nvtx,osrt \
   --output "$OUT/decode" \
   --force-overwrite true \
-  ./jitllm --gpu --model "<model.gguf>" \
-    --prompt "<prompt>" -n 256 --seed 42
+  ./jitllm run --gpu --model "<model.gguf>" \
+    --prompt "<prompt>" --max-new-tokens 256 --seed 42
 ```
 
 Quote every path.
@@ -89,6 +92,7 @@ nsys analyze "$OUT/decode.nsys-rep"
 | Observation | Classification | Next |
 | --- | --- | --- |
 | one generated kernel dominates GPU time | kernel-bound | `jitllm-ncu-analysis` on that kernel |
+| a cuBLAS/cuDNN kernel dominates GPU time | library-bound | compare with `--no-native-libraries` before tuning generated kernels |
 | many short kernels, high launch API time | launch-overhead-bound | compare with `--cuda-graphs`; look at graph count and per-layer task count |
 | high `cudaMemcpy` time | transfer-bound | which buffers move per step? A weight or block table copied every execution is a residency question |
 | high synchronization API time | sync-bound | look at the read-back at the invocation boundary |

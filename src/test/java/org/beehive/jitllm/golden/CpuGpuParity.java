@@ -219,6 +219,55 @@ abstract class CpuGpuParity {
 
     // @formatter:off
     /**
+     * Llama's <b>Q4_0 layers where the device has packed integer dot products</b> (CUDA). Every
+     * projection there quantizes its activation to eight bits per block of 32 and takes a {@code
+     * dp4a} dot product whatever the packed-path switch says: the prepacked Q4_0 weights have no
+     * floating-point kernel. The batched path adds FP16-operand GEMMs for the prompt rows.
+     *
+     * <p>A different arithmetic again, so its own envelope. <b>Measured on CUDA, teacher-forced
+     * over 64 rows, reference RMS 2.96</b>, on unsloth's Q4_0 file: single-token relative L2
+     * 0.0359, largest absolute difference 0.135 of the RMS, cosine 0.99942, elementwise 66.8%,
+     * argmax 2/64; batched at 128, 0.0289, 0.108, 0.99958, 66.4%, argmax 1/64. The locally
+     * quantized Q4_0 file measured single-token 0.0616 before Llama kept its tensors and 0.0511
+     * after, batched 0.0354 and 0.0409: this is the arithmetic these layers always had.
+     *
+     * <p>The limits carry about 1.5x over the unsloth file (cosine as its deficit from one); the
+     * elementwise budget only says the count stays below four in five, which is all it can say at
+     * this {@code atol}. {@code decisionGap} does not move.
+     */
+    // @formatter:on
+    static final Bounds LLAMA_Q4_0_PACKED = new Bounds(1.7e-4, 1e-2, 0.2, 0.055, 0.9991, 0.8, 0.5);
+
+    // @formatter:off
+    /**
+     * Qwen2-MoE's <b>batched prefill on tensor cores</b>: the routed and shared experts are int8
+     * GEMMs over the activation quantized to eight bits per block of 32, at every prompt position.
+     *
+     * <p>Wider than {@link #Q8_0_FULLY_PACKED}, which a dense model met, because routing amplifies
+     * small differences: a token whose top experts change takes another sum of experts. How much is
+     * visible without the int8 path at all. Single-token, where the host and device compute the
+     * same thing, the Q4_0 file kept as it is measures relative L2 1.0e-5; the same file read
+     * through its Q8_0 copies, whose weights differ from the host's by a requantization, measured
+     * 0.174 (Q6_K: 7.3e-6 kept, 0.105 copied).
+     *
+     * <p><b>Measured on CUDA, teacher-forced over 63 rows at a width of 128</b>, Qwen1.5-MoE-A2.7B
+     * kept as it is: relative L2 0.120 (Q8_0), 0.160 (Q4_0) and 0.085 (Q6_K); largest absolute
+     * difference 0.79, 0.74 and 0.60 of the reference RMS; cosine 0.99281, 0.98757 and 0.99637;
+     * elementwise 60%, 68% and 58%; argmax 0, 0 and 1 of 63. On their Q8_0 copies the same Q4_0 and
+     * Q6_K files measured 0.225 and 0.121. The Q8_0 file's rows are bit-identical before and after
+     * its experts were kept by type. With the tensor-core prefill forced off, the floating-point
+     * batched layers on the same device measure 5.5e-6 (Q8_0), 1.0e-5 (Q4_0) and 7.4e-6 (Q6_K): the
+     * difference is the int8 GEMMs'.
+     *
+     * <p>The limits carry about 1.5x over the worst of the three (cosine as its deficit from one).
+     * Only the decisions still speak here: {@code decisionGap} does not move.
+     */
+    // @formatter:on
+    static final Bounds QWEN2_MOE_INT8_BATCHED =
+            new Bounds(1.7e-4, 1e-2, 1.2, 0.24, 0.981, 0.9, 0.5);
+
+    // @formatter:off
+    /**
      * Gemma 4's <b>batched</b> prefill on the Q8_0 file, whose prompt rows go through tensor-core
      * GEMMs with FP16 operands and FP32 accumulation while the single-token path keeps FP32
      * activations.
@@ -317,6 +366,14 @@ abstract class CpuGpuParity {
         return assertParity(model, label, bounds, prefillBatchSize, true);
     }
 
+    /**
+     * {@link #assertParity(Fixture, Bounds)} for a model file that is not a pinned fixture, located
+     * by the caller; {@code label} names it in the report.
+     */
+    GoldenCapture.Result assertParity(Path model, String label, Bounds bounds) throws Exception {
+        return assertParity(model, label, bounds, 1, false);
+    }
+
     private GoldenCapture.Result assertParity(
             Path model,
             String label,
@@ -339,15 +396,136 @@ abstract class CpuGpuParity {
                     prefillBatchSize > 1 ? "batched prefill" : "sequential prefill",
                     prefillBatchSize);
         }
+        dumpRowsIfAsked(gpu);
+        assertRows(label, cpu.rows, gpu.rows, bounds);
+        return gpu;
+    }
 
-        assertEquals("compared row count", cpu.rows.size(), gpu.rows.size());
-        // Opt-in: the accelerator's rows as raw little-endian floats, one row after another, so
-        // two builds' accelerator outputs can be compared directly with each other rather than
-        // only each against the CPU reference (the metrics below measure the latter).
+    // @formatter:off
+    /**
+     * {@link #assertParityBatched} for a batched prefill whose GEMMs may stage the weights as FP16,
+     * the {@code ...HalfTiles} kernels on Metal, with what actually ran deciding the comparison.
+     *
+     * <p>Where no projection ran such a kernel, this is {@link #assertParityBatched} with {@code
+     * bounds}. Where some did, there are two comparisons:
+     *
+     * <ul>
+     *   <li>{@code bounds} against the host with exactly those weights rounded to FP16 for the
+     *       positions the prefill covered ({@link
+     *       GoldenCapture#captureWithPrefillWeightsRoundedToFp16}). What remains is accumulation
+     *       order, so an accumulation, masking or indexing defect fails at the original
+     *       sensitivity.
+     *   <li>{@code staged} against the exact host: the end-to-end cost of the rounding.
+     * </ul>
+     */
+    // @formatter:on
+    GoldenCapture.Result assertParityBatchedStagedWeights(
+            Fixture fixture, Bounds bounds, Bounds staged, int prefillBatchSize) throws Exception {
+        return assertParityBatchedStagedWeights(
+                fixture, bounds, staged, prefillBatchSize, CpuGpuParity::halfTilesWeights);
+    }
+
+    /**
+     * The weights each layer's {@code ...HalfTiles} GEMMs staged as FP16, by layer.
+     *
+     * <p>Read off the primary family's graphs, so the plan must have no narrow family: that family
+     * runs a short prompt on graphs with their own kernels. Example: at batch 512 an 18-token
+     * prompt runs 128 rows wide, where the output and down projections keep FP32 tiles.
+     */
+    private static java.util.Map<Integer, java.util.Set<String>> halfTilesWeights(
+            GoldenCapture.Result gpu) {
+        assertEquals(
+                "the kernels read are the batchPrefillLayer_<i> graphs', but a narrow family runs"
+                        + " every chunk of up to this many tokens on its own graphs; turn it off ("
+                        + "jitllm.prefill.narrowChunks=false) for this comparison",
+                0,
+                gpu.narrowPrefillRows);
+        java.util.Map<Integer, java.util.Set<String>> rounded = new java.util.TreeMap<>();
+        gpu.prefillProjectionKernels.forEach(
+                (layer, kernels) ->
+                        kernels.forEach(
+                                (task, kernel) -> {
+                                    if (kernel.endsWith("HalfTiles")) {
+                                        rounded.computeIfAbsent(
+                                                        layer, l -> new java.util.TreeSet<>())
+                                                .addAll(
+                                                        GoldenCapture.PREFILL_PROJECTION_WEIGHTS
+                                                                .get(task));
+                                    }
+                                }));
+        return rounded;
+    }
+
+    /**
+     * {@link #assertParityBatchedStagedWeights(Fixture, Bounds, Bounds, int)} with {@code
+     * stagedWeights} naming, from the accelerator's capture, the weights its prefill rounded to
+     * FP16, by layer.
+     */
+    GoldenCapture.Result assertParityBatchedStagedWeights(
+            Fixture fixture,
+            Bounds bounds,
+            Bounds staged,
+            int prefillBatchSize,
+            java.util.function.Function<
+                            GoldenCapture.Result, java.util.Map<Integer, java.util.Set<String>>>
+                    stagedWeights)
+            throws Exception {
+        Path model = GoldenFixture.locate(fixture);
+        if (model == null) {
+            System.out.println(
+                    "[SKIP] environment absent — " + GoldenFixture.absentMessage(fixture));
+            assumeTrue("environment absent: fixture " + fixture.fileName, false);
+        }
+        if (!TupleInfo.acceleratorPresent()) {
+            System.out.println("[SKIP] environment absent — no TornadoVM device");
+            assumeTrue("environment absent: no accelerator", false);
+        }
+        GoldenCapture.Result cpu = GoldenCapture.capture(model, false);
+        GoldenCapture.Result gpu =
+                GoldenCapture.capture(model, true, cpu.tokenIds, prefillBatchSize, true);
+        System.out.printf("  batched prefill, batch %d%n", prefillBatchSize);
+        dumpRowsIfAsked(gpu);
+        java.util.Map<Integer, java.util.Set<String>> rounded = stagedWeights.apply(gpu);
+        String label = fixture.quantization;
+        if (rounded.isEmpty()) {
+            assertRows(label, cpu.rows, gpu.rows, bounds);
+            return gpu;
+        }
+        System.out.printf(
+                "  weights staged as FP16 in %d layers, layer 0: %s%n",
+                rounded.size(), rounded.get(rounded.keySet().iterator().next()));
+        GoldenCapture.Result reference =
+                GoldenCapture.captureWithPrefillWeightsRoundedToFp16(model, cpu.tokenIds, rounded);
+        assertRows(label + " against the FP16-staged host", reference.rows, gpu.rows, bounds);
+        assertRows(label + " against the exact host", cpu.rows, gpu.rows, staged);
+        return gpu;
+    }
+
+    /**
+     * Opt-in: the accelerator's rows as raw little-endian floats, one row after another, so two
+     * builds' accelerator outputs can be compared directly with each other rather than only each
+     * against the CPU reference (the metrics measure the latter).
+     */
+    private static void dumpRowsIfAsked(GoldenCapture.Result gpu) throws java.io.IOException {
         String dump = System.getProperty("jitllm.parity.dumpRows");
         if (dump != null) {
             dumpRows(gpu.rows, Path.of(dump));
         }
+    }
+
+    /**
+     * {@link #assertRows} for rows a test captured itself, such as {@link KvPrecisionHarness}'s
+     * teacher-forced traces of a prompt the capture's own does not cover.
+     */
+    static void assertRowsWithin(
+            String label, List<float[]> reference, List<float[]> accelerator, Bounds bounds) {
+        assertRows(label, reference, accelerator, bounds);
+    }
+
+    /** The four gates over {@code got} against {@code reference}, row by row. */
+    private static void assertRows(
+            String label, List<float[]> reference, List<float[]> accelerator, Bounds bounds) {
+        assertEquals("compared row count", reference.size(), accelerator.size());
 
         // The two absolute-scale bounds are fractions of the reference's own RMS, not constants.
         // Families differ by two orders of magnitude here -- Granite-3.2-2B's logits have an RMS
@@ -357,7 +535,7 @@ abstract class CpuGpuParity {
         // measured worst-case error sits in one narrow band across every family on the pinned
         // tuple: Granite 0.0035, Llama 0.0026, Qwen3 0.0019, Phi-3 0.0009. The bounds below are
         // roughly 2x that band, which is the same margin the constants used to carry for Llama.
-        double refRms = rms(cpu.rows);
+        double refRms = rms(reference);
         double atol = bounds.atolPerRms() * refRms;
         double maxAbsCeiling = bounds.ceilingPerRms() * refRms;
         System.out.printf(
@@ -378,9 +556,9 @@ abstract class CpuGpuParity {
         double top10 = 0;
         List<String> wideReversals = new ArrayList<>();
 
-        for (int r = 0; r < cpu.rows.size(); r++) {
-            float[] ref = cpu.rows.get(r);
-            float[] got = gpu.rows.get(r);
+        for (int r = 0; r < reference.size(); r++) {
+            float[] ref = reference.get(r);
+            float[] got = accelerator.get(r);
             assertEquals("vocabulary length, row " + r, ref.length, got.length);
             assertFalse("NaN/Inf in CPU logits, row " + r, Envelope.hasNonFinite(ref));
             assertFalse("NaN/Inf in GPU logits, row " + r, Envelope.hasNonFinite(got));
@@ -443,7 +621,7 @@ abstract class CpuGpuParity {
             }
         }
 
-        int rows = cpu.rows.size();
+        int rows = reference.size();
         System.out.printf("[PARITY] %s rows=%d elements=%d%n", label, rows, elements);
         System.out.printf(
                 "[PARITY]   elementwise: violations=%d (%.4g%%, budget %.4g%%) worstRatio=%.4g%n",
@@ -499,7 +677,6 @@ abstract class CpuGpuParity {
                                 + " (gap > %.3g): %s",
                         label, bounds.decisionGap(), wideReversals),
                 wideReversals.isEmpty());
-        return gpu;
     }
 
     /** Number of shared entries between the two top-k sets. */

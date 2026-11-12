@@ -1,6 +1,56 @@
 # Changelog
 
-All notable changes to GPULlama3.java will be documented in this file.
+All notable changes to jitllm (formerly GPULlama3.java) will be documented in this file.
+
+jitllm releases are published as `io.github.beehive-lab:jitllm` and tagged `jitllm-vX.Y.Z`.
+Releases up to and including 1.0.0 of 2026-07-28 are GPULlama3.java releases (artifact
+`gpu-llama3`), tagged `vX.Y.Z`. Entries keep the names of their time: the
+`llama-tornado` and `llamaTornado` launchers are now `jitllm` and `jitllm4j`, and `-Dllama.*`
+properties are now `-Djitllm.*`.
+
+## [3.0.0] - 2026-11-12
+
+### Model Support
+
+- Read model weights in place on Apple silicon ([#270](https://github.com/beehive-lab/jitllm/pull/270))
+- [feat][metal] Read model weights in place from unified memory on Apple silicon ([#256](https://github.com/beehive-lab/jitllm/pull/256))
+- [fix] Load Q5_0, IQ4_XS and mixed files, run Qwen3.5 and Devstral batched on Metal, keep large models' defaults in memory ([#255](https://github.com/beehive-lab/jitllm/pull/255))
+
+### Other Changes
+
+- [refactor] Describe each layer once and take grids from the plan's choice ([#271](https://github.com/beehive-lab/jitllm/pull/271))
+- CI: build the native image and compare it with the JVM on each backend ([#268](https://github.com/beehive-lab/jitllm/pull/268))
+- Stop refusing loads on predicted device memory ([#269](https://github.com/beehive-lab/jitllm/pull/269))
+- Skip unused Qwen3.5 F16 quantization, verify prefill and packed decode, give cuBLAS the chunk's tokens ([#266](https://github.com/beehive-lab/jitllm/pull/266))
+- GraalVM native image without tracing, AOT cache recipe, and faster native startup ([#258](https://github.com/beehive-lab/jitllm/pull/258))
+- Depend on TornadoVM release 8.1.0 for releases ([#267](https://github.com/beehive-lab/jitllm/pull/267))
+- Fall back to scalar dot products for unsupported vector widths ([#249](https://github.com/beehive-lab/jitllm/pull/249))
+- [refactor] Choose Qwen3's prefill kernels per operation in backend.tornado.ops ([#252](https://github.com/beehive-lab/jitllm/pull/252))
+- [feat] Faster Qwen3 batched prefill on Metal and CUDA: FP16 weight tiles, flash attention, staged GEMM ([#253](https://github.com/beehive-lab/jitllm/pull/253))
+- [feat] Run the new prefill kernels in every family and quantized type ([#254](https://github.com/beehive-lab/jitllm/pull/254))
+- [cleanup] Remove leftovers of the native-library code ([#257](https://github.com/beehive-lab/jitllm/pull/257))
+- [refactor] Choose the Llama family's prefill kernels per operation ([#259](https://github.com/beehive-lab/jitllm/pull/259))
+- [perf] Run Qwen3.5's K-quant prefill projections on the tensor cores ([#260](https://github.com/beehive-lab/jitllm/pull/260))
+- [perf] Run Qwen3.5's F16 prefill projections on the tensor cores ([#261](https://github.com/beehive-lab/jitllm/pull/261))
+- [refactor] Choose the remaining prefill projections and the attention per operation ([#262](https://github.com/beehive-lab/jitllm/pull/262))
+- [refactor] Decide native libraries in one place ([#263](https://github.com/beehive-lab/jitllm/pull/263))
+- [perf] Refill Qwen3 F16's contiguous cuBLAS copies per chunk where they do not fit ([#264](https://github.com/beehive-lab/jitllm/pull/264))
+- Merge stacked PRs 245-248 ([#251](https://github.com/beehive-lab/jitllm/pull/251))
+- [refactor] Delete the load-time Q8_0 conversion ([#248](https://github.com/beehive-lab/jitllm/pull/248))
+- [refactor] Keep GGUF weights in their own format on the GPU ([#247](https://github.com/beehive-lab/jitllm/pull/247))
+- [refactor] Memory check from metadata, and weight prepacking decided per plan ([#246](https://github.com/beehive-lab/jitllm/pull/246))
+- [cleanup] backend.tornado: dead code, one admission entry point, one release path ([#245](https://github.com/beehive-lab/jitllm/pull/245))
+- [fix] Release a plan whose start fails, and drop device defaults that admission refuses ([#244](https://github.com/beehive-lab/jitllm/pull/244))
+- Depend on TornadoVM release 8.0.0 for releases ([#243](https://github.com/beehive-lab/jitllm/pull/243))
+- Merge concurrent perf history appends instead of failing the push ([#240](https://github.com/beehive-lab/jitllm/pull/240))
+- Native libraries on Blackwell GPUs, CUDA graphs by default, accurate native-library reporting ([#232](https://github.com/beehive-lab/jitllm/pull/232))
+- Let the backend-selection unit tests run where a GPU resolves ([#239](https://github.com/beehive-lab/jitllm/pull/239))
+- Bring the README, changelog and user docs in line with jitllm 2.0.0 ([#237](https://github.com/beehive-lab/jitllm/pull/237))
+- Bring the architecture docs in line with the current code ([#238](https://github.com/beehive-lab/jitllm/pull/238))
+- Update the Claude Code agents and skills for jitllm 2.0.0 ([#236](https://github.com/beehive-lab/jitllm/pull/236))
+- Run jitllm 2.0.0 out of the box on a Mac: JBang pin, Metal by default, async MLX ([#235](https://github.com/beehive-lab/jitllm/pull/235))
+- Fix the broken DeepWiki badge in the README ([#234](https://github.com/beehive-lab/jitllm/pull/234))
+- Drop Phi-3 from the standalone inference CI ([#233](https://github.com/beehive-lab/jitllm/pull/233))
 
 ## [2.0.0] - 2026-10-19
 
@@ -102,13 +152,13 @@ All notable changes to GPULlama3.java will be documented in this file.
 - docs(arch): ARCH-01..15 — review issues on the architecture baseline ([#140](https://github.com/beehive-lab/jitllm/pull/140))
 - Release 1.0.0 ([#139](https://github.com/beehive-lab/jitllm/pull/139))
 - Fix IllegalArgumentException (negative ArrayList capacity) on prompts longer than max-tokens ([#128](https://github.com/beehive-lab/jitllm/pull/128))
-- On-device greedy sampling (-Dllama.deviceSample): GPU argmax, keep logits device-side (~500x less D2H) ([#134](https://github.com/beehive-lab/jitllm/pull/134))
+- On-device greedy sampling (-Dllama.deviceSample, now -Djitllm.deviceSample): GPU argmax, keep logits device-side (~500x less D2H) ([#134](https://github.com/beehive-lab/jitllm/pull/134))
 - Fix Qwen3 FP16 garbage on CUDA backend: cross-workgroup race in RMS-norm reduction ([#132](https://github.com/beehive-lab/jitllm/pull/132))
 - Docs: modernize README — position as JVM-native LLM inference & serving engine ([#136](https://github.com/beehive-lab/jitllm/pull/136))
 - Add llama-bench-style benchmark: llama-tornado --bench (pp/tg/pg matrix, avg±stddev t/s, md/csv/json) ([#133](https://github.com/beehive-lab/jitllm/pull/133))
 - OpenAI-compatible server (llama-tornado --server): /v1/chat/completions + /v1/completions, streaming, zero-dep ([#135](https://github.com/beehive-lab/jitllm/pull/135))
 
-## [1.0.0] - 2026-07-28
+## [1.0.0] - 2026-07-28 (GPULlama3.java, `gpu-llama3`)
 
 ### Features
 

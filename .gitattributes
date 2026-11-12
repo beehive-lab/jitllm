@@ -1,0 +1,2 @@
+# Append-only perf log: keep lines from both sides instead of conflicting
+docs/perf-history.jsonl merge=union

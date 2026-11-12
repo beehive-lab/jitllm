@@ -77,6 +77,15 @@ class Commands(unittest.TestCase):
         self.reject("run", "-m", "stub.gguf", "--prompt", "hi", "--continuous-batching", "2")
         self.parse("serve", "-m", "stub.gguf", "--gpu", "--continuous-batching", "2", "--fp32-kv-cache")
 
+    def test_cuda_graphs_can_be_requested_or_declined(self):
+        for command in ("run", "chat", "serve", "bench"):
+            help_text = launcher.create_parser(command).format_help()
+            self.assertIn("--no-cuda-graphs", help_text)
+        self.assertFalse(self.parse("run", "-m", "stub.gguf", "--prompt", "hi").no_cuda_graphs)
+        self.assertTrue(self.parse("run", "-m", "stub.gguf", "--prompt", "hi",
+                                   "--no-cuda-graphs").no_cuda_graphs)
+        self.reject("run", "-m", "stub.gguf", "--prompt", "hi", "--cuda-graphs", "--no-cuda-graphs")
+
     def test_native_libraries_and_batched_prefill_can_be_required_or_declined(self):
         for command in ("run", "chat", "serve", "bench"):
             help_text = launcher.create_parser(command).format_help()

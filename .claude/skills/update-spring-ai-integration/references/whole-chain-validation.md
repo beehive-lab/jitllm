@@ -40,7 +40,8 @@ It runs every `*Tests` and `*IT` of the model and autoconfigure modules in a Tor
 failures. Build the modules on the same JDK first. Sample `nvidia-smi` during the run to confirm
 the GPU is used.
 
-Measured on jitllm 1.0.0 / TornadoVM 7.0.1, RTX 4090:
+Historical, measured on jitllm 1.0.0 / TornadoVM 7.0.1, RTX 4090; re-measure on the current
+release before relying on it:
 
 | JDK / SDK | Model | spring-ai-jitllm | autoconfigure |
 | --- | --- | --- | --- |

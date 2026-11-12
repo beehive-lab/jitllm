@@ -210,14 +210,16 @@ public class JitllmBench {
                 results.addAll(
                         benchModel(
                                 modelPath, tests, reps, warmup, delay, batchSize, onCpu, expect));
+            } catch (UnsupportedOperationException e) {
+                // A configuration the plan checks refuse: their message names the cause and the
+                // fix.
+                failed = true;
+                System.err.printf(
+                        Locale.ROOT, "[bench] %s FAILED: %s%n", modelPath, e.getMessage());
             } catch (Throwable e) {
                 failed = true;
                 System.err.printf(
-                        Locale.ROOT,
-                        "[bench] %s FAILED (batch=%d unsupported for this model?): %s%n",
-                        modelPath,
-                        batchSize,
-                        e);
+                        Locale.ROOT, "[bench] %s FAILED (batch=%d): %s%n", modelPath, batchSize, e);
             }
         }
 
@@ -265,7 +267,16 @@ public class JitllmBench {
         org.beehive.jitllm.integration.cli.ExperimentalWarnings.nativeLibraries(benchPolicy);
         if (!cpu) {
             // Flags left out take the device's default, as run, chat and serve do: the bench
-            // measures what a user who passes the same flags gets.
+            // measures what a user who passes the same flags gets. That includes run's memory
+            // check: a default whose copies would not fit the budget is skipped.
+            org.beehive.jitllm.runtime.policy.StorageOptions storage =
+                    org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties();
+            org.beehive.jitllm.api.ModelOptions fitOptions =
+                    org.beehive.jitllm.api.ModelOptions.builder()
+                            .contextLength(maxCtx)
+                            .executionPolicy(benchPolicy)
+                            .storageOptions(storage)
+                            .build();
             benchPolicy =
                     org.beehive.jitllm.backend.tornado.DeviceDefaultPolicy.resolve(
                             model,
@@ -274,8 +285,14 @@ public class JitllmBench {
                                     && System.getProperty("jitllm.prefillBatchSize") == null,
                             !org.beehive.jitllm.runtime.policy.ExecutionPolicy
                                     .nativeLibrariesSpecified(),
-                            org.beehive.jitllm.runtime.policy.StorageOptions
-                                    .fromSystemProperties());
+                            storage,
+                            candidate ->
+                                    org.beehive.jitllm.api.LocalModels.fitsMemoryBudget(
+                                            path, fitOptions, candidate));
+            // And run's choice of resident or per-chunk projection copies, for this policy.
+            benchPolicy =
+                    org.beehive.jitllm.api.LocalModels.resolveDecodedProjections(
+                            path, fitOptions, benchPolicy);
             if (benchPolicy.phaseStrategy()
                     == org.beehive.jitllm.runtime.policy.ExecutionPolicy.PhaseStrategy
                             .PREFILL_DECODE) {
@@ -283,7 +300,11 @@ public class JitllmBench {
             }
         }
         org.beehive.jitllm.integration.cli.StartupDiagnostics.installTaskGraphChainOutput();
-        org.beehive.jitllm.backend.tornado.NativeLibrarySupport.require(model, benchPolicy, !cpu);
+        org.beehive.jitllm.backend.tornado.PlanSupport.require(
+                model,
+                benchPolicy,
+                org.beehive.jitllm.runtime.policy.StorageOptions.fromSystemProperties(),
+                !cpu);
         long loadNs = System.nanoTime() - startedNs;
         State state = State.withPrefillBatchSize(batch, model::createNewState);
         state.resolveExecutionPolicy(benchPolicy);

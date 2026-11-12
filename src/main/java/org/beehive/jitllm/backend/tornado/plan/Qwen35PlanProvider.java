@@ -3,6 +3,7 @@ package org.beehive.jitllm.backend.tornado.plan;
 import java.util.Optional;
 import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
+import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.plan.components.Qwen35PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.inference.state.Qwen35State;
@@ -17,17 +18,9 @@ import org.beehive.jitllm.runtime.tensor.DataType;
 /**
  * The {@code qwen35} plan components — single-token decode, and a mixed model underneath.
  *
- * <p>The two declarations below answer different questions, and for this family they differ.
- *
- * <ul>
- *   <li>{@link #supportedDataTypes()} is admission: the representation the model <b>reports</b>,
- *       which for this family is the one its trunk projections share. Q4_0 is what the 27B holds,
- *       and it is what the loader insists the projections agree on.
- *   <li>{@link #nativeTensorTypes()} is what the layer, activation and logits graphs decode <b>per
- *       tensor</b>, without materializing anything. The 27B needs five of them at once, and the
- *       memory prediction has to count each tensor at its own size or it refuses a model that fits:
- *       14.944 GiB retained against roughly 27 GiB converted, on a 24 GiB device.
- * </ul>
+ * <p>{@link #supportedDataTypes()} is admission: the representation the model <b>reports</b> for
+ * its trunk projections. The layer, activation and logits graphs read each tensor <b>by its own
+ * type</b>, as the file stores it, so a K-quant mix (Q4_K_M) runs as a uniform file does.
  *
  * <p>All three modes. Sequential prefill is the same layer computation with the logits graph
  * skipped; batched prefill has its own layer graphs, because a chunk of prompt tokens is not a
@@ -45,21 +38,13 @@ public final class Qwen35PlanProvider implements TornadoPlanProvider {
 
     @Override
     public Set<DataType> supportedDataTypes() {
-        // Q8_0: the decode layers read it directly, and the batched prefill decodes it for cuBLAS.
-        return Set.of(DataType.Q4_0, DataType.Q8_0);
+        return TornadoSupportSets.F16_AND_NATIVE_QUANTIZED;
     }
 
+    /** Every qwen35 path reads its Q8_0 and Q4_0 projections prepacked. */
     @Override
-    public Set<DataType> nativeTensorTypes() {
-        return Set.of(
-                DataType.F32,
-                DataType.F16,
-                DataType.Q4_0,
-                DataType.Q4_1,
-                DataType.Q4_K,
-                DataType.Q5_K,
-                DataType.Q6_K,
-                DataType.Q8_0);
+    public Set<DataType> prepackableTypes(ExecutionPolicy policy) {
+        return Set.of(DataType.Q8_0, DataType.Q4_0);
     }
 
     @Override
@@ -121,7 +106,17 @@ public final class Qwen35PlanProvider implements TornadoPlanProvider {
     }
 
     @Override
+    public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
+        return Optional.empty();
+    }
+
+    @Override
+    public boolean metalBatchedPrefillDefault(DataType weights) {
+        return true;
+    }
+
+    @Override
     public Set<DataType> nativeLibraryWeights(BackendId backend) {
-        return BackendId.CUDA.equals(backend) ? Set.of(DataType.Q8_0) : Set.of();
+        return BackendId.CUDA.equals(backend) ? Set.of(DataType.Q8_0, DataType.F16) : Set.of();
     }
 }

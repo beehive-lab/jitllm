@@ -1,7 +1,7 @@
 package org.beehive.jitllm.api;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
@@ -17,8 +17,10 @@ import org.junit.Test;
 /**
  * Llama Q8_0's tensor-core batched prefill decodes its projections to FP16, and keeps them resident
  * only where a copy per session fits the configured budget beside everything else. Under a budget
- * too small for the copies it decodes per chunk instead, and still generates; under one too small
- * for even that, the load is refused before anything is loaded.
+ * too small for the copies it decodes per chunk instead, and still generates; under one predicted
+ * too small for even that, it keeps the per-chunk scratch, the smaller, and the load is not refused
+ * on the prediction: the allocation decides. (The budget set here is the prediction's; the test
+ * JVM's TornadoVM budget is larger, so this load allocates and runs.)
  */
 public class BatchPrefillResidencyAccelTest {
 
@@ -48,7 +50,8 @@ public class BatchPrefillResidencyAccelTest {
     }
 
     @Test
-    public void aBudgetTooSmallForEitherIsRefusedBeforeLoading() throws Exception {
+    public void aBudgetTooSmallForEitherKeepsThePerChunkScratchAndRefusesNothing()
+            throws Exception {
         Path llama = locate();
         ModelOptions options = options();
         MemoryPlan unbounded = LocalModels.preflight(llama, options);
@@ -59,14 +62,17 @@ public class BatchPrefillResidencyAccelTest {
                 BUDGET,
                 budget + "MB",
                 () -> {
-                    InsufficientDeviceMemoryException refused =
-                            assertThrows(
-                                    InsufficientDeviceMemoryException.class,
-                                    () -> LocalModels.load(llama, options));
-                    assertFalse(refused.plan().fitsConfiguredBudget());
-                    assertTrue(
-                            refused.plan().describe(),
-                            workspace(refused.plan()).name().contains("per chunk"));
+                    MemoryPlan plan = LocalModels.preflight(llama, options);
+                    assertFalse(plan.fitsConfiguredBudget());
+                    assertTrue(plan.describe(), workspace(plan).name().contains("per chunk"));
+                    assertEquals(
+                            ExecutionPolicy.DecodedProjections.PER_CHUNK,
+                            LocalModels.resolveDecodedProjections(
+                                            llama, options, options.executionPolicy())
+                                    .decodedProjections());
+                    try (LocalModel loaded = LocalModels.load(llama, options)) {
+                        assertFalse(generate((TextGenerationModel) loaded).isBlank());
+                    }
                 });
     }
 

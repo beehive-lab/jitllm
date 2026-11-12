@@ -5,11 +5,12 @@ import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.IntFunction;
-import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.kernels.MlxPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
+import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
-import org.beehive.jitllm.backend.tornado.tensor.PackedWeights;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
@@ -19,7 +20,6 @@ import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
-import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
@@ -32,18 +32,18 @@ import uk.ac.manchester.tornado.mlx.Mlx;
  * wrapVBatch}, attends into {@code wrapXbBatch} and adds the output and down projections back into
  * {@code wrapXBatch}.
  *
- * <p>Q, K and V, and gate and up, are stacked so each pair or triple is one GEMM. Which form of the
- * weights the GEMMs read is {@link MlxPrefill#projections()}: F16 weights through {@link
- * Mlx#matmulTransposed}; Q8_0 and Q4_0 weights either decoded once into FP16 copies, or repacked
- * once, on the host, into MLX's affine format with groups of 32 for {@link Mlx#quantizedMatmul}.
- * The repack is exact: Q8_0's {@code s * q} is {@code s * (q + 128) - 128 * s}, and Q4_0's {@code s
- * * (q - 8)} is {@code s * q - 8 * s}, with the bias {@code -128 * s} or {@code -8 * s} exact in
- * FP16.
+ * <p>Q, K and V, and gate and up, are made contiguous so each pair or triple is one GEMM. Which
+ * form of the weights the GEMMs read is {@link MlxPrefill#projections()}: F16 weights through
+ * {@link Mlx#matmulTransposed}; Q8_0 and Q4_0 weights either decoded once into FP16 copies, or
+ * repacked once, on the host, into MLX's affine format with groups of 32 for {@link
+ * Mlx#quantizedMatmul}. The repack is exact: Q8_0's {@code s * q} is {@code s * (q + 128) - 128 *
+ * s}, and Q4_0's {@code s * (q - 8)} is {@code s * q - 8 * s}, with the bias {@code -128 * s} or
+ * {@code -8 * s} exact in FP16.
  *
  * <p>Built from an {@link MlxPrefill} the caller resolved, and only from it: a tensor that does not
- * match it — another type, or packed tiles — is refused, never handed back to the JIT kernels, so
- * the decode graphs that ask the same {@link MlxPrefill} which weights these graphs bind ({@link
- * #notBound}) are always right.
+ * match it — another type, or a prepacked weight — is refused, never handed back to the JIT
+ * kernels. Each weight read through a copy is recorded as replaced ({@link #notBound}), so the
+ * decode graphs upload it themselves.
  *
  * <p>The family keeps its RMS reductions ({@code batch_attn_rms}, {@code batch_ffn_rms}), RoPE and
  * attention; this replaces the RMS applies and the projection tasks around them. The FP16 operands
@@ -54,6 +54,14 @@ import uk.ac.manchester.tornado.mlx.Mlx;
 public final class MlxPrefillProjections {
 
     private static final int GROUP = MlxPrefill.GROUP;
+
+    /**
+     * Blocks the host repack and decode read and write per bulk copy. They work through heap arrays
+     * rather than one {@code MemorySegment} access per element: some native images compile those
+     * accesses far slower than HotSpot does (Llama-3.2-3B Q8_0: 20 s of plan construction on Metal,
+     * against 1.6 s on the JVM).
+     */
+    private static final int CHUNK_BLOCKS = 4096;
 
     /** Threads per row of the row-scale reductions. */
     private static final int ROW_THREADS = 256;
@@ -95,9 +103,9 @@ public final class MlxPrefillProjections {
     private final FloatArray downRowScale; // B
 
     /**
-     * One layer's projection weights: Q, K and V (one fused tensor, or three stacked in that
-     * order), the output projection, gate and up (fused, or stacked in that order) and the down
-     * projection.
+     * One layer's projection weights: Q, K and V (one fused tensor, or three made contiguous in
+     * that order), the output projection, gate and up (fused, or made contiguous in that order) and
+     * the down projection.
      */
     public record LayerWeights(
             TornadoTensor[] qkv, TornadoTensor wo, TornadoTensor[] gateUp, TornadoTensor w2) {
@@ -126,18 +134,18 @@ public final class MlxPrefillProjections {
     /**
      * The model weights of {@code layer} that MLX prefill graphs built for {@code mlx} do not bind,
      * each as its tensor and as its native array, so a graph that would bind them from those graphs
-     * must upload them instead.
+     * must upload them instead ({@code WeightBindings.recordReplaced}).
      *
      * <ul>
      *   <li>Q8_0 and Q4_0: every projection, since the GEMMs read the FP16 copies or the affine
      *       repack;
-     *   <li>F16: the tensors stacked into one copy — split Q/K/V and gate/up. A fused tensor and
-     *       the output and down projections are multiplied as they are, so the prefill graph binds
-     *       them.
+     *   <li>F16: the tensors copied into one contiguous buffer — split Q/K/V and gate/up. A fused
+     *       tensor and the output and down projections are multiplied as they are, so the prefill
+     *       graph binds them.
      * </ul>
      */
     // @formatter:on
-    public static Object[] notBound(MlxPrefill mlx, LayerWeights layer) {
+    static Object[] notBound(MlxPrefill mlx, LayerWeights layer) {
         List<TornadoTensor> copied = new ArrayList<>();
         if (mlx.projections() == MlxPrefill.Projections.FP16) {
             if (layer.qkv().length > 1) {
@@ -248,8 +256,7 @@ public final class MlxPrefillProjections {
      * for a family whose layer weights {@code layerWeights} supplies, and whose projections are
      * added into the residual stream scaled by {@code residualScale}.
      *
-     * @throws UnsupportedOperationException if a projection is held in packed tiles, which MLX does
-     *     not read
+     * @throws UnsupportedOperationException if a projection is prepacked, which MLX does not read
      * @throws IllegalStateException if a projection is not of {@code mlx}'s weight type
      */
     public static MlxPrefillProjections of(
@@ -269,8 +276,8 @@ public final class MlxPrefillProjections {
         for (int i = 0; i < layers; i++) {
             perLayer[i] = layerWeights.apply(i);
             for (TornadoTensor t : perLayer[i].all()) {
-                if (t.isPacked()) {
-                    throw PackedWeights.noPackedKernel("The MLX batched prefill");
+                if (state.workspace.prepacking.prepacked(t)) {
+                    throw WeightPrepacking.noPrepackedKernel("The MLX batched prefill");
                 }
                 if (t.dataType() != mlx.weights()) {
                     throw new IllegalStateException(
@@ -282,6 +289,9 @@ public final class MlxPrefillProjections {
                                     + t.dataType()
                                     + " projection");
                 }
+            }
+            for (Object w : notBound(mlx, perLayer[i])) {
+                state.workspace.weightBindings.recordReplaced(w);
             }
         }
         return new MlxPrefillProjections(
@@ -296,6 +306,68 @@ public final class MlxPrefillProjections {
                 hidden,
                 residualScale,
                 perLayer);
+    }
+
+    /**
+     * The same projections over {@code rows} rows, on {@code wider}'s weight copies. The buffers
+     * MLX multiplies are its own, {@code rows} long: MLX takes an array as exactly the matrix the
+     * dimensions describe.
+     */
+    private MlxPrefillProjections(MlxPrefillProjections wider, int rows) {
+        this.state = wider.state;
+        this.weights = wider.weights;
+        this.context = wider.context;
+        this.batchSize = rows;
+        this.dim = wider.dim;
+        this.qDim = wider.qDim;
+        this.kvDim = wider.kvDim;
+        this.hidden = wider.hidden;
+        this.residualScale = wider.residualScale;
+        this.qkv = wider.qkv;
+        this.wo = wider.wo;
+        this.gateUp = wider.gateUp;
+        this.w2 = wider.w2;
+        this.xHalf = new HalfFloatArray(rows * dim);
+        this.qkvHalf = new HalfFloatArray(rows * (qDim + 2 * kvDim));
+        this.attnHalf = new HalfFloatArray(rows * qDim);
+        this.outHalf = new HalfFloatArray(rows * dim);
+        this.gateUpHalf = new HalfFloatArray(rows * 2 * hidden);
+        this.hbHalf = new HalfFloatArray(rows * hidden);
+        this.attnRowScale = new FloatArray(rows);
+        this.downRowScale = new FloatArray(rows);
+    }
+
+    /**
+     * {@code wider} over its first {@code rows} rows, for {@code family}, the narrow family ({@link
+     * PrefillFamily}), whose own the buffers MLX multiplies are; null where {@code wider} is.
+     *
+     * @throws PrefillFamily.Declined where a quantized GEMM at {@code rows} would split its depth
+     */
+    public static MlxPrefillProjections narrowed(
+            MlxPrefillProjections wider, int rows, PrefillFamily family) {
+        if (wider == null) {
+            return null;
+        }
+        if (rows > wider.batchSize) {
+            throw new IllegalArgumentException(rows + " rows is wider than " + wider.batchSize);
+        }
+        if (wider.qkv[0].fp16() == null) {
+            declineIfSplit(rows, wider.qDim + 2 * wider.kvDim, "qkvProj");
+            declineIfSplit(rows, wider.dim, "woProj");
+            declineIfSplit(rows, 2 * wider.hidden, "gateUpProj");
+        }
+        MlxPrefillProjections narrow = new MlxPrefillProjections(wider, rows);
+        for (Object buffer : narrow.buffers()) {
+            family.own(buffer);
+        }
+        return narrow;
+    }
+
+    /** The FP16 buffers the GEMMs and the glue around them share, {@code batchSize} rows each. */
+    private Object[] buffers() {
+        return new Object[] {
+            xHalf, qkvHalf, attnHalf, outHalf, gateUpHalf, hbHalf, attnRowScale, downRowScale
+        };
     }
 
     private MlxPrefillProjections(
@@ -341,7 +413,7 @@ public final class MlxPrefillProjections {
         this.downRowScale = new FloatArray(batchSize);
     }
 
-    /** The tensors, rows stacked in order, as one matrix in {@code form}. */
+    /** The tensors, rows contiguous in order, as one matrix in {@code form}. */
     static Matrix matrix(MlxPrefill.Projections form, TornadoTensor... tensors) {
         return switch (form) {
             case FP16 -> {
@@ -362,58 +434,89 @@ public final class MlxPrefillProjections {
     }
 
     /**
-     * Q8_0 or Q4_0 tensors, rows stacked in order, repacked into MLX's affine format: {@code bits}
-     * -bit unsigned values packed little-end first into 32-bit words, and per group of 32 an FP16
-     * scale and bias with {@code w = scale * q + bias}.
+     * Q8_0 or Q4_0 tensors, rows contiguous in order, repacked into MLX's affine format: {@code
+     * bits} -bit unsigned values packed little-end first into 32-bit words, and per group of 32 an
+     * FP16 scale and bias with {@code w = scale * q + bias}.
      */
     static Matrix affine(TornadoTensor... tensors) {
         boolean q8 = tensors[0].dataType() == DataType.Q8_0;
         int bits = q8 ? 8 : 4;
         int blockBytes = q8 ? 34 : 18;
+        int perWord = 32 / bits;
+        int wordsPerBlock = GROUP / perWord;
         long blocks = 0;
         for (TornadoTensor t : tensors) {
             blocks += t.asByteArray().getSize() / blockBytes;
         }
-        IntArray q = new IntArray(Math.toIntExact(blocks * GROUP * bits / 32));
+        IntArray q = new IntArray(Math.toIntExact(blocks * wordsPerBlock));
         HalfFloatArray scales = new HalfFloatArray(Math.toIntExact(blocks));
         HalfFloatArray biases = new HalfFloatArray(Math.toIntExact(blocks));
-        int word = 0;
-        int group = 0;
+        byte[] in = new byte[CHUNK_BLOCKS * blockBytes];
+        int[] words = new int[CHUNK_BLOCKS * wordsPerBlock];
+        short[] scaleHalves = new short[CHUNK_BLOCKS];
+        short[] biasHalves = new short[CHUNK_BLOCKS];
         int[] values = new int[GROUP];
+        long group = 0;
         for (TornadoTensor t : tensors) {
             MemorySegment src = t.asByteArray().getSegment();
             long n = t.asByteArray().getSize() / blockBytes;
-            for (long b = 0; b < n; b++) {
-                long base = b * blockBytes;
-                float scale = Float.float16ToFloat(src.get(ValueLayout.JAVA_SHORT_UNALIGNED, base));
-                if (q8) {
-                    for (int j = 0; j < GROUP; j++) {
-                        values[j] = src.get(ValueLayout.JAVA_BYTE, base + 2 + j) + 128;
+            for (long first = 0; first < n; first += CHUNK_BLOCKS) {
+                int count = (int) Math.min(CHUNK_BLOCKS, n - first);
+                MemorySegment.copy(
+                        src, ValueLayout.JAVA_BYTE, first * blockBytes, in, 0, count * blockBytes);
+                for (int b = 0; b < count; b++) {
+                    int base = b * blockBytes;
+                    float scale = Float.float16ToFloat(fp16At(in, base));
+                    if (q8) {
+                        for (int j = 0; j < GROUP; j++) {
+                            values[j] = in[base + 2 + j] + 128;
+                        }
+                    } else {
+                        for (int j = 0; j < GROUP / 2; j++) {
+                            int packed = in[base + 2 + j] & 0xFF;
+                            values[j] = packed & 0xF;
+                            values[j + GROUP / 2] = packed >>> 4;
+                        }
                     }
-                } else {
-                    for (int j = 0; j < GROUP / 2; j++) {
-                        int packed = src.get(ValueLayout.JAVA_BYTE, base + 2 + j) & 0xFF;
-                        values[j] = packed & 0xF;
-                        values[j + GROUP / 2] = packed >>> 4;
+                    for (int w = 0; w < wordsPerBlock; w++) {
+                        int packed = 0;
+                        for (int e = 0; e < perWord; e++) {
+                            packed |= values[w * perWord + e] << (e * bits);
+                        }
+                        words[b * wordsPerBlock + w] = packed;
                     }
+                    // Float.floatToFloat16 is the conversion HalfFloat(float) uses.
+                    scaleHalves[b] = Float.floatToFloat16(scale);
+                    biasHalves[b] = Float.floatToFloat16(-(q8 ? 128 : 8) * scale);
                 }
-                int perWord = 32 / bits;
-                for (int w = 0; w < GROUP / perWord; w++) {
-                    int packed = 0;
-                    for (int e = 0; e < perWord; e++) {
-                        packed |= values[w * perWord + e] << (e * bits);
-                    }
-                    q.set(word++, packed);
-                }
-                scales.set(group, new HalfFloat(scale));
-                biases.set(group, new HalfFloat(-(q8 ? 128 : 8) * scale));
-                group++;
+                MemorySegment.copy(
+                        words,
+                        0,
+                        q.getSegment(),
+                        ValueLayout.JAVA_INT_UNALIGNED,
+                        group * wordsPerBlock * Integer.BYTES,
+                        count * wordsPerBlock);
+                MemorySegment.copy(
+                        scaleHalves,
+                        0,
+                        scales.getSegment(),
+                        ValueLayout.JAVA_SHORT_UNALIGNED,
+                        group * Short.BYTES,
+                        count);
+                MemorySegment.copy(
+                        biasHalves,
+                        0,
+                        biases.getSegment(),
+                        ValueLayout.JAVA_SHORT_UNALIGNED,
+                        group * Short.BYTES,
+                        count);
+                group += count;
             }
         }
         return new Matrix(null, q, scales, biases, bits);
     }
 
-    /** Q8_0 or Q4_0 tensors, rows stacked in order, decoded to FP16. */
+    /** Q8_0 or Q4_0 tensors, rows contiguous in order, decoded to FP16. */
     static HalfFloatArray decode(TornadoTensor... tensors) {
         boolean q8 = tensors[0].dataType() == DataType.Q8_0;
         int blockBytes = q8 ? 34 : 18;
@@ -423,29 +526,49 @@ public final class MlxPrefillProjections {
         }
         HalfFloatArray out = new HalfFloatArray(Math.toIntExact(blocks * GROUP));
         MemorySegment dst = out.getSegment();
+        byte[] in = new byte[CHUNK_BLOCKS * blockBytes];
+        short[] halves = new short[CHUNK_BLOCKS * GROUP];
         long e = 0;
         for (TornadoTensor t : tensors) {
             MemorySegment src = t.asByteArray().getSegment();
             long n = t.asByteArray().getSize() / blockBytes;
-            for (long b = 0; b < n; b++, e += GROUP) {
-                long base = b * blockBytes;
-                float scale = Float.float16ToFloat(src.get(ValueLayout.JAVA_SHORT_UNALIGNED, base));
-                for (int j = 0; j < GROUP; j++) {
-                    int q;
+            for (long first = 0; first < n; first += CHUNK_BLOCKS) {
+                int count = (int) Math.min(CHUNK_BLOCKS, n - first);
+                MemorySegment.copy(
+                        src, ValueLayout.JAVA_BYTE, first * blockBytes, in, 0, count * blockBytes);
+                for (int b = 0; b < count; b++) {
+                    int base = b * blockBytes;
+                    int o = b * GROUP;
+                    float scale = Float.float16ToFloat(fp16At(in, base));
                     if (q8) {
-                        q = src.get(ValueLayout.JAVA_BYTE, base + 2 + j);
+                        for (int j = 0; j < GROUP; j++) {
+                            halves[o + j] = Float.floatToFloat16(scale * in[base + 2 + j]);
+                        }
                     } else {
-                        int packed = src.get(ValueLayout.JAVA_BYTE, base + 2 + (j % 16)) & 0xFF;
-                        q = (j < 16 ? packed & 0xF : packed >>> 4) - 8;
+                        for (int j = 0; j < GROUP / 2; j++) {
+                            int packed = in[base + 2 + j] & 0xFF;
+                            halves[o + j] = Float.floatToFloat16(scale * ((packed & 0xF) - 8));
+                            halves[o + j + GROUP / 2] =
+                                    Float.floatToFloat16(scale * ((packed >>> 4) - 8));
+                        }
                     }
-                    dst.set(
-                            ValueLayout.JAVA_SHORT_UNALIGNED,
-                            (e + j) * 2,
-                            Float.floatToFloat16(scale * q));
                 }
+                MemorySegment.copy(
+                        halves,
+                        0,
+                        dst,
+                        ValueLayout.JAVA_SHORT_UNALIGNED,
+                        e * Short.BYTES,
+                        count * GROUP);
+                e += (long) count * GROUP;
             }
         }
         return out;
+    }
+
+    /** The FP16 scale at {@code offset}, little-endian as GGUF stores it. */
+    private static short fp16At(byte[] in, int offset) {
+        return (short) ((in[offset] & 0xFF) | (in[offset + 1] << 8));
     }
 
     /**
@@ -467,12 +590,12 @@ public final class MlxPrefillProjections {
                 }) {
             layerWeights.addAll(List.of(m.arrays()));
         }
-        layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, layerWeights.toArray());
+        UnifiedMemoryWeights.upload(layer, state.workspace, layerWeights.toArray());
     }
 
     /**
      * The attention input: RMS apply (after the family's {@code batch_attn_rms}) into FP16, the
-     * stacked QKV GEMM, and its split into {@code wrapQBatch}, {@code wrapKBatch}, {@code
+     * GEMM over contiguous QKV, and its split into {@code wrapQBatch}, {@code wrapKBatch}, {@code
      * wrapVBatch}.
      */
     public void qkv(TaskGraph layer, int layerIndex) {
@@ -538,9 +661,9 @@ public final class MlxPrefillProjections {
 
     /**
      * The feed-forward block after the family's {@code batch_ffn_rms}: RMS apply into FP16, the
-     * stacked gate/up GEMM, SwiGLU, and the down GEMM added into {@code wrapXBatch}. A row whose
-     * SwiGLU output would overflow FP16 in the down GEMM is scaled into range first, and the scale
-     * is undone in the FP32 residual add.
+     * GEMM over contiguous gate/up, SwiGLU, and the down GEMM added into {@code wrapXBatch}. A row
+     * whose SwiGLU output would overflow FP16 in the down GEMM is scaled into range first, and the
+     * scale is undone in the FP32 residual add.
      */
     public void ffn(TaskGraph layer, int layerIndex) {
         layer.task(
@@ -624,6 +747,35 @@ public final class MlxPrefillProjections {
                     n,
                     GROUP,
                     w.bits());
+        }
+    }
+
+    /**
+     * Whether MLX's quantized GEMM splits the depth of an {@code m x n} output: it does when the
+     * output has no more than 256 tiles of 32 x 32, and it keeps the partial sums in FP16.
+     *
+     * <p>Example: 128 rows by 3072 columns is 384 tiles, one pass; 128 by 2048 is 256, two parts.
+     */
+    static boolean splitsDepth(int m, int n) {
+        long tiles = (long) ((m + 31) / 32) * ((n + 31) / 32);
+        return tiles <= 256;
+    }
+
+    /**
+     * Declines the narrow family ({@link PrefillFamily#decline}) where MLX's quantized GEMM of
+     * {@code task} would split the depth of its {@code rows x n} output and sum the parts in FP16,
+     * which it does not at the plan's width.
+     */
+    static void declineIfSplit(int rows, int n, String task) {
+        if (splitsDepth(rows, n)) {
+            throw PrefillFamily.decline(
+                    "MLX's quantized GEMM would split the depth of "
+                            + task
+                            + " ("
+                            + rows
+                            + " x "
+                            + n
+                            + ") and sum the parts in FP16");
         }
     }
 

@@ -1,7 +1,7 @@
 package org.beehive.jitllm.backend.tornado.kv;
 
+import org.beehive.jitllm.runtime.kv.BlockPool;
 import org.beehive.jitllm.runtime.kv.KvStorage;
-import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
@@ -82,18 +82,15 @@ public final class TornadoKvStore implements KvStorage {
         this.bytesPerBlock = 2L * kvDim * blockSizeTokens * numLayers * (fp16 ? 2L : 4L);
 
         int size = (int) elements;
+        // A new TornadoVM array is already zeroed (its memory comes from Arena.allocate).
         if (fp16) {
             this.keyPool = null;
             this.valuePool = null;
             this.keyPoolFP16 = new HalfFloatArray(size);
             this.valuePoolFP16 = new HalfFloatArray(size);
-            this.keyPoolFP16.init(new HalfFloat(0.f));
-            this.valuePoolFP16.init(new HalfFloat(0.f));
         } else {
             this.keyPool = new FloatArray(size);
             this.valuePool = new FloatArray(size);
-            this.keyPool.init(0.f);
-            this.valuePool.init(0.f);
             this.keyPoolFP16 = null;
             this.valuePoolFP16 = null;
         }
@@ -139,11 +136,10 @@ public final class TornadoKvStore implements KvStorage {
      * {@inheritDoc}
      *
      * <p><b>Unmapped entries are translated to the scratch block here</b>, and only here. The host
-     * table keeps {@link org.beehive.jitllm.runtime.kv.BlockPool#UNMAPPED} because that is the
-     * accounting truth — "no lease holds this slot" — while the device needs an index it can safely
-     * write to, since an inactive slot still executes the KV kernels every step. Doing the
-     * translation on the host instead would collapse the two meanings and lose the distinction the
-     * pool's own tests assert.
+     * table keeps {@link BlockPool#UNMAPPED} because that is the accounting truth — "no lease holds
+     * this slot" — while the device needs an index it can safely write to, since an inactive slot
+     * still executes the KV kernels every step. Doing the translation on the host instead would
+     * collapse the two meanings and lose the distinction the pool's own tests assert.
      */
     @Override
     public void publishBlockTable(int[] table) {
@@ -160,11 +156,7 @@ public final class TornadoKvStore implements KvStorage {
         }
         for (int i = 0; i < table.length; i++) {
             int entry = table[i];
-            blockTable.set(
-                    i,
-                    entry == org.beehive.jitllm.runtime.kv.BlockPool.UNMAPPED
-                            ? scratchBlock
-                            : entry);
+            blockTable.set(i, entry == BlockPool.UNMAPPED ? scratchBlock : entry);
         }
     }
 

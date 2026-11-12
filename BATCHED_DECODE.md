@@ -11,6 +11,16 @@ greedy reference. Runs on the TornadoVM **CUDA backend** (tensor-core MMA).
 Both **LLaMA** and **Qwen3** are supported (Qwen3 adds per-head Q/K RMS norm + split-
 half RoPE).
 
+Two ways to use it:
+
+- **`jitllm serve --continuous-batching SLOTS`** (experimental) decodes up to `SLOTS`
+  HTTP requests in one batch — see [Reproduce](#reproduce).
+- **`BatchedDecodeEngine`** (`org.beehive.jitllm.backend.tornado.bench`), the benchmark
+  harness every number below comes from, configured with a `BatchDecodeOptions`.
+
+The measurements in this document were taken with that harness on TornadoVM 5.0.1 (JDK 21,
+RTX 4090), before the move to TornadoVM 7.3; they are kept as recorded.
+
 ---
 
 ## Why batching wins decode
@@ -40,7 +50,7 @@ decode FLOPs, so the projection win dominates.
 
 ## Design
 
-### Engine loop (`bench/BatchedDecodeEngine.java`)
+### Engine loop (`backend/tornado/bench/BatchedDecodeEngine.java`)
 
 One step routine serves **both** phases. Prompt tokens are fed with logits
 discarded — this fills every slot's KV region with the *same* RoPE the decode step
@@ -119,7 +129,7 @@ Because the engine (not `State`) owns this buffer, `ctx` is capped independently
 All slots advance one position per step, so `seqPositions` is the same scalar for
 every slot at every step. The load-bearing part is the per-slot KV **base** address,
 not the position — the `IntArray seqPositions` keeps the door open for ragged /
-continuous batching later.
+continuous batching below.
 
 ---
 
@@ -148,7 +158,7 @@ requests, not replication):
 
 ## Performance
 
-RTX 4090, TornadoVM **CUDA backend**, FP16, `ctx=512`, CUDA graphs on, steady-state
+RTX 4090, TornadoVM 5.0.1 **CUDA backend**, FP16, `ctx=512`, CUDA graphs on, steady-state
 (capture steps excluded).
 
 **Llama-3.2-1B** (16 layers, vocab 128256):
@@ -160,7 +170,7 @@ RTX 4090, TornadoVM **CUDA backend**, FP16, `ctx=512`, CUDA graphs on, steady-st
 | batched B=64  | 2167 | 21.5× | 29.5 ms |
 | batched B=128 | **4175** | **41.3×** | 30.7 ms |
 
-CUDA graphs (`-Dbatch.decode.cudaGraphs`, default on) cut a uniform ~6% off per-step
+CUDA graphs (`cudaGraphs`, default on) cut a uniform ~6% off per-step
 (dispatch overhead across the 2+N graphs).
 
 **Across models** (largest B that fits 24 GB; deeper/wider → higher per-step, so B is
@@ -187,7 +197,7 @@ launch overhead, which is why CUDA graphs help only marginally.
 
 ## Continuous batching (iteration-level scheduling)
 
-`-Dbatch.decode.continuous=true` runs an Orca-style scheduler over the same B slots:
+`continuous` runs an Orca-style scheduler over the same B slots:
 each slot is independently either **prefilling** its prompt (token-by-token, logits
 ignored) or **decoding**; a slot that hits a stop token / its max-gen is evicted and
 **immediately refilled** from a pending queue — new requests join a partly-decoded
@@ -200,14 +210,14 @@ so identical token counts and all outputs mutually prefix-consistent):
 
 | scheduling | steps | gen tok/s | requests/s | slot utilization |
 |------------|------:|----------:|-----------:|-----------------:|
-| static wave (`refill=false`) | 336 | 1645 | 46.9 | 66.4% |
-| **continuous** (`refill=true`) | **272** | **1972** | **56.2** | **82.2%** |
+| static wave (no refill) | 336 | 1645 | 46.9 | 66.4% |
+| **continuous** (refill) | **272** | **1972** | **56.2** | **82.2%** |
 
 **+20% throughput / +24% relative utilization** by refilling freed slots instead of
 draining each wave to its longest request. The gap widens with more length variance.
 Correctness under scheduling = all completed outputs are mutually prefix-consistent.
 
-## PagedAttention (`-Dbatch.decode.paged=true`, LLaMA + Qwen3)
+## PagedAttention (`paged`, LLaMA + Qwen3)
 
 The contiguous KV cache reserves the full `ctx` per slot — `B·ctx` token-slots even
 when most sequences are short. Paging stores KV in a **shared pool of fixed-size blocks**
@@ -232,7 +242,7 @@ inactive slots (they still execute the kernels each step) so they never corrupt 
 block. Paging is the prerequisite for prefix caching (share a prompt's blocks across
 requests via the block table + refcounting).
 
-## Prefix caching (`-Dbatch.decode.prefixCache=true`, needs paging)
+## Prefix caching (`prefixCache`, needs `paged`)
 
 When requests share a common prompt prefix (a system prompt, a few-shot preamble), its KV
 is identical across all of them. Prefix caching prefills the block-aligned shared prefix
@@ -266,7 +276,7 @@ shared prompt:
 
 +104% throughput and prefix sharing also halves peak KV blocks (296→151), all bit-exact.
 
-## On-device sampling (`-Dbatch.decode.deviceSample=true`, default for greedy)
+## On-device sampling (`deviceSample`, default on)
 
 Profiling (nsys) showed the engine was **host-bound**: each step copied the full
 `paddedB×vocab` logits tensor D2H (~65 MB on Llama, ~78 MB on Qwen) and ran a CPU argmax over
@@ -282,33 +292,84 @@ Llama-1B, B=128, 512-request continuous+paged+prefix, identical greedy output:
 | **on-device** | ~0.5 KB | 5.88 s | **3057** |
 
 **+30% throughput** — the D2H copy collapses (115 ms → 0.03 ms in the trace) and the CPU scan
-is gone; GPU kernel work per step is unchanged, so the gain is pure host-stall removal. Auto-off
-for temperature sampling (which still needs logits on the host).
+is gone; GPU kernel work per step is unchanged, so the gain is pure host-stall removal. Greedy
+only: temperature sampling still needs logits on the host, so a configuration with a temperature
+sets `deviceSample` to `false`.
 
 ## Reproduce
 
-### Qwen3 quick start (copy-paste)
+### Build
 
-After building TornadoVM (CUDA backend) and this project (steps 1–3 below), take
-`jitllm --show-command …`, swap the main class to
-`org.beehive.jitllm.bench.BatchedDecodeEngine`, and prepend the flags. Keep
-`-Djitllm.prefillBatchSize` equal to `-Dbatch.decode.B`.
+You need a TornadoVM SDK with the **CUDA backend**, version **8.0 or newer**, at
+`TORNADOVM_HOME` (its JDK line must match the JDK you build with; see the README), and an NVIDIA
+GPU with tensor cores. Then:
 
 ```bash
-# A) static batch — all B streams bit-exact vs single-stream greedy
--Djitllm.prefillBatchSize=32 -Dbatch.decode.B=32 -Dbatch.decode.ctx=512 -Dbatch.decode.n=64 \
-  ... BatchedDecodeEngine -m Qwen3-1.7B-f16.gguf -p "What is the capital of France?" --instruct
-#  → [verify] all 32 streams identical (== single-stream greedy ref): true
-
-# B) continuous multi-request serving — paged KV + prefix cache
--Djitllm.prefillBatchSize=16 -Dbatch.decode.B=16 -Dbatch.decode.ctx=512 -Dbatch.decode.n=64 \
-  -Dbatch.decode.continuous=true -Dbatch.decode.paged=true -Dbatch.decode.prefixCache=true \
-  -Dbatch.decode.requests=128 \
-  ... BatchedDecodeEngine -m Qwen3-1.7B-f16.gguf -p "What is the capital of France?" --instruct
-#  → [verify] 128 requests completed, all mutually prefix-consistent (greedy): true
+export TORNADOVM_HOME=/path/to/tornadovm-sdk
+export PATH="$TORNADOVM_HOME/bin:$PATH"
+./mvnw clean package -DskipTests
 ```
 
-Verified fresh (RTX 4090, TornadoVM 5.0.1-jdk21-dev, JDK 21) — every row bit-exact /
+### Serve: continuous batching over HTTP
+
+```bash
+./jitllm serve --gpu -m Llama-3.2-1B-Instruct-f16.gguf --continuous-batching 16
+```
+
+`--continuous-batching SLOTS` (at least 2) decodes up to `SLOTS` requests together;
+`--max-queued-requests N` (default 64) bounds how many wait for a slot, and
+`--prefix-cache-entries N` (default 0, off) shares cached prompt prefixes between requests. It
+is experimental and narrower than the regular path: CUDA tensor-core devices, FP16 Llama/Qwen3
+weights and greedy requests (temperature 0) only, and it refuses `--with-prefill-decode`,
+`--batch-prefill-size`, `--cuda-graphs` and `--with-native-libraries`.
+
+### Benchmark: `BatchedDecodeEngine`
+
+The harness has no `main`; call it from Java with the model loaded on TornadoVM:
+
+```java
+Model model = ModelLoader.loadModel(Path.of("Qwen3-1.7B-f16.gguf"), 512, true, true);
+
+// A) static batch: all B streams bit-exact vs single-stream greedy
+var report = BatchedDecodeEngine.run(model, "What is the capital of France?",
+        BatchDecodeOptions.of(32));                // batch 32, context 512, 64 tokens
+
+// B) continuous multi-request serving, paged KV + prefix cache
+var options = new BatchDecodeOptions(
+        16, 512, 64, true,      // batch, context, tokens, CUDA graphs
+        true, 16, 0,            // paged, block size, blocks (0 = derive)
+        true, 128, 32,          // continuous, requests, minimum tokens
+        true, 0.0f, true);      // prefix cache, temperature, device sampling
+var continuous = BatchedDecodeEngine.run(model, "What is the capital of France?", options);
+```
+
+Run it on the JVM command `./jitllm --gpu --show-command …` prints, with your class on the
+classpath and `-Djitllm.prefillBatchSize` set to the batch size (32 for A, 16 for B): the prefill
+plan is sized for it, and `run` refuses to start otherwise. `run` returns a report instead of
+printing: a `StaticReport` (`allStreamsIdentical`, `distinctStreams`, throughput) or a
+`ContinuousReport` (`prefixConsistent`, throughput, slot utilization, peak blocks, prefill tokens).
+
+`BatchDecodeOptions` fields and the `of(B)` defaults:
+
+| field | default | meaning |
+|-------|---------|---------|
+| `batchSize` | B | slots decoded together |
+| `decodeContext` | 512 | context each slot gets (VRAM) |
+| `decodeTokens` | 64 | tokens decoded per slot |
+| `cudaGraphs` | true | capture and replay the plan as a CUDA graph |
+| `paged` | false | block-addressed KV storage |
+| `blockSize` | 16 | tokens per block, when paged |
+| `blocks` | 0 | blocks in the pool, when paged; 0 derives `B·ctx/blockSize` |
+| `continuous` | false | refill finished slots while others run |
+| `requests` | 4·B | requests served in continuous mode |
+| `minDecodeTokens` | 32 | shortest a refilled request may be |
+| `prefixCache` | false | share a prompt prefix across requests; needs `paged` |
+| `temperature` | 0.0 | 0 is greedy; > 0 gives divergent streams |
+| `deviceSample` | true | argmax on the device; greedy only |
+
+### Results as recorded
+
+Measured with the harness on TornadoVM 5.0.1-jdk21-dev, JDK 21, RTX 4090 — every row bit-exact /
 prefix-consistent:
 
 | model | mode | throughput | correctness |
@@ -323,82 +384,37 @@ prefix-consistent:
 Per-stream tok/s stays flat as B grows (1.7B ~25, 4B ~13.5): the MMA tile runs 128
 rows regardless of B, so batching is effectively free until B=128.
 
-### 1. TornadoVM (CUDA backend + tensor-core MMA)
-
-Requires a TornadoVM with the **CUDA backend** and the **MMA `KernelContext`** API
-(`mmaFragment` / `mmaLoadA` / `mmaMultiply`, `HalfFloatArray`) — the same TornadoVM the
-`feat/mma_cuda` jitllm branch already needs. Tested against **TornadoVM
-5.0.1-jdk21-dev**, CUDA backend, **JDK 21**. (All numbers here are from the CUDA
-backend.)
-
-```bash
-git clone https://github.com/beehive-lab/TornadoVM
-cd TornadoVM
-# JDK 21; build the CUDA backend (installs artifacts into ~/.m2)
-make BACKEND=cuda
-export TORNADOVM_HOME=$PWD/dist/tornadovm-*-cuda
-```
-
-### 2. jitllm (this branch)
-
-```bash
-# JDK 21
-mvn -Pjdk21 -Dtornadovm.base.version=5.0.1 -Djdk.version.suffix=-jdk21-dev \
-    clean package -DskipTests
-```
-
-### 3. Run the engine
-
-`-Djitllm.prefillBatchSize` MUST equal `-Dbatch.decode.B` (it sizes the batch
-activation buffers). Launch `org.beehive.jitllm.bench.BatchedDecodeEngine` on the
-standard TornadoVM module path (easiest: take `jitllm --show-command …`,
-swap the main class to the engine, and prepend the `-D` flags):
-
-```
--Djitllm.prefillBatchSize=128     # batch buffers = B
--Dbatch.decode.B=128             # concurrent sequences
--Dbatch.decode.ctx=512           # per-slot KV context cap (VRAM)
--Dbatch.decode.n=64              # decode steps
--Dbatch.decode.temp=0.0          # 0 = greedy (bit-exact verify); >0 = divergent streams
--Dbatch.decode.cudaGraphs=true   # CUDA-graph capture/replay
-org.beehive.jitllm.bench.BatchedDecodeEngine -m <llama-3.2-1b-fp16.gguf> -p "…" --instruct
-```
-
-Two supporting micro-benchmarks (synthetic dims, no model load) isolate the two
-regimes: `bench/BatchedProjectionBench` (compute-bound projection crossover, ~20×)
-and `bench/BatchedDecodeAttentionBench` (memory-bound per-slot attention, ~2×,
-bit-exact vs a CPU reference).
-
-### Exact prompts + flags per result
+### Exact prompts + configuration per result
 
 Prompts (verbatim):
 - `P_SHORT` = `Tell me a short story about a robot learning to paint.`
 - `P_LONG` (48-token shared prefix) = `You are a helpful and knowledgeable assistant. Please write a detailed, vivid and engaging short story about a small curious robot named Zeta who lives in an old cluttered workshop and slowly learns the delicate art of painting with oil colors.`
 
-| result | model | prompt | engine flags |
-|--------|-------|--------|--------------|
-| static B=128 (41×) | llama-1b-fp16 | P_SHORT | `-Djitllm.prefillBatchSize=128 -Dbatch.decode.B=128 -Dbatch.decode.ctx=512 -Dbatch.decode.n=64` |
-| divergent streams | llama-1b-fp16 | P_SHORT | above + `-Dbatch.decode.temp=0.7` |
-| continuous (vs static-wave) | llama-1b-fp16 | P_SHORT | `…B=128 -Dbatch.decode.continuous=true -Dbatch.decode.requests=512 -Dbatch.decode.minN=8 -Dbatch.decode.refill=true` (baseline `refill=false`) |
-| paged (10.7× less KV) | llama-1b-fp16 | P_SHORT | `…continuous=true -Dbatch.decode.paged=true -Dbatch.decode.blocks=384 -Dbatch.decode.requests=512 -Dbatch.decode.minN=8` |
-| prefix cache (+85%) | llama-1b-fp16 | P_LONG | `…continuous=true -Dbatch.decode.paged=true -Dbatch.decode.blocks=1024 -Dbatch.decode.prefixCache=true -Dbatch.decode.requests=512 -Dbatch.decode.minN=8` (off: `prefixCache=false`) |
-| Qwen3 paged+prefix (+104%) | Qwen3-1.7B-f16 | P_LONG | `-Dtornado.device.memory=20GB -Djitllm.prefillBatchSize=64 -Dbatch.decode.B=64 -Dbatch.decode.ctx=512 -Dbatch.decode.n=64 -Dbatch.decode.continuous=true -Dbatch.decode.paged=true -Dbatch.decode.blocks=768 -Dbatch.decode.prefixCache=true -Dbatch.decode.requests=256 -Dbatch.decode.minN=8` |
+Every row ran with `-Djitllm.prefillBatchSize` equal to `batchSize`.
 
-All flags (defaults): `batch.decode.B`, `.ctx`(512), `.n`(64), `.temp`(0=greedy),
-`.cudaGraphs`(true), `.continuous`(false), `.refill`(true), `.requests`(4·B), `.minN`(n/2),
-`.paged`(false), `.blockSize`(16), `.blocks`(B·ctx/blockSize), `.prefixCache`(false).
-Each run prints `[verify] …: true` and `[perf] …`.
+| result | model | prompt | `BatchDecodeOptions` |
+|--------|-------|--------|----------------------|
+| static B=128 (41×) | llama-1b-fp16 | P_SHORT | `batchSize=128, decodeContext=512, decodeTokens=64` |
+| divergent streams | llama-1b-fp16 | P_SHORT | above + `temperature=0.7, deviceSample=false` |
+| continuous (vs static wave) | llama-1b-fp16 | P_SHORT | `batchSize=128, continuous, requests=512, minDecodeTokens=8` |
+| paged (10.7× less KV) | llama-1b-fp16 | P_SHORT | `…continuous, paged, blocks=384, requests=512, minDecodeTokens=8` |
+| prefix cache (+85%) | llama-1b-fp16 | P_LONG | `…continuous, paged, blocks=1024, prefixCache, requests=512, minDecodeTokens=8` (off: no `prefixCache`) |
+| Qwen3 paged+prefix (+104%) | Qwen3-1.7B-f16 | P_LONG | `-Dtornado.device.memory=20GB`; `batchSize=64, decodeContext=512, decodeTokens=64, continuous, paged, blocks=768, prefixCache, requests=256, minDecodeTokens=8` |
+
+The static-wave baseline of the continuous comparison refilled no slots, a mode the harness no
+longer offers.
 
 ---
 
 ## Limitations / next
 
-- **FP16 LLaMA + Qwen3.** Q8_0 and other architectures reuse the same pattern but need
-  their own decode layer graph. Qwen3-8B produces garbage in the **stock** decode path
-  on this build (independent of batched decode — the engine faithfully reproduces the
-  stock output); Qwen3-1.7B/4B are fine.
-- **Same prompt length across slots** (static batching). Ragged prompts / iteration-
-  level (continuous) batching are the follow-up — the per-slot `seqPositions` +
-  per-slot KV base already support per-slot positions.
+- **FP16 LLaMA + Qwen3, greedy, CUDA tensor cores.** Q8_0 and other architectures reuse
+  the same pattern but need their own decode layer graph. On the toolchain the results
+  above were recorded with, Qwen3-8B produced garbage in the **stock** decode path
+  (independent of batched decode — the engine faithfully reproduces the stock output);
+  Qwen3-1.7B/4B were fine.
+- **One prompt in the harness.** `run` replicates its prompt across slots; continuous mode
+  varies each request's generated length. `jitllm serve --continuous-batching` takes
+  independent requests.
 - **Logits GEMM over the full vocab every step** is ~half the per-step cost; only
   needed for slots actually sampling.

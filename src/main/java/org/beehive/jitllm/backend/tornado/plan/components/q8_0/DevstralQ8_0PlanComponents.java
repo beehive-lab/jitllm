@@ -1,14 +1,17 @@
 package org.beehive.jitllm.backend.tornado.plan.components.q8_0;
 
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.PackedQ8_0LogitsLayer;
 import org.beehive.jitllm.backend.tornado.layers.PackedQ8_0LogitsLayerDecode;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.devstral.DevstralQ8_0FFNLayersDecode;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.DevstralQ8_0FFNLayers;
+import org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill.LlamaQ8_0LayersBatchPrefill;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.prefill.LlamaQ8_0LayersBatchPrefillMMA;
 import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchDecodeActivation;
@@ -36,18 +39,17 @@ public class DevstralQ8_0PlanComponents implements BatchPrefillDecodeForwardPlan
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new DevstralQ8_0FFNLayers("devstralFFN", state, weights, config, schedulerType);
+        return new DevstralQ8_0FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new PackedQ8_0LogitsLayer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new PackedQ8_0LogitsLayer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── Batched prefill/decode ───────────────────────────────────────────────
@@ -58,7 +60,10 @@ public class DevstralQ8_0PlanComponents implements BatchPrefillDecodeForwardPlan
      */
     @Override
     public BatchPrefillTransformerLayerTaskGraphs batchPrefillTransformerLayers(int batchSize) {
-        return new LlamaQ8_0LayersBatchPrefillMMA(state, weights, config, batchSize);
+        if (TensorCoreSupport.isTensorCoreCapableBackend()) {
+            return new LlamaQ8_0LayersBatchPrefillMMA(state, weights, config, batchSize);
+        }
+        return new LlamaQ8_0LayersBatchPrefill(state, weights, config, batchSize);
     }
 
     @Override
@@ -68,18 +73,19 @@ public class DevstralQ8_0PlanComponents implements BatchPrefillDecodeForwardPlan
 
     @Override
     public ActivationTaskGraph batchDecodeActivation(String lastBatchLayerId) {
-        return new BatchDecodeActivation(state, config, lastBatchLayerId, true);
+        return new BatchDecodeActivation(
+                state, config, lastBatchLayerId, weights.getTokenEmbeddingTable().dataType());
     }
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new DevstralQ8_0FFNLayersDecode("decode", state, weights, config, schedulerType);
+        return new DevstralQ8_0FFNLayersDecode(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
         return new PackedQ8_0LogitsLayerDecode(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+                state, weights, config, previousGraphId, schedulerType);
     }
 
     /** Devstral has no sequential prefill/decode plan; its provider refuses the mode. */

@@ -15,13 +15,12 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 public class LogitsGraniteQ8_0LayerDecode extends LogitsGraniteQ8_0Layer {
 
     public LogitsGraniteQ8_0LayerDecode(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config, lastTaskGraphID, schedulerType);
+        super(state, weights, config, lastTaskGraphID, schedulerType);
     }
 
     private Object keyCache() {

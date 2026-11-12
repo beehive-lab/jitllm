@@ -11,7 +11,9 @@ import org.beehive.jitllm.format.GGMLType;
 import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_0FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_1FloatTensor;
+import org.beehive.jitllm.tensor.standard.Q4_KFloatTensor;
 import org.beehive.jitllm.tensor.standard.Q5_KFloatTensor;
+import org.beehive.jitllm.tensor.standard.Q6_KFloatTensor;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -45,7 +47,7 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 // @formatter:on
 public class BatchProjectionTilingAccelTest {
 
-    /** Columns: a whole number of Q4_1 blocks (32) and Q5_K super-blocks (256). */
+    /** Columns: a whole number of Q4_1 blocks (32) and K-quant super-blocks (256). */
     private static final int N = 512;
 
     private static final int D = 37;
@@ -73,11 +75,12 @@ public class BatchProjectionTilingAccelTest {
         byte[] raw = new byte[blocks * type.getTypeSize()];
         new Random(seed).nextBytes(raw);
         // Keep the block scales finite and modest, as NativeQuantizedKernelAccelTest does: a
-        // random fp16 scale can be Inf, whose products are not comparable term by term. Q4_1 and
-        // Q5_K both carry two fp16 scales, at offsets 0 and 2.
+        // random fp16 scale can be Inf, whose products are not comparable term by term. Q4_1,
+        // Q4_K and Q5_K carry two fp16 scales, at offsets 0 and 2; Q6_K carries one, at 208.
+        int[] scaleOffsets = type == GGMLType.Q6_K ? new int[] {208} : new int[] {0, 2};
         for (int b = 0; b < blocks; b++) {
             int base = b * type.getTypeSize();
-            for (int offset : new int[] {0, 2}) {
+            for (int offset : scaleOffsets) {
                 raw[base + offset] = (byte) (b & 0xFF);
                 raw[base + offset + 1] = 0x2C; // ~0.06
             }
@@ -326,5 +329,129 @@ public class BatchProjectionTilingAccelTest {
                                 D,
                                 active,
                                 LOCAL));
+    }
+
+    @Test
+    public void theTiledQ4_KProjectionMatchesTheHost() throws Exception {
+        assertTiledMatchesHost(
+                "q4k",
+                GGMLType.Q4_K,
+                (n, seg) -> new Q4_KFloatTensor(n, seg),
+                TransformerComputeKernelsQ4_K.rowTile(),
+                TransformerComputeKernelsQ4_K.colTile(),
+                (g, c, x, out, w, active) ->
+                        g.task(
+                                "projection",
+                                TransformerComputeKernelsQ4_K::matrixVectorTiledBatchQ4_K,
+                                c,
+                                x,
+                                out,
+                                w,
+                                N,
+                                D,
+                                active,
+                                LOCAL),
+                (g, c, x, out, w, active) ->
+                        g.task(
+                                "projection",
+                                TransformerComputeKernelsQ4_K
+                                        ::matrixVectorTiledBatchWithResidualQ4_K,
+                                c,
+                                x,
+                                out,
+                                w,
+                                N,
+                                D,
+                                active,
+                                LOCAL));
+    }
+
+    @Test
+    public void theTiledQ6_KProjectionMatchesTheHost() throws Exception {
+        assertTiledMatchesHost(
+                "q6k",
+                GGMLType.Q6_K,
+                (n, seg) -> new Q6_KFloatTensor(n, seg),
+                TransformerComputeKernelsQ6_K.rowTile(),
+                TransformerComputeKernelsQ6_K.colTile(),
+                (g, c, x, out, w, active) ->
+                        g.task(
+                                "projection",
+                                TransformerComputeKernelsQ6_K::matrixVectorTiledBatchQ6_K,
+                                c,
+                                x,
+                                out,
+                                w,
+                                N,
+                                D,
+                                active,
+                                LOCAL),
+                (g, c, x, out, w, active) ->
+                        g.task(
+                                "projection",
+                                TransformerComputeKernelsQ6_K
+                                        ::matrixVectorTiledBatchWithResidualQ6_K,
+                                c,
+                                x,
+                                out,
+                                w,
+                                N,
+                                D,
+                                active,
+                                LOCAL));
+    }
+
+    /**
+     * The tiled fused Q4_K gate/up against the host: {@code SiLU(w1·x) * (w3·x)} for every active
+     * row, and nothing written past {@code activeRows}.
+     */
+    @Test
+    public void theTiledQ4_KGateUpMatchesTheHost() throws Exception {
+        byte[] gate = randomBlocks(GGMLType.Q4_K, 20261027L);
+        byte[] up = randomBlocks(GGMLType.Q4_K, 20261028L);
+        int tileRows = TransformerComputeKernelsQ4_K.rowTile();
+        int tileCols = TransformerComputeKernelsQ4_K.colTile();
+        for (int width : WIDTHS) {
+            int activeRows = width;
+            float[] g = hostReference(gate, (n, seg) -> new Q4_KFloatTensor(n, seg), activeRows);
+            float[] u = hostReference(up, (n, seg) -> new Q4_KFloatTensor(n, seg), activeRows);
+            ByteArray w3 = toDevice(up);
+            FloatArray got =
+                    execute(
+                            "q4kGateUp",
+                            (graph, c, x, out, w1, active) -> {
+                                graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, w3);
+                                graph.task(
+                                        "projection",
+                                        TransformerComputeKernelsQ4_K
+                                                ::fusedFFNGateUpSiLUTiledBatchQ4_K,
+                                        c,
+                                        x,
+                                        out,
+                                        w1,
+                                        w3,
+                                        N,
+                                        D,
+                                        active,
+                                        LOCAL);
+                            },
+                            gate,
+                            width,
+                            activeRows,
+                            tileRows,
+                            tileCols);
+            for (int row = 0; row < width; row++) {
+                for (int col = 0; col < D; col++) {
+                    int i = row * D + col;
+                    float want = (g[i] / (1.0f + (float) Math.exp(-g[i]))) * u[i];
+                    float tolerance = Math.max(1e-3f, Math.abs(want) * 1e-4f);
+                    assertEquals(
+                            "q4k gate/up width=" + width + " [" + row + "][" + col + "]",
+                            want,
+                            got.get(i),
+                            tolerance);
+                }
+            }
+        }
     }
 }

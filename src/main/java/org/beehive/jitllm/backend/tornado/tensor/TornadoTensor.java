@@ -1,8 +1,10 @@
 package org.beehive.jitllm.backend.tornado.tensor;
 
+import java.util.Objects;
 import org.beehive.jitllm.format.DataTypeMapping;
 import org.beehive.jitllm.format.GGMLType;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
@@ -13,6 +15,18 @@ import uk.ac.manchester.tornado.api.types.arrays.Int8Array;
  * GPU execution.
  */
 public abstract class TornadoTensor {
+
+    /** The tensor's dimensions, in GGUF {@code ne} order: dimension 0 is the length of a row. */
+    private final Shape shape;
+
+    protected TornadoTensor(Shape shape) {
+        this.shape = Objects.requireNonNull(shape, "a device tensor states its shape");
+    }
+
+    /** The tensor's dimensions, in GGUF {@code ne} order: dimension 0 is the length of a row. */
+    public final Shape shape() {
+        return shape;
+    }
 
     /**
      * @deprecated Use {@link #dataType()}. A materialized device tensor is not a file type — a
@@ -75,29 +89,6 @@ public abstract class TornadoTensor {
     public Int8Array getQuants() {
         throw new UnsupportedOperationException(
                 "Not a quantized tensor: " + this.getClass().getSimpleName());
-    }
-
-    /**
-     * The tile layout this projection is packed into on the device, or {@code null} when the device
-     * holds it as the file stores it. Only Q8_0 and Q4_0 projections are packed.
-     */
-    public PackedTiles packedTiles() {
-        return null;
-    }
-
-    /** Whether the device holds this tensor in a {@link PackedTiles} layout. */
-    public final boolean isPacked() {
-        return packedTiles() != null;
-    }
-
-    /** Whether the device holds this Q4_0 projection packed. */
-    public final boolean isPackedQ4() {
-        return isPacked() && dataType() == DataType.Q4_0;
-    }
-
-    /** Whether the device holds this Q8_0 projection packed. */
-    public final boolean isPackedQ8() {
-        return isPacked() && dataType() == DataType.Q8_0;
     }
 
     /** The device array the layer graphs bind for this tensor, whatever its representation. */

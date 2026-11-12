@@ -63,22 +63,20 @@ public class Lfm2Layers
     private final String activationGraphName;
 
     public Lfm2Layers(
-            String taskGraphName,
             Lfm2State state,
             Lfm2TornadoWeights weights,
             Lfm2Configuration config,
             SchedulerType schedulerType) {
-        this(taskGraphName, state, weights, config, schedulerType, "activationUpdate");
+        this(state, weights, config, schedulerType, GraphNames.ACTIVATION_UPDATE);
     }
 
     public Lfm2Layers(
-            String taskGraphName,
             Lfm2State state,
             Lfm2TornadoWeights weights,
             Lfm2Configuration config,
             SchedulerType schedulerType,
             String activationGraphName) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.lfm2State = state;
         this.activationGraphName = activationGraphName;
         setupFFNLayers();
@@ -277,8 +275,9 @@ public class Lfm2Layers
 
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        TaskGraph layer = new TaskGraph("layer_" + layerIndex);
-        String predecessor = layerIndex == 0 ? activationGraphName : "layer_" + (layerIndex - 1);
+        TaskGraph layer = new TaskGraph(GraphNames.layer(layerIndex));
+        String predecessor =
+                layerIndex == 0 ? activationGraphName : GraphNames.layer(layerIndex - 1);
         layer.consumeFromDevice(predecessor, lfm2State.workspace.wrapX);
         configureLayerDataTransfers(layer, layerIndex);
         transferLayerWeights(layer, layerIndex);
@@ -853,7 +852,7 @@ public class Lfm2Layers
                     ws.wrapSelectedExperts,
                     ws.wrapSelectedExpertWeights);
         } else {
-            String predecessor = "layer_" + (layerIndex - 1);
+            String predecessor = GraphNames.layer(layerIndex - 1);
             layer.consumeFromDevice(
                     predecessor,
                     context,
@@ -904,7 +903,7 @@ public class Lfm2Layers
         WorkerGrid single = WorkerGridFactory.genericWorker(1, 1);
 
         for (int layer = 0; layer < config.numberOfLayers(); layer++) {
-            String prefix = "layer_" + layer + ".";
+            String prefix = GraphNames.layer(layer) + ".";
             scheduler.addWorkerGrid(prefix + "attn_rms_reduce", rmsReduce);
             scheduler.addWorkerGrid(prefix + "ffn_rms_reduce", rmsReduce);
             if (shouldUseFinalNormalization()) {

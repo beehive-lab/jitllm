@@ -71,7 +71,7 @@ Accelerator gates are opt-in and need a device, an SDK and the pinned fixtures u
 ## Run
 
 ```bash
-./jitllm --gpu --model <model.gguf> --prompt "..." -n 128 --seed 42
+./jitllm run --gpu --model <model.gguf> --prompt "..." --max-new-tokens 128 --seed 42
 ```
 
 The backend comes from `$TORNADOVM_HOME/etc/tornado.backend`. `--opencl`, `--cuda`
@@ -93,11 +93,11 @@ result, establish all three:
 # The launcher parses its own flags, so engine properties go through JAVA_TOOL_OPTIONS,
 # which is what CI does too.
 JAVA_TOOL_OPTIONS="-Djitllm.metrics.format=json -Djitllm.metrics.output=file -Djitllm.metrics.file=$PWD/run.json" \
-  ./jitllm --gpu --model <model.gguf> \
-    --prompt "What is the capital of France?" -n 64 --seed 42
+  ./jitllm run --gpu -v --model <model.gguf> \
+    --prompt "What is the capital of France?" --max-new-tokens 64 --seed 42
 ```
 
-1. **The backend resolved** — the launcher prints `Detected TornadoVM backend: <name>`.
+1. **The backend resolved** — with `-v`, the launcher prints `Detected TornadoVM backend: <name>` on stderr.
 2. **A plan was built** — `execution_path` in the metrics JSON is `LOWERED` or `LEGACY`. If
    it is absent, no accelerator plan was built and a CPU fallback looks identical to
    success.
@@ -112,33 +112,40 @@ an error.
 
 | Flag | Use |
 | --- | --- |
+| `run` / `chat` / `serve` / `bench` | subcommand: one-shot (`--prompt "..."`), a chat loop, the OpenAI-compatible server (`--host`, `--port N`), or the llama-bench-style harness |
 | `--model <path>` | required |
-| `--prompt "..."` / `-i` | one-shot, or a chat loop |
 | `--gpu` | required for acceleration; without it the run is CPU-only |
-| `-n`, `--temperature`, `--top-p`, `--seed` | sampling |
+| `-c`, `--ctx-size N` | context window (key/value-cache capacity); default 512 for `run`/`chat` |
+| `--max-new-tokens N` | stop an answer after N generated tokens |
+| `--temperature`, `--top-p`, `--seed` | sampling |
+| `--pp`, `--tg`, `--depth`, `--repetitions`, `--output` | `bench` only: prompt lengths, generated tokens, prefilled depth, reps, result format; `bench` refuses `--ctx-size` |
 | `--gpu-memory 20GB` | raise from the 14GB default for 3B/8B models |
 | `--heap-max`, `--heap-min` | JVM heap, default 20g |
-| `--server --port N` | the OpenAI-compatible server |
-| `--bench --bench-args "..."` | the llama-bench-style harness |
 
-Execution modes (batched prefill is default-off, deliberately):
+`-n`/`--max-tokens` is a deprecated alias of `--ctx-size`, not a generated-token limit.
+
+Execution modes (on GPU, batched prefill of 512 tokens per step is the default where the model supports it):
 
 | Flag | Meaning |
 | --- | --- |
-| `--with-prefill-decode` | sequential prefill, then single-token decode |
-| `--batch-prefill-size N` | with the above, batch N prompt tokens per invocation |
+| `--no-batch-prefill` | read the prompt one token at a time |
+| `--with-prefill-decode` | alone: separate prefill and decode plans, single-token prefill |
+| `--batch-prefill-size N` | batch N prompt tokens per step instead of 512 |
+| `--with-native-libraries` / `--no-native-libraries` | require, or turn off, cuBLAS/cuDNN (CUDA) or MLX (Metal) for batched prefill; default: used where implemented and installed |
+| `--fp32-kv-cache` | FP32 key/value cache instead of the FP16 default |
 | `--cuda-graphs` | CUDA only: capture and replay to cut launch overhead |
 
 Diagnostics — for a specific investigation, not for normal runs:
 
 | Flag | Use |
 | --- | --- |
-| `--verbose-init` | GGUF load, copy-in and JIT timings |
+| `-v`, `--verbose` | startup configuration, GGUF load, copy-in and JIT timings (stderr) |
 | `--show-command --execute-after-show` | print the exact JVM command first |
 | `--print-kernel`, `--print-bytecodes`, `--print-threads`, `--full-dump` | codegen and scheduling detail |
-| `--profiler --profiler-dump-dir <FILE>` | TornadoVM profiler output |
+| `--print-taskgraph-chain` | the plan's TaskGraphs, their kernels and worker grids, and cuBLAS/cuDNN library tasks |
+| `--profiler --profiler-dump-file <FILE>` | TornadoVM profiler output |
 
-`--profiler-dump-dir` takes a **file**, not a directory. Given a directory the run bails
+`--profiler-dump-file` takes a **file**, not a directory. Given a directory the run bails
 out to sequential Java and looks like a hang.
 
 Run `--help` before using a flag you are not certain about. Keep profiler output, traces

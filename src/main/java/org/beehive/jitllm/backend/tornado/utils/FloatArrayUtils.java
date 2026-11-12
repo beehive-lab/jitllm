@@ -31,17 +31,6 @@ public final class FloatArrayUtils {
     }
 
     /**
-     * Divides all elements in a FloatArray by a value in-place.
-     *
-     * @param array The FloatArray to modify
-     * @param value The value to divide by
-     * @return The modified FloatArray for method chaining
-     */
-    public static FloatArray divideInPlace(FloatArray array, float value) {
-        return divideInPlace(array, 0, array.getSize(), value);
-    }
-
-    /**
      * Applies the softmax function to a range of elements in a FloatArray in-place. Mirrors the
      * functionality of FloatTensor.softmaxInPlace().
      *
@@ -92,48 +81,47 @@ public final class FloatArrayUtils {
         return array;
     }
 
-    /**
-     * Applies the softmax function to all elements in a FloatArray in-place.
-     *
-     * @param array The FloatArray to modify
-     * @return The modified FloatArray for method chaining
-     */
-    public static FloatArray softmaxInPlace(FloatArray array) {
-        return softmaxInPlace(array, 0, array.getSize());
+    /** {@link #divideInPlace(FloatArray, int, int, float)} over a heap copy of the scores. */
+    public static float[] divideInPlace(float[] array, int start, int end, float value) {
+        for (int i = start; i < end; i++) {
+            array[i] = array[i] / value;
+        }
+        return array;
     }
 
     /**
-     * Finds the index of the maximum value in a FloatArray. Mirrors the functionality of
-     * FloatTensor.argmax().
-     *
-     * @param array The FloatArray to search
-     * @param start The starting index (inclusive)
-     * @param end The ending index (exclusive)
-     * @return The index of the maximum value
+     * {@link #softmaxInPlace(FloatArray, int, int)} over a heap copy of the scores: the same
+     * operations in the same order, so the probabilities are bit-for-bit those of the device array.
      */
-    public static int argmax(FloatArray array, int start, int end) {
-        float maxValue = Float.NEGATIVE_INFINITY;
-        int maxIndex = start;
-
+    public static float[] softmaxInPlace(float[] array, int start, int end) {
+        float maxVal = Float.NEGATIVE_INFINITY;
         for (int i = start; i < end; i++) {
-            float value = array.get(i);
-            if (value > maxValue) {
-                maxValue = value;
-                maxIndex = i;
+            if (array[i] > maxVal) {
+                maxVal = array[i];
             }
         }
-
-        return maxIndex;
-    }
-
-    /**
-     * Finds the index of the maximum value in a FloatArray.
-     *
-     * @param array The FloatArray to search
-     * @return The index of the maximum value
-     */
-    public static int argmax(FloatArray array) {
-        return argmax(array, 0, array.getSize());
+        float sum = 0.0f;
+        for (int i = start; i < end; i++) {
+            float exp;
+            if (TornadoVMSupport.isTornadoVMEnabled()) {
+                exp = TornadoMath.exp(array[i] - maxVal);
+            } else {
+                exp = (float) Math.exp(array[i] - maxVal);
+            }
+            array[i] = exp;
+            sum += exp;
+        }
+        if (sum == 0.0f) {
+            float value = 1.0f / (end - start);
+            for (int i = start; i < end; i++) {
+                array[i] = value;
+            }
+        } else {
+            for (int i = start; i < end; i++) {
+                array[i] = array[i] / sum;
+            }
+        }
+        return array;
     }
 
     /**

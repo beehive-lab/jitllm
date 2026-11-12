@@ -23,13 +23,12 @@ public class LogitsQ8_0LayerDecode extends LogitsQ8_0Layer {
 
     // @formatter:off
     public LogitsQ8_0LayerDecode(
-            String name,
             State state,
             Weights weights,
             Configuration config,
             String lastTaskGraphID,
             SchedulerType schedulerType) {
-        super(name, state, weights, config, lastTaskGraphID, schedulerType);
+        super(state, weights, config, lastTaskGraphID, schedulerType);
     }
 
     // @formatter:on

@@ -117,11 +117,11 @@ public final class Qwen3ProgramDescription {
             boolean deviceSample,
             boolean splitKvAttention) {
         int dim = config.dim();
-        // Qwen3 carries key_length and value_length separately, and kvDim()/headSize() on this
-        // configuration throw rather than guess. The widths come from the metadata.
+        // Qwen3 carries key_length and value_length separately; the widths come from them, not
+        // from dim / heads.
         int headSize = config.numberOfHeadsValue();
-        int kvDim = config.numberOfHeadsValue() * config.numberOfKeyValueHeads();
-        int queryWidth = config.numberOfHeadsKey() * config.numberOfHeads();
+        int kvDim = config.kvDim();
+        int queryWidth = config.queryDim();
         int layers = config.numberOfLayers();
 
         List<ProgramComponent> components = new ArrayList<>();
@@ -290,16 +290,12 @@ public final class Qwen3ProgramDescription {
                                         kvDataType)),
                         leaf(
                                 "attention" + suffix,
-                                new Attention(
+                                attention(
+                                        config,
                                         activation(Q),
                                         activation(KEY_STORE),
                                         activation(VALUE_STORE),
                                         activation(XB),
-                                        config.numberOfHeads(),
-                                        config.numberOfKeyValueHeads(),
-                                        headSize,
-                                        (float) Math.sqrt(headSize),
-                                        OptionalInt.empty(),
                                         kvDataType)),
                         leaf(
                                 "attnOut" + suffix,
@@ -383,9 +379,7 @@ public final class Qwen3ProgramDescription {
             DataType weightDataType,
             DataType kvDataType,
             boolean deviceSample) {
-        // Not config.kvDim(): Qwen3's configuration refuses that accessor rather than guessing,
-        // because its value length is separate metadata. Asking anyway threw at description time.
-        int kvDim = config.numberOfHeadsValue() * config.numberOfKeyValueHeads();
+        int kvDim = config.kvDim();
         List<BindingEntry> entries = new ArrayList<>();
         int index = 0;
         entries.add(
@@ -462,6 +456,32 @@ public final class Qwen3ProgramDescription {
                             index, ResultId.SAMPLED_TOKEN, ValueType.I32, sampled, 0, 1));
         }
         return entries;
+    }
+
+    /**
+     * A Qwen3 layer's attention, for every description of the layer: the query heads over the
+     * grouped key/value heads, each the value length wide, scores divided by its square root, no
+     * window. Example: Qwen3-0.6B, 16 heads over 8, head 128, divisor sqrt(128).
+     */
+    public static Attention attention(
+            Qwen3Configuration config,
+            OperandRef query,
+            OperandRef keys,
+            OperandRef values,
+            OperandRef output,
+            DataType dataType) {
+        int headSize = config.numberOfHeadsValue();
+        return new Attention(
+                query,
+                keys,
+                values,
+                output,
+                config.numberOfHeads(),
+                config.numberOfKeyValueHeads(),
+                headSize,
+                (float) Math.sqrt(headSize),
+                OptionalInt.empty(),
+                dataType);
     }
 
     private static ProgramComponent leaf(

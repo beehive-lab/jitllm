@@ -2,6 +2,7 @@ package org.beehive.jitllm.model.provider;
 
 import java.util.Locale;
 import org.beehive.jitllm.format.ModelSource;
+import org.beehive.jitllm.model.loader.Qwen2ModelLoader;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 
 /**
@@ -51,10 +52,12 @@ final class GgufRecognition {
             return switch (declared) {
                 case "llama" -> withinLlama(name);
                 case "qwen2" ->
-                        contains(name, "deepseek r1 distill")
+                        Qwen2ModelLoader.isDeepSeekR1DistillQwen(source.metadata())
                                 ? ArchitectureId.of("deepseek-r1-distill-qwen")
                                 : ArchitectureId.of("qwen2");
                 case "granitemoehybrid" -> ArchitectureId.of("granite");
+                    // The identity the loaded model reports and its plan provider registers under.
+                case "qwen2moe" -> ArchitectureId.of("qwen2-moe");
                 case "mistral3" -> withinMistral3(name);
                 default -> ArchitectureId.of(declared);
             };

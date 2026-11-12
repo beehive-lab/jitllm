@@ -1,6 +1,10 @@
 package org.beehive.jitllm.model.provider;
 
 import org.beehive.jitllm.format.ModelSource;
+import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.model.loader.AbstractModelLoader;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
 
 /**
@@ -36,5 +40,24 @@ public abstract class FamilyProvider implements ModelProvider {
     @Override
     public final String name() {
         return architecture + " provider";
+    }
+
+    /**
+     * This family's loader for {@code source}.
+     *
+     * @param useTornadovm whether the weights are materialized for the accelerator
+     */
+    protected abstract AbstractModelLoader<?, ?> loader(
+            ModelSource source, int contextLength, boolean useTornadovm);
+
+    @Override
+    public final Model load(ModelSource source, BackendId backend, int contextLength) {
+        return loader(source, contextLength, !BackendId.CPU.equals(backend)).loadModel();
+    }
+
+    /** From the metadata alone: no tokenizer, tensor or weight is built. */
+    @Override
+    public final Configuration configuration(ModelSource source, int contextLength) {
+        return loader(source, contextLength, false).loadConfiguration();
     }
 }

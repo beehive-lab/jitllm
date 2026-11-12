@@ -6,6 +6,7 @@ import static org.beehive.jitllm.tokenizer.Vocabulary.fromTokensAndScores;
 import java.nio.channels.FileChannel;
 import java.util.Map;
 import org.beehive.jitllm.auxiliary.Pair;
+import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
 import org.beehive.jitllm.format.DataTypeMapping;
 import org.beehive.jitllm.format.GGMLTensorEntry;
@@ -18,7 +19,6 @@ import org.beehive.jitllm.model.format.Qwen3ChatFormat;
 import org.beehive.jitllm.model.qwen3.Qwen3;
 import org.beehive.jitllm.model.qwen3.Qwen3Configuration;
 import org.beehive.jitllm.runtime.tensor.DataType;
-import org.beehive.jitllm.runtime.tensor.ExecutionTarget;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
 import org.beehive.jitllm.tokenizer.Qwen3Tokenizer;
 import org.beehive.jitllm.tokenizer.Tokenizer;
@@ -169,41 +169,58 @@ public class Qwen3ModelLoader extends AbstractModelLoader<Qwen3, Qwen3Configurat
             Pair<float[], float[]> ropeFreqs,
             GGMLTensorEntry tokenEmbeddings,
             GGMLTensorEntry outputWeight) {
-        DataType weightType =
-                DataTypeMapping.materializedType(outputWeight.ggmlType(), ExecutionTarget.GPU);
-
         final int nl = config.numberOfLayers();
+        // Every tensor stays as the file stores it; the layers read each by its own type.
+        TornadoTensor[] wq =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_q.weight"));
+        TornadoTensor[] wk =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_k.weight"));
+        TornadoTensor[] wv =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_v.weight"));
+        TornadoTensor[] wo =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_output.weight"));
+        TornadoTensor[] w1 =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_gate.weight"));
+        TornadoTensor[] w2 =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_down.weight"));
+        TornadoTensor[] w3 =
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_up.weight"));
+        // The projections' type: F16 or Q8_0 as before, Q4_K for a Q4_K_M file. A file that mixes
+        // Q8_0 with other types reports the first other type, so nothing that serves only uniform
+        // Q8_0 files (MLX) takes it.
+        DataType weightType = keptType(wq, wk, wv, wo, w1, w2, w3);
 
         return new Qwen3TornadoWeights(
-                loadTornadoTensor(tokenEmbeddings),
-                loadArrayOfTornadoTensors(
-                        nl, i -> tensorEntries.get("blk." + i + ".attn_norm.weight")), // fp32
-                loadArrayOfTornadoTensors(
-                        nl, i -> tensorEntries.get("blk." + i + ".attn_q.weight")),
-                loadArrayOfTornadoTensors(
-                        nl, i -> tensorEntries.get("blk." + i + ".attn_k.weight")),
-                loadArrayOfTornadoTensors(
-                        nl, i -> tensorEntries.get("blk." + i + ".attn_v.weight")),
-                loadArrayOfTornadoTensors(
-                        nl, i -> tensorEntries.get("blk." + i + ".attn_output.weight")),
+                loadTornadoTensorNative(tokenEmbeddings),
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_norm.weight")),
+                wq,
+                wk,
+                wv,
+                wo,
                 // Qwen3-specific: attnKNorm and attnQNorm (always F32)
-                loadArrayOfTornadoTensors(
-                        nl, i -> tensorEntries.get("blk." + i + ".attn_k_norm.weight")), // fp32
-                loadArrayOfTornadoTensors(
-                        nl, i -> tensorEntries.get("blk." + i + ".attn_q_norm.weight")), // fp32
-                loadArrayOfTornadoTensors(
-                        nl, i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")), // fp32
-                loadArrayOfTornadoTensors(
-                        nl, i -> tensorEntries.get("blk." + i + ".ffn_gate.weight")),
-                loadArrayOfTornadoTensors(
-                        nl, i -> tensorEntries.get("blk." + i + ".ffn_down.weight")),
-                loadArrayOfTornadoTensors(
-                        nl, i -> tensorEntries.get("blk." + i + ".ffn_up.weight")),
-                loadTornadoTensor(tensorEntries.get("output_norm.weight")), // fp32
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_k_norm.weight")),
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".attn_q_norm.weight")),
+                loadArrayOfTornadoTensorsNative(
+                        nl, i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")),
+                w1,
+                w2,
+                w3,
+                loadTornadoTensorNative(tensorEntries.get("output_norm.weight")), // fp32
                 TornadoTensorLoader.fromFloats(ropeFreqs.first()),
                 TornadoTensorLoader.fromFloats(ropeFreqs.second()),
-                loadTornadoTensor(outputWeight),
+                loadTornadoTensorNative(outputWeight),
                 weightType);
     }
+
     // @formatter:on
 }

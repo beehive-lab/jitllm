@@ -58,6 +58,7 @@ public class FamilyRecognitionTest {
         assertEquals(
                 "deepseek-r1-distill-qwen",
                 architectureOf(source("qwen2", "DeepSeek R1 Distill Qwen 1.5B")));
+        assertEquals("qwen2-moe", architectureOf(source("qwen2moe", "Qwen1.5 MoE A2.7B Chat")));
     }
 
     /**
@@ -113,6 +114,25 @@ public class FamilyRecognitionTest {
                         IllegalStateException.class,
                         () -> ModelProviders.select(source, families()));
         assertTrue(failure.getMessage(), failure.getMessage().contains("mistral3"));
+    }
+
+    /**
+     * A DeepSeek distill whose name is hyphenated ({@code Deepseek-R1-Distill-Qwen-1.5B}, a Q4_K_M
+     * build) is still the distill, by its name or by its {@code deepseek-r1-qwen} pre-tokenizer.
+     */
+    @Test
+    public void theDeepSeekDistillIsRecognizedInAnySpelling() {
+        assertEquals(
+                "deepseek-r1-distill-qwen",
+                architectureOf(source("qwen2", "Deepseek-R1-Distill-Qwen-1.5B")));
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("general.architecture", "qwen2");
+        metadata.put("general.name", "R1 1.5B");
+        metadata.put("tokenizer.ggml.pre", "deepseek-r1-qwen");
+        assertEquals(
+                "deepseek-r1-distill-qwen",
+                architectureOf(ModelSource.ofMetadata(Path.of("m.gguf"), metadata)));
+        assertEquals("qwen2", architectureOf(source("qwen2", "Qwen2.5 1.5B Instruct")));
     }
 
     /** Files from tools that omit general.architecture keep loading, by the old rules. */

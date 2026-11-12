@@ -14,6 +14,7 @@ import org.beehive.jitllm.inference.weights.standard.Qwen35StandardWeights;
 import org.beehive.jitllm.inference.weights.tornado.Qwen35TornadoWeights;
 import org.beehive.jitllm.model.qwen35.Qwen35Configuration;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import org.beehive.jitllm.runtime.tensor.Shape;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
 import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_0FloatTensor;
@@ -114,7 +115,8 @@ final class Qwen35SyntheticModel {
         for (int i = 0; i < elements; i++) {
             device.set(i, values[i]);
         }
-        return new Pair(new ArrayFloatTensor(values), new FP32TornadoTensor(device));
+        return new Pair(
+                new ArrayFloatTensor(values), new FP32TornadoTensor(device, Shape.of(elements)));
     }
 
     /**
@@ -164,13 +166,21 @@ final class Qwen35SyntheticModel {
 
         return switch (type) {
             case Q4_0 ->
-                    new Pair(new Q4_0FloatTensor(elements, segment), new Q4_0TornadoTensor(bytes));
+                    new Pair(
+                            new Q4_0FloatTensor(elements, segment),
+                            new Q4_0TornadoTensor(bytes, Shape.of(elements)));
             case Q4_1 ->
-                    new Pair(new Q4_1FloatTensor(elements, segment), new Q4_1TornadoTensor(bytes));
+                    new Pair(
+                            new Q4_1FloatTensor(elements, segment),
+                            new Q4_1TornadoTensor(bytes, Shape.of(elements)));
             case Q5_K ->
-                    new Pair(new Q5_KFloatTensor(elements, segment), new Q5_KTornadoTensor(bytes));
+                    new Pair(
+                            new Q5_KFloatTensor(elements, segment),
+                            new Q5_KTornadoTensor(bytes, Shape.of(elements)));
             case Q6_K ->
-                    new Pair(new Q6_KFloatTensor(elements, segment), new Q6_KTornadoTensor(bytes));
+                    new Pair(
+                            new Q6_KFloatTensor(elements, segment),
+                            new Q6_KTornadoTensor(bytes, Shape.of(elements)));
             default -> throw new IllegalArgumentException(type.toString());
         };
     }
@@ -266,7 +276,7 @@ final class Qwen35SyntheticModel {
                     aDevice.set(h, a[h]);
                 }
                 hA[l] = new ArrayFloatTensor(a);
-                dA[l] = new FP32TornadoTensor(aDevice);
+                dA[l] = new FP32TornadoTensor(aDevice, Shape.of(VALUE_HEADS));
                 Pair ssmNorm = floats(config.headValueDim(), 0.5f);
                 hSsmNorm[l] = ssmNorm.host();
                 dSsmNorm[l] = ssmNorm.device();
@@ -361,8 +371,8 @@ final class Qwen35SyntheticModel {
                         dUp,
                         outputNorm.device(),
                         output.device(),
-                        new FP32TornadoTensor(realDevice),
-                        new FP32TornadoTensor(imagDevice),
+                        new FP32TornadoTensor(realDevice, Shape.of(real.length)),
+                        new FP32TornadoTensor(imagDevice, Shape.of(imag.length)),
                         dWq,
                         dWk,
                         dWv,

@@ -116,26 +116,45 @@ public class NativeLibrarySupportTest {
                                 true));
             }
         }
-        assertEquals(
-                Optional.empty(),
-                check(
-                        "qwen3",
-                        DataType.Q8_0,
-                        ExecutionMode.BATCH_PREFILL_DECODE,
-                        BackendId.CUDA,
-                        true));
+        // Qwen3 decodes every quantized type it keeps to FP16 for cuBLAS.
+        for (DataType weights :
+                new DataType[] {
+                    DataType.Q8_0,
+                    DataType.Q4_0,
+                    DataType.Q4_1,
+                    DataType.Q4_K,
+                    DataType.Q5_K,
+                    DataType.Q6_K
+                }) {
+            assertEquals(
+                    weights.toString(),
+                    Optional.empty(),
+                    check(
+                            "qwen3",
+                            weights,
+                            ExecutionMode.BATCH_PREFILL_DECODE,
+                            BackendId.CUDA,
+                            true));
+        }
     }
 
     @Test
     public void everythingElseIsRefused() {
-        assertTrue(
-                check(
-                                "qwen3",
-                                DataType.Q4_0,
-                                ExecutionMode.BATCH_PREFILL_DECODE,
-                                BackendId.CUDA,
-                                true)
-                        .isPresent());
+        // MLX takes no quantized Qwen3 file but Q8_0 until part 5 (decision 2).
+        for (DataType weights :
+                new DataType[] {
+                    DataType.Q4_0, DataType.Q4_1, DataType.Q4_K, DataType.Q5_K, DataType.Q6_K
+                }) {
+            assertTrue(
+                    weights.toString(),
+                    check(
+                                    "qwen3",
+                                    weights,
+                                    ExecutionMode.BATCH_PREFILL_DECODE,
+                                    BackendId.METAL,
+                                    false)
+                            .isPresent());
+        }
         assertTrue(
                 check(
                                 "llama",

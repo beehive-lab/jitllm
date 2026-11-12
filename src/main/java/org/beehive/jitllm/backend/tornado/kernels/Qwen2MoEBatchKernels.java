@@ -552,4 +552,263 @@ public final class Qwen2MoEBatchKernels {
             residualBatch.set(outputOffset, residualBatch.get(outputOffset) + weightedOutput);
         }
     }
+
+    // ── The routed experts of a layer whose weights keep the file's own representations ─────────
+    //
+    // One projection of every assignment in expert-grouped order, each expert's row read by its own
+    // type: out[p * rows + r] = w_e[r] . x[row(p) * n ...], p a grouped position, e its
+    // assignment's
+    // expert, whose row r is row e * rows + r of the stacked tensor. With byToken 1 the input row
+    // is
+    // the assignment's token (gate and up over the normalized chunk); with 0 it is the grouped
+    // position itself (down over the grouped hidden activations). Worker: one workgroup per
+    // (grouped position, row), topK * batch * rows workgroups of localWorkGroupSize lanes. A
+    // position past the chunk's assignments, or whose expert is out of range, writes nothing.
+
+    /** The grouped routed projection over Q8_0 experts. */
+    public static void groupedRoutedExpertsMatvecQ8_0(
+            KernelContext context,
+            FloatArray x,
+            int byToken,
+            IntArray selectedExperts,
+            IntArray groupedAssignmentIds,
+            IntArray activeBatchSizeHolder,
+            ByteArray w,
+            FloatArray out,
+            int n,
+            int rows,
+            int numberOfExperts,
+            int topK,
+            int localWorkGroupSize) {
+        int groupedPosition = context.groupIdx / rows;
+        int rowId = context.groupIdx - groupedPosition * rows;
+        int localId = context.localIdx;
+        if (groupedPosition >= activeBatchSizeHolder.get(0) * topK) {
+            return;
+        }
+        int assignment = groupedAssignmentIds.get(groupedPosition);
+        int expert = selectedExperts.get(assignment);
+        if (expert < 0 || expert >= numberOfExperts) {
+            return;
+        }
+        // Branch-free: the token for byToken 1, the grouped position for 0.
+        int xBase = (groupedPosition + byToken * (assignment / topK - groupedPosition)) * n;
+
+        int blocksPerRow = n / Q8_0_BLOCK_SIZE;
+        int rowBlockOffset = (expert * rows + rowId) * blocksPerRow;
+        float partialSum = 0.0f;
+        for (int column = localId; column < n; column += localWorkGroupSize) {
+            int blockByteOffset = (rowBlockOffset + column / Q8_0_BLOCK_SIZE) * Q8_0_BLOCK_BYTES;
+            int quantOffset = blockByteOffset + 2 + column % Q8_0_BLOCK_SIZE;
+            float weight = w.get(quantOffset) * w.getHalfFloat(blockByteOffset).getFloat32();
+            partialSum += weight * x.get(xBase + column);
+        }
+
+        float[] localSums = context.allocateFloatLocalArray(localWorkGroupSize);
+        localSums[localId] = partialSum;
+        context.localBarrier();
+        for (int stride = localWorkGroupSize / 2; stride > 0; stride >>= 1) {
+            if (localId < stride) {
+                localSums[localId] += localSums[localId + stride];
+            }
+            context.localBarrier();
+        }
+        if (localId == 0) {
+            out.set(groupedPosition * rows + rowId, localSums[0]);
+        }
+    }
+
+    /** The grouped routed projection over Q4_0 experts. */
+    public static void groupedRoutedExpertsMatvecQ4_0(
+            KernelContext context,
+            FloatArray x,
+            int byToken,
+            IntArray selectedExperts,
+            IntArray groupedAssignmentIds,
+            IntArray activeBatchSizeHolder,
+            ByteArray w,
+            FloatArray out,
+            int n,
+            int rows,
+            int numberOfExperts,
+            int topK,
+            int localWorkGroupSize) {
+        int groupedPosition = context.groupIdx / rows;
+        int rowId = context.groupIdx - groupedPosition * rows;
+        if (groupedPosition >= activeBatchSizeHolder.get(0) * topK) {
+            return;
+        }
+        int assignment = groupedAssignmentIds.get(groupedPosition);
+        int expert = selectedExperts.get(assignment);
+        if (expert < 0 || expert >= numberOfExperts) {
+            return;
+        }
+        int xBase = (groupedPosition + byToken * (assignment / topK - groupedPosition)) * n;
+        float sum =
+                TransformerComputeKernelsQ4_0.rowDotShared(
+                        context, localWorkGroupSize, x, xBase, w, n, expert * rows + rowId);
+        if (context.localIdx == 0) {
+            out.set(groupedPosition * rows + rowId, sum);
+        }
+    }
+
+    /** The grouped routed projection over Q4_1 experts. */
+    public static void groupedRoutedExpertsMatvecQ4_1(
+            KernelContext context,
+            FloatArray x,
+            int byToken,
+            IntArray selectedExperts,
+            IntArray groupedAssignmentIds,
+            IntArray activeBatchSizeHolder,
+            ByteArray w,
+            FloatArray out,
+            int n,
+            int rows,
+            int numberOfExperts,
+            int topK,
+            int localWorkGroupSize) {
+        int groupedPosition = context.groupIdx / rows;
+        int rowId = context.groupIdx - groupedPosition * rows;
+        if (groupedPosition >= activeBatchSizeHolder.get(0) * topK) {
+            return;
+        }
+        int assignment = groupedAssignmentIds.get(groupedPosition);
+        int expert = selectedExperts.get(assignment);
+        if (expert < 0 || expert >= numberOfExperts) {
+            return;
+        }
+        int xBase = (groupedPosition + byToken * (assignment / topK - groupedPosition)) * n;
+        float sum =
+                TransformerComputeKernelsQ4_1.rowDotShared(
+                        context, localWorkGroupSize, x, xBase, w, n, expert * rows + rowId);
+        if (context.localIdx == 0) {
+            out.set(groupedPosition * rows + rowId, sum);
+        }
+    }
+
+    /** The grouped routed projection over Q4_K experts. */
+    public static void groupedRoutedExpertsMatvecQ4_K(
+            KernelContext context,
+            FloatArray x,
+            int byToken,
+            IntArray selectedExperts,
+            IntArray groupedAssignmentIds,
+            IntArray activeBatchSizeHolder,
+            ByteArray w,
+            FloatArray out,
+            int n,
+            int rows,
+            int numberOfExperts,
+            int topK,
+            int localWorkGroupSize) {
+        int groupedPosition = context.groupIdx / rows;
+        int rowId = context.groupIdx - groupedPosition * rows;
+        if (groupedPosition >= activeBatchSizeHolder.get(0) * topK) {
+            return;
+        }
+        int assignment = groupedAssignmentIds.get(groupedPosition);
+        int expert = selectedExperts.get(assignment);
+        if (expert < 0 || expert >= numberOfExperts) {
+            return;
+        }
+        int xBase = (groupedPosition + byToken * (assignment / topK - groupedPosition)) * n;
+        float sum =
+                TransformerComputeKernelsQ4_K.rowDotShared(
+                        context, localWorkGroupSize, x, xBase, w, n, expert * rows + rowId);
+        if (context.localIdx == 0) {
+            out.set(groupedPosition * rows + rowId, sum);
+        }
+    }
+
+    /** The grouped routed projection over Q5_K experts. */
+    public static void groupedRoutedExpertsMatvecQ5_K(
+            KernelContext context,
+            FloatArray x,
+            int byToken,
+            IntArray selectedExperts,
+            IntArray groupedAssignmentIds,
+            IntArray activeBatchSizeHolder,
+            ByteArray w,
+            FloatArray out,
+            int n,
+            int rows,
+            int numberOfExperts,
+            int topK,
+            int localWorkGroupSize) {
+        int groupedPosition = context.groupIdx / rows;
+        int rowId = context.groupIdx - groupedPosition * rows;
+        if (groupedPosition >= activeBatchSizeHolder.get(0) * topK) {
+            return;
+        }
+        int assignment = groupedAssignmentIds.get(groupedPosition);
+        int expert = selectedExperts.get(assignment);
+        if (expert < 0 || expert >= numberOfExperts) {
+            return;
+        }
+        int xBase = (groupedPosition + byToken * (assignment / topK - groupedPosition)) * n;
+        float sum =
+                TransformerComputeKernelsQ5_K.rowDotShared(
+                        context, localWorkGroupSize, x, xBase, w, n, expert * rows + rowId);
+        if (context.localIdx == 0) {
+            out.set(groupedPosition * rows + rowId, sum);
+        }
+    }
+
+    /** The grouped routed projection over Q6_K experts. */
+    public static void groupedRoutedExpertsMatvecQ6_K(
+            KernelContext context,
+            FloatArray x,
+            int byToken,
+            IntArray selectedExperts,
+            IntArray groupedAssignmentIds,
+            IntArray activeBatchSizeHolder,
+            ByteArray w,
+            FloatArray out,
+            int n,
+            int rows,
+            int numberOfExperts,
+            int topK,
+            int localWorkGroupSize) {
+        int groupedPosition = context.groupIdx / rows;
+        int rowId = context.groupIdx - groupedPosition * rows;
+        if (groupedPosition >= activeBatchSizeHolder.get(0) * topK) {
+            return;
+        }
+        int assignment = groupedAssignmentIds.get(groupedPosition);
+        int expert = selectedExperts.get(assignment);
+        if (expert < 0 || expert >= numberOfExperts) {
+            return;
+        }
+        int xBase = (groupedPosition + byToken * (assignment / topK - groupedPosition)) * n;
+        float sum =
+                TransformerComputeKernelsQ6_K.rowDotShared(
+                        context, localWorkGroupSize, x, xBase, w, n, expert * rows + rowId);
+        if (context.localIdx == 0) {
+            out.set(groupedPosition * rows + rowId, sum);
+        }
+    }
+
+    /**
+     * {@code gate = SiLU(gate) * up * sharedWeight[token]} over the chunk's shared-expert hidden
+     * rows: the SwiGLU, with the shared expert's sigmoid gate folded into the hidden activation, so
+     * the down projection that adds to the residual stream adds the gated output (the projection is
+     * linear). Worker: one lane per element of the {@code batch * sharedExpertHiddenDim} rows.
+     */
+    public static void batchedSharedExpertSwiGLUGated(
+            KernelContext context,
+            FloatArray gate,
+            FloatArray up,
+            FloatArray sharedWeightBatch,
+            IntArray activeBatchSizeHolder,
+            int sharedExpertHiddenDim) {
+        int index = context.globalIdx;
+        int token = index / sharedExpertHiddenDim;
+        if (token >= activeBatchSizeHolder.get(0)) {
+            return;
+        }
+        float g = gate.get(index);
+        gate.set(
+                index,
+                g / (1.0f + TornadoMath.exp(-g)) * up.get(index) * sharedWeightBatch.get(token));
+    }
 }

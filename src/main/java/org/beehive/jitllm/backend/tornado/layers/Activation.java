@@ -2,22 +2,70 @@ package org.beehive.jitllm.backend.tornado.layers;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Weights;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
+import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
+import uk.ac.manchester.tornado.api.common.TornadoFunctions;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
+import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 public class Activation extends AbstractLayer implements ActivationTaskGraph {
+
+    /**
+     * Whether {@code embedding} is a quantized representation other than Q8_0, which a load keeps
+     * only as the file stores it: its rows are staged in that representation and decoded by {@link
+     * #embeddingRowDecode}.
+     */
+    public static boolean keptEmbedding(DataType embedding) {
+        return embedding == DataType.Q4_0
+                || embedding == DataType.Q4_1
+                || embedding == DataType.Q5_0
+                || embedding == DataType.Q4_K
+                || embedding == DataType.Q5_K
+                || embedding == DataType.Q6_K;
+    }
+
+    /**
+     * Whether the staged embedding row is decoded from bytes by {@link #embeddingRowDecode}: a
+     * {@link #keptEmbedding} type, or F16 staged in a Q8_0 model's byte buffer, as a UD-Q8_K_XL
+     * file's embeddings are.
+     */
+    public static boolean stagedAsBytes(DataType embedding, Object embeddingX) {
+        return keptEmbedding(embedding)
+                || (embedding == DataType.F16 && embeddingX instanceof ByteArray);
+    }
+
+    /** The device decode of one staged embedding row of a {@link #stagedAsBytes} type into FP32. */
+    public static TornadoFunctions.Task3<KernelContext, ByteArray, FloatArray> embeddingRowDecode(
+            DataType embedding) {
+        return switch (embedding) {
+            case Q4_0 -> TransformerComputeKernels::convertQ4_0toFP32;
+            case Q4_1 -> TransformerComputeKernels::convertQ4_1toFP32;
+            case Q5_0 -> TransformerComputeKernels::convertQ5_0toFP32;
+            case Q4_K -> TransformerComputeKernels::convertQ4_KtoFP32;
+            case Q5_K -> TransformerComputeKernels::convertQ5_KtoFP32;
+            case Q6_K -> TransformerComputeKernels::convertQ6_KtoFP32;
+            case F16 -> TransformerComputeKernels::convertFP16BytesToFP32;
+            default ->
+                    throw new IllegalArgumentException(
+                            "no device row decode for a " + embedding + " embedding");
+        };
+    }
+
     private final TaskGraph activationTaskGraph;
 
     public Activation(String name, State state, Weights weights, Configuration config) {
-        super(name, state, weights, config);
+        super(state, weights, config);
         this.activationTaskGraph = setupActivationTaskGraph(name);
     }
 
@@ -33,56 +81,19 @@ public class Activation extends AbstractLayer implements ActivationTaskGraph {
      * same reason; this is the other half of that.
      */
     protected TaskGraph setupActivationTaskGraph(String name) {
-        org.beehive.jitllm.runtime.tensor.DataType embedding =
-                weights instanceof org.beehive.jitllm.inference.weights.tornado.TornadoWeights t
-                        ? t.getTokenEmbeddingTable().dataType()
-                        : null;
-        if (embedding == org.beehive.jitllm.runtime.tensor.DataType.Q4_0) {
+        DataType embedding =
+                weights instanceof TornadoWeights t ? t.getTokenEmbeddingTable().dataType() : null;
+        TornadoWorkspaces.stagingHolds(state.workspace, embedding, config.dim());
+        if (stagedAsBytes(embedding, state.workspace.embeddingX)) {
             return new TaskGraph(name)
                     .transferToDevice(DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX)
                     .task(
                             "updateX",
-                            TransformerComputeKernels::convertQ4_0toFP32,
+                            embeddingRowDecode(embedding),
                             context,
                             (ByteArray) state.workspace.embeddingX,
                             state.workspace.wrapX)
                     .persistOnDevice(state.workspace.wrapX);
-        }
-        // K-quant embeddings are staged as raw rows too, and decoded here by their own layout. A
-        // row of dim weights in 256-weight super-blocks fits the Q8_0-sized staging buffer, which
-        // spends 34 bytes per 32 weights against at most 210 per 256.
-        if (embedding == org.beehive.jitllm.runtime.tensor.DataType.Q4_K
-                || embedding == org.beehive.jitllm.runtime.tensor.DataType.Q5_K
-                || embedding == org.beehive.jitllm.runtime.tensor.DataType.Q6_K) {
-            TaskGraph graph =
-                    new TaskGraph(name)
-                            .transferToDevice(
-                                    DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingX);
-            ByteArray row = (ByteArray) state.workspace.embeddingX;
-            switch (embedding) {
-                case Q4_K ->
-                        graph.task(
-                                "updateX",
-                                TransformerComputeKernels::convertQ4_KtoFP32,
-                                context,
-                                row,
-                                state.workspace.wrapX);
-                case Q5_K ->
-                        graph.task(
-                                "updateX",
-                                TransformerComputeKernels::convertQ5_KtoFP32,
-                                context,
-                                row,
-                                state.workspace.wrapX);
-                default ->
-                        graph.task(
-                                "updateX",
-                                TransformerComputeKernels::convertQ6_KtoFP32,
-                                context,
-                                row,
-                                state.workspace.wrapX);
-            }
-            return graph.persistOnDevice(state.workspace.wrapX);
         }
         return switch (config.quantization()) {
             case "FP16" ->

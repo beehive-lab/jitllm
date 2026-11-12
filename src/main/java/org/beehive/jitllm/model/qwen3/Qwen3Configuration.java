@@ -27,7 +27,7 @@ public record Qwen3Configuration(
      * weightSourceGraphName}), so the plan holds the weights once. Measured: Llama-3.2-1B F16
      * batched prefill runs in a 2600 MB budget and Qwen3-8B F16 in 17 GB, where counting the
      * weights twice predicted 4.2 GB and 29.2 GB and refused the second. The native prefill path's
-     * stacked projection copies are a separate component, not this count.
+     * projection copies are a separate component, not this count.
      */
     @Override
     public int weightBindingFamilies(int layerGraphFamilies) {
@@ -68,33 +68,6 @@ public record Qwen3Configuration(
 
     // @formatter:off
     /**
-     * Bytes of stacked projection weights a native batch-prefill family keeps per layer, or zero
-     * where it keeps none.
-     *
-     * <p>cuBLAS takes one B operand and the binding has no operand offset, so a single GEMM over
-     * {@code [q|k|v]} or {@code [gate|up]} needs those operands adjacent in memory — a copy, not a
-     * view. The originals stay resident because the decode graphs and the generated-kernel path
-     * still read them, so this is genuinely additional.
-     *
-     * <p>FP16 only, and the check is on the file's own representation rather than on a flag: the
-     * native path passes dense half-precision matrices straight to the library, and a quantized
-     * file would have to be dequantized into a staging copy this figure does not describe. The test
-     * is {@link #activationType()} rather than the quantization string, because that is where the
-     * interface already decides what half precision means.
-     */
-    // @formatter:on
-    @Override
-    public long nativeStackedProjectionBytesPerLayer() {
-        if (activationType() != DataType.F16) {
-            return 0L;
-        }
-        long qDim = (long) numberOfHeadsKey * numberOfHeads;
-        long kvWidth = kvDim();
-        return (long) dim * (qDim + 2 * kvWidth + 2 * hiddenDim) * Short.BYTES;
-    }
-
-    // @formatter:off
-    /**
      * Bytes of contiguous staging the fused attention adapters need for one chunk, or zero.
      *
      * <p>Four tensors — query, the group-expanded key and value, and the output — each {@code
@@ -114,5 +87,11 @@ public record Qwen3Configuration(
     @Override
     public int contextLengthModel() {
         return contextLengthModel;
+    }
+
+    /** Its layer graphs chain the KV buffers by predecessor name, so a shared table stays fresh. */
+    @Override
+    public boolean supportsSharedKvStorage() {
+        return true;
     }
 }

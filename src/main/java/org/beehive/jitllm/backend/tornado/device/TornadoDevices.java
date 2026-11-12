@@ -229,6 +229,31 @@ public final class TornadoDevices {
     }
 
     /**
+     * The target device's CUDA compute capability as major*10+minor, or -1 when the target is not a
+     * CUDA device or its capability cannot be read.
+     */
+    public static int targetCudaComputeCapability() {
+        return ComputeCapability.VALUE;
+    }
+
+    private static final class ComputeCapability {
+        private static final int VALUE = read();
+
+        private static int read() {
+            try {
+                var backend = TornadoRuntimeProvider.getTornadoRuntime().getBackend(0);
+                if (backend.getBackendType() != TornadoVMBackendType.CUDA) {
+                    return -1;
+                }
+                return cudaComputeCapability(
+                        backend.getDefaultDevice().getPhysicalDevice().getDeviceInfo());
+            } catch (RuntimeException | LinkageError e) {
+                return -1;
+            }
+        }
+    }
+
+    /**
      * The CUDA compute capability as major*10+minor, read from the device's own description —
      * TornadoVM's CUDA device reports it as "Device version : CUDA X.Y" — or -1 when it cannot be
      * read. Package-private for the unit test.

@@ -6,7 +6,9 @@ import static org.junit.Assert.assertTrue;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.runtime.backend.BackendId;
+import org.beehive.jitllm.runtime.backend.DeviceCapability;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
@@ -146,14 +148,20 @@ public class PlanSupportTest {
     }
 
     @Test
-    public void llamaQ4_0StagesNeedNativeLibrariesForABatchedSplit() {
+    public void llamaQ4_0StagesNeedTensorCoresForABatchedSplit() {
         // One stage holds the whole model, whose layers decode the projections themselves.
         assertEquals(
                 Optional.empty(), check("llama", DataType.Q4_0, BATCHED, true, BackendId.CUDA));
+        // Two stages build the tensor-core layers, with or without native libraries; the check
+        // reads the session's device, as the layers do.
         Optional<String> reason =
                 check("llama", DataType.Q4_0, BATCHED, true, BackendId.CUDA, BackendId.CUDA);
-        assertTrue(reason.isPresent());
-        assertTrue(reason.get(), reason.get().contains("--with-native-libraries"));
+        if (Target.of(BATCHED).supports(DeviceCapability.TENSOR_CORE_MMA)) {
+            assertEquals(Optional.empty(), reason);
+        } else {
+            assertTrue(reason.isPresent());
+            assertTrue(reason.get(), reason.get().contains("tensor cores"));
+        }
         assertEquals(
                 Optional.empty(),
                 check("llama", DataType.Q4_0, SINGLE_TOKEN, true, BackendId.CUDA, BackendId.CUDA));
@@ -165,49 +173,5 @@ public class PlanSupportTest {
         assertEquals(
                 Optional.empty(),
                 check("deepseek2", BATCHED, true, BackendId.CUDA, BackendId.CUDA));
-    }
-
-    private static ExecutionPolicy batched(int width, boolean nativeLibraries) {
-        return ExecutionPolicy.builder()
-                .phaseStrategy(ExecutionPolicy.PhaseStrategy.PREFILL_DECODE)
-                .prefillBatchSize(width)
-                .nativeLibraries(nativeLibraries)
-                .build();
-    }
-
-    @Test
-    public void unpackedWeightsServeEveryPolicy() {
-        for (ExecutionPolicy policy :
-                List.of(SINGLE_TOKEN, batched(64, true), batched(96, false))) {
-            assertEquals(Optional.empty(), PlanSupport.packedUnsupported("gemma4", false, policy));
-        }
-    }
-
-    @Test
-    public void packedWeightsNeedATiledPrefillWidth() {
-        for (String architecture : List.of("llama", "qwen35", "gemma4")) {
-            for (ExecutionPolicy policy :
-                    List.of(SINGLE_TOKEN, SEQUENTIAL, BATCHED, batched(256, false))) {
-                assertEquals(
-                        architecture,
-                        Optional.empty(),
-                        PlanSupport.packedUnsupported(architecture, true, policy));
-            }
-            Optional<String> reason =
-                    PlanSupport.packedUnsupported(architecture, true, batched(64, false));
-            assertTrue(architecture, reason.isPresent());
-            assertTrue(reason.get(), reason.get().contains("multiple of 128"));
-        }
-    }
-
-    @Test
-    public void packedGemma4WeightsRefuseNativeProjections() {
-        Optional<String> reason = PlanSupport.packedUnsupported("gemma4", true, batched(128, true));
-        assertTrue(reason.isPresent());
-        assertTrue(reason.get(), reason.get().contains("cuBLAS"));
-        assertTrue(reason.get(), reason.get().contains("ModelOptions.executionPolicy"));
-        // Llama's native prefill takes its int8 GEMM over packed tiles.
-        assertEquals(
-                Optional.empty(), PlanSupport.packedUnsupported("llama", true, batched(128, true)));
     }
 }

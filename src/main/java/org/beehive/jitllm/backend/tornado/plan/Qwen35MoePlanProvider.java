@@ -30,9 +30,10 @@ public final class Qwen35MoePlanProvider implements TornadoPlanProvider {
         return Set.of(DataType.Q8_0);
     }
 
+    /** Its trunk projections are Qwen3.5's, read prepacked the same way. */
     @Override
-    public Set<DataType> nativeTensorTypes() {
-        return Set.of(DataType.F32, DataType.F16, DataType.Q8_0);
+    public Set<DataType> prepackableTypes(ExecutionPolicy policy) {
+        return Set.of(DataType.Q8_0, DataType.Q4_0);
     }
 
     @Override

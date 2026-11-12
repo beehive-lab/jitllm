@@ -209,7 +209,7 @@ public final class LlamaProgramDescription {
                                         weight(TensorRole.ATTENTION_QUERY),
                                         activation(XB),
                                         activation(Q),
-                                        dim,
+                                        config.queryDim(),
                                         dim,
                                         weightDataType)),
                         leaf(
@@ -251,16 +251,12 @@ public final class LlamaProgramDescription {
                                         kvDataType)),
                         leaf(
                                 "attention" + suffix,
-                                new Attention(
+                                attention(
+                                        config,
                                         activation(Q),
                                         activation(KEY_STORE),
                                         activation(VALUE_STORE),
                                         activation(XB),
-                                        config.numberOfHeads(),
-                                        config.numberOfKeyValueHeads(),
-                                        headSize,
-                                        (float) Math.sqrt(headSize),
-                                        OptionalInt.empty(),
                                         kvDataType)),
                         leaf(
                                 "attnOut" + suffix,
@@ -269,7 +265,7 @@ public final class LlamaProgramDescription {
                                         activation(XB),
                                         activation(XB2),
                                         dim,
-                                        dim,
+                                        config.queryDim(),
                                         weightDataType)),
                         leaf(
                                 "attnResidual" + suffix,
@@ -420,6 +416,32 @@ public final class LlamaProgramDescription {
                             index, ResultId.SAMPLED_TOKEN, ValueType.I32, sampled, 0, 1));
         }
         return entries;
+    }
+
+    /**
+     * A Llama-shaped layer's attention, for every description of the layer: Llama's, Mistral's,
+     * Qwen2's, DeepSeek-R1-Distill-Qwen's and Phi-3's, and their batched prefill regions. The query
+     * heads over the grouped key/value heads, scores divided by the square root of the head size,
+     * no window. Example: Llama 3.2 1B, 32 heads over 8, head 64, divisor 8.
+     */
+    public static Attention attention(
+            Configuration config,
+            OperandRef query,
+            OperandRef keys,
+            OperandRef values,
+            OperandRef output,
+            DataType dataType) {
+        return new Attention(
+                query,
+                keys,
+                values,
+                output,
+                config.numberOfHeads(),
+                config.numberOfKeyValueHeads(),
+                config.headSize(),
+                (float) Math.sqrt(config.headSize()),
+                OptionalInt.empty(),
+                dataType);
     }
 
     private static ProgramComponent leaf(

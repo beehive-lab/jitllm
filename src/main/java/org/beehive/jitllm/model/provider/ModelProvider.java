@@ -2,6 +2,7 @@ package org.beehive.jitllm.model.provider;
 
 import java.io.IOException;
 import org.beehive.jitllm.format.ModelSource;
+import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.model.ArchitectureId;
@@ -40,6 +41,20 @@ public interface ModelProvider {
      * @throws IOException if the file cannot be read
      */
     Model load(ModelSource source, BackendId backend, int contextLength) throws IOException;
+
+    /**
+     * The configuration a {@link #load} would give the model, without loading it: what the memory
+     * preflight needs before anything is materialized.
+     *
+     * <p>The default loads the model on the host and keeps its configuration, which is correct and
+     * slow. A provider that can read the configuration from the metadata alone overrides it.
+     *
+     * @param contextLength as for {@link #load}
+     * @throws IOException if the file cannot be read
+     */
+    default Configuration configuration(ModelSource source, int contextLength) throws IOException {
+        return load(source, BackendId.CPU, contextLength).configuration();
+    }
 
     /** For diagnostics: which provider answered, in a message a user can act on. */
     default String name() {

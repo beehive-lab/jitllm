@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado;
 
 import java.util.List;
+import java.util.function.Predicate;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.policy.StorageOptions;
@@ -33,6 +34,22 @@ public final class DeviceDefaultPolicy {
             boolean defaultBatching,
             boolean defaultNativeLibraries,
             StorageOptions storage) {
+        return resolve(
+                model, chosen, defaultBatching, defaultNativeLibraries, storage, policy -> true);
+    }
+
+    /**
+     * {@link #resolve(Model, ExecutionPolicy, boolean, boolean, StorageOptions)}, skipping a
+     * candidate {@code fits} says the memory budget cannot hold: the model then runs batched on the
+     * JIT kernels rather than running out of memory on the native libraries' copies.
+     */
+    public static ExecutionPolicy resolve(
+            Model model,
+            ExecutionPolicy chosen,
+            boolean defaultBatching,
+            boolean defaultNativeLibraries,
+            StorageOptions storage,
+            Predicate<ExecutionPolicy> fits) {
         ExecutionPolicy batched =
                 defaultBatching ? BatchPrefillSupport.defaultFor(model, chosen) : chosen;
         ExecutionPolicy accelerated =
@@ -41,22 +58,41 @@ public final class DeviceDefaultPolicy {
             if (candidate.equals(chosen)) {
                 break;
             }
-            if (accepted(model, candidate, storage)) {
+            java.util.Optional<String> refused = refusal(model, candidate, storage);
+            if (refused.isEmpty() && !fits.test(candidate)) {
+                refused = java.util.Optional.of("predicted not to fit the device memory budget");
+            }
+            if (refused.isEmpty()) {
                 return candidate;
+            }
+            if (candidate == accelerated
+                    && accelerated.nativeLibraries()
+                    && !batched.nativeLibraries()) {
+                // The native default was on and a plan check refused it: say so, or the run
+                // continues on the JIT kernels with nothing to tell the two apart.
+                LOGGER.log(
+                        System.Logger.Level.INFO,
+                        "Native libraries are off for this model: " + refused.get());
             }
         }
         return chosen;
     }
 
-    /** Whether the plan checks every GPU load runs accept {@code policy}. */
-    private static boolean accepted(Model model, ExecutionPolicy policy, StorageOptions storage) {
+    private static final System.Logger LOGGER =
+            System.getLogger(DeviceDefaultPolicy.class.getName());
+
+    /**
+     * Why the plan checks every GPU load runs refuse {@code policy}, or empty if they accept it.
+     */
+    private static java.util.Optional<String> refusal(
+            Model model, ExecutionPolicy policy, StorageOptions storage) {
         try {
-            Fp16KeyValueSupport.require(model, policy, storage, true);
-            NativeLibrarySupport.require(model, policy, true);
-            BatchPrefillSupport.require(model, policy, true);
-            return true;
-        } catch (UnsupportedOperationException refused) {
-            return false;
+            PlanSupport.require(model, policy, storage, true);
+            return java.util.Optional.empty();
+        } catch (UnsupportedOperationException | IllegalArgumentException refused) {
+            // The FP16 cache check refuses with IllegalArgumentException, the others with
+            // UnsupportedOperationException.
+            return java.util.Optional.of(String.valueOf(refused.getMessage()));
         }
     }
 }

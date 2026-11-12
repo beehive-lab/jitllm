@@ -1,10 +1,7 @@
 package org.beehive.jitllm.model.provider;
 
-import java.nio.channels.FileChannel;
 import org.beehive.jitllm.format.ModelSource;
-import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.loader.Lfm2ModelLoader;
-import org.beehive.jitllm.runtime.backend.BackendId;
 
 /**
  * The {@code lfm2moe} architecture: LFM2-8B-A1B and LFM2.5-24B-A2B.
@@ -19,10 +16,8 @@ public final class Lfm2Provider extends FamilyProvider {
     }
 
     @Override
-    public Model load(ModelSource source, BackendId backend, int contextLength) {
-        FileChannel channel = source.gguf().getFileChannel();
+    protected Lfm2ModelLoader loader(ModelSource source, int contextLength, boolean useTornadovm) {
         return new Lfm2ModelLoader(
-                        channel, source.gguf(), contextLength, !BackendId.CPU.equals(backend))
-                .loadModel();
+                source.gguf().getFileChannel(), source.gguf(), contextLength, useTornadovm);
     }
 }

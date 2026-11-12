@@ -81,11 +81,16 @@ executable. Backends implement the SPI, and nothing above the SPI knows they exi
 | `format`, `tensor` | supporting | GGUF parsing and the host-side tensor representations |
 | `tokenizer` | supporting | tokenizers and chat formats |
 | `server`, `bench` | integrations | the OpenAI-compatible server and the benchmark harness |
+| `generation` | generation policy | the token-generation loops, kept off `Model` (Rule 8a) |
+| `integration/cli` | integrations | CLI and server run configuration, startup summary and diagnostics |
+| `examples` | integrations | runnable examples of the public API, importing only `api` types |
+| `auxiliary` | supporting | small shared utilities: timers, run metrics, tuples |
 
 ## Enforced dependency rules
 
 These are executable, not aspirational: `ArchRules` in `src/test/java/.../arch` states each
-one as an ArchUnit rule and `DependencyRulesTest` runs them as an ordinary unit test. The
+one as an ArchUnit rule and `DependencyRulesTest` runs them as an ordinary unit test (Rule 8b
+is a guard in `DependencyRulesTest` itself, over Rule 8a's allowlist). The
 allowlists are shrink-only, and a stale allowlist entry fails the build.
 
 | Rule | Statement |

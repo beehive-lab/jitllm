@@ -30,7 +30,7 @@ materialized as Q8_0 runs, and is decided as, Q8_0.
 | Backend | Family | Weights (as loaded) | Mode | FP16 | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | CPU | all families | all | all | supported | tested: Llama 1B Q8_0 (single-token and 32-token chunked prefill), Qwen3 0.6B F16, Qwen2.5 0.5B Q8_0, Granite 3.2 2B Q8_0, Phi-3 mini Q8_0 — `CpuFp16KvPrecisionAccelTest`: cosine ≥ 0.999998, relative L2 ≤ 0.0022, top-1 100% |
-| CUDA | Llama, Qwen3 | F16 | single-token (Llama: lowered by default) | supported | tested: Llama 1B F16 cos ≥ 0.9999997, rel L2 ≤ 7.6e-4; Qwen3 0.6B F16 cos ≥ 0.9999977, rel L2 ≤ 0.0023; top-1 100% — `GpuFp16KvLlamaF16AccelTest`, `GpuFp16KvQwen3F16AccelTest` |
+| CUDA | Llama, Qwen3 | F16 | single-token (Llama: lowered with `--no-batch-prefill`) | supported | tested: Llama 1B F16 cos ≥ 0.9999997, rel L2 ≤ 7.6e-4; Qwen3 0.6B F16 cos ≥ 0.9999977, rel L2 ≤ 0.0023; top-1 100% — `GpuFp16KvLlamaF16AccelTest`, `GpuFp16KvQwen3F16AccelTest` |
 | CUDA | Llama, Qwen3 | F16 | batched prefill, tensor-core MMA (128-token chunks) | supported | tested: Llama 1B F16 cos ≥ 0.9999994, rel L2 ≤ 0.0011; Qwen3 0.6B F16 cos ≥ 0.9999974, rel L2 ≤ 0.0024; top-1 100%. Measured with the per-query flash attention; the tensor-core GEMM attention that replaced it gives identical batched greedy text on these models, and has not been re-run through the harness |
 | CUDA | Llama | Q8_0 (and materialized Q8_0) | single-token, sequential prefill/decode, batched prefill (MMA) | supported | tested: Llama 1B Q8_0 — single-token and prefill/decode cos ≥ 0.9999996, rel L2 ≤ 9.3e-4; batched cos ≥ 0.9999997, rel L2 ≤ 7.5e-4; top-1 100% — `GpuFp16KvLlamaQ8AccelTest`. Structural: other Llama sizes (3B, 8B) and Q4_1/Q4_K/Q5_K/Q6_K files loaded as Q8_0 |
 | CUDA | Llama | Q4_0 (retained) | single-token | supported | tested: Llama 1B Q4_0 cos ≥ 0.9999996, rel L2 ≤ 9.4e-4 — `GpuFp16KvLlamaQ4AccelTest` |
@@ -76,7 +76,7 @@ memory, so the 64-thread per-key FP16 split-KV kernel (34052 bytes) cannot be bu
   and 128-wide heads, plain and Granite-scaled) and `Gemma4BatchPrefillSimdgroupAttentionFP16Kernels`
   (256 and 512): the FP32 SIMD-group kernels with key and value fragments loaded as
   `simdgroup_half8x8` and multiplied with `float` query and probability fragments
-  (`*SimdgroupFP16KernelsAccelTest`, host reference with NaN in unwritten cache and padding
+  (`TransformerPagedKvBatchPrefillSimdgroupFP16KernelsAccelTest`, host reference with NaN in unwritten cache and padding
   rows). Qwen3.5 runs `attentionBatchFP16Paged`; its score-scratch kernel is slower on Metal.
 - **Greedy text**: identical to the FP32 cache, single-token and batched (chunk 256), on all 16
   model files below over a 400-token prompt and 64 generated tokens, with one exception:

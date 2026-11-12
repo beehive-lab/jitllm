@@ -1,12 +1,14 @@
 package org.beehive.jitllm.backend.tornado;
 
 import org.beehive.jitllm.auxiliary.RunMetrics;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers;
 import org.beehive.jitllm.backend.tornado.plan.BatchPrefillDecodeForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
 import org.beehive.jitllm.backend.tornado.plan.layout.BatchPrefillDecodeForwardTaskGraphLayout;
 import org.beehive.jitllm.inference.state.State;
-import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -41,7 +43,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
             System.getLogger(TornadoVMMasterPlanBatchPrefillDecode.class.getName());
 
     @Override
-    public org.beehive.jitllm.runtime.backend.ExecutionInfo executionInfo() {
+    public ExecutionInfo executionInfo() {
         var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
         return PlanDiagnostics.describe(
                 state,
@@ -54,7 +56,6 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
 
     private final State state;
     private final Model model;
-    private final Configuration config;
 
     BatchPrefillDecodeForwardPlan batchPrefillDecodeForwardPlan;
     BatchPrefillDecodeForwardTaskGraphLayout taskGraphLayout;
@@ -73,55 +74,66 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
 
         this.state = initialState;
         this.model = model;
-        this.config = model.configuration();
         this.metrics = new TornadoMetricsReporter(sink);
 
         long startTime = System.nanoTime();
         this.executionPlan = createExecutionPlan();
-        // Before compilation and the weight upload, so a plan that fails either still prints.
-        TaskGraphChainPrinter.printIfRequested(taskGraphChain(), model);
-        metrics.enableOn(executionPlan);
-        long planCreationTime = System.nanoTime();
-        if (ENABLE_TORNADOVM_INIT_TIME) {
-            // The device the plan was built for and the kernel families it was granted, then
-            // the batched-prefill path the layer builder actually chose from them; the same
-            // facts the tests read off the plan, reported where a user can see them.
-            var device = org.beehive.jitllm.backend.tornado.device.TornadoDevices.current();
-            LOGGER.log(
-                    System.Logger.Level.INFO,
-                    "TornadoVM device: {0} ({1}) capabilities {2}",
-                    device.displayName(),
-                    device.id().backend(),
-                    device.capabilities());
-            var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
-            if (layers
-                    instanceof
-                    org.beehive.jitllm.backend.tornado.layers.Qwen35BatchPrefillLayers q) {
+        try {
+            // Before compilation and the weight upload, so a plan that fails either still prints.
+            TaskGraphChainPrinter.printIfRequested(taskGraphChain(), model);
+            metrics.enableOn(executionPlan);
+            long planCreationTime = System.nanoTime();
+            if (ENABLE_TORNADOVM_INIT_TIME) {
+                // The device the plan was built for and the kernel families it was granted, then
+                // the batched-prefill path the layer builder actually chose from them; the same
+                // facts the tests read off the plan, reported where a user can see them.
+                var device = TornadoDevices.current();
                 LOGGER.log(
                         System.Logger.Level.INFO,
-                        "qwen35 batched prefill: {0}",
-                        q.describeDispatch());
+                        "TornadoVM device: {0} ({1}) capabilities {2}",
+                        device.displayName(),
+                        device.id().backend(),
+                        device.capabilities());
+                LOGGER.log(
+                        System.Logger.Level.INFO,
+                        "prefill narrow family: {0}",
+                        batchPrefillDecodeForwardPlan.describeNarrowPrefill());
+                var layers = batchPrefillDecodeForwardPlan.getBatchPrefillLayers();
+                if (layers instanceof Qwen35BatchPrefillLayers q) {
+                    LOGGER.log(
+                            System.Logger.Level.INFO,
+                            "qwen35 batched prefill: {0}",
+                            q.describeDispatch());
+                }
             }
+
+            if (CUDA_GRAPHS) {
+                executionPlan.withAllGraphs().withCUDAGraph();
+            }
+            // Large one-shot uploads (the weights, below) chunked through pinned staging buffers
+            // instead of pinning each whole segment: measured 2.6 s off a 14.3 s cold start of the
+            // 27B model on CUDA, steady-state throughput unchanged; a no-op on the other backends.
+            executionPlan.withStagedTransfers();
+            executionPlan.withPreCompilation();
+            long warmupTime = System.nanoTime();
+
+            batchPrefillDecodeForwardPlan.runWeightPrepacking(executionPlan);
+            forceCopyInReadOnlyData();
+            long copyTime = System.nanoTime();
+
+            RunMetrics.setTornadoMetrics(
+                    planCreationTime - startTime,
+                    warmupTime - planCreationTime,
+                    copyTime - warmupTime);
+            metrics.reportSetUp(
+                    planCreationTime - startTime,
+                    warmupTime - planCreationTime,
+                    copyTime - warmupTime);
+        } catch (RuntimeException | Error failure) {
+            // Nobody else holds this plan yet, so nobody else can free its device memory.
+            ExecutionPlanRelease.closeAfter(failure, executionPlan);
+            throw failure;
         }
-
-        if (CUDA_GRAPHS) {
-            executionPlan.withAllGraphs().withCUDAGraph();
-        }
-        // Large one-shot uploads (the weights, below) chunked through pinned staging buffers
-        // instead of pinning each whole segment: measured 2.6 s off a 14.3 s cold start of the
-        // 27B model on CUDA, steady-state throughput unchanged; a no-op on the other backends.
-        executionPlan.withStagedTransfers();
-        executionPlan.withPreCompilation();
-        long warmupTime = System.nanoTime();
-
-        org.beehive.jitllm.backend.tornado.plan.PackedRepack.run(executionPlan, packedRepack);
-        forceCopyInReadOnlyData();
-        long copyTime = System.nanoTime();
-
-        RunMetrics.setTornadoMetrics(
-                planCreationTime - startTime, warmupTime - planCreationTime, copyTime - warmupTime);
-        metrics.reportSetUp(
-                planCreationTime - startTime, warmupTime - planCreationTime, copyTime - warmupTime);
     }
 
     // ── Plan construction ─────────────────────────────────────────────────────
@@ -140,6 +152,13 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
                     layout.fallbackLayerIdx(0),
                     layout.fallbackLayerGraphs(),
                     "prefill fallback layers");
+        }
+        if (layout.narrowLayerGraphs() > 0) {
+            TaskGraphChainPrinter.label(
+                    roles,
+                    layout.narrowLayerIdx(0),
+                    layout.narrowLayerGraphs(),
+                    "prefill narrow layers");
         }
         roles.put(layout.decodeActivationIdx(), "decode activation");
         TaskGraphChainPrinter.label(
@@ -160,11 +179,13 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
                                 layout.decodeLayerGraphIdx(layout.decodeLayerGraphs() - 1)),
                         java.util.List.of(layout.logitsIdx()));
         var phases = new java.util.ArrayList<TaskGraphChainPrinter.Phase>();
+        phases.addAll(TaskGraphChainPrinter.prepacking(roles, layout.prepackingGraphs()));
         phases.add(
                 new TaskGraphChainPrinter.Phase(
                         "warm-up",
                         "once, at plan build",
-                        TaskGraphChainPrinter.span(0, layout.logitsIdx())));
+                        TaskGraphChainPrinter.span(
+                                layout.firstInferenceIdx(), layout.logitsIdx())));
         String chunk = "per chunk of up to " + batch + " prompt tokens";
         if (layout.fallbackLayerGraphs() > 0) {
             phases.add(
@@ -183,6 +204,18 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
         } else {
             phases.add(new TaskGraphChainPrinter.Phase("prefill chunk", chunk, primary));
         }
+        if (layout.narrowLayerGraphs() > 0) {
+            phases.add(
+                    new TaskGraphChainPrinter.Phase(
+                            "prefill chunk",
+                            "per chunk of up to " + narrowPrefillRows() + " prompt tokens",
+                            TaskGraphChainPrinter.concat(
+                                    activation,
+                                    TaskGraphChainPrinter.span(
+                                            layout.narrowLayerIdx(0),
+                                            layout.narrowLayerIdx(
+                                                    layout.narrowLayerGraphs() - 1)))));
+        }
         phases.add(new TaskGraphChainPrinter.Phase("decode token", "per generated token", decode));
         return new TaskGraphChainPrinter.Chain(
                 "batch-prefill-decode (batch " + batch + ")",
@@ -198,16 +231,11 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
         this.batchPrefillDecodeForwardPlan =
                 ForwardPlanFactory.createBatchPrefillDecode(weightType, state, model);
         this.taskGraphLayout = batchPrefillDecodeForwardPlan.getTaskGraphLayout();
-        var taskGraphs =
-                new java.util.ArrayList<>(batchPrefillDecodeForwardPlan.getImmutableTaskGraphs());
-        packedRepack =
-                state.workspace.packedRepack.appendGraphs(
-                        taskGraphs, batchPrefillDecodeForwardPlan.getGridScheduler());
-        return new TornadoExecutionPlan(taskGraphs.toArray(new ImmutableTaskGraph[0]));
+        return new TornadoExecutionPlan(
+                batchPrefillDecodeForwardPlan
+                        .getImmutableTaskGraphs()
+                        .toArray(new ImmutableTaskGraph[0]));
     }
-
-    /** The graphs that repack the packed weights on the GPU before the warm-up, or null. */
-    private org.beehive.jitllm.backend.tornado.plan.PackedRepack.Graphs packedRepack;
 
     // ── Initialisation ────────────────────────────────────────────────────────
 
@@ -228,7 +256,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
             state.workspace.batchStartPosHolder.set(2, state.kvSlot);
         }
 
-        for (int i = 0; i <= taskGraphLayout.logitsIdx(); i++) {
+        for (int i = taskGraphLayout.firstInferenceIdx(); i <= taskGraphLayout.logitsIdx(); i++) {
             var g =
                     executionPlan
                             .withGraph(i)
@@ -312,6 +340,48 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
 
     // @formatter:on
 
+    @Override
+    public int narrowPrefillRows() {
+        return batchPrefillDecodeForwardPlan.narrowPrefillRows();
+    }
+
+    /**
+     * Batch prefill through the narrow family: the same layers on fewer rows, for a chunk with no
+     * more tokens than {@link #narrowPrefillRows}, at any start position. The caller has staged the
+     * chunk as for the primary path.
+     */
+    @Override
+    public void tornadoVMForwardBatchPrefillNarrow() {
+        // The chunk's per-chunk arrays into the primary's buffers, which the narrow graphs and
+        // the decode graphs read; an index past the primary's graphs is a fallback graph's.
+        batchPrefillDecodeForwardPlan
+                .narrowRefreshes()
+                .forEach(
+                        (g, arrays) ->
+                                executionPlan
+                                        .withGraph(taskGraphLayout.batchLayerIdx(g))
+                                        .transferToDevice(arrays));
+        var batchAct =
+                executionPlan
+                        .withGraph(taskGraphLayout.batchActivationIdx())
+                        .withGridScheduler(batchPrefillDecodeForwardPlan.getGridScheduler());
+        if (CUDA_GRAPHS) {
+            batchAct.withCUDAGraph();
+        }
+        metrics.report(batchAct.execute());
+
+        for (int g = 0; g < taskGraphLayout.narrowLayerGraphs(); g++) {
+            var layer =
+                    executionPlan
+                            .withGraph(taskGraphLayout.narrowLayerIdx(g))
+                            .withGridScheduler(batchPrefillDecodeForwardPlan.getGridScheduler());
+            if (CUDA_GRAPHS) {
+                layer.withCUDAGraph();
+            }
+            metrics.report(layer.execute());
+        }
+    }
+
     /**
      * Single-token decode: runs graphs N+1.2N+2 (activation + N layers + logits). Caller is
      * responsible for copying the decode embedding into state before calling this.
@@ -368,15 +438,6 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
 
     @Override
     public void freeTornadoExecutionPlan() {
-        // Free the buffers, then close the plan. freeDeviceMemory() alone returns the device
-        // allocations but leaves the plan — and its compiled code and task graphs — alive, so a
-        // process that opens and closes several plans keeps accumulating them until the device
-        // budget runs out. A session that has been closed must cost nothing.
-        executionPlan.freeDeviceMemory();
-        try {
-            executionPlan.close();
-        } catch (Exception e) {
-            throw new IllegalStateException("failed to close the TornadoVM execution plan", e);
-        }
+        ExecutionPlanRelease.close(executionPlan);
     }
 }

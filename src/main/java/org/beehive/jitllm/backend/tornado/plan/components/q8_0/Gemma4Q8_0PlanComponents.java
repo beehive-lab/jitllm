@@ -5,6 +5,7 @@ import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.Gemma4BatchPrefillLayers;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.Gemma4LogitsQ8_0Layer;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.Gemma4Q8_0FFNLayers;
@@ -45,18 +46,17 @@ public class Gemma4Q8_0PlanComponents
 
     @Override
     public ActivationTaskGraph singleTokenActivation() {
-        return new Activation("activationUpdate", state, weights, config);
+        return new Activation(GraphNames.ACTIVATION_UPDATE, state, weights, config);
     }
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new Gemma4Q8_0FFNLayers("gemma4FFN", state, weights, config, schedulerType);
+        return new Gemma4Q8_0FFNLayers(state, weights, config, schedulerType);
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new Gemma4LogitsQ8_0Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new Gemma4LogitsQ8_0Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // ── The batched prefill/decode plan ───────────────────────────────────────
@@ -96,13 +96,12 @@ public class Gemma4Q8_0PlanComponents
     // @formatter:on
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
-        return new Gemma4Q8_0FFNLayers("gemma4FFN", state, weights, config, schedulerType, true);
+        return new Gemma4Q8_0FFNLayers(state, weights, config, schedulerType, true);
     }
 
     @Override
     public AbstractLogitsTaskGraph decodeLogits(String previousGraphId) {
-        return new Gemma4LogitsQ8_0Layer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new Gemma4LogitsQ8_0Layer(state, weights, config, previousGraphId, schedulerType);
     }
 
     // @formatter:off
@@ -130,7 +129,6 @@ public class Gemma4Q8_0PlanComponents
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers(int firstLayer, int endLayer) {
         return new Gemma4Q8_0FFNLayers(
-                "gemma4FFN",
                 state,
                 weights,
                 config,
@@ -138,7 +136,7 @@ public class Gemma4Q8_0PlanComponents
                 false,
                 firstLayer,
                 endLayer,
-                firstLayer == 0 ? null : "activationUpdate");
+                firstLayer == 0 ? null : GraphNames.ACTIVATION_UPDATE);
     }
 
     @Override
@@ -151,7 +149,6 @@ public class Gemma4Q8_0PlanComponents
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers(int firstLayer, int endLayer) {
         return new Gemma4Q8_0FFNLayers(
-                "gemma4FFN",
                 state,
                 weights,
                 config,
@@ -159,6 +156,6 @@ public class Gemma4Q8_0PlanComponents
                 true,
                 firstLayer,
                 endLayer,
-                firstLayer == 0 ? null : "decodeActivation");
+                firstLayer == 0 ? null : GraphNames.DECODE_ACTIVATION);
     }
 }

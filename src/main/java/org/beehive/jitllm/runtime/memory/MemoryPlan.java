@@ -44,18 +44,17 @@ public record MemoryPlan(
         /**
          * Every component's multiplicity is known from the plan topology.
          *
-         * <p><b>The only level that may enforce fail-fast admission.</b> A load whose exact plan
-         * exceeds the configured budget is refused before allocation.
+         * <p><b>The only level whose over-budget answer counts on its own.</b> A device default
+         * whose exact plan exceeds the configured budget is not chosen; no load is refused.
          */
         EXACT,
 
         /**
          * At least one component used a conservative upper bound rather than a known value.
          *
-         * <p><b>Report-only.</b> Never rejects a load on its own — a caller must opt in explicitly
-         * for that. An upper bound that happens to exceed the budget would block a load that would
-         * in fact have run, and the caller has no way to overrule a refusal from inside the loader.
-         * The one exception is a plan whose logical bytes alone exceed the budget ({@link
+         * <p><b>Report-only.</b> Never rules out a device default on its own: an upper bound that
+         * happens to exceed the budget would set aside a default that would in fact have run. The
+         * one exception is a plan whose logical bytes alone exceed the budget ({@link
          * MemoryPlan#exceedsConfiguredBudgetAtLowerBound}): that is a lower bound, not an upper
          * one.
          */
@@ -104,7 +103,7 @@ public record MemoryPlan(
      *
      * <p>At {@link Confidence#CONSERVATIVE} a {@code false} may be pessimistic, and at {@link
      * Confidence#UNSUPPORTED} the answer carries no weight in either direction. Only an {@link
-     * Confidence#EXACT} plan is used to refuse a load.
+     * Confidence#EXACT} plan's answer rules out a device default by itself.
      */
     public boolean fitsConfiguredBudget() {
         return configuredBudgetBytes <= 0 || predictedBudgetBytes() <= configuredBudgetBytes;
@@ -116,10 +115,10 @@ public record MemoryPlan(
      *
      * <p>A lower bound on what the backend will be charged at any confidence: the uncertainty that
      * keeps a {@link Confidence#CONSERVATIVE} plan report-only is in multiplicity and overhead,
-     * which only ever add to it. So a {@code true} here cannot block a load that would have run,
-     * which is why admission may act on it below {@link Confidence#EXACT}. Never for {@link
-     * Confidence#UNSUPPORTED}, whose components are not known to be the ones that will be
-     * allocated.
+     * which only ever add to it. So a {@code true} here cannot set aside a default that would have
+     * run, which is why the choice of a device default may act on it below {@link
+     * Confidence#EXACT}. Never for {@link Confidence#UNSUPPORTED}, whose components are not known
+     * to be the ones that will be allocated.
      */
     public boolean exceedsConfiguredBudgetAtLowerBound() {
         return confidence != Confidence.UNSUPPORTED

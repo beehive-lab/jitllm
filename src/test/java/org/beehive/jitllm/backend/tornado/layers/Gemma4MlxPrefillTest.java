@@ -3,8 +3,8 @@ package org.beehive.jitllm.backend.tornado.layers;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.model.gemma4.Gemma4Configuration;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.junit.Test;
@@ -57,8 +57,8 @@ public class Gemma4MlxPrefillTest {
 
         BatchPrefillWorkspace ws =
                 Gemma4BatchPrefillLayers.mlxWorkspace(DataType.Q8_0, config, 512);
-        assertTrue(ws.decodesProjections());
-        assertEquals(projections, ws.decodedWeights());
+        assertTrue(ws.hasResidencyChoice());
+        assertEquals(projections, ws.residentContiguousSize());
         assertEquals(
                 FP16Projections.residentBytes(projections)
                         - MlxPrefill.affineBytes(DataType.Q8_0, projections),

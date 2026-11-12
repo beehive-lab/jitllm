@@ -1,6 +1,8 @@
 package org.beehive.jitllm.backend.tornado.scheduling;
 
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupKernels;
 import org.beehive.jitllm.runtime.backend.BackendId;
 
 // @formatter:off
@@ -28,18 +30,21 @@ public final class BatchPrefillGemmPolicy {
     // @formatter:off
     /**
      * Whether the tiled projections run on SIMD-group matrices ({@link
-     * org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels}) instead
-     * of scalar FMAs. On by default with {@link #tiled()}; {@code
-     * -Djitllm.metal.simdgroupGemm=false} selects the scalar kernels.
+     * TransformerBatchPrefillSimdgroupKernels}) instead of scalar FMAs. On by default with {@link
+     * #tiled()}; {@code -Djitllm.metal.simdgroupGemm=false} selects the scalar kernels.
      *
-     * <p>Measured on an M4 Pro, Qwen3-0.6B, batch 256 (pp512 / pp2048 tok/s): F16 1965 / 1175
-     * scalar, 2929 / 1461 SIMD-group; Q8_0 1944 / 1166 scalar, 2931 / 1462 SIMD-group. Greedy text
-     * identical; the CPU/GPU parity tests pass. Q8_0 weights are staged as {@code float}: rounding
-     * the dequantized weights to {@code half} was faster but failed the batched-prefill parity
-     * budget. FP16 stages through two alternating buffers (one barrier per k-slice): kernel time at
-     * batch 256 fell 11% for gate/up and the down projection and 5% for QKV. Reading the staged
-     * tiles with vector-width loads ({@code getFloat4} / {@code getHalf4}) took Qwen3-0.6B pp512 /
-     * pp2048 to 4171 / 2886 tok/s for F16 and 3802 / 2693 for Q8_0.
+     * <p>Measured on an M4 Pro, Qwen3-0.6B, batch 256 (pp512 / pp2048 tok/s), with Q8_0 weights
+     * staged as {@code float}: F16 1965 / 1175 scalar, 2929 / 1461 SIMD-group; Q8_0 1944 / 1166
+     * scalar, 2931 / 1462 SIMD-group. Greedy text identical; the CPU/GPU parity tests pass. FP16
+     * stages through two alternating buffers (one barrier per k-slice): kernel time at batch 256
+     * fell 11% for gate/up and the down projection and 5% for QKV. Reading the staged tiles with
+     * vector-width loads ({@code getFloat4} / {@code getHalf4}) took Qwen3-0.6B pp512 / pp2048 to
+     * 4171 / 2886 tok/s for F16 and 3802 / 2693 for Q8_0.
+     *
+     * <p>Since then, a GEMM with enough workgroups stages quantized weights as {@code half} and
+     * keeps activations and sums {@code float} ({@link
+     * TransformerBatchPrefillSimdgroupKernels#halfTiles}). The batched-prefill parity tests compare
+     * it with a host that rounds the same weights to FP16.
      */
     // @formatter:on
     public static boolean simdgroup() {
@@ -49,9 +54,9 @@ public final class BatchPrefillGemmPolicy {
     // @formatter:off
     /**
      * Whether batched-prefill attention over the FP32 cache runs on SIMD-group matrices ({@link
-     * org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupKernels})
-     * where the lane-cooperative kernel would otherwise run. On by default with {@link #tiled()};
-     * {@code -Djitllm.metal.simdgroupAttention=false} selects the lane-cooperative kernel.
+     * TransformerPagedKvBatchPrefillSimdgroupKernels}) where the lane-cooperative kernel would
+     * otherwise run. On by default with {@link #tiled()}; {@code
+     * -Djitllm.metal.simdgroupAttention=false} selects the lane-cooperative kernel.
      *
      * <p>Measured on an M4 Pro, Qwen3-0.6B, batch 256, SIMD-group projections (pp512 / pp2048
      * tok/s): F16 2913 / 1452 lane-cooperative, 3698 / 2645 SIMD-group; Q8_0 2912 / 1453

@@ -1,6 +1,8 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0.decode;
 
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.Qwen2MoEQ8_0FFNLayers;
+import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.Qwen2MoEState;
 import org.beehive.jitllm.inference.weights.tornado.Qwen2MoETornadoWeights;
@@ -12,42 +14,47 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public final class Qwen2MoEQ8_0FFNLayersDecode extends Qwen2MoEQ8_0FFNLayers {
 
     public Qwen2MoEQ8_0FFNLayersDecode(
-            String taskGraph,
             Qwen2MoEState state,
             Qwen2MoETornadoWeights weights,
             Qwen2MoEConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     /** Connects decode layer 0 to the decode activation and later layers in order. */
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return layerIndex == 0 ? "decodeActivation" : "layer_" + (layerIndex - 1);
+        return layerIndex == 0 ? GraphNames.DECODE_ACTIVATION : GraphNames.layer(layerIndex - 1);
     }
 
     /** Reuses the weights already uploaded by the corresponding batch-prefill layer. */
     @Override
     protected TaskGraph configureLayerWeights(TaskGraph layer, int layerIndex) {
-        return layer.consumeFromDevice(
-                "batchPrefillLayer_" + layerIndex,
-                weights.rms_att_weightLayered[layerIndex].asFloatArray(),
-                weights.wqLayered[layerIndex].asByteArray(),
-                weights.wkLayered[layerIndex].asByteArray(),
-                weights.wvLayered[layerIndex].asByteArray(),
-                weights.woLayered[layerIndex].asByteArray(),
-                weights.q_biasLayered[layerIndex].asFloatArray(),
-                weights.k_biasLayered[layerIndex].asFloatArray(),
-                weights.v_biasLayered[layerIndex].asFloatArray(),
-                weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
-                weights.routerGateLayered[layerIndex].asFloatArray(),
-                weights.gateExpertsLayered[layerIndex].asByteArray(),
-                weights.upExpertsLayered[layerIndex].asByteArray(),
-                weights.downExpertsLayered[layerIndex].asByteArray(),
-                weights.sharedGateLayered[layerIndex].asByteArray(),
-                weights.sharedUpLayered[layerIndex].asByteArray(),
-                weights.sharedDownLayered[layerIndex].asByteArray(),
-                weights.sharedGateInputLayered[layerIndex].asFloatArray());
+        // Weights read in place are declared so here too, never bound from another graph.
+        Object[] fromPrefill =
+                UnifiedMemoryWeights.consume(
+                        layer,
+                        state.workspace,
+                        weights.rms_att_weightLayered[layerIndex].asFloatArray(),
+                        weights.wqLayered[layerIndex].deviceArray(),
+                        weights.wkLayered[layerIndex].deviceArray(),
+                        weights.wvLayered[layerIndex].deviceArray(),
+                        weights.woLayered[layerIndex].deviceArray(),
+                        weights.q_biasLayered[layerIndex].asFloatArray(),
+                        weights.k_biasLayered[layerIndex].asFloatArray(),
+                        weights.v_biasLayered[layerIndex].asFloatArray(),
+                        weights.rms_ffn_weightLayered[layerIndex].asFloatArray(),
+                        weights.routerGateLayered[layerIndex].asFloatArray(),
+                        weights.gateExpertsLayered[layerIndex].deviceArray(),
+                        weights.upExpertsLayered[layerIndex].deviceArray(),
+                        weights.downExpertsLayered[layerIndex].deviceArray(),
+                        weights.sharedGateLayered[layerIndex].deviceArray(),
+                        weights.sharedUpLayered[layerIndex].deviceArray(),
+                        weights.sharedDownLayered[layerIndex].deviceArray(),
+                        weights.sharedGateInputLayered[layerIndex].asFloatArray());
+        return fromPrefill.length > 0
+                ? layer.consumeFromDevice(GraphNames.batchPrefillLayer(layerIndex), fromPrefill)
+                : layer;
     }
 
     /** Reuses the KV cache produced by batch prefill instead of allocating a new cache. */
@@ -74,10 +81,11 @@ public final class Qwen2MoEQ8_0FFNLayersDecode extends Qwen2MoEQ8_0FFNLayers {
                     moeState.workspace.wrapExpertGate,
                     moeState.workspace.wrapSharedGate,
                     moeState.workspace.wrapSharedOutput);
-            layer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
-            layer.consumeFromDevice("decodeActivation", state.workspace.wrapBlockTable);
+            layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, keyCache(), valueCache());
+            layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, state.workspace.wrapBlockTable);
+            bindNativeScratch(layer, layerIndex, null);
         } else {
-            String predecessor = "layer_" + (layerIndex - 1);
+            String predecessor = GraphNames.layer(layerIndex - 1);
             layer.consumeFromDevice(
                     predecessor,
                     context,
@@ -99,6 +107,7 @@ public final class Qwen2MoEQ8_0FFNLayersDecode extends Qwen2MoEQ8_0FFNLayers {
                     moeState.workspace.temp,
                     moeState.workspace.tempFFN);
             layer.consumeFromDevice(predecessor, state.workspace.wrapBlockTable);
+            bindNativeScratch(layer, layerIndex, predecessor);
         }
         return layer;
     }

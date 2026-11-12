@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.devstral;
 
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.DevstralQ8_0FFNLayers;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.State;
@@ -17,22 +18,21 @@ import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 public class DevstralQ8_0FFNLayersDecode extends DevstralQ8_0FFNLayers {
 
     public DevstralQ8_0FFNLayersDecode(
-            String taskGraph,
             State state,
             LlamaTornadoWeights weights,
             DevstralConfiguration config,
             SchedulerType schedulerType) {
-        super(taskGraph, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
     }
 
     @Override
     protected String predecessorGraphName(int layerIndex) {
-        return layerIndex == 0 ? "decodeActivation" : "layer_" + (layerIndex - 1);
+        return layerIndex == 0 ? GraphNames.DECODE_ACTIVATION : GraphNames.layer(layerIndex - 1);
     }
 
     @Override
     protected String weightSourceGraphName(int layerIndex) {
-        return "batchPrefillLayer_" + layerIndex;
+        return GraphNames.batchPrefillLayer(layerIndex);
     }
 
     @Override
@@ -55,10 +55,13 @@ public class DevstralQ8_0FFNLayersDecode extends DevstralQ8_0FFNLayers {
                     state.workspace.wrapHb,
                     weights.freq_cis_realFlat.asFloatArray(),
                     weights.freq_cis_imagFlat.asFloatArray());
-            layer.consumeFromDevice("decodeActivation", keyCache(), valueCache());
-            layer.consumeFromDevice("decodeActivation", state.workspace.wrapBlockTable);
+            layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, keyCache(), valueCache());
+            layer.consumeFromDevice(GraphNames.DECODE_ACTIVATION, state.workspace.wrapBlockTable);
+            if (splitsGateUp()) {
+                layer.transferToDevice(DataTransferMode.FIRST_EXECUTION, state.workspace.wrapHb2);
+            }
         } else {
-            String pred = "layer_" + (layerIndex - 1);
+            String pred = GraphNames.layer(layerIndex - 1);
             layer.consumeFromDevice(
                     pred,
                     context,
@@ -75,6 +78,9 @@ public class DevstralQ8_0FFNLayersDecode extends DevstralQ8_0FFNLayers {
                     weights.freq_cis_realFlat.asFloatArray(),
                     weights.freq_cis_imagFlat.asFloatArray());
             layer.consumeFromDevice(pred, state.workspace.wrapBlockTable);
+            if (splitsGateUp()) {
+                layer.consumeFromDevice(pred, state.workspace.wrapHb2);
+            }
         }
         return layer;
     }

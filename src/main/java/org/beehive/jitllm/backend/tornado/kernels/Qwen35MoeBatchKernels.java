@@ -690,6 +690,1574 @@ public final class Qwen35MoeBatchKernels {
         }
     }
 
+    // ── The same GEMMs over experts that keep the file's own representations ─────────────────
+    //
+    // groupedGateUpQ8_0 and groupedDownQ8_0 with only the weight staging changed: each word of the
+    // weight tile is still the int8 quants of two columns at one pair of k, decoded from the
+    // type's blocks, with the block's scale. Q4_0 recentres its nibbles by 8 and needs nothing
+    // else. Q4_1, Q4_K and Q5_K store unsigned quants and a minimum per 32 weights: a block's dot
+    // product is scale * sum(q a) + min * sum(a), and sum(a) is one more MMA, against a tile of
+    // ones. Q6_K's scales cover sixteen weights, which one m16n8k32 MMA cannot separate, so each
+    // 32-block is staged as two virtual blocks, each holding one sub-block's quants and zeros.
+
+    /**
+     * Quants {@code 2 kRow} and {@code 2 kRow + 1} of 32-block {@code blk} of the Q4_0 row at byte
+     * {@code rowOffset}, as two int8 lanes of a 16-bit half-word.
+     */
+    private static int pairQ4_0(ByteArray w, int rowOffset, int blk, int kRow) {
+        int blockOffset = rowOffset + blk * 18;
+        int h = halfBits(w, blockOffset + 2 + ((kRow << 1) & 15));
+        int shift = (kRow >> 3) << 2;
+        int v0 = ((h >> shift) & 0xF) - 8;
+        int v1 = ((h >> (8 + shift)) & 0xF) - 8;
+        return (v0 & 0xFF) | ((v1 & 0xFF) << 8);
+    }
+
+    /** The scale of 32-block {@code blk} of the Q4_0 row at byte {@code rowOffset}. */
+    private static float scaleQ4_0(ByteArray w, int rowOffset, int blk) {
+        return w.getHalfFloat(rowOffset + blk * 18).getFloat32();
+    }
+
+    /**
+     * {@link #stageB} for Q4_0 weights: the same tile, each word the int8 quants of two columns at
+     * one pair of k, decoded from Q4_0 blocks.
+     */
+    private static void stageBQ4_0(
+            int[] bTile,
+            float[] sW,
+            ByteArray w,
+            int firstRow,
+            int rowBytes,
+            int round,
+            int buf,
+            int tid) {
+        int kRow = tid & 15;
+        int colPair = (tid >> 4) & 15;
+        int slot = ((colPair >> 2) << 6) + (kRow << 2) + (colPair & 3);
+        int row = firstRow + (colPair << 1);
+        int dst = buf * 2 * B_WORDS + slot;
+        for (int s = 0; s < 8; s++) {
+            int blk = round * 2 + (s >> 2);
+            int rowOffset = (row + (s & 3) * 32) * rowBytes;
+            bTile[dst + (s >> 2) * B_WORDS + (s & 3) * 256] =
+                    pairQ4_0(w, rowOffset, blk, kRow)
+                            | (pairQ4_0(w, rowOffset + rowBytes, blk, kRow) << 16);
+        }
+        int b = tid >> 7;
+        int col = tid & 127;
+        sW[buf * 256 + b * 128 + col] = scaleQ4_0(w, (firstRow + col) * rowBytes, round * 2 + b);
+    }
+
+    /** {@link #groupedGateUpQ8_0} over stacked Q4_0 experts. */
+    public static void groupedGateUpQ4_0(
+            KernelContext ctx,
+            ByteArray a8,
+            FloatArray dA,
+            IntArray sortedToken,
+            IntArray tiles,
+            ByteArray gateExperts,
+            ByteArray upExperts,
+            FloatArray hidden,
+            int dim,
+            int hiddenDim) {
+        int tid = ctx.localIdx;
+        int tile = ctx.groupIdy;
+        int blockCol = TILE_COLS * ctx.groupIdx;
+        if (tile < tiles.get(0) && blockCol < hiddenDim) {
+            int expert = tiles.get(1 + 3 * tile);
+            int rowStart = tiles.get(2 + 3 * tile);
+            int rows = tiles.get(3 + 3 * tile);
+            int warp = tid >> 5;
+            int lane = tid & 31;
+            int rounds = dim / (2 * QK);
+            int rowBytes = (dim / 32) * 18;
+            int firstRow = expert * hiddenDim + blockCol;
+
+            int[] aTile = ctx.allocateIntLocalArray(2 * 2 * A_WORDS);
+            int[] gTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            int[] uTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            float[] sA = ctx.allocateFloatLocalArray(2 * 2 * TILE_ROWS);
+            float[] sG = ctx.allocateFloatLocalArray(2 * 256);
+            float[] sU = ctx.allocateFloatLocalArray(2 * 256);
+
+            float[] gate = new float[SUB_TILES * 8];
+            float[] up = new float[SUB_TILES * 8];
+            for (int i = 0; i < SUB_TILES * 8; i++) {
+                gate[i] = 0.0f;
+                up[i] = 0.0f;
+            }
+            int rowInWarp = lane >> 2;
+            int colInWarp = (lane & 3) << 1;
+            int activeSub = (rows + 15) >> 4;
+
+            stageA(ctx, aTile, sA, a8, dA, sortedToken, 1, rowStart, rows, 0, 0, dim, tid);
+            stageBQ4_0(gTile, sG, gateExperts, firstRow, rowBytes, 0, 0, tid);
+            stageBQ4_0(uTile, sU, upExperts, firstRow, rowBytes, 0, 0, tid);
+            ctx.asyncCopyCommit();
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+
+            for (int round = 0; round < rounds; round++) {
+                int buf = round & 1;
+                int next = 1 - buf;
+                if (round + 1 < rounds) {
+                    stageA(
+                            ctx,
+                            aTile,
+                            sA,
+                            a8,
+                            dA,
+                            sortedToken,
+                            1,
+                            rowStart,
+                            rows,
+                            round + 1,
+                            next,
+                            dim,
+                            tid);
+                    ctx.asyncCopyCommit();
+                    stageBQ4_0(gTile, sG, gateExperts, firstRow, rowBytes, round + 1, next, tid);
+                    stageBQ4_0(uTile, sU, upExperts, firstRow, rowBytes, round + 1, next, tid);
+                }
+                for (int b = 0; b < 2; b++) {
+                    for (int j = 0; j < 2; j++) {
+                        int bOff = (buf * 2 + b) * B_WORDS * 4 + (warp * 2 + j) * 256;
+                        int sCol = buf * 256 + b * 128 + warp * 16 + j * 8 + colInWarp;
+                        byte[] fg = ctx.mmaLoadBInt8(gTile, 32, bOff);
+                        byte[] fu = ctx.mmaLoadBInt8(uTile, 32, bOff);
+                        float g0 = sG[sCol];
+                        float g1 = sG[sCol + 1];
+                        float u0 = sU[sCol];
+                        float u1 = sU[sCol + 1];
+                        for (int t = 0; t < SUB_TILES; t++) {
+                            if (t < activeSub) {
+                                byte[] fa =
+                                        ctx.mmaLoadAInt8(
+                                                aTile, 32, (buf * 2 + b) * A_WORDS * 4 + t * 512);
+                                int sRow = buf * 2 * TILE_ROWS + b * TILE_ROWS + t * 16 + rowInWarp;
+                                float dA0 = sA[sRow];
+                                float dA1 = sA[sRow + 8];
+                                int[] dg =
+                                        ctx.mmaInt8(
+                                                fa, fg, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int[] du =
+                                        ctx.mmaInt8(
+                                                fa, fu, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int o = t * 8 + j * 4;
+                                gate[o] += (float) dg[0] * dA0 * g0;
+                                gate[o + 1] += (float) dg[1] * dA0 * g1;
+                                gate[o + 2] += (float) dg[2] * dA1 * g0;
+                                gate[o + 3] += (float) dg[3] * dA1 * g1;
+                                up[o] += (float) du[0] * dA0 * u0;
+                                up[o + 1] += (float) du[1] * dA0 * u1;
+                                up[o + 2] += (float) du[2] * dA1 * u0;
+                                up[o + 3] += (float) du[3] * dA1 * u1;
+                            }
+                        }
+                    }
+                }
+                if (round + 1 < rounds) {
+                    ctx.asyncCopyWaitGroup(0);
+                }
+                ctx.localBarrier();
+            }
+
+            for (int t = 0; t < SUB_TILES; t++) {
+                for (int j = 0; j < 2; j++) {
+                    int col = blockCol + warp * 16 + j * 8 + colInWarp;
+                    for (int e = 0; e < 4; e++) {
+                        int row = t * 16 + rowInWarp + 8 * (e >> 1);
+                        if (row < rows) {
+                            float g = gate[t * 8 + j * 4 + e];
+                            hidden.set(
+                                    (rowStart + row) * hiddenDim + col + (e & 1),
+                                    g / (1.0f + TornadoMath.exp(-g)) * up[t * 8 + j * 4 + e]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** {@link #groupedDownQ8_0} over stacked Q4_0 experts. */
+    public static void groupedDownQ4_0(
+            KernelContext ctx,
+            ByteArray h8,
+            FloatArray dH,
+            IntArray tiles,
+            ByteArray downExperts,
+            FloatArray out,
+            int dim,
+            int hiddenDim) {
+        int tid = ctx.localIdx;
+        int tile = ctx.groupIdy;
+        int blockCol = TILE_COLS * ctx.groupIdx;
+        if (tile < tiles.get(0) && blockCol < dim) {
+            int expert = tiles.get(1 + 3 * tile);
+            int rowStart = tiles.get(2 + 3 * tile);
+            int rows = tiles.get(3 + 3 * tile);
+            int warp = tid >> 5;
+            int lane = tid & 31;
+            int rounds = hiddenDim / (2 * QK);
+            int rowBytes = (hiddenDim / 32) * 18;
+            int firstRow = expert * dim + blockCol;
+
+            int[] aTile = ctx.allocateIntLocalArray(2 * 2 * A_WORDS);
+            int[] bTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            float[] sA = ctx.allocateFloatLocalArray(2 * 2 * TILE_ROWS);
+            float[] sW = ctx.allocateFloatLocalArray(2 * 256);
+
+            float[] acc = new float[SUB_TILES * 8];
+            for (int i = 0; i < SUB_TILES * 8; i++) {
+                acc[i] = 0.0f;
+            }
+            int rowInWarp = lane >> 2;
+            int colInWarp = (lane & 3) << 1;
+            int activeSub = (rows + 15) >> 4;
+
+            stageA(ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, 0, 0, hiddenDim, tid);
+            stageBQ4_0(bTile, sW, downExperts, firstRow, rowBytes, 0, 0, tid);
+            ctx.asyncCopyCommit();
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+
+            for (int round = 0; round < rounds; round++) {
+                int buf = round & 1;
+                int next = 1 - buf;
+                if (round + 1 < rounds) {
+                    stageA(
+                            ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, round + 1, next,
+                            hiddenDim, tid);
+                    ctx.asyncCopyCommit();
+                    stageBQ4_0(bTile, sW, downExperts, firstRow, rowBytes, round + 1, next, tid);
+                }
+                for (int b = 0; b < 2; b++) {
+                    for (int j = 0; j < 2; j++) {
+                        int bOff = (buf * 2 + b) * B_WORDS * 4 + (warp * 2 + j) * 256;
+                        int sCol = buf * 256 + b * 128 + warp * 16 + j * 8 + colInWarp;
+                        byte[] fb = ctx.mmaLoadBInt8(bTile, 32, bOff);
+                        float w0 = sW[sCol];
+                        float w1 = sW[sCol + 1];
+                        for (int t = 0; t < SUB_TILES; t++) {
+                            if (t < activeSub) {
+                                byte[] fa =
+                                        ctx.mmaLoadAInt8(
+                                                aTile, 32, (buf * 2 + b) * A_WORDS * 4 + t * 512);
+                                int sRow = buf * 2 * TILE_ROWS + b * TILE_ROWS + t * 16 + rowInWarp;
+                                float dA0 = sA[sRow];
+                                float dA1 = sA[sRow + 8];
+                                int[] d =
+                                        ctx.mmaInt8(
+                                                fa, fb, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int o = t * 8 + j * 4;
+                                acc[o] += (float) d[0] * dA0 * w0;
+                                acc[o + 1] += (float) d[1] * dA0 * w1;
+                                acc[o + 2] += (float) d[2] * dA1 * w0;
+                                acc[o + 3] += (float) d[3] * dA1 * w1;
+                            }
+                        }
+                    }
+                }
+                if (round + 1 < rounds) {
+                    ctx.asyncCopyWaitGroup(0);
+                }
+                ctx.localBarrier();
+            }
+
+            for (int t = 0; t < SUB_TILES; t++) {
+                for (int j = 0; j < 2; j++) {
+                    int col = blockCol + warp * 16 + j * 8 + colInWarp;
+                    for (int e = 0; e < 4; e++) {
+                        int row = t * 16 + rowInWarp + 8 * (e >> 1);
+                        if (row < rows) {
+                            out.set((rowStart + row) * dim + col + (e & 1), acc[t * 8 + j * 4 + e]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Quants {@code 2 kRow} and {@code 2 kRow + 1} of 32-block {@code blk} of the Q4_1 row at byte
+     * {@code rowOffset}, as two int8 lanes of a 16-bit half-word.
+     */
+    private static int pairQ4_1(ByteArray w, int rowOffset, int blk, int kRow) {
+        int blockOffset = rowOffset + blk * 20;
+        int h = halfBits(w, blockOffset + 4 + ((kRow << 1) & 15));
+        int shift = (kRow >> 3) << 2;
+        return ((h >> shift) & 0xF) | (((h >> (8 + shift)) & 0xF) << 8);
+    }
+
+    /** The scale of 32-block {@code blk} of the Q4_1 row at byte {@code rowOffset}. */
+    private static float scaleQ4_1(ByteArray w, int rowOffset, int blk) {
+        return w.getHalfFloat(rowOffset + blk * 20).getFloat32();
+    }
+
+    /** What 32-block {@code blk} of the Q4_1 row at byte {@code rowOffset} adds per unit of x. */
+    private static float minQ4_1(ByteArray w, int rowOffset, int blk) {
+        return w.getHalfFloat(rowOffset + blk * 20 + 2).getFloat32();
+    }
+
+    /**
+     * {@link #stageB} for Q4_1 weights: the same tile, each word the int8 quants of two columns at
+     * one pair of k, decoded from Q4_1 blocks.
+     */
+    private static void stageBQ4_1(
+            int[] bTile,
+            float[] sW,
+            ByteArray w,
+            int firstRow,
+            int rowBytes,
+            int round,
+            int buf,
+            int tid) {
+        int kRow = tid & 15;
+        int colPair = (tid >> 4) & 15;
+        int slot = ((colPair >> 2) << 6) + (kRow << 2) + (colPair & 3);
+        int row = firstRow + (colPair << 1);
+        int dst = buf * 2 * B_WORDS + slot;
+        for (int s = 0; s < 8; s++) {
+            int blk = round * 2 + (s >> 2);
+            int rowOffset = (row + (s & 3) * 32) * rowBytes;
+            bTile[dst + (s >> 2) * B_WORDS + (s & 3) * 256] =
+                    pairQ4_1(w, rowOffset, blk, kRow)
+                            | (pairQ4_1(w, rowOffset + rowBytes, blk, kRow) << 16);
+        }
+        int b = tid >> 7;
+        int col = tid & 127;
+        sW[buf * 256 + b * 128 + col] = scaleQ4_1(w, (firstRow + col) * rowBytes, round * 2 + b);
+    }
+
+    /** {@link #groupedGateUpQ8_0} over stacked Q4_1 experts. */
+    public static void groupedGateUpQ4_1(
+            KernelContext ctx,
+            ByteArray a8,
+            FloatArray dA,
+            IntArray sortedToken,
+            IntArray tiles,
+            ByteArray gateExperts,
+            ByteArray upExperts,
+            FloatArray hidden,
+            int dim,
+            int hiddenDim) {
+        int tid = ctx.localIdx;
+        int tile = ctx.groupIdy;
+        int blockCol = TILE_COLS * ctx.groupIdx;
+        if (tile < tiles.get(0) && blockCol < hiddenDim) {
+            int expert = tiles.get(1 + 3 * tile);
+            int rowStart = tiles.get(2 + 3 * tile);
+            int rows = tiles.get(3 + 3 * tile);
+            int warp = tid >> 5;
+            int lane = tid & 31;
+            int rounds = dim / (2 * QK);
+            int rowBytes = (dim / 32) * 20;
+            int firstRow = expert * hiddenDim + blockCol;
+
+            int[] aTile = ctx.allocateIntLocalArray(2 * 2 * A_WORDS);
+            int[] gTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            int[] uTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            float[] sA = ctx.allocateFloatLocalArray(2 * 2 * TILE_ROWS);
+            float[] sG = ctx.allocateFloatLocalArray(2 * 256);
+            float[] sU = ctx.allocateFloatLocalArray(2 * 256);
+            int[] ones = ctx.allocateIntLocalArray(64);
+            if (tid < 64) {
+                ones[tid] = 0x01010101;
+            }
+
+            float[] gate = new float[SUB_TILES * 8];
+            float[] up = new float[SUB_TILES * 8];
+            for (int i = 0; i < SUB_TILES * 8; i++) {
+                gate[i] = 0.0f;
+                up[i] = 0.0f;
+            }
+            int rowInWarp = lane >> 2;
+            int colInWarp = (lane & 3) << 1;
+            int activeSub = (rows + 15) >> 4;
+
+            stageA(ctx, aTile, sA, a8, dA, sortedToken, 1, rowStart, rows, 0, 0, dim, tid);
+            stageBQ4_1(gTile, sG, gateExperts, firstRow, rowBytes, 0, 0, tid);
+            stageBQ4_1(uTile, sU, upExperts, firstRow, rowBytes, 0, 0, tid);
+            ctx.asyncCopyCommit();
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+            byte[] fOnes = ctx.mmaLoadBInt8(ones, 32, 0);
+
+            for (int round = 0; round < rounds; round++) {
+                int buf = round & 1;
+                int next = 1 - buf;
+                if (round + 1 < rounds) {
+                    stageA(
+                            ctx,
+                            aTile,
+                            sA,
+                            a8,
+                            dA,
+                            sortedToken,
+                            1,
+                            rowStart,
+                            rows,
+                            round + 1,
+                            next,
+                            dim,
+                            tid);
+                    ctx.asyncCopyCommit();
+                    stageBQ4_1(gTile, sG, gateExperts, firstRow, rowBytes, round + 1, next, tid);
+                    stageBQ4_1(uTile, sU, upExperts, firstRow, rowBytes, round + 1, next, tid);
+                }
+                for (int b = 0; b < 2; b++) {
+                    for (int j = 0; j < 2; j++) {
+                        int bOff = (buf * 2 + b) * B_WORDS * 4 + (warp * 2 + j) * 256;
+                        int sCol = buf * 256 + b * 128 + warp * 16 + j * 8 + colInWarp;
+                        byte[] fg = ctx.mmaLoadBInt8(gTile, 32, bOff);
+                        byte[] fu = ctx.mmaLoadBInt8(uTile, 32, bOff);
+                        float g0 = sG[sCol];
+                        float g1 = sG[sCol + 1];
+                        float u0 = sU[sCol];
+                        float u1 = sU[sCol + 1];
+                        // The minima are read where they lie: staged beside the scales they
+                        // would take the two tiles past 48 KB of shared memory.
+                        int minCol = firstRow + warp * 16 + j * 8 + colInWarp;
+                        int minBlk = round * 2 + b;
+                        float gm0 = minQ4_1(gateExperts, minCol * rowBytes, minBlk);
+                        float gm1 = minQ4_1(gateExperts, (minCol + 1) * rowBytes, minBlk);
+                        float um0 = minQ4_1(upExperts, minCol * rowBytes, minBlk);
+                        float um1 = minQ4_1(upExperts, (minCol + 1) * rowBytes, minBlk);
+                        for (int t = 0; t < SUB_TILES; t++) {
+                            if (t < activeSub) {
+                                byte[] fa =
+                                        ctx.mmaLoadAInt8(
+                                                aTile, 32, (buf * 2 + b) * A_WORDS * 4 + t * 512);
+                                int sRow = buf * 2 * TILE_ROWS + b * TILE_ROWS + t * 16 + rowInWarp;
+                                float dA0 = sA[sRow];
+                                float dA1 = sA[sRow + 8];
+                                int[] dg =
+                                        ctx.mmaInt8(
+                                                fa, fg, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int[] du =
+                                        ctx.mmaInt8(
+                                                fa, fu, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int[] ds =
+                                        ctx.mmaInt8(
+                                                fa,
+                                                fOnes,
+                                                ctx.mmaFragmentInt(0),
+                                                MMAShape.M16N8K32);
+                                int o = t * 8 + j * 4;
+                                gate[o] += dA0 * ((float) dg[0] * g0 + (float) ds[0] * gm0);
+                                gate[o + 1] += dA0 * ((float) dg[1] * g1 + (float) ds[1] * gm1);
+                                gate[o + 2] += dA1 * ((float) dg[2] * g0 + (float) ds[2] * gm0);
+                                gate[o + 3] += dA1 * ((float) dg[3] * g1 + (float) ds[3] * gm1);
+                                up[o] += dA0 * ((float) du[0] * u0 + (float) ds[0] * um0);
+                                up[o + 1] += dA0 * ((float) du[1] * u1 + (float) ds[1] * um1);
+                                up[o + 2] += dA1 * ((float) du[2] * u0 + (float) ds[2] * um0);
+                                up[o + 3] += dA1 * ((float) du[3] * u1 + (float) ds[3] * um1);
+                            }
+                        }
+                    }
+                }
+                if (round + 1 < rounds) {
+                    ctx.asyncCopyWaitGroup(0);
+                }
+                ctx.localBarrier();
+            }
+
+            for (int t = 0; t < SUB_TILES; t++) {
+                for (int j = 0; j < 2; j++) {
+                    int col = blockCol + warp * 16 + j * 8 + colInWarp;
+                    for (int e = 0; e < 4; e++) {
+                        int row = t * 16 + rowInWarp + 8 * (e >> 1);
+                        if (row < rows) {
+                            float g = gate[t * 8 + j * 4 + e];
+                            hidden.set(
+                                    (rowStart + row) * hiddenDim + col + (e & 1),
+                                    g / (1.0f + TornadoMath.exp(-g)) * up[t * 8 + j * 4 + e]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** {@link #groupedDownQ8_0} over stacked Q4_1 experts. */
+    public static void groupedDownQ4_1(
+            KernelContext ctx,
+            ByteArray h8,
+            FloatArray dH,
+            IntArray tiles,
+            ByteArray downExperts,
+            FloatArray out,
+            int dim,
+            int hiddenDim) {
+        int tid = ctx.localIdx;
+        int tile = ctx.groupIdy;
+        int blockCol = TILE_COLS * ctx.groupIdx;
+        if (tile < tiles.get(0) && blockCol < dim) {
+            int expert = tiles.get(1 + 3 * tile);
+            int rowStart = tiles.get(2 + 3 * tile);
+            int rows = tiles.get(3 + 3 * tile);
+            int warp = tid >> 5;
+            int lane = tid & 31;
+            int rounds = hiddenDim / (2 * QK);
+            int rowBytes = (hiddenDim / 32) * 20;
+            int firstRow = expert * dim + blockCol;
+
+            int[] aTile = ctx.allocateIntLocalArray(2 * 2 * A_WORDS);
+            int[] bTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            float[] sA = ctx.allocateFloatLocalArray(2 * 2 * TILE_ROWS);
+            float[] sW = ctx.allocateFloatLocalArray(2 * 256);
+            int[] ones = ctx.allocateIntLocalArray(64);
+            if (tid < 64) {
+                ones[tid] = 0x01010101;
+            }
+
+            float[] acc = new float[SUB_TILES * 8];
+            for (int i = 0; i < SUB_TILES * 8; i++) {
+                acc[i] = 0.0f;
+            }
+            int rowInWarp = lane >> 2;
+            int colInWarp = (lane & 3) << 1;
+            int activeSub = (rows + 15) >> 4;
+
+            stageA(ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, 0, 0, hiddenDim, tid);
+            stageBQ4_1(bTile, sW, downExperts, firstRow, rowBytes, 0, 0, tid);
+            ctx.asyncCopyCommit();
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+            byte[] fOnes = ctx.mmaLoadBInt8(ones, 32, 0);
+
+            for (int round = 0; round < rounds; round++) {
+                int buf = round & 1;
+                int next = 1 - buf;
+                if (round + 1 < rounds) {
+                    stageA(
+                            ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, round + 1, next,
+                            hiddenDim, tid);
+                    ctx.asyncCopyCommit();
+                    stageBQ4_1(bTile, sW, downExperts, firstRow, rowBytes, round + 1, next, tid);
+                }
+                for (int b = 0; b < 2; b++) {
+                    for (int j = 0; j < 2; j++) {
+                        int bOff = (buf * 2 + b) * B_WORDS * 4 + (warp * 2 + j) * 256;
+                        int sCol = buf * 256 + b * 128 + warp * 16 + j * 8 + colInWarp;
+                        byte[] fb = ctx.mmaLoadBInt8(bTile, 32, bOff);
+                        float w0 = sW[sCol];
+                        float w1 = sW[sCol + 1];
+                        int minCol = firstRow + warp * 16 + j * 8 + colInWarp;
+                        float m0 = minQ4_1(downExperts, minCol * rowBytes, round * 2 + b);
+                        float m1 = minQ4_1(downExperts, (minCol + 1) * rowBytes, round * 2 + b);
+                        for (int t = 0; t < SUB_TILES; t++) {
+                            if (t < activeSub) {
+                                byte[] fa =
+                                        ctx.mmaLoadAInt8(
+                                                aTile, 32, (buf * 2 + b) * A_WORDS * 4 + t * 512);
+                                int sRow = buf * 2 * TILE_ROWS + b * TILE_ROWS + t * 16 + rowInWarp;
+                                float dA0 = sA[sRow];
+                                float dA1 = sA[sRow + 8];
+                                int[] d =
+                                        ctx.mmaInt8(
+                                                fa, fb, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int[] ds =
+                                        ctx.mmaInt8(
+                                                fa,
+                                                fOnes,
+                                                ctx.mmaFragmentInt(0),
+                                                MMAShape.M16N8K32);
+                                int o = t * 8 + j * 4;
+                                acc[o] += dA0 * ((float) d[0] * w0 + (float) ds[0] * m0);
+                                acc[o + 1] += dA0 * ((float) d[1] * w1 + (float) ds[1] * m1);
+                                acc[o + 2] += dA1 * ((float) d[2] * w0 + (float) ds[2] * m0);
+                                acc[o + 3] += dA1 * ((float) d[3] * w1 + (float) ds[3] * m1);
+                            }
+                        }
+                    }
+                }
+                if (round + 1 < rounds) {
+                    ctx.asyncCopyWaitGroup(0);
+                }
+                ctx.localBarrier();
+            }
+
+            for (int t = 0; t < SUB_TILES; t++) {
+                for (int j = 0; j < 2; j++) {
+                    int col = blockCol + warp * 16 + j * 8 + colInWarp;
+                    for (int e = 0; e < 4; e++) {
+                        int row = t * 16 + rowInWarp + 8 * (e >> 1);
+                        if (row < rows) {
+                            out.set((rowStart + row) * dim + col + (e & 1), acc[t * 8 + j * 4 + e]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Quants {@code 2 kRow} and {@code 2 kRow + 1} of 32-block {@code blk} of the Q4_K row at byte
+     * {@code rowOffset}, as two int8 lanes of a 16-bit half-word.
+     */
+    private static int pairQ4_K(ByteArray w, int rowOffset, int blk, int kRow) {
+        int sub = blk & 7;
+        int superOffset = rowOffset + (blk >> 3) * 144;
+        int h = halfBits(w, superOffset + 16 + (sub >> 1) * 32 + (kRow << 1));
+        int shift = (sub & 1) << 2;
+        return ((h >> shift) & 0xF) | (((h >> (8 + shift)) & 0xF) << 8);
+    }
+
+    /** The scale of 32-block {@code blk} of the Q4_K row at byte {@code rowOffset}. */
+    private static float scaleQ4_K(ByteArray w, int rowOffset, int blk) {
+        int superOffset = rowOffset + (blk >> 3) * 144;
+        int packed = TransformerComputeKernelsQ4_K.scaleAndMin(w, superOffset + 4, blk & 7);
+        return w.getHalfFloat(superOffset).getFloat32() * (packed >> 8);
+    }
+
+    /** What 32-block {@code blk} of the Q4_K row at byte {@code rowOffset} adds per unit of x. */
+    private static float minQ4_K(ByteArray w, int rowOffset, int blk) {
+        int superOffset = rowOffset + (blk >> 3) * 144;
+        int packed = TransformerComputeKernelsQ4_K.scaleAndMin(w, superOffset + 4, blk & 7);
+        return -w.getHalfFloat(superOffset + 2).getFloat32() * (packed & 0xFF);
+    }
+
+    /**
+     * {@link #stageB} for Q4_K weights: the same tile, each word the int8 quants of two columns at
+     * one pair of k, decoded from Q4_K blocks.
+     */
+    private static void stageBQ4_K(
+            int[] bTile,
+            float[] sW,
+            ByteArray w,
+            int firstRow,
+            int rowBytes,
+            int round,
+            int buf,
+            int tid) {
+        int kRow = tid & 15;
+        int colPair = (tid >> 4) & 15;
+        int slot = ((colPair >> 2) << 6) + (kRow << 2) + (colPair & 3);
+        int row = firstRow + (colPair << 1);
+        int dst = buf * 2 * B_WORDS + slot;
+        for (int s = 0; s < 8; s++) {
+            int blk = round * 2 + (s >> 2);
+            int rowOffset = (row + (s & 3) * 32) * rowBytes;
+            bTile[dst + (s >> 2) * B_WORDS + (s & 3) * 256] =
+                    pairQ4_K(w, rowOffset, blk, kRow)
+                            | (pairQ4_K(w, rowOffset + rowBytes, blk, kRow) << 16);
+        }
+        int b = tid >> 7;
+        int col = tid & 127;
+        sW[buf * 256 + b * 128 + col] = scaleQ4_K(w, (firstRow + col) * rowBytes, round * 2 + b);
+    }
+
+    /** {@link #groupedGateUpQ8_0} over stacked Q4_K experts. */
+    public static void groupedGateUpQ4_K(
+            KernelContext ctx,
+            ByteArray a8,
+            FloatArray dA,
+            IntArray sortedToken,
+            IntArray tiles,
+            ByteArray gateExperts,
+            ByteArray upExperts,
+            FloatArray hidden,
+            int dim,
+            int hiddenDim) {
+        int tid = ctx.localIdx;
+        int tile = ctx.groupIdy;
+        int blockCol = TILE_COLS * ctx.groupIdx;
+        if (tile < tiles.get(0) && blockCol < hiddenDim) {
+            int expert = tiles.get(1 + 3 * tile);
+            int rowStart = tiles.get(2 + 3 * tile);
+            int rows = tiles.get(3 + 3 * tile);
+            int warp = tid >> 5;
+            int lane = tid & 31;
+            int rounds = dim / (2 * QK);
+            int rowBytes = (dim / 256) * 144;
+            int firstRow = expert * hiddenDim + blockCol;
+
+            int[] aTile = ctx.allocateIntLocalArray(2 * 2 * A_WORDS);
+            int[] gTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            int[] uTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            float[] sA = ctx.allocateFloatLocalArray(2 * 2 * TILE_ROWS);
+            float[] sG = ctx.allocateFloatLocalArray(2 * 256);
+            float[] sU = ctx.allocateFloatLocalArray(2 * 256);
+            int[] ones = ctx.allocateIntLocalArray(64);
+            if (tid < 64) {
+                ones[tid] = 0x01010101;
+            }
+
+            float[] gate = new float[SUB_TILES * 8];
+            float[] up = new float[SUB_TILES * 8];
+            for (int i = 0; i < SUB_TILES * 8; i++) {
+                gate[i] = 0.0f;
+                up[i] = 0.0f;
+            }
+            int rowInWarp = lane >> 2;
+            int colInWarp = (lane & 3) << 1;
+            int activeSub = (rows + 15) >> 4;
+
+            stageA(ctx, aTile, sA, a8, dA, sortedToken, 1, rowStart, rows, 0, 0, dim, tid);
+            stageBQ4_K(gTile, sG, gateExperts, firstRow, rowBytes, 0, 0, tid);
+            stageBQ4_K(uTile, sU, upExperts, firstRow, rowBytes, 0, 0, tid);
+            ctx.asyncCopyCommit();
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+            byte[] fOnes = ctx.mmaLoadBInt8(ones, 32, 0);
+
+            for (int round = 0; round < rounds; round++) {
+                int buf = round & 1;
+                int next = 1 - buf;
+                if (round + 1 < rounds) {
+                    stageA(
+                            ctx,
+                            aTile,
+                            sA,
+                            a8,
+                            dA,
+                            sortedToken,
+                            1,
+                            rowStart,
+                            rows,
+                            round + 1,
+                            next,
+                            dim,
+                            tid);
+                    ctx.asyncCopyCommit();
+                    stageBQ4_K(gTile, sG, gateExperts, firstRow, rowBytes, round + 1, next, tid);
+                    stageBQ4_K(uTile, sU, upExperts, firstRow, rowBytes, round + 1, next, tid);
+                }
+                for (int b = 0; b < 2; b++) {
+                    for (int j = 0; j < 2; j++) {
+                        int bOff = (buf * 2 + b) * B_WORDS * 4 + (warp * 2 + j) * 256;
+                        int sCol = buf * 256 + b * 128 + warp * 16 + j * 8 + colInWarp;
+                        byte[] fg = ctx.mmaLoadBInt8(gTile, 32, bOff);
+                        byte[] fu = ctx.mmaLoadBInt8(uTile, 32, bOff);
+                        float g0 = sG[sCol];
+                        float g1 = sG[sCol + 1];
+                        float u0 = sU[sCol];
+                        float u1 = sU[sCol + 1];
+                        // The minima are read where they lie: staged beside the scales they
+                        // would take the two tiles past 48 KB of shared memory.
+                        int minCol = firstRow + warp * 16 + j * 8 + colInWarp;
+                        int minBlk = round * 2 + b;
+                        float gm0 = minQ4_K(gateExperts, minCol * rowBytes, minBlk);
+                        float gm1 = minQ4_K(gateExperts, (minCol + 1) * rowBytes, minBlk);
+                        float um0 = minQ4_K(upExperts, minCol * rowBytes, minBlk);
+                        float um1 = minQ4_K(upExperts, (minCol + 1) * rowBytes, minBlk);
+                        for (int t = 0; t < SUB_TILES; t++) {
+                            if (t < activeSub) {
+                                byte[] fa =
+                                        ctx.mmaLoadAInt8(
+                                                aTile, 32, (buf * 2 + b) * A_WORDS * 4 + t * 512);
+                                int sRow = buf * 2 * TILE_ROWS + b * TILE_ROWS + t * 16 + rowInWarp;
+                                float dA0 = sA[sRow];
+                                float dA1 = sA[sRow + 8];
+                                int[] dg =
+                                        ctx.mmaInt8(
+                                                fa, fg, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int[] du =
+                                        ctx.mmaInt8(
+                                                fa, fu, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int[] ds =
+                                        ctx.mmaInt8(
+                                                fa,
+                                                fOnes,
+                                                ctx.mmaFragmentInt(0),
+                                                MMAShape.M16N8K32);
+                                int o = t * 8 + j * 4;
+                                gate[o] += dA0 * ((float) dg[0] * g0 + (float) ds[0] * gm0);
+                                gate[o + 1] += dA0 * ((float) dg[1] * g1 + (float) ds[1] * gm1);
+                                gate[o + 2] += dA1 * ((float) dg[2] * g0 + (float) ds[2] * gm0);
+                                gate[o + 3] += dA1 * ((float) dg[3] * g1 + (float) ds[3] * gm1);
+                                up[o] += dA0 * ((float) du[0] * u0 + (float) ds[0] * um0);
+                                up[o + 1] += dA0 * ((float) du[1] * u1 + (float) ds[1] * um1);
+                                up[o + 2] += dA1 * ((float) du[2] * u0 + (float) ds[2] * um0);
+                                up[o + 3] += dA1 * ((float) du[3] * u1 + (float) ds[3] * um1);
+                            }
+                        }
+                    }
+                }
+                if (round + 1 < rounds) {
+                    ctx.asyncCopyWaitGroup(0);
+                }
+                ctx.localBarrier();
+            }
+
+            for (int t = 0; t < SUB_TILES; t++) {
+                for (int j = 0; j < 2; j++) {
+                    int col = blockCol + warp * 16 + j * 8 + colInWarp;
+                    for (int e = 0; e < 4; e++) {
+                        int row = t * 16 + rowInWarp + 8 * (e >> 1);
+                        if (row < rows) {
+                            float g = gate[t * 8 + j * 4 + e];
+                            hidden.set(
+                                    (rowStart + row) * hiddenDim + col + (e & 1),
+                                    g / (1.0f + TornadoMath.exp(-g)) * up[t * 8 + j * 4 + e]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** {@link #groupedDownQ8_0} over stacked Q4_K experts. */
+    public static void groupedDownQ4_K(
+            KernelContext ctx,
+            ByteArray h8,
+            FloatArray dH,
+            IntArray tiles,
+            ByteArray downExperts,
+            FloatArray out,
+            int dim,
+            int hiddenDim) {
+        int tid = ctx.localIdx;
+        int tile = ctx.groupIdy;
+        int blockCol = TILE_COLS * ctx.groupIdx;
+        if (tile < tiles.get(0) && blockCol < dim) {
+            int expert = tiles.get(1 + 3 * tile);
+            int rowStart = tiles.get(2 + 3 * tile);
+            int rows = tiles.get(3 + 3 * tile);
+            int warp = tid >> 5;
+            int lane = tid & 31;
+            int rounds = hiddenDim / (2 * QK);
+            int rowBytes = (hiddenDim / 256) * 144;
+            int firstRow = expert * dim + blockCol;
+
+            int[] aTile = ctx.allocateIntLocalArray(2 * 2 * A_WORDS);
+            int[] bTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            float[] sA = ctx.allocateFloatLocalArray(2 * 2 * TILE_ROWS);
+            float[] sW = ctx.allocateFloatLocalArray(2 * 256);
+            int[] ones = ctx.allocateIntLocalArray(64);
+            if (tid < 64) {
+                ones[tid] = 0x01010101;
+            }
+
+            float[] acc = new float[SUB_TILES * 8];
+            for (int i = 0; i < SUB_TILES * 8; i++) {
+                acc[i] = 0.0f;
+            }
+            int rowInWarp = lane >> 2;
+            int colInWarp = (lane & 3) << 1;
+            int activeSub = (rows + 15) >> 4;
+
+            stageA(ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, 0, 0, hiddenDim, tid);
+            stageBQ4_K(bTile, sW, downExperts, firstRow, rowBytes, 0, 0, tid);
+            ctx.asyncCopyCommit();
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+            byte[] fOnes = ctx.mmaLoadBInt8(ones, 32, 0);
+
+            for (int round = 0; round < rounds; round++) {
+                int buf = round & 1;
+                int next = 1 - buf;
+                if (round + 1 < rounds) {
+                    stageA(
+                            ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, round + 1, next,
+                            hiddenDim, tid);
+                    ctx.asyncCopyCommit();
+                    stageBQ4_K(bTile, sW, downExperts, firstRow, rowBytes, round + 1, next, tid);
+                }
+                for (int b = 0; b < 2; b++) {
+                    for (int j = 0; j < 2; j++) {
+                        int bOff = (buf * 2 + b) * B_WORDS * 4 + (warp * 2 + j) * 256;
+                        int sCol = buf * 256 + b * 128 + warp * 16 + j * 8 + colInWarp;
+                        byte[] fb = ctx.mmaLoadBInt8(bTile, 32, bOff);
+                        float w0 = sW[sCol];
+                        float w1 = sW[sCol + 1];
+                        int minCol = firstRow + warp * 16 + j * 8 + colInWarp;
+                        float m0 = minQ4_K(downExperts, minCol * rowBytes, round * 2 + b);
+                        float m1 = minQ4_K(downExperts, (minCol + 1) * rowBytes, round * 2 + b);
+                        for (int t = 0; t < SUB_TILES; t++) {
+                            if (t < activeSub) {
+                                byte[] fa =
+                                        ctx.mmaLoadAInt8(
+                                                aTile, 32, (buf * 2 + b) * A_WORDS * 4 + t * 512);
+                                int sRow = buf * 2 * TILE_ROWS + b * TILE_ROWS + t * 16 + rowInWarp;
+                                float dA0 = sA[sRow];
+                                float dA1 = sA[sRow + 8];
+                                int[] d =
+                                        ctx.mmaInt8(
+                                                fa, fb, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int[] ds =
+                                        ctx.mmaInt8(
+                                                fa,
+                                                fOnes,
+                                                ctx.mmaFragmentInt(0),
+                                                MMAShape.M16N8K32);
+                                int o = t * 8 + j * 4;
+                                acc[o] += dA0 * ((float) d[0] * w0 + (float) ds[0] * m0);
+                                acc[o + 1] += dA0 * ((float) d[1] * w1 + (float) ds[1] * m1);
+                                acc[o + 2] += dA1 * ((float) d[2] * w0 + (float) ds[2] * m0);
+                                acc[o + 3] += dA1 * ((float) d[3] * w1 + (float) ds[3] * m1);
+                            }
+                        }
+                    }
+                }
+                if (round + 1 < rounds) {
+                    ctx.asyncCopyWaitGroup(0);
+                }
+                ctx.localBarrier();
+            }
+
+            for (int t = 0; t < SUB_TILES; t++) {
+                for (int j = 0; j < 2; j++) {
+                    int col = blockCol + warp * 16 + j * 8 + colInWarp;
+                    for (int e = 0; e < 4; e++) {
+                        int row = t * 16 + rowInWarp + 8 * (e >> 1);
+                        if (row < rows) {
+                            out.set((rowStart + row) * dim + col + (e & 1), acc[t * 8 + j * 4 + e]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Quants {@code 2 kRow} and {@code 2 kRow + 1} of 32-block {@code blk} of the Q5_K row at byte
+     * {@code rowOffset}, as two int8 lanes of a 16-bit half-word.
+     */
+    private static int pairQ5_K(ByteArray w, int rowOffset, int blk, int kRow) {
+        int sub = blk & 7;
+        int superOffset = rowOffset + (blk >> 3) * 176;
+        int h = halfBits(w, superOffset + 48 + (sub >> 1) * 32 + (kRow << 1));
+        int high = halfBits(w, superOffset + 16 + (kRow << 1));
+        int shift = (sub & 1) << 2;
+        int v0 = ((h >> shift) & 0xF) | (((high >> sub) & 1) << 4);
+        int v1 = ((h >> (8 + shift)) & 0xF) | (((high >> (8 + sub)) & 1) << 4);
+        return v0 | (v1 << 8);
+    }
+
+    /** The scale of 32-block {@code blk} of the Q5_K row at byte {@code rowOffset}. */
+    private static float scaleQ5_K(ByteArray w, int rowOffset, int blk) {
+        int superOffset = rowOffset + (blk >> 3) * 176;
+        int packed = TransformerComputeKernelsQ4_K.scaleAndMin(w, superOffset + 4, blk & 7);
+        return w.getHalfFloat(superOffset).getFloat32() * (packed >> 8);
+    }
+
+    /** What 32-block {@code blk} of the Q5_K row at byte {@code rowOffset} adds per unit of x. */
+    private static float minQ5_K(ByteArray w, int rowOffset, int blk) {
+        int superOffset = rowOffset + (blk >> 3) * 176;
+        int packed = TransformerComputeKernelsQ4_K.scaleAndMin(w, superOffset + 4, blk & 7);
+        return -w.getHalfFloat(superOffset + 2).getFloat32() * (packed & 0xFF);
+    }
+
+    /**
+     * {@link #stageB} for Q5_K weights: the same tile, each word the int8 quants of two columns at
+     * one pair of k, decoded from Q5_K blocks.
+     */
+    private static void stageBQ5_K(
+            int[] bTile,
+            float[] sW,
+            ByteArray w,
+            int firstRow,
+            int rowBytes,
+            int round,
+            int buf,
+            int tid) {
+        int kRow = tid & 15;
+        int colPair = (tid >> 4) & 15;
+        int slot = ((colPair >> 2) << 6) + (kRow << 2) + (colPair & 3);
+        int row = firstRow + (colPair << 1);
+        int dst = buf * 2 * B_WORDS + slot;
+        for (int s = 0; s < 8; s++) {
+            int blk = round * 2 + (s >> 2);
+            int rowOffset = (row + (s & 3) * 32) * rowBytes;
+            bTile[dst + (s >> 2) * B_WORDS + (s & 3) * 256] =
+                    pairQ5_K(w, rowOffset, blk, kRow)
+                            | (pairQ5_K(w, rowOffset + rowBytes, blk, kRow) << 16);
+        }
+        int b = tid >> 7;
+        int col = tid & 127;
+        sW[buf * 256 + b * 128 + col] = scaleQ5_K(w, (firstRow + col) * rowBytes, round * 2 + b);
+    }
+
+    /** {@link #groupedGateUpQ8_0} over stacked Q5_K experts. */
+    public static void groupedGateUpQ5_K(
+            KernelContext ctx,
+            ByteArray a8,
+            FloatArray dA,
+            IntArray sortedToken,
+            IntArray tiles,
+            ByteArray gateExperts,
+            ByteArray upExperts,
+            FloatArray hidden,
+            int dim,
+            int hiddenDim) {
+        int tid = ctx.localIdx;
+        int tile = ctx.groupIdy;
+        int blockCol = TILE_COLS * ctx.groupIdx;
+        if (tile < tiles.get(0) && blockCol < hiddenDim) {
+            int expert = tiles.get(1 + 3 * tile);
+            int rowStart = tiles.get(2 + 3 * tile);
+            int rows = tiles.get(3 + 3 * tile);
+            int warp = tid >> 5;
+            int lane = tid & 31;
+            int rounds = dim / (2 * QK);
+            int rowBytes = (dim / 256) * 176;
+            int firstRow = expert * hiddenDim + blockCol;
+
+            int[] aTile = ctx.allocateIntLocalArray(2 * 2 * A_WORDS);
+            int[] gTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            int[] uTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            float[] sA = ctx.allocateFloatLocalArray(2 * 2 * TILE_ROWS);
+            float[] sG = ctx.allocateFloatLocalArray(2 * 256);
+            float[] sU = ctx.allocateFloatLocalArray(2 * 256);
+            int[] ones = ctx.allocateIntLocalArray(64);
+            if (tid < 64) {
+                ones[tid] = 0x01010101;
+            }
+
+            float[] gate = new float[SUB_TILES * 8];
+            float[] up = new float[SUB_TILES * 8];
+            for (int i = 0; i < SUB_TILES * 8; i++) {
+                gate[i] = 0.0f;
+                up[i] = 0.0f;
+            }
+            int rowInWarp = lane >> 2;
+            int colInWarp = (lane & 3) << 1;
+            int activeSub = (rows + 15) >> 4;
+
+            stageA(ctx, aTile, sA, a8, dA, sortedToken, 1, rowStart, rows, 0, 0, dim, tid);
+            stageBQ5_K(gTile, sG, gateExperts, firstRow, rowBytes, 0, 0, tid);
+            stageBQ5_K(uTile, sU, upExperts, firstRow, rowBytes, 0, 0, tid);
+            ctx.asyncCopyCommit();
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+            byte[] fOnes = ctx.mmaLoadBInt8(ones, 32, 0);
+
+            for (int round = 0; round < rounds; round++) {
+                int buf = round & 1;
+                int next = 1 - buf;
+                if (round + 1 < rounds) {
+                    stageA(
+                            ctx,
+                            aTile,
+                            sA,
+                            a8,
+                            dA,
+                            sortedToken,
+                            1,
+                            rowStart,
+                            rows,
+                            round + 1,
+                            next,
+                            dim,
+                            tid);
+                    ctx.asyncCopyCommit();
+                    stageBQ5_K(gTile, sG, gateExperts, firstRow, rowBytes, round + 1, next, tid);
+                    stageBQ5_K(uTile, sU, upExperts, firstRow, rowBytes, round + 1, next, tid);
+                }
+                for (int b = 0; b < 2; b++) {
+                    for (int j = 0; j < 2; j++) {
+                        int bOff = (buf * 2 + b) * B_WORDS * 4 + (warp * 2 + j) * 256;
+                        int sCol = buf * 256 + b * 128 + warp * 16 + j * 8 + colInWarp;
+                        byte[] fg = ctx.mmaLoadBInt8(gTile, 32, bOff);
+                        byte[] fu = ctx.mmaLoadBInt8(uTile, 32, bOff);
+                        float g0 = sG[sCol];
+                        float g1 = sG[sCol + 1];
+                        float u0 = sU[sCol];
+                        float u1 = sU[sCol + 1];
+                        // The minima are read where they lie: staged beside the scales they
+                        // would take the two tiles past 48 KB of shared memory.
+                        int minCol = firstRow + warp * 16 + j * 8 + colInWarp;
+                        int minBlk = round * 2 + b;
+                        float gm0 = minQ5_K(gateExperts, minCol * rowBytes, minBlk);
+                        float gm1 = minQ5_K(gateExperts, (minCol + 1) * rowBytes, minBlk);
+                        float um0 = minQ5_K(upExperts, minCol * rowBytes, minBlk);
+                        float um1 = minQ5_K(upExperts, (minCol + 1) * rowBytes, minBlk);
+                        for (int t = 0; t < SUB_TILES; t++) {
+                            if (t < activeSub) {
+                                byte[] fa =
+                                        ctx.mmaLoadAInt8(
+                                                aTile, 32, (buf * 2 + b) * A_WORDS * 4 + t * 512);
+                                int sRow = buf * 2 * TILE_ROWS + b * TILE_ROWS + t * 16 + rowInWarp;
+                                float dA0 = sA[sRow];
+                                float dA1 = sA[sRow + 8];
+                                int[] dg =
+                                        ctx.mmaInt8(
+                                                fa, fg, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int[] du =
+                                        ctx.mmaInt8(
+                                                fa, fu, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int[] ds =
+                                        ctx.mmaInt8(
+                                                fa,
+                                                fOnes,
+                                                ctx.mmaFragmentInt(0),
+                                                MMAShape.M16N8K32);
+                                int o = t * 8 + j * 4;
+                                gate[o] += dA0 * ((float) dg[0] * g0 + (float) ds[0] * gm0);
+                                gate[o + 1] += dA0 * ((float) dg[1] * g1 + (float) ds[1] * gm1);
+                                gate[o + 2] += dA1 * ((float) dg[2] * g0 + (float) ds[2] * gm0);
+                                gate[o + 3] += dA1 * ((float) dg[3] * g1 + (float) ds[3] * gm1);
+                                up[o] += dA0 * ((float) du[0] * u0 + (float) ds[0] * um0);
+                                up[o + 1] += dA0 * ((float) du[1] * u1 + (float) ds[1] * um1);
+                                up[o + 2] += dA1 * ((float) du[2] * u0 + (float) ds[2] * um0);
+                                up[o + 3] += dA1 * ((float) du[3] * u1 + (float) ds[3] * um1);
+                            }
+                        }
+                    }
+                }
+                if (round + 1 < rounds) {
+                    ctx.asyncCopyWaitGroup(0);
+                }
+                ctx.localBarrier();
+            }
+
+            for (int t = 0; t < SUB_TILES; t++) {
+                for (int j = 0; j < 2; j++) {
+                    int col = blockCol + warp * 16 + j * 8 + colInWarp;
+                    for (int e = 0; e < 4; e++) {
+                        int row = t * 16 + rowInWarp + 8 * (e >> 1);
+                        if (row < rows) {
+                            float g = gate[t * 8 + j * 4 + e];
+                            hidden.set(
+                                    (rowStart + row) * hiddenDim + col + (e & 1),
+                                    g / (1.0f + TornadoMath.exp(-g)) * up[t * 8 + j * 4 + e]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** {@link #groupedDownQ8_0} over stacked Q5_K experts. */
+    public static void groupedDownQ5_K(
+            KernelContext ctx,
+            ByteArray h8,
+            FloatArray dH,
+            IntArray tiles,
+            ByteArray downExperts,
+            FloatArray out,
+            int dim,
+            int hiddenDim) {
+        int tid = ctx.localIdx;
+        int tile = ctx.groupIdy;
+        int blockCol = TILE_COLS * ctx.groupIdx;
+        if (tile < tiles.get(0) && blockCol < dim) {
+            int expert = tiles.get(1 + 3 * tile);
+            int rowStart = tiles.get(2 + 3 * tile);
+            int rows = tiles.get(3 + 3 * tile);
+            int warp = tid >> 5;
+            int lane = tid & 31;
+            int rounds = hiddenDim / (2 * QK);
+            int rowBytes = (hiddenDim / 256) * 176;
+            int firstRow = expert * dim + blockCol;
+
+            int[] aTile = ctx.allocateIntLocalArray(2 * 2 * A_WORDS);
+            int[] bTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            float[] sA = ctx.allocateFloatLocalArray(2 * 2 * TILE_ROWS);
+            float[] sW = ctx.allocateFloatLocalArray(2 * 256);
+            int[] ones = ctx.allocateIntLocalArray(64);
+            if (tid < 64) {
+                ones[tid] = 0x01010101;
+            }
+
+            float[] acc = new float[SUB_TILES * 8];
+            for (int i = 0; i < SUB_TILES * 8; i++) {
+                acc[i] = 0.0f;
+            }
+            int rowInWarp = lane >> 2;
+            int colInWarp = (lane & 3) << 1;
+            int activeSub = (rows + 15) >> 4;
+
+            stageA(ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, 0, 0, hiddenDim, tid);
+            stageBQ5_K(bTile, sW, downExperts, firstRow, rowBytes, 0, 0, tid);
+            ctx.asyncCopyCommit();
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+            byte[] fOnes = ctx.mmaLoadBInt8(ones, 32, 0);
+
+            for (int round = 0; round < rounds; round++) {
+                int buf = round & 1;
+                int next = 1 - buf;
+                if (round + 1 < rounds) {
+                    stageA(
+                            ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, round + 1, next,
+                            hiddenDim, tid);
+                    ctx.asyncCopyCommit();
+                    stageBQ5_K(bTile, sW, downExperts, firstRow, rowBytes, round + 1, next, tid);
+                }
+                for (int b = 0; b < 2; b++) {
+                    for (int j = 0; j < 2; j++) {
+                        int bOff = (buf * 2 + b) * B_WORDS * 4 + (warp * 2 + j) * 256;
+                        int sCol = buf * 256 + b * 128 + warp * 16 + j * 8 + colInWarp;
+                        byte[] fb = ctx.mmaLoadBInt8(bTile, 32, bOff);
+                        float w0 = sW[sCol];
+                        float w1 = sW[sCol + 1];
+                        int minCol = firstRow + warp * 16 + j * 8 + colInWarp;
+                        float m0 = minQ5_K(downExperts, minCol * rowBytes, round * 2 + b);
+                        float m1 = minQ5_K(downExperts, (minCol + 1) * rowBytes, round * 2 + b);
+                        for (int t = 0; t < SUB_TILES; t++) {
+                            if (t < activeSub) {
+                                byte[] fa =
+                                        ctx.mmaLoadAInt8(
+                                                aTile, 32, (buf * 2 + b) * A_WORDS * 4 + t * 512);
+                                int sRow = buf * 2 * TILE_ROWS + b * TILE_ROWS + t * 16 + rowInWarp;
+                                float dA0 = sA[sRow];
+                                float dA1 = sA[sRow + 8];
+                                int[] d =
+                                        ctx.mmaInt8(
+                                                fa, fb, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int[] ds =
+                                        ctx.mmaInt8(
+                                                fa,
+                                                fOnes,
+                                                ctx.mmaFragmentInt(0),
+                                                MMAShape.M16N8K32);
+                                int o = t * 8 + j * 4;
+                                acc[o] += dA0 * ((float) d[0] * w0 + (float) ds[0] * m0);
+                                acc[o + 1] += dA0 * ((float) d[1] * w1 + (float) ds[1] * m1);
+                                acc[o + 2] += dA1 * ((float) d[2] * w0 + (float) ds[2] * m0);
+                                acc[o + 3] += dA1 * ((float) d[3] * w1 + (float) ds[3] * m1);
+                            }
+                        }
+                    }
+                }
+                if (round + 1 < rounds) {
+                    ctx.asyncCopyWaitGroup(0);
+                }
+                ctx.localBarrier();
+            }
+
+            for (int t = 0; t < SUB_TILES; t++) {
+                for (int j = 0; j < 2; j++) {
+                    int col = blockCol + warp * 16 + j * 8 + colInWarp;
+                    for (int e = 0; e < 4; e++) {
+                        int row = t * 16 + rowInWarp + 8 * (e >> 1);
+                        if (row < rows) {
+                            out.set((rowStart + row) * dim + col + (e & 1), acc[t * 8 + j * 4 + e]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * {@link #stageA} for one 32-block a round, the shape of the Q6_K GEMMs: 64 rows of 32 bytes,
+     * two words a lane.
+     */
+    private static void stageA1(
+            KernelContext ctx,
+            int[] aTile,
+            float[] sA,
+            ByteArray a8,
+            FloatArray dA,
+            IntArray sortedToken,
+            int gather,
+            int rowStart,
+            int rows,
+            int round,
+            int buf,
+            int k,
+            int tid) {
+        int kBlocks = k / QK;
+        for (int s = 0; s < 2; s++) {
+            int linear = tid + (s << 8);
+            int row = (linear >> 3) & 63;
+            int quad = linear & 7;
+            int sorted = rowStart + (row < rows ? row : 0);
+            int source = gather != 0 ? sortedToken.get(sorted) : sorted;
+            ctx.asyncCopyToLocal(
+                    aTile, buf * A_WORDS + linear, a8, source * k + round * QK + (quad << 2));
+        }
+        if (tid < TILE_ROWS) {
+            int sSorted = rowStart + (tid < rows ? tid : 0);
+            int sSource = gather != 0 ? sortedToken.get(sSorted) : sSorted;
+            sA[buf * TILE_ROWS + tid] = dA.get(sSource * kBlocks + round);
+        }
+    }
+
+    /**
+     * Quants {@code 2 kRow} and {@code 2 kRow + 1} of 32-block {@code blk} of the Q6_K row at byte
+     * {@code rowOffset}, minus 32, as two int8 lanes of a 16-bit half-word.
+     */
+    private static int pairQ6_K(ByteArray w, int rowOffset, int blk, int kRow) {
+        int inSuper = blk & 7;
+        int half = inSuper >> 2;
+        int group = inSuper & 3;
+        int superOffset = rowOffset + (blk >> 3) * 210;
+        int low = halfBits(w, superOffset + half * 64 + (group & 1) * 32 + (kRow << 1));
+        int high = halfBits(w, superOffset + 128 + half * 32 + (kRow << 1));
+        int nibble = (group >> 1) << 2;
+        int bits = group << 1;
+        int v0 = (((low >> nibble) & 0xF) | (((high >> bits) & 3) << 4)) - 32;
+        int v1 = (((low >> (8 + nibble)) & 0xF) | (((high >> (8 + bits)) & 3) << 4)) - 32;
+        return (v0 & 0xFF) | ((v1 & 0xFF) << 8);
+    }
+
+    /** The scale of sixteen-wide sub-block {@code sub} (0 or 1) of 32-block {@code blk}. */
+    private static float scaleQ6_K(ByteArray w, int rowOffset, int blk, int sub) {
+        int inSuper = blk & 7;
+        int superOffset = rowOffset + (blk >> 3) * 210;
+        int index = (inSuper >> 2) * 8 + (inSuper & 3) * 2 + sub;
+        return w.getHalfFloat(superOffset + 208).getFloat32() * w.get(superOffset + 192 + index);
+    }
+
+    /**
+     * One round of a Q6_K weight tile: real 32-block {@code round} staged as two virtual blocks,
+     * the first holding its quants at k below 16 and zeros above, the second the rest, each with
+     * its own sub-block's scale. One MMA over each is then a sixteen-wide dot product.
+     */
+    private static void stageBQ6_K(
+            int[] bTile,
+            float[] sW,
+            ByteArray w,
+            int firstRow,
+            int rowBytes,
+            int round,
+            int buf,
+            int tid) {
+        int kRow = tid & 15;
+        int colPair = (tid >> 4) & 15;
+        int slot = ((colPair >> 2) << 6) + (kRow << 2) + (colPair & 3);
+        int row = firstRow + (colPair << 1);
+        int dst = buf * 2 * B_WORDS + slot;
+        for (int s = 0; s < 8; s++) {
+            int virtual = s >> 2;
+            int keep = -(1 - ((kRow >> 3) ^ virtual));
+            int rowOffset = (row + (s & 3) * 32) * rowBytes;
+            bTile[dst + virtual * B_WORDS + (s & 3) * 256] =
+                    (pairQ6_K(w, rowOffset, round, kRow)
+                                    | (pairQ6_K(w, rowOffset + rowBytes, round, kRow) << 16))
+                            & keep;
+        }
+        int b = tid >> 7;
+        int col = tid & 127;
+        sW[buf * 256 + b * 128 + col] = scaleQ6_K(w, (firstRow + col) * rowBytes, round, b);
+    }
+
+    /**
+     * {@link #groupedGateUpQ8_0} over stacked Q6_K experts: one real 32-block of k a round, as two
+     * zero-padded virtual blocks ({@link #stageBQ6_K}) against the same activation block.
+     */
+    public static void groupedGateUpQ6_K(
+            KernelContext ctx,
+            ByteArray a8,
+            FloatArray dA,
+            IntArray sortedToken,
+            IntArray tiles,
+            ByteArray gateExperts,
+            ByteArray upExperts,
+            FloatArray hidden,
+            int dim,
+            int hiddenDim) {
+        int tid = ctx.localIdx;
+        int tile = ctx.groupIdy;
+        int blockCol = TILE_COLS * ctx.groupIdx;
+        if (tile < tiles.get(0) && blockCol < hiddenDim) {
+            int expert = tiles.get(1 + 3 * tile);
+            int rowStart = tiles.get(2 + 3 * tile);
+            int rows = tiles.get(3 + 3 * tile);
+            int warp = tid >> 5;
+            int lane = tid & 31;
+            int rounds = dim / QK;
+            int rowBytes = (dim / 256) * 210;
+            int firstRow = expert * hiddenDim + blockCol;
+
+            int[] aTile = ctx.allocateIntLocalArray(2 * A_WORDS);
+            int[] gTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            int[] uTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            float[] sA = ctx.allocateFloatLocalArray(2 * TILE_ROWS);
+            float[] sG = ctx.allocateFloatLocalArray(2 * 256);
+            float[] sU = ctx.allocateFloatLocalArray(2 * 256);
+
+            float[] gate = new float[SUB_TILES * 8];
+            float[] up = new float[SUB_TILES * 8];
+            for (int i = 0; i < SUB_TILES * 8; i++) {
+                gate[i] = 0.0f;
+                up[i] = 0.0f;
+            }
+            int rowInWarp = lane >> 2;
+            int colInWarp = (lane & 3) << 1;
+            int activeSub = (rows + 15) >> 4;
+
+            stageA1(ctx, aTile, sA, a8, dA, sortedToken, 1, rowStart, rows, 0, 0, dim, tid);
+            stageBQ6_K(gTile, sG, gateExperts, firstRow, rowBytes, 0, 0, tid);
+            stageBQ6_K(uTile, sU, upExperts, firstRow, rowBytes, 0, 0, tid);
+            ctx.asyncCopyCommit();
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+
+            for (int round = 0; round < rounds; round++) {
+                int buf = round & 1;
+                int next = 1 - buf;
+                if (round + 1 < rounds) {
+                    stageA1(
+                            ctx,
+                            aTile,
+                            sA,
+                            a8,
+                            dA,
+                            sortedToken,
+                            1,
+                            rowStart,
+                            rows,
+                            round + 1,
+                            next,
+                            dim,
+                            tid);
+                    ctx.asyncCopyCommit();
+                    stageBQ6_K(gTile, sG, gateExperts, firstRow, rowBytes, round + 1, next, tid);
+                    stageBQ6_K(uTile, sU, upExperts, firstRow, rowBytes, round + 1, next, tid);
+                }
+                for (int b = 0; b < 2; b++) {
+                    for (int j = 0; j < 2; j++) {
+                        int bOff = (buf * 2 + b) * B_WORDS * 4 + (warp * 2 + j) * 256;
+                        int sCol = buf * 256 + b * 128 + warp * 16 + j * 8 + colInWarp;
+                        byte[] fg = ctx.mmaLoadBInt8(gTile, 32, bOff);
+                        byte[] fu = ctx.mmaLoadBInt8(uTile, 32, bOff);
+                        float g0 = sG[sCol];
+                        float g1 = sG[sCol + 1];
+                        float u0 = sU[sCol];
+                        float u1 = sU[sCol + 1];
+                        for (int t = 0; t < SUB_TILES; t++) {
+                            if (t < activeSub) {
+                                byte[] fa =
+                                        ctx.mmaLoadAInt8(aTile, 32, buf * A_WORDS * 4 + t * 512);
+                                int sRow = buf * TILE_ROWS + t * 16 + rowInWarp;
+                                float dA0 = sA[sRow];
+                                float dA1 = sA[sRow + 8];
+                                int[] dg =
+                                        ctx.mmaInt8(
+                                                fa, fg, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int[] du =
+                                        ctx.mmaInt8(
+                                                fa, fu, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int o = t * 8 + j * 4;
+                                gate[o] += (float) dg[0] * dA0 * g0;
+                                gate[o + 1] += (float) dg[1] * dA0 * g1;
+                                gate[o + 2] += (float) dg[2] * dA1 * g0;
+                                gate[o + 3] += (float) dg[3] * dA1 * g1;
+                                up[o] += (float) du[0] * dA0 * u0;
+                                up[o + 1] += (float) du[1] * dA0 * u1;
+                                up[o + 2] += (float) du[2] * dA1 * u0;
+                                up[o + 3] += (float) du[3] * dA1 * u1;
+                            }
+                        }
+                    }
+                }
+                if (round + 1 < rounds) {
+                    ctx.asyncCopyWaitGroup(0);
+                }
+                ctx.localBarrier();
+            }
+
+            for (int t = 0; t < SUB_TILES; t++) {
+                for (int j = 0; j < 2; j++) {
+                    int col = blockCol + warp * 16 + j * 8 + colInWarp;
+                    for (int e = 0; e < 4; e++) {
+                        int row = t * 16 + rowInWarp + 8 * (e >> 1);
+                        if (row < rows) {
+                            float g = gate[t * 8 + j * 4 + e];
+                            hidden.set(
+                                    (rowStart + row) * hiddenDim + col + (e & 1),
+                                    g / (1.0f + TornadoMath.exp(-g)) * up[t * 8 + j * 4 + e]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** {@link #groupedDownQ8_0} over stacked Q6_K experts, staged as {@link #groupedGateUpQ6_K}. */
+    public static void groupedDownQ6_K(
+            KernelContext ctx,
+            ByteArray h8,
+            FloatArray dH,
+            IntArray tiles,
+            ByteArray downExperts,
+            FloatArray out,
+            int dim,
+            int hiddenDim) {
+        int tid = ctx.localIdx;
+        int tile = ctx.groupIdy;
+        int blockCol = TILE_COLS * ctx.groupIdx;
+        if (tile < tiles.get(0) && blockCol < dim) {
+            int expert = tiles.get(1 + 3 * tile);
+            int rowStart = tiles.get(2 + 3 * tile);
+            int rows = tiles.get(3 + 3 * tile);
+            int warp = tid >> 5;
+            int lane = tid & 31;
+            int rounds = hiddenDim / QK;
+            int rowBytes = (hiddenDim / 256) * 210;
+            int firstRow = expert * dim + blockCol;
+
+            int[] aTile = ctx.allocateIntLocalArray(2 * A_WORDS);
+            int[] bTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            float[] sA = ctx.allocateFloatLocalArray(2 * TILE_ROWS);
+            float[] sW = ctx.allocateFloatLocalArray(2 * 256);
+
+            float[] acc = new float[SUB_TILES * 8];
+            for (int i = 0; i < SUB_TILES * 8; i++) {
+                acc[i] = 0.0f;
+            }
+            int rowInWarp = lane >> 2;
+            int colInWarp = (lane & 3) << 1;
+            int activeSub = (rows + 15) >> 4;
+
+            stageA1(ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, 0, 0, hiddenDim, tid);
+            stageBQ6_K(bTile, sW, downExperts, firstRow, rowBytes, 0, 0, tid);
+            ctx.asyncCopyCommit();
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+
+            for (int round = 0; round < rounds; round++) {
+                int buf = round & 1;
+                int next = 1 - buf;
+                if (round + 1 < rounds) {
+                    stageA1(
+                            ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, round + 1, next,
+                            hiddenDim, tid);
+                    ctx.asyncCopyCommit();
+                    stageBQ6_K(bTile, sW, downExperts, firstRow, rowBytes, round + 1, next, tid);
+                }
+                for (int b = 0; b < 2; b++) {
+                    for (int j = 0; j < 2; j++) {
+                        int bOff = (buf * 2 + b) * B_WORDS * 4 + (warp * 2 + j) * 256;
+                        int sCol = buf * 256 + b * 128 + warp * 16 + j * 8 + colInWarp;
+                        byte[] fb = ctx.mmaLoadBInt8(bTile, 32, bOff);
+                        float w0 = sW[sCol];
+                        float w1 = sW[sCol + 1];
+                        for (int t = 0; t < SUB_TILES; t++) {
+                            if (t < activeSub) {
+                                byte[] fa =
+                                        ctx.mmaLoadAInt8(aTile, 32, buf * A_WORDS * 4 + t * 512);
+                                int sRow = buf * TILE_ROWS + t * 16 + rowInWarp;
+                                float dA0 = sA[sRow];
+                                float dA1 = sA[sRow + 8];
+                                int[] d =
+                                        ctx.mmaInt8(
+                                                fa, fb, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int o = t * 8 + j * 4;
+                                acc[o] += (float) d[0] * dA0 * w0;
+                                acc[o + 1] += (float) d[1] * dA0 * w1;
+                                acc[o + 2] += (float) d[2] * dA1 * w0;
+                                acc[o + 3] += (float) d[3] * dA1 * w1;
+                            }
+                        }
+                    }
+                }
+                if (round + 1 < rounds) {
+                    ctx.asyncCopyWaitGroup(0);
+                }
+                ctx.localBarrier();
+            }
+
+            for (int t = 0; t < SUB_TILES; t++) {
+                for (int j = 0; j < 2; j++) {
+                    int col = blockCol + warp * 16 + j * 8 + colInWarp;
+                    for (int e = 0; e < 4; e++) {
+                        int row = t * 16 + rowInWarp + 8 * (e >> 1);
+                        if (row < rows) {
+                            out.set((rowStart + row) * dim + col + (e & 1), acc[t * 8 + j * 4 + e]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /**
      * {@code residual[t][c] += sum over slots of weight[t][slot] * routed[position(t, slot)][c] +
      * sharedGate[t] * shared[t][c]}, the slots in order, for the active tokens. Worker: {@code

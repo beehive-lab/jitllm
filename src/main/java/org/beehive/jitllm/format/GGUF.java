@@ -219,6 +219,18 @@ public final class GGUF {
             // start the header's width before the tensor position to include header space
             long offset = mappingOffset - headerBytes;
             long size = sizeInBytes + headerBytes;
+            // FileChannel.map grows the file to cover a region past its end, so a size that does
+            // not fit is refused here and the model file is never written.
+            if (mappingOffset + sizeInBytes > fileChannel.size()) {
+                throw new IOException(
+                        "tensor "
+                                + ti.name()
+                                + " ("
+                                + ti.ggmlType()
+                                + ", "
+                                + sizeInBytes
+                                + " bytes) runs past the end of the file");
+            }
             MemorySegment memorySegment =
                     fileChannel.map(FileChannel.MapMode.PRIVATE, offset, size, arena);
 
@@ -245,6 +257,12 @@ public final class GGUF {
      * large tensors.
      */
     private static long tensorByteSize(GGUFTensorInfo ti) {
+        if (ti.ggmlType().getTypeSize() == Integer.MAX_VALUE) {
+            // A type with no block layout here: its size would be nonsense, and mapping it would
+            // run past the end of the file.
+            throw new UnsupportedOperationException(
+                    "tensor " + ti.name() + " is " + ti.ggmlType() + ", which jitllm cannot read");
+        }
         long numberOfElements = 1L;
         for (int dimension : ti.dimensions()) {
             numberOfElements *= dimension;

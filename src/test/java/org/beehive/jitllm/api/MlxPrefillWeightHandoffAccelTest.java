@@ -5,8 +5,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
-import org.beehive.jitllm.backend.tornado.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.golden.GoldenFixture;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.beehive.jitllm.runtime.backend.BackendId;
@@ -21,9 +21,9 @@ import org.junit.Test;
  * <p>Which ones those are depends on the representation, which is why each is exercised:
  *
  * <ul>
- *   <li>F16 — the prefill stacks Q/K/V and gate/up into copies, so it stops binding {@code wq},
- *       {@code wk}, {@code wv}, {@code w1} and {@code w3} and still binds {@code wo}, {@code w2}
- *       and the norms, which decode consumes;
+ *   <li>F16 — the prefill copies Q/K/V and gate/up into contiguous buffers, so it stops binding
+ *       {@code wq}, {@code wk}, {@code wv}, {@code w1} and {@code w3} and still binds {@code wo},
+ *       {@code w2} and the norms, which decode consumes;
  *   <li>Q8_0, affine or FP16 copies — the prefill binds none of the projections, so decode uploads
  *       all seven and consumes only the norms.
  * </ul>
