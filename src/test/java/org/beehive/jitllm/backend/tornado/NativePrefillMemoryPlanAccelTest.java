@@ -153,7 +153,7 @@ public class NativePrefillMemoryPlanAccelTest {
             // ── the confidence the model is actually entitled to ─────────────
             assertEquals(
                     "the native path's reservation overhead has not been bisected, so its plan"
-                            + " must not claim to be exact — only an exact plan refuses a load",
+                            + " must not claim to be exact — an exact plan over budget sets a default aside",
                     MemoryPlan.Confidence.CONSERVATIVE,
                     on.confidence());
         } finally {
@@ -195,7 +195,7 @@ public class NativePrefillMemoryPlanAccelTest {
                     constrained.fitsConfiguredBudget());
             assertEquals(
                     "a conservative plan must stay conservative under a tight budget, so that it"
-                            + " is reported to a person rather than used to refuse the load",
+                            + " is reported to a person rather than used to set a default aside",
                     MemoryPlan.Confidence.CONSERVATIVE,
                     constrained.confidence());
         } finally {

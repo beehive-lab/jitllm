@@ -314,16 +314,12 @@ public final class LoweredPlanSelection {
 
     /** Validates the program and lowers it, or throws naming what did not match. */
     public static TornadoVMMasterPlan lower(Model model, State state, MetricsSink sink) {
+        // Where a lowered plan allocates its device buffers, so where one that does not fit fails.
+        // Its callers report that: TornadoVMMasterPlan.initializeTornadoVMPlan and the facade's
+        // session.
+        var program = describe(model, state.executionPolicy(), keyValueRepresentation(state));
         TornadoVMMasterPlan plan =
-                loweringFor(model, executionMode(state))
-                        .lower(
-                                describe(
-                                        model,
-                                        state.executionPolicy(),
-                                        keyValueRepresentation(state)),
-                                state,
-                                model,
-                                sink);
+                loweringFor(model, executionMode(state)).lower(program, state, model, sink);
         LOWERED_PLANS.incrementAndGet();
         return plan;
     }

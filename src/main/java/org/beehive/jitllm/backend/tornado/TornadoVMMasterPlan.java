@@ -74,9 +74,9 @@ public interface TornadoVMMasterPlan {
         // why the boundary is the whole method rather than the construction sites inside it.
         try {
             return buildPlan(state, model, sink);
-        } catch (RuntimeException failure) {
+        } catch (RuntimeException | OutOfMemoryError failure) {
             if (DeviceMemoryExhaustedException.isDeviceExhaustion(failure)) {
-                throw DeviceMemoryExhaustedException.wrap(failure);
+                throw DeviceMemoryExhaustedException.buildingPlan(failure);
             }
             throw failure;
         }

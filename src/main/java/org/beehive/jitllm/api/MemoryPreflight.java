@@ -15,7 +15,9 @@ import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
- * Builds a {@link MemoryPlan} from a model file, and refuses a load that cannot fit.
+ * Builds a {@link MemoryPlan} from a model file. A load asks it which device default and which
+ * residency of decoded projections fit the configured budget; it never refuses a load: one that
+ * does not fit fails while allocating, with {@link InsufficientDeviceMemoryException}.
  *
  * <p>Package-private machinery behind {@link LocalModels#preflight}. It exists as its own type so
  * the facade stays a facade: this is where the backend is asked, and {@code LocalModels} does not
@@ -117,19 +119,13 @@ final class MemoryPreflight {
                                         options.storageOptions().usesFp16KeyValueCache()));
     }
 
-    // @formatter:off
     /**
      * {@code policy} with where its batched prefill keeps decoded projections settled for this
      * load: resident only when one copy per session fits beside everything else predicted,
-     * otherwise one per-chunk scratch. The layers then build what was predicted.
-     *
-     * <p>When even the per-chunk scratch cannot fit a budget the rest of the plan predicts exactly,
-     * the load is refused here, before any device allocation. A policy that pins the residency is
-     * kept as it is.
-     *
-     * @throws InsufficientDeviceMemoryException when neither representation fits
+     * otherwise one per-chunk scratch, the smaller, even where that is predicted not to fit either:
+     * the allocation then decides. The layers build what was chosen. A policy that pins the
+     * residency is kept as it is.
      */
-    // @formatter:on
     static ExecutionPolicy resolveDecodedProjections(
             Path modelFile, int contextLength, ModelOptions options, ExecutionPolicy policy) {
         try {
@@ -138,42 +134,24 @@ final class MemoryPreflight {
             if (workspace.isEmpty() || !workspace.get().hasResidencyChoice()) {
                 return policy;
             }
-            MemoryPlan others = plan(modelFile, contextLength, options, policy, false);
-            long budget = configuredBudgetBytes();
-            int sessions = options.maxConcurrentSessions();
-            if (budget > 0
-                    && others.confidence() == MemoryPlan.Confidence.EXACT
-                    && others.predictedBudgetBytes() + workspace.get().perChunkBytes() * sessions
-                            > budget) {
-                throw new InsufficientDeviceMemoryException(
-                        plan(
-                                modelFile,
-                                contextLength,
-                                options,
-                                withDecodedProjections(
-                                        policy, ExecutionPolicy.DecodedProjections.PER_CHUNK),
-                                true));
-            }
             if (policy.decodedProjections() != ExecutionPolicy.DecodedProjections.BACKEND) {
                 return policy;
             }
+            MemoryPlan others = plan(modelFile, contextLength, options, policy, false);
             boolean resident =
                     TornadoMemoryModel.residentDecodedProjections(
                             policy,
                             workspace.get(),
                             others.predictedBudgetBytes(),
-                            budget,
-                            sessions);
+                            configuredBudgetBytes(),
+                            options.maxConcurrentSessions());
             return withDecodedProjections(
                     policy,
                     resident
                             ? ExecutionPolicy.DecodedProjections.RESIDENT
                             : ExecutionPolicy.DecodedProjections.PER_CHUNK);
         } catch (IOException | RuntimeException unpredictable) {
-            if (unpredictable instanceof InsufficientDeviceMemoryException refused) {
-                throw refused;
-            }
-            // As the preflight: a prediction that cannot be made leaves the backend's own rule.
+            // A prediction that cannot be made leaves the backend's own rule.
             return policy;
         }
     }
@@ -200,55 +178,29 @@ final class MemoryPreflight {
         }
     }
 
+    // @formatter:off
     /**
-     * Fails a known-over-capacity load before the first device allocation.
+     * Whether a load under {@code policy} is predicted to fit the configured budget: not when an
+     * exact plan exceeds it, nor when even the plan's lower bound does, at any confidence. Asked of
+     * the device's default policy, which is resolved only once the model is loaded, to choose
+     * between its candidates; it refuses nothing. A prediction that cannot be computed does not
+     * count against a policy.
      *
-     * <p>Silent when the budget is unknown or the plan's confidence is not exact. **Refusing on an
-     * unreliable prediction would be worse than not predicting**: a conservative estimate that
-     * happens to exceed the budget would block a load that would in fact have run, and the caller
-     * has no way to overrule it. An under-confident plan is reported by {@link
-     * LocalModels#preflight}, where a person can read it, rather than enforced here.
-     *
-     * <p>Except where even its lower bound does not fit: a plan whose buffers, each counted once,
-     * already exceed the budget is refused at any known confidence ({@link
-     * MemoryPlan#exceedsConfiguredBudgetAtLowerBound}). That is what refuses a Metal load — capped
-     * at {@code CONSERVATIVE} — that could only die part-allocated, such as a 7B Q8_0 model whose
-     * MLX prefill adds a second form of its projections beside them.
+     * <p>Example: Mistral-7B Q8_0 on Metal under a 14 GB budget: MLX's copies of the projections do
+     * not fit beside the weights, so the default runs the JIT kernels.
      */
-    static void refuseIfOverCapacity(Path modelFile, int contextLength, ModelOptions options) {
-        MemoryPlan plan;
-        try {
-            plan = plan(modelFile, contextLength, options);
-        } catch (IOException | RuntimeException e) {
-            // A preflight that cannot be computed must not stop a load that might succeed. The
-            // load's own error is the better diagnostic in that case.
-            return;
-        }
-        if (refuses(plan)) {
-            throw new InsufficientDeviceMemoryException(plan);
-        }
-    }
-
-    /**
-     * Whether a load under {@code policy} rather than the options' own passes {@link
-     * #refuseIfOverCapacity}'s rule. Asked of the device's default policy, which is resolved only
-     * once the model is loaded: batched prefill with the native libraries can need more than the
-     * policy checked before the load. A prediction that cannot be computed does not count against
-     * it.
-     */
+    // @formatter:on
     static boolean fits(
             Path modelFile, int contextLength, ModelOptions options, ExecutionPolicy policy) {
         try {
-            return !refuses(plan(modelFile, contextLength, options, policy, true));
+            MemoryPlan plan = plan(modelFile, contextLength, options, policy, true);
+            boolean exactOver =
+                    plan.confidence() == MemoryPlan.Confidence.EXACT
+                            && !plan.fitsConfiguredBudget();
+            return !exactOver && !plan.exceedsConfiguredBudgetAtLowerBound();
         } catch (IOException | RuntimeException e) {
             return true;
         }
-    }
-
-    private static boolean refuses(MemoryPlan plan) {
-        boolean exactOver =
-                plan.confidence() == MemoryPlan.Confidence.EXACT && !plan.fitsConfiguredBudget();
-        return exactOver || plan.exceedsConfiguredBudgetAtLowerBound();
     }
 
     /**

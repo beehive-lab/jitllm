@@ -53,13 +53,12 @@ public final class LocalModels {
         int contextLength = options.contextLength() > 0 ? options.contextLength() : -1;
         boolean gpu = useGpu(options);
 
-        // Where a batched prefill keeps its decoded weights, settled against the budget the
-        // preflight predicts — refused here when nothing fits — so the layers build what was
-        // accounted.
+        // Where a batched prefill keeps its decoded weights, chosen against the budget the
+        // preflight predicts, so the layers build what was chosen. Nothing is refused on a
+        // prediction: a load that does not fit fails while allocating, below.
         ExecutionPolicy.DecodedProjections decodedProjections =
                 options.executionPolicy().decodedProjections();
         if (gpu) {
-            MemoryPreflight.refuseIfOverCapacity(modelFile, contextLength, options);
             decodedProjections =
                     MemoryPreflight.resolveDecodedProjections(
                                     modelFile, contextLength, options, options.executionPolicy())
@@ -69,7 +68,9 @@ public final class LocalModels {
         try {
             model = ModelLoader.loadModel(modelFile, contextLength, true, gpu);
         } catch (RuntimeException | OutOfMemoryError exhaustion) {
-            if (gpu && isDeviceMemoryExhaustion(exhaustion)) {
+            if (gpu
+                    && org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException
+                            .isDeviceExhaustion(exhaustion)) {
                 throw deviceMemoryExhausted(modelFile, options, exhaustion);
             }
             throw exhaustion;
@@ -117,65 +118,28 @@ public final class LocalModels {
     }
 
     /**
-     * Whether a load failure is the device running out of memory, in either form it arrives in.
-     *
-     * <p>Two distinct signatures, both observed on a real fixture:
-     *
-     * <ul>
-     *   <li>{@code TornadoOutOfMemoryException} — the backend's configured device budget is
-     *       exhausted while buffers are allocated;
-     *   <li>{@code java.lang.OutOfMemoryError: Cannot reserve … direct buffer memory} — the host
-     *       runs out of direct memory materializing the weights (a BF16 tensor's FP16 copy is made
-     *       there).
-     * </ul>
-     */
-    private static boolean isDeviceMemoryExhaustion(Throwable failure) {
-        for (Throwable t = failure; t != null; t = t.getCause()) {
-            String type = t.getClass().getName();
-            if (type.startsWith("uk.ac.manchester.tornado")
-                    && type.toLowerCase(java.util.Locale.ROOT).contains("outofmemory")) {
-                return true;
-            }
-            if (t instanceof OutOfMemoryError
-                    && t.getMessage() != null
-                    && t.getMessage().contains("direct buffer memory")) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
      * The same failure, told in this project's own terms.
      *
      * <p>What the caller saw before was the backend's message — a byte count and an instruction to
      * raise {@code -Dtornado.device.memory}, a TornadoVM-internal property rather than the {@code
-     * --gpu-memory} flag this project exposes. The prediction is included when it can still be
-     * produced, because it names the dominant component, which a byte count does not.
+     * --gpu-memory} flag this project exposes. The prediction is included, and attached, when it
+     * can still be produced, because it names the dominant component, which a byte count does not.
      */
     private static InsufficientDeviceMemoryException deviceMemoryExhausted(
             Path modelFile, ModelOptions options, Throwable cause) {
         StringBuilder message =
                 new StringBuilder(
-                                org.beehive.jitllm.runtime.diagnostics.DiagnosticCode
-                                        .DEVICE_MEMORY_INSUFFICIENT
-                                        .prefix())
-                        .append("The device ran out of memory loading ")
-                        .append(modelFile.getFileName())
-                        .append(
-                                ".\n  The preflight did not refuse this load beforehand: it reports")
-                        .append(" CONSERVATIVE confidence on this backend, which is report-only.\n")
-                        .append(
-                                "  Raise --gpu-memory, reduce the context length, or select a smaller")
-                        .append(" quantization.\n  Backend failure: ")
-                        .append(cause);
+                        org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException.message(
+                                "loading " + modelFile.getFileName(), cause));
+        MemoryPlan plan = null;
         try {
-            message.append("\n\n").append(preflight(modelFile, options).describe());
+            plan = preflight(modelFile, options);
+            message.append("\n\n").append(plan.describe());
         } catch (RuntimeException | java.io.IOException unavailable) {
             // A prediction is an aid here, not the finding — the exhaustion is already established.
             message.append("\n  (no memory plan available: ").append(unavailable).append(')');
         }
-        return new InsufficientDeviceMemoryException(message.toString(), cause);
+        return new InsufficientDeviceMemoryException(message.toString(), cause, plan);
     }
 
     /**
@@ -220,8 +184,6 @@ public final class LocalModels {
     /**
      * {@code policy} with its projection copies settled as a load settles them: kept for the whole
      * session where they fit the budget, one shared scratch refilled per chunk where they do not.
-     *
-     * @throws InsufficientDeviceMemoryException when even the scratch does not fit
      */
     @Experimental
     public static ExecutionPolicy resolveDecodedProjections(

@@ -76,9 +76,17 @@ final class LegacySessionRuntime implements SessionRuntime {
     @Override
     public TornadoVMMasterPlan plan() {
         if (plan == null) {
-            plan =
-                    TornadoVMMasterPlan.initializeTornadoVMPlan(
-                            state, model, RunMetricsSink.installedOrDisabled());
+            try {
+                plan =
+                        TornadoVMMasterPlan.initializeTornadoVMPlan(
+                                state, model, RunMetricsSink.installedOrDisabled());
+            } catch (RuntimeException | OutOfMemoryError failure) {
+                if (org.beehive.jitllm.backend.tornado.DeviceMemoryExhaustedException
+                        .isDeviceExhaustion(failure)) {
+                    throw InsufficientDeviceMemoryException.buildingSession(failure);
+                }
+                throw failure;
+            }
         }
         return plan;
     }

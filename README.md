@@ -258,15 +258,15 @@ Default device allocation is **14GB**. Larger models need more — raise it with
 Still out of memory? Use Q4_0 instead of Q8_0, or close other GPU apps. The error to look for:
 
 ```
-org.beehive.jitllm.api.InsufficientDeviceMemoryException: [GPUL-MEM-001] This configuration
-needs about 13826.6 MiB of device memory but the configured budget is 1024.0 MiB
-(short by 12802.6 MiB).
-  Dominant component: weights (per-layer) at 13313.0 MiB
-  Raise -Dtornado.device.memory, reduce the context length, or select a smaller quantization.
+org.beehive.jitllm.api.InsufficientDeviceMemoryException: [GPUL-MEM-001] The device ran out of
+memory while building the execution plan.
+  Raise --gpu-memory, reduce the context length, or select a smaller quantization.
+  Backend failure: ...TornadoOutOfMemoryException: Unable to allocate 2097168 bytes of memory.
 ```
 
-It is followed by a per-component device memory plan, so you can see what is actually
-consuming the budget before changing anything.
+A load that runs out while loading the weights also prints the predicted per-component device
+memory plan, so you can see what is consuming the budget before changing anything. Nothing is
+refused on that prediction beforehand.
 
 -----------
 
@@ -377,8 +377,9 @@ TornadoVM develop `3d2d9695`, `llama-bench` at `11fe021` with flash attention (t
 
 Mistral-7B Q8_0 measures 293 (jitllm) against 310 ± 69 (MLX, affine) and 372 (llama.cpp) with
 `--gpu-memory 17GB`; the spread reflects memory pressure on a 24 GB machine. Under the default
-14 GB budget `jitllm run` refuses the MLX load at the memory preflight (`GPUL-MEM-001`, before any
-device allocation); `jitllm bench` skips the preflight and fails part-allocated instead.
+14 GB budget the device default runs it on the JIT kernels, since its MLX copies are predicted not
+to fit; asked for MLX with `--with-native-libraries`, the load fails while allocating
+(`GPUL-MEM-001`, naming `--gpu-memory`).
 
 -----------
 
