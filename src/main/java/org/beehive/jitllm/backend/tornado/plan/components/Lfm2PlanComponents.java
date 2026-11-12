@@ -2,8 +2,8 @@ package org.beehive.jitllm.backend.tornado.plan.components;
 
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
-import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
+import org.beehive.jitllm.backend.tornado.layers.GraphNames;
 import org.beehive.jitllm.backend.tornado.layers.Lfm2Layers;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.type.q8_0.LogitsQ8_0Layer;
@@ -64,8 +64,7 @@ public class Lfm2PlanComponents implements PrefillDecodeForwardPlanComponents {
 
     @Override
     public TransformerLayerTaskGraphs prefillDecodeTransformerLayers() {
-        return new Lfm2Layers(
-                state, weights, config, schedulerType, GraphNames.DECODE_ACTIVATION);
+        return new Lfm2Layers(state, weights, config, schedulerType, GraphNames.DECODE_ACTIVATION);
     }
 
     @Override
