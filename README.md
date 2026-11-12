@@ -98,7 +98,7 @@ JitLLMChatModel model = JitLLMChatModel.builder()
 <dependency>
     <groupId>io.github.beehive-lab</groupId>
     <artifactId>jitllm</artifactId>
-    <version>2.0.0-jdk21</version>
+    <version>3.0.0-jdk21</version>
 </dependency>
 ```
 
@@ -107,7 +107,7 @@ JitLLMChatModel model = JitLLMChatModel.builder()
 <dependency>
     <groupId>io.github.beehive-lab</groupId>
     <artifactId>jitllm</artifactId>
-    <version>2.0.0-jdk22plus</version>
+    <version>3.0.0-jdk22plus</version>
 </dependency>
 ```
 
@@ -115,12 +115,12 @@ JitLLMChatModel model = JitLLMChatModel.builder()
 
 **JDK 21**:
 ```groovy
-implementation 'io.github.beehive-lab:jitllm:2.0.0-jdk21'
+implementation 'io.github.beehive-lab:jitllm:3.0.0-jdk21'
 ```
 
 **JDK 22+**:
 ```groovy
-implementation 'io.github.beehive-lab:jitllm:2.0.0-jdk22plus'
+implementation 'io.github.beehive-lab:jitllm:3.0.0-jdk22plus'
 ```
 <!-- DEPENDENCY-SNIPPETS:END -->
 
