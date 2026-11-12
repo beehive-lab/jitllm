@@ -7,7 +7,6 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Random;
-import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.inference.op.CpuOperations;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
@@ -241,7 +240,7 @@ public class Lfm2KernelAccelTest {
         if (simd) {
             assumeTrue(
                     "no 32-lane shuffle on this device",
-                    SchedulerDetectionService.isSubgroupShuffle32Supported());
+                    org.beehive.jitllm.backend.tornado.layers.Lfm2Layers.shuffle32());
         }
         int gateElements = EXPERTS * EXPERT_HIDDEN * DIM;
         byte[] gate = blocks(type, gateElements);
@@ -530,7 +529,7 @@ public class Lfm2KernelAccelTest {
         if (simd) {
             assumeTrue(
                     "no 32-lane shuffle on this device",
-                    SchedulerDetectionService.isSubgroupShuffle32Supported());
+                    org.beehive.jitllm.backend.tornado.layers.Lfm2Layers.shuffle32());
         }
         int experts = logits.length;
         int used = 4;

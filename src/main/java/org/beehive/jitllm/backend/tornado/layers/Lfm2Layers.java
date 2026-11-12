@@ -2,6 +2,7 @@ package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.ArrayList;
 import java.util.List;
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.Lfm2Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35AttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
@@ -18,6 +19,7 @@ import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.Lfm2State;
 import org.beehive.jitllm.inference.weights.tornado.Lfm2TornadoWeights;
 import org.beehive.jitllm.model.lfm2.Lfm2Configuration;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.TaskGraph;
@@ -611,7 +613,17 @@ public class Lfm2Layers
                 type == DataType.Q4_K
                         || type == DataType.Q5_K
                         || (!gateUp && type == DataType.Q6_K);
-        return kernel && SchedulerDetectionService.isSubgroupShuffle32Supported();
+        return kernel && shuffle32();
+    }
+
+    /**
+     * Whether the 32-lane shuffle reductions the SIMD-group kernels end with are verified on this
+     * device: Metal's grant, and CUDA's warp shuffle, which the packed kernels already reduce with.
+     * Not OpenCL, whose backend miscompiles the shuffle.
+     */
+    public static boolean shuffle32() {
+        return SchedulerDetectionService.isSubgroupShuffle32Supported()
+                || TornadoDevices.current().backend().equals(BackendId.CUDA);
     }
 
     /** The selected experts' gate/up with SwiGLU, one workgroup per (slot, row). */
@@ -961,8 +973,7 @@ public class Lfm2Layers
 
     /** Whether the router's selection runs on one SIMD group rather than one lane. */
     private boolean simdgroupSelect() {
-        return config.expertCount() <= Lfm2Kernels.MAX_EXPERTS
-                && SchedulerDetectionService.isSubgroupShuffle32Supported();
+        return config.expertCount() <= Lfm2Kernels.MAX_EXPERTS && shuffle32();
     }
 
     /** The grid of an expert projection over {@code rows} rows of a tensor in {@code type}. */

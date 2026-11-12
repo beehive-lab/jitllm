@@ -253,9 +253,14 @@ public class Fp16KeyValueSupportTest {
                     "lfm2moe " + mode,
                     Optional.empty(),
                     check("lfm2moe", DataType.Q4_K, mode, BackendId.METAL, false, false));
-            assertTrue(
+            assertEquals(
                     "lfm2moe " + mode + " on CUDA",
-                    check("lfm2moe", DataType.Q4_K, mode, BackendId.CUDA, true, true).isPresent());
+                    Optional.empty(),
+                    check("lfm2moe", DataType.Q4_K, mode, BackendId.CUDA, true, true));
+            assertTrue(
+                    "lfm2moe " + mode + " on OpenCL",
+                    check("lfm2moe", DataType.Q4_K, mode, BackendId.OPENCL, true, false)
+                            .isPresent());
         }
     }
 

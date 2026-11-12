@@ -99,12 +99,22 @@ public final class Lfm2PlanProvider implements TornadoPlanProvider {
     }
 
     /**
-     * On Metal the layers write and read the FP16 cache in both modes, held to the host's own FP16
-     * cache by {@code Lfm2Fp16KvParityAccelTest}. Elsewhere they keep the FP32 cache until measured
-     * there.
+     * On Metal the layers write and read the FP16 cache in every mode, held to the host's own FP16
+     * cache by {@code Lfm2Fp16KvParityAccelTest}.
      */
     @Override
     public Optional<String> metalFp16KeyValueUnsupported(Combination c) {
         return Optional.empty();
+    }
+
+    /**
+     * On CUDA, measured as on Metal ({@code Lfm2Fp16KvParityAccelTest}); OpenCL keeps the FP32
+     * cache until measured there.
+     */
+    @Override
+    public Optional<String> fp16KeyValueUnsupported(Combination c) {
+        return BackendId.CUDA.equals(c.backend())
+                ? Optional.empty()
+                : Optional.of("the lfm2moe layers keep an FP32 cache on " + c.backend());
     }
 }

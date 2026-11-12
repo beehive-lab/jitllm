@@ -26,26 +26,40 @@ public class Lfm2BatchedPrefillParityAccelTest extends CpuGpuParity {
 
     @Test
     public void lfm2_8b_a1b_batchedPrefillParityAt7() throws Exception {
+        assumeBatchedPrefillHere();
         assertParityBatched(Fixture.LFM2_8B_A1B_Q4_K_XL, FP16, 7);
     }
 
     @Test
     public void lfm2_8b_a1b_batchedPrefillParityAt64() throws Exception {
+        assumeBatchedPrefillHere();
         assertParityBatched(Fixture.LFM2_8B_A1B_Q4_K_XL, FP16, 64);
     }
 
     @Test
     public void lfm2_8b_a1b_batchedPrefillParityAt512() throws Exception {
+        assumeBatchedPrefillHere();
         assertParityBatched(Fixture.LFM2_8B_A1B_Q4_K_XL, FP16, 512);
     }
 
     @Test
     public void lfm2_5_24b_a2b_batchedPrefillParityAt64() throws Exception {
+        assumeBatchedPrefillHere();
         assertParityBatched(Fixture.LFM2_5_24B_A2B_Q4_K_XL, FP16, 64);
     }
 
     @Test
     public void lfm2_5_24b_a2b_batchedPrefillParityAt512() throws Exception {
+        assumeBatchedPrefillHere();
         assertParityBatched(Fixture.LFM2_5_24B_A2B_Q4_K_XL, FP16, 512);
+    }
+
+    /** The batched prefill is Metal's so far; the provider refuses it elsewhere by name. */
+    private static void assumeBatchedPrefillHere() {
+        org.junit.Assume.assumeTrue(
+                "the lfm2moe batched prefill runs on Metal",
+                org.beehive.jitllm.runtime.backend.BackendId.METAL.equals(
+                        org.beehive.jitllm.backend.tornado.device.TornadoDevices.current()
+                                .backend()));
     }
 }
