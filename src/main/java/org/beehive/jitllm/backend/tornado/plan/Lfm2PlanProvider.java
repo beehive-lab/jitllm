@@ -117,13 +117,11 @@ public final class Lfm2PlanProvider implements TornadoPlanProvider {
     }
 
     /**
-     * On CUDA, measured as on Metal ({@code Lfm2Fp16KvParityAccelTest}); OpenCL keeps the FP32
-     * cache until measured there.
+     * On CUDA and on OpenCL over an NVIDIA device, measured as on Metal ({@code
+     * Lfm2Fp16KvParityAccelTest}).
      */
     @Override
     public Optional<String> fp16KeyValueUnsupported(Combination c) {
-        return BackendId.CUDA.equals(c.backend())
-                ? Optional.empty()
-                : Optional.of("the lfm2moe layers keep an FP32 cache on " + c.backend());
+        return Optional.empty();
     }
 }
