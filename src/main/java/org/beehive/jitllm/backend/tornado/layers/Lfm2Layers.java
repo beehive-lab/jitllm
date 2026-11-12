@@ -63,6 +63,9 @@ public class Lfm2Layers
     /** The graph layer 0 consumes its activation from. */
     private final String activationGraphName;
 
+    /** The dense projections, each weight's kernel chosen from its representation. */
+    private final QuantizedProjections projections;
+
     public Lfm2Layers(
             Lfm2State state,
             Lfm2TornadoWeights weights,
@@ -80,6 +83,7 @@ public class Lfm2Layers
         super(state, weights, config, schedulerType);
         this.lfm2State = state;
         this.activationGraphName = activationGraphName;
+        this.projections = new QuantizedProjections(context, state.workspace, MATVEC_LOCAL);
         setupFFNLayers();
     }
 
@@ -138,7 +142,10 @@ public class Lfm2Layers
 
     // ── per-representation matrix-vector dispatch ─────────────────────────────
 
-    /** {@code out = w · x}, or {@code out += w · x}, by the representation {@code w} is in. */
+    /**
+     * {@code out = w · x}, or {@code wrapX += w · x}, by the representation {@code w} is in: the
+     * F32 router here, every quantized weight through {@link QuantizedProjections}.
+     */
     private void matVec(
             TaskGraph graph,
             int layer,
@@ -151,124 +158,30 @@ public class Lfm2Layers
             int d,
             boolean residual) {
         requireWholeBlocks(layer, role, w.dataType(), n);
-        switch (w.dataType()) {
-            case F32 -> {
-                if (residual) {
-                    throw unsupported(layer, task, role, w.dataType());
-                }
-                graph.task(
-                        task,
-                        TransformerComputeKernelsLayered::matrixVectorGeneric,
-                        context,
-                        x,
-                        out,
-                        w.asFloatArray(),
-                        n,
-                        d,
-                        MATVEC_LOCAL);
+        if (w.dataType() == DataType.F32) {
+            if (residual) {
+                throw unsupported(layer, task, role, w.dataType());
             }
-            case Q8_0 -> {
-                if (residual) {
-                    graph.task(
-                            task,
-                            TransformerComputeKernelsLayered
-                                    ::matrixVectorGenericWithResidualQ8_0Byte,
-                            context,
-                            x,
-                            out,
-                            w.asByteArray(),
-                            n,
-                            d,
-                            MATVEC_LOCAL);
-                } else {
-                    graph.task(
-                            task,
-                            TransformerComputeKernelsLayered::matrixVectorGenericQ8Byte,
-                            context,
-                            x,
-                            out,
-                            w.asByteArray(),
-                            n,
-                            d,
-                            MATVEC_LOCAL);
-                }
+            graph.task(
+                    task,
+                    TransformerComputeKernelsLayered::matrixVectorGeneric,
+                    context,
+                    x,
+                    out,
+                    w.asFloatArray(),
+                    n,
+                    d,
+                    MATVEC_LOCAL);
+            return;
+        }
+        if (residual) {
+            if (out != lfm2State.workspace.wrapX) {
+                throw new IllegalStateException(
+                        "lfm2moe layer " + layer + " task '" + task + "' adds into wrapX only");
             }
-            case Q4_K -> {
-                if (residual) {
-                    graph.task(
-                            task,
-                            TransformerComputeKernelsQ4_K::matrixVectorGenericWithResidualQ4_K,
-                            context,
-                            x,
-                            out,
-                            w.asByteArray(),
-                            n,
-                            d,
-                            MATVEC_LOCAL);
-                } else {
-                    graph.task(
-                            task,
-                            TransformerComputeKernelsQ4_K::matrixVectorGenericQ4_K,
-                            context,
-                            x,
-                            out,
-                            w.asByteArray(),
-                            n,
-                            d,
-                            MATVEC_LOCAL);
-                }
-            }
-            case Q5_K -> {
-                if (residual) {
-                    graph.task(
-                            task,
-                            TransformerComputeKernelsQ5_K::matrixVectorGenericWithResidualQ5_K,
-                            context,
-                            x,
-                            out,
-                            w.asByteArray(),
-                            n,
-                            d,
-                            MATVEC_LOCAL);
-                } else {
-                    graph.task(
-                            task,
-                            TransformerComputeKernelsQ5_K::matrixVectorGenericQ5_K,
-                            context,
-                            x,
-                            out,
-                            w.asByteArray(),
-                            n,
-                            d,
-                            MATVEC_LOCAL);
-                }
-            }
-            case Q6_K -> {
-                if (residual) {
-                    graph.task(
-                            task,
-                            TransformerComputeKernelsQ6_K::matrixVectorGenericWithResidualQ6_K,
-                            context,
-                            x,
-                            out,
-                            w.asByteArray(),
-                            n,
-                            d,
-                            MATVEC_LOCAL);
-                } else {
-                    graph.task(
-                            task,
-                            TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_K,
-                            context,
-                            x,
-                            out,
-                            w.asByteArray(),
-                            n,
-                            d,
-                            MATVEC_LOCAL);
-                }
-            }
-            default -> throw unsupported(layer, task, role, w.dataType());
+            projections.residualMatvec(graph, task + "_quantize", task, x, w, n, d);
+        } else {
+            projections.floatMatvec(graph, task, x, out, w, n, d);
         }
     }
 
@@ -569,41 +482,8 @@ public class Lfm2Layers
         var ws = lfm2State.workspace;
         TornadoTensor gate = require(weights.w1Layered, layerIndex, "ffn_gate");
         TornadoTensor up = require(weights.w3Layered, layerIndex, "ffn_up");
-        FusedOperandSupport.requireUniform(
-                "lfm2moe layer " + layerIndex + " fused gate/up feed-forward",
-                List.of("ffn_gate", "ffn_up"),
-                gate,
-                up);
-        switch (gate.dataType()) {
-            case Q8_0 ->
-                    layer.task(
-                            "ffn_gate_up",
-                            TransformerComputeKernelsLayered
-                                    ::fusedFeedForwardWithSiLUAndGLUActivationQ8_0Byte,
-                            context,
-                            ws.wrapXb,
-                            ws.wrapHb,
-                            gate.asByteArray(),
-                            up.asByteArray(),
-                            config.dim(),
-                            config.hiddenDim(),
-                            MATVEC_LOCAL);
-            case Q4_K ->
-                    layer.task(
-                            "ffn_gate_up",
-                            TransformerComputeKernelsQ4_K::fusedFFNGateUpSiLUQ4_K,
-                            context,
-                            ws.wrapXb,
-                            ws.wrapHb,
-                            gate.asByteArray(),
-                            up.asByteArray(),
-                            config.dim(),
-                            config.hiddenDim(),
-                            MATVEC_LOCAL);
-            default ->
-                    throw unsupported(
-                            layerIndex, "ffn_gate_up", "ffn_gate|ffn_up", gate.dataType());
-        }
+        requireWholeBlocks(layerIndex, "ffn_gate", gate.dataType(), config.dim());
+        projections.gateUp(layer, "ffn_gate_up", gate, up, config.dim(), config.hiddenDim());
         matVec(
                 layer,
                 layerIndex,
@@ -920,6 +800,7 @@ public class Lfm2Layers
                     valueStore(),
                     ws.wrapAtt,
                     ws.wrapHb,
+                    ws.wrapHb2,
                     ws.wrapSsmQkv,
                     ws.wrapSsmConvOut,
                     ws.wrapConvState,
@@ -939,6 +820,7 @@ public class Lfm2Layers
                     valueStore(),
                     ws.wrapAtt,
                     ws.wrapHb,
+                    ws.wrapHb2,
                     ws.wrapSsmQkv,
                     ws.wrapSsmConvOut,
                     ws.wrapConvState,
@@ -1015,10 +897,17 @@ public class Lfm2Layers
                         prefix + "moe_down",
                         expertWorker(weights.ffnDownExps[layer].dataType(), false, config.dim()));
             } else {
-                scheduler.addWorkerGrid(prefix + "ffn_gate_up", matVecWorker(config.hiddenDim()));
+                projections.addGateUpGrids(
+                        scheduler,
+                        prefix,
+                        "ffn_gate_up",
+                        weights.w1Layered[layer],
+                        weights.w3Layered[layer],
+                        config.hiddenDim());
                 scheduler.addWorkerGrid(prefix + "ffn_down_proj", matVecWorker(config.dim()));
             }
         }
+        projections.addGrids(scheduler);
         return scheduler;
     }
 
