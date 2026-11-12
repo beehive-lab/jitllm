@@ -520,7 +520,9 @@ public class Lfm2Layers
                 false);
         layer.task(
                 "moe_select",
-                Lfm2Kernels::selectExpertsSigmoid,
+                simdgroupSelect()
+                        ? Lfm2Kernels::selectExpertsSigmoidSimdgroup
+                        : Lfm2Kernels::selectExpertsSigmoid,
                 context,
                 ws.wrapRouterLogits,
                 require(weights.expProbsBias, layerIndex, "exp_probs_b").asFloatArray(),
@@ -857,7 +859,10 @@ public class Lfm2Layers
         WorkerGrid attention =
                 WorkerGridFactory.createAttentionWorker(config.numberOfHeads(), headDim);
         WorkerGrid conv = WorkerGridFactory.genericWorker(config.dim(), ELEMENTWISE_LOCAL);
-        WorkerGrid single = WorkerGridFactory.genericWorker(1, 1);
+        WorkerGrid single =
+                simdgroupSelect()
+                        ? WorkerGridFactory.genericWorker(32, 32)
+                        : WorkerGridFactory.genericWorker(1, 1);
 
         for (int layer = 0; layer < config.numberOfLayers(); layer++) {
             String prefix = GraphNames.layer(layer) + ".";
@@ -909,6 +914,12 @@ public class Lfm2Layers
         }
         projections.addGrids(scheduler);
         return scheduler;
+    }
+
+    /** Whether the router's selection runs on one SIMD group rather than one lane. */
+    private boolean simdgroupSelect() {
+        return config.expertCount() <= Lfm2Kernels.MAX_EXPERTS
+                && SchedulerDetectionService.isSubgroupShuffle32Supported();
     }
 
     /** The grid of an expert projection over {@code rows} rows of a tensor in {@code type}. */

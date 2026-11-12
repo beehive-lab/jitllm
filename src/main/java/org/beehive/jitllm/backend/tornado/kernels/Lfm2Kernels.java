@@ -121,6 +121,78 @@ public final class Lfm2Kernels {
         }
     }
 
+    /** Experts {@link #selectExpertsSigmoidSimdgroup} holds in threadgroup memory. */
+    public static final int MAX_EXPERTS = 256;
+
+    /**
+     * {@link #selectExpertsSigmoid} on one SIMD group: each round takes the largest score across
+     * the lanes, then the lowest index among the lanes that hold it, so the same tie rule. Example:
+     * LFM2.5-24B-A2B, 64 experts, two per lane, four rounds. Launch one workgroup of 32 threads.
+     */
+    public static void selectExpertsSigmoidSimdgroup(
+            KernelContext context,
+            FloatArray logits,
+            FloatArray bias,
+            IntArray selected,
+            FloatArray weights,
+            int experts,
+            int used) {
+        int lane = context.localIdx;
+        float[] scores = context.allocateFloatLocalArray(MAX_EXPERTS);
+        float[] probs = context.allocateFloatLocalArray(MAX_EXPERTS);
+        for (int e = lane; e < experts; e += 32) {
+            float p = 1.0f / (1.0f + TornadoMath.exp(-logits.get(e)));
+            probs[e] = p;
+            scores[e] = p + bias.get(e);
+        }
+        context.localBarrier();
+        float total = 0.0f;
+        for (int k = 0; k < used; k++) {
+            float best = Float.NEGATIVE_INFINITY;
+            float bestIndex = 1.0e9f;
+            for (int e = lane; e < experts; e += 32) {
+                float score = scores[e];
+                if (score > best) {
+                    best = score;
+                    bestIndex = e;
+                }
+            }
+            float max = best;
+            max = TornadoMath.max(max, context.simdShuffleDown(max, 16));
+            max = TornadoMath.max(max, context.simdShuffleDown(max, 8));
+            max = TornadoMath.max(max, context.simdShuffleDown(max, 4));
+            max = TornadoMath.max(max, context.simdShuffleDown(max, 2));
+            max = TornadoMath.max(max, context.simdShuffleDown(max, 1));
+            max = context.simdBroadcastFirst(max);
+            float index = best == max ? bestIndex : 1.0e9f;
+            index = TornadoMath.min(index, context.simdShuffleDown(index, 16));
+            index = TornadoMath.min(index, context.simdShuffleDown(index, 8));
+            index = TornadoMath.min(index, context.simdShuffleDown(index, 4));
+            index = TornadoMath.min(index, context.simdShuffleDown(index, 2));
+            index = TornadoMath.min(index, context.simdShuffleDown(index, 1));
+            int chosen = (int) context.simdBroadcastFirst(index);
+            float w = probs[chosen];
+            total += w;
+            if (lane == 0) {
+                selected.set(k, chosen);
+                weights.set(k, w);
+            }
+            context.localBarrier();
+            if (lane == chosen % 32) {
+                scores[chosen] = Float.NEGATIVE_INFINITY;
+            }
+            context.localBarrier();
+        }
+        if (lane == 0) {
+            if (total < 6.103515625e-5f) {
+                total = 6.103515625e-5f;
+            }
+            for (int j = 0; j < used; j++) {
+                weights.set(j, weights.get(j) / total);
+            }
+        }
+    }
+
     // ── Q4_K ─────────────────────────────────────────────────────────────────────
 
     /** Lane-partial dot of global row {@code row} of a Q4_K matrix with {@code x[xOffset..]}. */

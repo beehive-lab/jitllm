@@ -511,10 +511,29 @@ public class Lfm2KernelAccelTest {
 
     @Test
     public void routerSelectionMatchesTheHost() {
-        int experts = 64;
+        assertRouterMatchesHost(noise(64, 2f), noise(64, 0.5f), false);
+    }
+
+    /** The SIMD-group selection the layers take on a device with a 32-lane shuffle. */
+    @Test
+    public void routerSelectionSimdgroupMatchesTheHost() {
+        assertRouterMatchesHost(noise(64, 2f), noise(64, 0.5f), true);
+    }
+
+    /** Equal scores everywhere: both selections take the lowest indices, in order. */
+    @Test
+    public void routerSelectionSimdgroupBreaksTiesByIndex() {
+        assertRouterMatchesHost(new float[64], new float[64], true);
+    }
+
+    private void assertRouterMatchesHost(float[] logits, float[] bias, boolean simd) {
+        if (simd) {
+            assumeTrue(
+                    "no 32-lane shuffle on this device",
+                    SchedulerDetectionService.isSubgroupShuffle32Supported());
+        }
+        int experts = logits.length;
         int used = 4;
-        float[] logits = noise(experts, 2f);
-        float[] bias = noise(experts, 0.5f);
 
         FloatArray dLogits = device(logits);
         IntArray selected = new IntArray(used);
@@ -526,7 +545,9 @@ public class Lfm2KernelAccelTest {
                         .transferToDevice(DataTransferMode.FIRST_EXECUTION, context, dLogits, dBias)
                         .task(
                                 "select",
-                                Lfm2Kernels::selectExpertsSigmoid,
+                                simd
+                                        ? Lfm2Kernels::selectExpertsSigmoidSimdgroup
+                                        : Lfm2Kernels::selectExpertsSigmoid,
                                 context,
                                 dLogits,
                                 dBias,
@@ -536,7 +557,7 @@ public class Lfm2KernelAccelTest {
                                 used)
                         .transferToHost(DataTransferMode.EVERY_EXECUTION, selected, weights);
         GridScheduler scheduler = new GridScheduler();
-        scheduler.addWorkerGrid("router.select", grid(1, 1));
+        scheduler.addWorkerGrid("router.select", simd ? grid(32, 32) : grid(1, 1));
         run(graph, scheduler);
 
         // The host router takes the projection; an identity router makes its input the logits.
