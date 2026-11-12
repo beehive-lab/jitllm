@@ -247,6 +247,16 @@ public class Fp16KeyValueSupportTest {
                         check("devstral", weights, mode, BackendId.METAL, false, false));
             }
         }
+        for (ExecutionMode mode :
+                new ExecutionMode[] {ExecutionMode.STANDARD, ExecutionMode.PREFILL_DECODE}) {
+            assertEquals(
+                    "lfm2moe " + mode,
+                    Optional.empty(),
+                    check("lfm2moe", DataType.Q4_K, mode, BackendId.METAL, false, false));
+            assertTrue(
+                    "lfm2moe " + mode + " on CUDA",
+                    check("lfm2moe", DataType.Q4_K, mode, BackendId.CUDA, true, true).isPresent());
+        }
     }
 
     @Test
