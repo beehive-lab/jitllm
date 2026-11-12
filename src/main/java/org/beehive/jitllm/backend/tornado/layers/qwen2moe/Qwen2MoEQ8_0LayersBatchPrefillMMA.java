@@ -75,7 +75,10 @@ public class Qwen2MoEQ8_0LayersBatchPrefillMMA extends Qwen2Q8_0LayersBatchPrefi
     /** Which of cuBLAS and the JIT GEMMs runs the FP16 shared experts. */
     private WorkPlan sharedPlan;
 
-    /** The plan's arrays: the tasks this class adds name their buffers themselves. */
+    /**
+     * No arrays: the plan picks only {@link LayerProjections}, which reads none, because the tasks
+     * this class adds name their buffers themselves.
+     */
     private static final Operands NO_OPERANDS =
             Operands.of(java.util.Map.of(), (role, layer) -> null, List.of());
 
@@ -457,6 +460,43 @@ public class Qwen2MoEQ8_0LayersBatchPrefillMMA extends Qwen2Q8_0LayersBatchPrefi
         }
     }
 
+    /**
+     * The grid of the JIT GEMM {@link #project} added for {@code step}; none for a cuBLAS call.
+     * Example: {@code batchPrefillLayer_3.sharedGateUpProj} over the padded rows and gate|up's
+     * columns. A split projection's grids replace it ({@link FP16Projections#addGrids}).
+     */
+    @Override
+    public void addProjectionGrids(
+            GridScheduler scheduler, String graph, Step step, boolean cublas) {
+        if (cublas) {
+            return;
+        }
+        String p = graph + ".";
+        switch (step.first(MatMul.class).weight().role()) {
+            case MOE_SHARED_GATE ->
+                    scheduler.addWorkerGrid(
+                            p + "sharedGateUpProj",
+                            mmaGrid(paddedBatch, 2 * moeConfig().sharedExpertHiddenDim()));
+            case MOE_SHARED_DOWN ->
+                    scheduler.addWorkerGrid(
+                            p + "sharedDownProj", mmaGrid(paddedBatch, moeConfig().dim()));
+            default ->
+                    throw new IllegalArgumentException("not a shared expert projection: " + step);
+        }
+    }
+
+    @Override
+    public void updateGridScheduler(GridScheduler scheduler) {
+        super.updateGridScheduler(scheduler);
+        if (anyFP16Shared()) {
+            // The shared experts' GEMMs, for what their plan picked (addProjectionGrids); then the
+            // decoders' and the split projections', which replace a split GEMM's.
+            FP16Projections projections = sharedProjections();
+            sharedPlan.addGrids(scheduler);
+            projections.addGrids(scheduler);
+        }
+    }
+
     @Override
     protected void addFeedForwardGrids(GridScheduler scheduler, String p, int layerIndex) {
         int dim = moeConfig().dim();
@@ -479,11 +519,8 @@ public class Qwen2MoEQ8_0LayersBatchPrefillMMA extends Qwen2Q8_0LayersBatchPrefi
             scheduler.addWorkerGrid(
                     p + "shared_rms_apply16",
                     WorkerGridFactory.genericWorker(batchSize * dim, 256));
-            scheduler.addWorkerGrid(p + "sharedGateUpProj", mmaGrid(paddedBatch, 2 * shared));
             scheduler.addWorkerGrid(p + "shared_swiglu", elementwiseGrid(batchSize * shared));
-            scheduler.addWorkerGrid(p + "sharedDownProj", mmaGrid(paddedBatch, dim));
-            // After the GEMMs' grids, which a split projection's replace.
-            sharedProjections().addGrids(scheduler);
+            // The GEMMs' grids follow the plan's choice (updateGridScheduler).
         }
         moe().addExpertGrids(scheduler, p, layerIndex, !fp16Shared);
     }

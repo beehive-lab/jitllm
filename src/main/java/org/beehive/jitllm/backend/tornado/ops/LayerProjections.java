@@ -3,7 +3,9 @@ package org.beehive.jitllm.backend.tornado.ops;
 import static org.beehive.jitllm.program.op.OperationKind.MAT_MUL;
 import static org.beehive.jitllm.program.op.OperationKind.RESIDUAL_ADD;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -12,8 +14,11 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 
 /**
  * The projections of a batched-prefill layer class that adds the tasks of each one itself, on the
- * JIT kernels or on cuBLAS. The layer class keeps the kernels, uploads the weights and registers
- * the grids; the plan picks, for each projection, which of the two runs it.
+ * JIT kernels or on cuBLAS. The layer class keeps the kernels and uploads the weights; the plan
+ * picks, for each projection, which of the two runs it.
+ *
+ * <p>Its instance reads neither the operands nor the weight bindings it is given: the layer's tasks
+ * name their own buffers, and the layer binds its weights to its graphs.
  *
  * <p>Example: Qwen3.5's Q8_0 ssm_alpha has 16 outputs, which the int8 GEMM does not tile. It runs
  * on cuBLAS TF32 under native libraries, and on the warp kernel without them.
@@ -27,6 +32,15 @@ public abstract class LayerProjections implements Implementation {
 
         /** Adds the tasks of {@code step}'s projection, on cuBLAS or on the JIT kernels. */
         void project(TaskGraph graph, Step step, Operands operands, boolean cublas);
+
+        /**
+         * Adds the worker grids of the tasks {@link #project} added for {@code step} to {@code
+         * graph}. Example: Qwen3 F16's JIT q|k|v projection in {@code batchPrefillLayer_3} adds
+         * {@code batchPrefillLayer_3.qkvProj}; a cuBLAS call takes none. A layer that registers
+         * these grids itself keeps the default.
+         */
+        default void addProjectionGrids(
+                GridScheduler scheduler, String graph, Step step, boolean cublas) {}
     }
 
     /** One projection. */
@@ -70,14 +84,24 @@ public abstract class LayerProjections implements Implementation {
     public Instance create(
             List<Step> steps, Target target, KernelContext context, WeightPrepacking prepacking) {
         return new Instance() {
+
+            /** Each step this instance added, with its graph's name, in order. */
+            private final List<Map.Entry<String, Step>> added = new ArrayList<>();
+
             @Override
             public void emit(
                     TaskGraph graph, Step step, Operands operands, WeightBindings bindings) {
                 tasks.project(graph, step, operands, cublas());
+                added.add(Map.entry(graph.getTaskGraphName(), step));
             }
 
             @Override
-            public void addGrids(GridScheduler scheduler) {}
+            public void addGrids(GridScheduler scheduler) {
+                added.forEach(
+                        e ->
+                                tasks.addProjectionGrids(
+                                        scheduler, e.getKey(), e.getValue(), cublas()));
+            }
         };
     }
 }

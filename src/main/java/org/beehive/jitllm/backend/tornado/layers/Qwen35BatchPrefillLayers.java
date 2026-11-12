@@ -23,7 +23,6 @@ import org.beehive.jitllm.backend.tornado.ops.WorkPlan;
 import org.beehive.jitllm.backend.tornado.ops.jit.JitLayerProjections;
 import org.beehive.jitllm.backend.tornado.ops.nativelib.nvidia.CublasLayerProjections;
 import org.beehive.jitllm.backend.tornado.plan.FusedOperandSupport;
-import org.beehive.jitllm.backend.tornado.plan.WeightBindings;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -148,9 +147,6 @@ public class Qwen35BatchPrefillLayers
 
     /** Which of cuBLAS and the JIT kernels runs each projection. */
     private final WorkPlan plan;
-
-    /** The plan's record of the weights its steps read, which this class does not need. */
-    private final WeightBindings bindings = new WeightBindings();
 
     private final List<ImmutableTaskGraph> graphs;
     private String lastLayerTaskGraphID;
@@ -1165,7 +1161,12 @@ public class Qwen35BatchPrefillLayers
                             + "' does not match its region "
                             + region);
         }
-        plan.emit(graph, region, Qwen35PrefillRegions.operands(xBatch, outBatch, w), bindings);
+        // The plan's one record of who uploads each weight; the adapters it picks add nothing.
+        plan.emit(
+                graph,
+                region,
+                Qwen35PrefillRegions.operands(xBatch, outBatch, w),
+                state.workspace.weightBindings);
     }
 
     /**
@@ -3231,6 +3232,15 @@ public class Qwen35BatchPrefillLayers
 
         for (int layer = firstLayer; layer < endLayer; layer++) {
             String prefix = family.batchLayer(layer) + ".";
+            // The attention and recurrent projections' grids, from the typed table: q, k, v and
+            // output on an attention layer, the ssm projections on a recurrent one. The
+            // feed-forward's, below, depend on how gate and up were fused.
+            for (Qwen35PrefillRegions.Projection p : projections) {
+                if (p.tensor(layer) != null && !p.task().startsWith("ffn_")) {
+                    scheduler.addWorkerGrid(
+                            prefix + p.task(), matVecWorker(prefix + p.task(), p.outputs()));
+                }
+            }
             scheduler.addWorkerGrid(prefix + "attn_rms_reduce", rmsReduce);
             scheduler.addWorkerGrid(prefix + "ffn_rms_reduce", rmsReduce);
             scheduler.addWorkerGrid(prefix + "attn_rms_apply", rmsApply);
@@ -3280,23 +3290,6 @@ public class Qwen35BatchPrefillLayers
             }
 
             if (config.isRecurrentLayer(layer)) {
-                scheduler.addWorkerGrid(
-                        prefix + "ssm_qkv_proj",
-                        matVecWorker(prefix + "ssm_qkv_proj", config.deltaNetConvDim()));
-                scheduler.addWorkerGrid(
-                        prefix + "ssm_gate_proj",
-                        matVecWorker(prefix + "ssm_gate_proj", config.deltaNetValueDim()));
-                scheduler.addWorkerGrid(
-                        prefix + "ssm_beta_proj",
-                        matVecWorker(prefix + "ssm_beta_proj", config.numberOfValueHeads()));
-                scheduler.addWorkerGrid(
-                        prefix + "ssm_alpha_proj",
-                        matVecWorker(prefix + "ssm_alpha_proj", config.numberOfValueHeads()));
-                if (alphaBetaFused.contains(prefix)) {
-                    scheduler.addWorkerGrid(
-                            prefix + "ssm_alpha_beta",
-                            WorkerGridFactory.genericWorker(batchSize * 128, 128));
-                }
                 if (alphaBetaFused.contains(prefix)) {
                     scheduler.addWorkerGrid(
                             prefix + "ssm_alpha_beta",
@@ -3318,33 +3311,18 @@ public class Qwen35BatchPrefillLayers
                 scheduler.addWorkerGrid(prefix + "ssm_scale_q", keyDim);
                 scheduler.addWorkerGrid(prefix + "ssm_delta_rule", deltaColumns);
                 scheduler.addWorkerGrid(prefix + "ssm_gated_norm", valueHeads);
-                scheduler.addWorkerGrid(
-                        prefix + "ssm_out_proj",
-                        matVecWorker(prefix + "ssm_out_proj", config.dim()));
                 if (onTensorCores(prefix + "ssm_out_proj")) {
                     if (!quantizeTasks.containsKey(prefix + "ssm_out_q8")) {
                         scheduler.addWorkerGrid(prefix + "ssm_out_fp16", ssmOutFP16Convert);
                     }
                 }
             } else {
-                scheduler.addWorkerGrid(
-                        prefix + "attn_q_proj",
-                        matVecWorker(prefix + "attn_q_proj", config.queryGateDim()));
-                scheduler.addWorkerGrid(
-                        prefix + "attn_k_proj",
-                        matVecWorker(prefix + "attn_k_proj", config.kvDim()));
-                scheduler.addWorkerGrid(
-                        prefix + "attn_v_proj",
-                        matVecWorker(prefix + "attn_v_proj", config.kvDim()));
                 scheduler.addWorkerGrid(prefix + "attn_split_query_gate", queryGate);
                 scheduler.addWorkerGrid(prefix + "attn_qk_norm", qkNorm);
                 scheduler.addWorkerGrid(prefix + "attn_rope", rope);
                 scheduler.addWorkerGrid(prefix + "attn_kv_append", kvAppend);
                 scheduler.addWorkerGrid(prefix + "attention", attention);
                 scheduler.addWorkerGrid(prefix + "attn_output_gate", outputGate);
-                scheduler.addWorkerGrid(
-                        prefix + "attn_output_proj",
-                        matVecWorker(prefix + "attn_output_proj", config.dim()));
                 if (onTensorCores(prefix + "attn_output_proj")) {
                     if (!quantizeTasks.containsKey(prefix + "attn_output_q8")) {
                         scheduler.addWorkerGrid(prefix + "attn_output_fp16", attnOutputFP16Convert);

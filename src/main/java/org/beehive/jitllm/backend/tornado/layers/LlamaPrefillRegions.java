@@ -4,10 +4,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.function.BiFunction;
 import org.beehive.jitllm.backend.tornado.ops.Region;
 import org.beehive.jitllm.model.Configuration;
+import org.beehive.jitllm.model.architecture.GraniteProgramDescription;
+import org.beehive.jitllm.model.architecture.LlamaProgramDescription;
+import org.beehive.jitllm.model.granite.GraniteConfiguration;
 import org.beehive.jitllm.program.op.Attention;
 import org.beehive.jitllm.program.op.MatMul;
 import org.beehive.jitllm.program.op.OperandRef;
@@ -81,7 +83,7 @@ public final class LlamaPrefillRegions {
             boolean denseFeedForward,
             BiFunction<TensorRole, Integer, DataType> type) {
         int dim = config.dim();
-        int qDim = config.numberOfHeads() * config.headSize();
+        int qDim = config.queryDim();
         int kvDim = config.kvDim();
         int hidden = config.hiddenDim();
         float eps = config.rmsNormEps();
@@ -242,19 +244,31 @@ public final class LlamaPrefillRegions {
                             "attention",
                             tokens,
                             List.of(
-                                    new Attention(
+                                    attention(
+                                            config,
                                             a(fused ? "qkv" : "q"),
                                             a(fused ? "qkv" : "k"),
                                             a(fused ? "qkv" : "v"),
-                                            a("attn"),
-                                            config.numberOfHeads(),
-                                            config.numberOfKeyValueHeads(),
-                                            config.headSize(),
-                                            (float) (1.0 / Math.sqrt(config.headSize())),
-                                            OptionalInt.empty(),
-                                            DataType.F32))));
+                                            a("attn")))));
         }
         return regions;
+    }
+
+    /**
+     * The family's own attention, as its program description defines it: Granite's multiplies the
+     * scores by its attention multiplier, every other family here divides by sqrt(head size).
+     */
+    private static Attention attention(
+            Configuration config,
+            OperandRef query,
+            OperandRef keys,
+            OperandRef values,
+            OperandRef output) {
+        return config instanceof GraniteConfiguration granite
+                ? GraniteProgramDescription.attention(
+                        granite, query, keys, values, output, DataType.F32)
+                : LlamaProgramDescription.attention(
+                        config, query, keys, values, output, DataType.F32);
     }
 
     /** Every layer's operations as {@link Whole} layers; the arguments as {@link #of}. */

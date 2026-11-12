@@ -3,6 +3,7 @@ package org.beehive.jitllm.golden;
 import static org.junit.Assert.assertEquals;
 
 import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
@@ -100,10 +101,27 @@ public class Qwen3BatchedPrefillParityAccelTest extends CpuGpuParity {
         assertQ8_0Selection(assertQuantizedPrefill(Fixture.QWEN3_0_6B_Q8_0, 7), false);
     }
 
-    /** Width 512: all four GEMMs stage FP16, so all seven projection weights are rounded. */
+    /**
+     * Width 512: all four GEMMs stage FP16, so all seven projection weights are rounded.
+     *
+     * <p>The narrow family is off. It would run this 18-token prompt on graphs 128 rows wide, so
+     * the 512-wide graphs this case is about would not run; {@code NarrowChunkQwen3Q8AccelTest}
+     * covers that family.
+     */
     @Test
     public void qwen3_0_6b_q8_0_batchedPrefillParityWidth512() throws Exception {
-        assertQ8_0Selection(assertQuantizedPrefill(Fixture.QWEN3_0_6B_Q8_0, 512), true);
+        String property = BatchPrefillTransformerLayerTaskGraphs.NARROW_CHUNKS_PROPERTY;
+        String previous = System.getProperty(property);
+        System.setProperty(property, "false");
+        try {
+            assertQ8_0Selection(assertQuantizedPrefill(Fixture.QWEN3_0_6B_Q8_0, 512), true);
+        } finally {
+            if (previous == null) {
+                System.clearProperty(property);
+            } else {
+                System.setProperty(property, previous);
+            }
+        }
     }
 
     @Test

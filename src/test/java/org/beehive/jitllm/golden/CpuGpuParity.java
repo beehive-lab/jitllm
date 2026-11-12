@@ -425,9 +425,21 @@ abstract class CpuGpuParity {
                 fixture, bounds, staged, prefillBatchSize, CpuGpuParity::halfTilesWeights);
     }
 
-    /** The weights each layer's {@code ...HalfTiles} GEMMs staged as FP16, by layer. */
+    /**
+     * The weights each layer's {@code ...HalfTiles} GEMMs staged as FP16, by layer.
+     *
+     * <p>Read off the primary family's graphs, so the plan must have no narrow family: that family
+     * runs a short prompt on graphs with their own kernels. Example: at batch 512 an 18-token
+     * prompt runs 128 rows wide, where the output and down projections keep FP32 tiles.
+     */
     private static java.util.Map<Integer, java.util.Set<String>> halfTilesWeights(
             GoldenCapture.Result gpu) {
+        assertEquals(
+                "the kernels read are the batchPrefillLayer_<i> graphs', but a narrow family runs"
+                        + " every chunk of up to this many tokens on its own graphs; turn it off ("
+                        + "jitllm.prefill.narrowChunks=false) for this comparison",
+                0,
+                gpu.narrowPrefillRows);
         java.util.Map<Integer, java.util.Set<String>> rounded = new java.util.TreeMap<>();
         gpu.prefillProjectionKernels.forEach(
                 (layer, kernels) ->

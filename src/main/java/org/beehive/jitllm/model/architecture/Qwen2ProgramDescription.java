@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.Set;
 import org.beehive.jitllm.model.qwen2.Qwen2Configuration;
 import org.beehive.jitllm.program.BindingEntry;
@@ -20,7 +19,6 @@ import org.beehive.jitllm.program.ResultId;
 import org.beehive.jitllm.program.ValueId;
 import org.beehive.jitllm.program.ValueType;
 import org.beehive.jitllm.program.op.ArgMax;
-import org.beehive.jitllm.program.op.Attention;
 import org.beehive.jitllm.program.op.BiasAdd;
 import org.beehive.jitllm.program.op.EmbeddingLookup;
 import org.beehive.jitllm.program.op.KvAppend;
@@ -212,7 +210,7 @@ public final class Qwen2ProgramDescription {
                                         weight(TensorRole.ATTENTION_QUERY),
                                         activation(XB),
                                         activation(Q),
-                                        dim,
+                                        config.queryDim(),
                                         dim,
                                         weightDataType)),
                         leaf(
@@ -275,16 +273,12 @@ public final class Qwen2ProgramDescription {
                                         kvDataType)),
                         leaf(
                                 "attention" + suffix,
-                                new Attention(
+                                LlamaProgramDescription.attention(
+                                        config,
                                         activation(Q),
                                         activation(KEY_STORE),
                                         activation(VALUE_STORE),
                                         activation(XB),
-                                        config.numberOfHeads(),
-                                        config.numberOfKeyValueHeads(),
-                                        headSize,
-                                        (float) Math.sqrt(headSize),
-                                        OptionalInt.empty(),
                                         kvDataType)),
                         leaf(
                                 "attnOut" + suffix,
@@ -293,7 +287,7 @@ public final class Qwen2ProgramDescription {
                                         activation(XB),
                                         activation(XB2),
                                         dim,
-                                        dim,
+                                        config.queryDim(),
                                         weightDataType)),
                         leaf(
                                 "attnResidual" + suffix,

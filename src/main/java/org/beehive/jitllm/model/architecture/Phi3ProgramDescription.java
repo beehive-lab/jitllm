@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.Set;
 import org.beehive.jitllm.model.phi3.Phi3Configuration;
 import org.beehive.jitllm.program.BindingEntry;
@@ -20,7 +19,6 @@ import org.beehive.jitllm.program.ResultId;
 import org.beehive.jitllm.program.ValueId;
 import org.beehive.jitllm.program.ValueType;
 import org.beehive.jitllm.program.op.ArgMax;
-import org.beehive.jitllm.program.op.Attention;
 import org.beehive.jitllm.program.op.EmbeddingLookup;
 import org.beehive.jitllm.program.op.KvAppend;
 import org.beehive.jitllm.program.op.MatVec;
@@ -235,7 +233,7 @@ public final class Phi3ProgramDescription {
                                         weight(TensorRole.ATTENTION_QKV),
                                         activation(XB),
                                         activation(QKV),
-                                        dim + 2 * kvWidth,
+                                        config.queryDim() + 2 * kvWidth,
                                         dim,
                                         weightDataType)),
                         leaf(
@@ -269,16 +267,12 @@ public final class Phi3ProgramDescription {
                                         kvDataType)),
                         leaf(
                                 "attention" + suffix,
-                                new Attention(
+                                LlamaProgramDescription.attention(
+                                        config,
                                         activation(Q),
                                         activation(KEY_STORE),
                                         activation(VALUE_STORE),
                                         activation(XB),
-                                        config.numberOfHeads(),
-                                        config.numberOfKeyValueHeads(),
-                                        headSize,
-                                        (float) Math.sqrt(headSize),
-                                        OptionalInt.empty(),
                                         kvDataType)),
                         leaf(
                                 "attnOut" + suffix,
@@ -287,7 +281,7 @@ public final class Phi3ProgramDescription {
                                         activation(XB),
                                         activation(XB2),
                                         dim,
-                                        dim,
+                                        config.queryDim(),
                                         weightDataType)),
                         leaf(
                                 "attnResidual" + suffix,
