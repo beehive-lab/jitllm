@@ -53,6 +53,15 @@ public final class Lfm2PlanProvider implements TornadoPlanProvider {
     }
 
     /**
+     * Greedy decode can take its token from the device: the logits are always {@code
+     * LogitsQ8_0Layer}'s, whichever representation the tied output projection holds.
+     */
+    @Override
+    public boolean deviceSampling(DataType weights) {
+        return true;
+    }
+
+    /**
      * On Metal the layers write and read the FP16 cache in both modes, held to the host's own FP16
      * cache by {@code Lfm2Fp16KvParityAccelTest}. Elsewhere they keep the FP32 cache until measured
      * there.
