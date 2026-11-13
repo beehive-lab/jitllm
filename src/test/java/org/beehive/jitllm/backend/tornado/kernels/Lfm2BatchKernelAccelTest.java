@@ -426,9 +426,12 @@ public class Lfm2BatchKernelAccelTest {
 
     private static WorkerGrid groupedGrid(DataType type, int d, int maxTiles, Grouped kind) {
         if (kind == Grouped.MMA) {
+            int workgroups =
+                    type == DataType.Q4_K || type == DataType.Q5_K
+                            ? GroupedExpertMmaKernels.splitWorkgroups(maxTiles, d)
+                            : maxTiles * (d / 128);
             return grid(
-                    maxTiles * (d / 128) * GroupedExpertMmaKernels.THREADS,
-                    GroupedExpertMmaKernels.THREADS);
+                    workgroups * GroupedExpertMmaKernels.THREADS, GroupedExpertMmaKernels.THREADS);
         }
         if (kind == Grouped.SIMDGROUP_HALF_TILES) {
             int threads = TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS;
