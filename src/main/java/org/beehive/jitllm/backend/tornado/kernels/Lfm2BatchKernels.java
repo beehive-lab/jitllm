@@ -28,9 +28,11 @@ public final class Lfm2BatchKernels {
     private Lfm2BatchKernels() {}
 
     /**
-     * {@link Lfm2Kernels#shortConv} over the chunk's rows in order, one lane per channel: the
-     * window carries from row to row and is left where decode continues. {@code bcx} rows are
-     * {@code 3 * dim} wide, {@code out} rows {@code dim}.
+     * {@link Lfm2Kernels#shortConv} over the chunk's rows, one lane per row and channel: row {@code
+     * r} reads the two rows before it, or the window the previous chunk left for rows 0 and 1, in
+     * the order the row-at-a-time scan adds them. The window is left alone; {@link
+     * #shortConvBatchWindow} moves it afterwards. {@code bcx} rows are {@code 3 * dim} wide, {@code
+     * out} rows {@code dim}. Example: a chunk of 512 rows of 2048 channels, 1048576 lanes.
      */
     public static void shortConvBatch(
             KernelContext context,
@@ -42,27 +44,58 @@ public final class Lfm2BatchKernels {
             int dim,
             int kernel,
             int stateOffset) {
+        int i = context.globalIdx;
+        if (i >= batchInfo.get(1) * dim) {
+            return;
+        }
+        int r = i / dim;
+        int c = i - r * dim;
+        int history = kernel - 1;
+        int wBase = c * kernel;
+        int hBase = stateOffset + c * history;
+        float sum = 0.0f;
+        for (int t = 0; t < history; t++) {
+            int j = r - history + t;
+            float v =
+                    j >= 0
+                            ? bcx.get(j * 3 * dim + c) * bcx.get(j * 3 * dim + 2 * dim + c)
+                            : state.get(hBase + history + j);
+            sum += taps.get(wBase + t) * v;
+        }
+        int in = r * 3 * dim;
+        float bx = bcx.get(in + c) * bcx.get(in + 2 * dim + c);
+        sum += taps.get(wBase + history) * bx;
+        out.set(i, bcx.get(in + dim + c) * sum);
+    }
+
+    /**
+     * The window {@link #shortConvBatch} leaves where decode continues: per channel, the gated
+     * inputs of the chunk's last {@code kernel - 1} rows, or of the previous window where the chunk
+     * is shorter. One lane per channel; run after {@link #shortConvBatch}.
+     */
+    public static void shortConvBatchWindow(
+            KernelContext context,
+            IntArray batchInfo,
+            FloatArray bcx,
+            FloatArray state,
+            int dim,
+            int kernel,
+            int stateOffset) {
         int c = context.globalIdx;
         if (c >= dim) {
             return;
         }
         int rows = batchInfo.get(1);
         int history = kernel - 1;
-        int wBase = c * kernel;
         int hBase = stateOffset + c * history;
-        for (int r = 0; r < rows; r++) {
-            int in = r * 3 * dim;
-            float bx = bcx.get(in + c) * bcx.get(in + 2 * dim + c);
-            float sum = 0.0f;
-            for (int t = 0; t < history; t++) {
-                sum += taps.get(wBase + t) * state.get(hBase + t);
-            }
-            sum += taps.get(wBase + history) * bx;
-            for (int t = 0; t + 1 < history; t++) {
-                state.set(hBase + t, state.get(hBase + t + 1));
-            }
-            state.set(hBase + history - 1, bx);
-            out.set(r * dim + c, bcx.get(in + dim + c) * sum);
+        // Slot t reads slot rows + t of the old window, never one already written.
+        for (int t = 0; t < history; t++) {
+            int j = rows - history + t;
+            float v =
+                    j >= 0
+                            ? bcx.get(j * 3 * dim + c) * bcx.get(j * 3 * dim + 2 * dim + c)
+                            : state.get(hBase + history + j);
+            state.set(hBase + t, v);
         }
     }
 

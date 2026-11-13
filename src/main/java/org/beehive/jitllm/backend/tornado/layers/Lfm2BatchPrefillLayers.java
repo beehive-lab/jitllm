@@ -686,6 +686,16 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 config.dim(),
                 config.shortConvCache(),
                 config.convLayerIndex(layerIndex) * config.convStateSize());
+        layer.task(
+                "conv_window",
+                Lfm2BatchKernels::shortConvBatchWindow,
+                context,
+                ws.batchStartPosHolder,
+                ws.wrapSsmQkvBatch,
+                ws.wrapConvState,
+                config.dim(),
+                config.shortConvCache(),
+                config.convLayerIndex(layerIndex) * config.convStateSize());
         project(
                 layer,
                 "conv_out_proj",
@@ -1060,7 +1070,9 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
         WorkerGrid attention =
                 WorkerGridFactory.genericWorker(
                         batchSize * config.numberOfHeads() * ATTENTION_LOCAL, ATTENTION_LOCAL);
-        WorkerGrid conv = WorkerGridFactory.genericWorker(config.dim(), ELEMENTWISE_LOCAL);
+        WorkerGrid conv =
+                WorkerGridFactory.genericWorker(batchSize * config.dim(), ELEMENTWISE_LOCAL);
+        WorkerGrid convWindow = WorkerGridFactory.genericWorker(config.dim(), ELEMENTWISE_LOCAL);
         WorkerGrid flashQueries =
                 WorkerGridFactory.genericWorker(batchSize * config.dim(), ELEMENTWISE_LOCAL);
         WorkerGrid flashGather =
@@ -1152,6 +1164,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                         config.shortConvProjectionDim());
                 scheduler.addWorkerGrid(prefix + "conv_in_proj_zero", zero);
                 scheduler.addWorkerGrid(prefix + "conv", conv);
+                scheduler.addWorkerGrid(prefix + "conv_window", convWindow);
                 projectionGrid(
                         scheduler,
                         prefix + "conv_out_proj",

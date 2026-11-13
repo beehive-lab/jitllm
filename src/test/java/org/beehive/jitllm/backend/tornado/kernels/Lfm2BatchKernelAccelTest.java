@@ -139,7 +139,10 @@ public class Lfm2BatchKernelAccelTest {
 
     // ── the short convolution ───────────────────────────────────────────────────
 
-    /** The chunk's rows through {@code shortConvBatch} equal the host's row-at-a-time scan. */
+    /**
+     * The chunk's rows through {@code shortConvBatch} and its window through {@code
+     * shortConvBatchWindow} equal the host's row-at-a-time scan.
+     */
     @Test
     public void shortConvBatchMatchesTheHostRowByRow() {
         int kernel = 3;
@@ -174,9 +177,20 @@ public class Lfm2BatchKernelAccelTest {
                                 DIM,
                                 kernel,
                                 0)
+                        .task(
+                                "window",
+                                Lfm2BatchKernels::shortConvBatchWindow,
+                                context,
+                                info,
+                                dBcx,
+                                dState,
+                                DIM,
+                                kernel,
+                                0)
                         .transferToHost(DataTransferMode.EVERY_EXECUTION, out, dState);
         GridScheduler scheduler = new GridScheduler();
-        scheduler.addWorkerGrid("conv.scan", grid(DIM, 128));
+        scheduler.addWorkerGrid("conv.scan", grid(((ROWS * DIM + 127) / 128) * 128, 128));
+        scheduler.addWorkerGrid("conv.window", grid(DIM, 128));
         run(graph, scheduler);
 
         FloatTensor hTaps = new ArrayFloatTensor(taps);
