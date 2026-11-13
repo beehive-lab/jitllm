@@ -5,6 +5,7 @@ import java.util.Set;
 import org.beehive.jitllm.backend.tornado.Fp16KeyValueSupport.Combination;
 import org.beehive.jitllm.backend.tornado.layers.Lfm2BatchPrefillLayers;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
+import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.plan.components.Lfm2PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.inference.state.Lfm2State;
@@ -79,11 +80,21 @@ public final class Lfm2PlanProvider implements TornadoPlanProvider {
 
     /**
      * Q8_0 projections (LFM2.5's attention and dense layers) read prepacked on CUDA, against the
-     * floating-point activation in decode and in the batched prefill.
+     * floating-point activation in decode and in the batched prefill; not under native libraries,
+     * whose cuBLAS projections decode the file's own blocks.
      */
     @Override
     public Set<DataType> prepackableTypes(ExecutionPolicy policy) {
-        return Set.of(DataType.Q8_0);
+        return policy.nativeLibraries() ? Set.of() : Set.of(DataType.Q8_0);
+    }
+
+    /**
+     * cuBLAS for the batched prefill's dense projections on CUDA ({@code Lfm2BatchPrefillLayers});
+     * the experts stay on the grouped JIT kernels.
+     */
+    @Override
+    public Set<DataType> nativeLibraryWeights(BackendId backend) {
+        return BackendId.CUDA.equals(backend) ? Set.of(DataType.Q4_K) : Set.of();
     }
 
     /** The batched prefill is the default on Metal, where its GEMMs are tuned. */
@@ -103,7 +114,10 @@ public final class Lfm2PlanProvider implements TornadoPlanProvider {
         return config instanceof Lfm2Configuration lfm2
                 ? Optional.of(
                         BatchPrefillWorkspace.withoutResidencyChoice(
-                                Lfm2BatchPrefillLayers.workspaceBytes(lfm2, batchSize)))
+                                Lfm2BatchPrefillLayers.workspaceBytes(lfm2, batchSize)
+                                        + (Target.of(policy).cublas()
+                                                ? Lfm2BatchPrefillLayers.nativeScratchBytes(lfm2)
+                                                : 0)))
                 : Optional.empty();
     }
 

@@ -1,21 +1,26 @@
 package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.IntStream;
 import org.beehive.jitllm.backend.tornado.kernels.GroupedExpertSimdgroupKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Lfm2BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35BatchKernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
+import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
 import org.beehive.jitllm.backend.tornado.scheduling.BatchPrefillGemmPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspaces;
 import org.beehive.jitllm.inference.state.Lfm2State;
 import org.beehive.jitllm.inference.weights.tornado.Lfm2TornadoWeights;
 import org.beehive.jitllm.model.lfm2.Lfm2Configuration;
@@ -27,6 +32,7 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 // @formatter:off
 /**
@@ -43,8 +49,11 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * rather than once per token: a chunk of 512 tokens over 64 experts gives each about 32 rows.
  *
  * <p>On Metal the GEMMs are SIMD-group matrices; elsewhere they are the tiled batch kernels,
- * decoding each weight once per eight rows, with the experts' as grouped tiled kernels. The narrow
- * chunk family is declined.
+ * decoding each weight once per eight rows, with the experts' as grouped tiled kernels. With native
+ * libraries on CUDA ({@link Target#cublas}) the attention and convolution projections are cuBLAS
+ * FP16 GEMMs over the weight decoded into an FP16 scratch, one projection at a time; the experts
+ * stay on the grouped kernels, since the cuBLAS binding has no grouped GEMM, and the two dense
+ * feed-forward layers on the JIT kernels. The narrow chunk family is declined.
  */
 // @formatter:on
 public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskGraphs {
@@ -65,6 +74,13 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
     private final int batchSize;
     private final KernelContext context = new KernelContext();
     private final QuantizedBatchProjections projections;
+
+    /** Whether the dense projections run on cuBLAS ({@link Target#cublas}). */
+    private final boolean cublas;
+
+    /** The decode and conversion tasks ahead of the cuBLAS GEMMs, by qualified name, with lanes. */
+    private final Map<String, Integer> dequantTasks = new LinkedHashMap<>();
+
     private final List<ImmutableTaskGraph> graphs;
     private final String lastLayerTaskGraphID;
 
@@ -86,6 +102,14 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
         this.projections =
                 new QuantizedBatchProjections(
                         context, state.workspace, batchSize, simdgroup, true, TILED_LOCAL);
+        this.cublas = Target.of(state.executionPolicy()).cublas();
+        if (cublas) {
+            int widest = Math.toIntExact(nativeScratchBytes(config) / 2);
+            HalfFloatArray current = state.workspace.contiguousF16WeightsScratch;
+            if (current == null || current.getSize() < widest) {
+                state.workspace.contiguousF16WeightsScratch = TornadoWorkspaces.halfFloats(widest);
+            }
+        }
         this.graphs =
                 IntStream.range(0, config.numberOfLayers())
                         .mapToObj(this::buildLayer)
@@ -120,9 +144,20 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
         return 4 * (floats + ints);
     }
 
+    /**
+     * The FP16 scratch the cuBLAS projections decode each weight into: the largest attention or
+     * convolution projection. Example: LFM2.5-24B-A2B's conv in_proj, 6144 x 2048, 25 MB.
+     */
+    public static long nativeScratchBytes(Lfm2Configuration config) {
+        long dim = config.dim();
+        return 2 * dim * Math.max(dim, config.shortConvProjectionDim());
+    }
+
     @Override
     public String describeProjections() {
-        return "JIT kernels (SIMD-group GEMMs, grouped expert GEMMs)";
+        return cublas
+                ? "cuBLAS FP16 attention and convolution projections, JIT kernels elsewhere"
+                : "JIT kernels (SIMD-group GEMMs, grouped expert GEMMs)";
     }
 
     @Override
@@ -348,7 +383,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                     state.kvBlockStride,
                     ATTENTION_LOCAL);
         }
-        projections.projection(
+        project(
                 layer,
                 "attn_output_proj",
                 ws.wrapXbBatch,
@@ -371,7 +406,9 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
             TornadoTensor w,
             int n,
             int d) {
-        if (!simdgroup && w.dataType() == DataType.Q8_0 && !projections.prepacked(w)) {
+        if (cublasForm(w)) {
+            cublasProjection(layer, name, x, out, w, n, d, false);
+        } else if (!simdgroup && w.dataType() == DataType.Q8_0 && !projections.prepacked(w)) {
             layer.task(
                     name + "_zero",
                     Lfm2BatchKernels::zeroRows,
@@ -383,6 +420,88 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
         } else {
             projections.projection(layer, name, x, out, w, n, d, false);
         }
+    }
+
+    /**
+     * {@code out (+)= w · x} over the chunk: on cuBLAS where it has the form, the JIT kernels else.
+     */
+    private void project(
+            TaskGraph layer,
+            String name,
+            FloatArray x,
+            FloatArray out,
+            TornadoTensor w,
+            int n,
+            int d,
+            boolean residual) {
+        if (cublasForm(w)) {
+            cublasProjection(layer, name, x, out, w, n, d, residual);
+        } else {
+            projections.projection(layer, name, x, out, w, n, d, residual);
+        }
+    }
+
+    /**
+     * Whether attention or convolution weight {@code w} runs on cuBLAS: native libraries, and a
+     * type with an FP16 decode. The dense feed-forward stays on the JIT kernels, whose weights
+     * would need a scratch twice the size.
+     */
+    private boolean cublasForm(TornadoTensor w) {
+        DataType type = w.dataType();
+        return cublas && (type == DataType.Q8_0 || type == DataType.Q4_K || type == DataType.Q6_K);
+    }
+
+    /**
+     * {@code out (+)= w · x} as cuBLAS's FP16 GEMM with FP32 accumulation: {@code x} converted to
+     * FP16 by {@code name + "_x16"}, {@code w} decoded into the FP16 scratch by {@code name +
+     * "_dequant"}, then one GEMM over the chunk, adding into {@code out} for a residual projection.
+     */
+    private void cublasProjection(
+            TaskGraph layer,
+            String name,
+            FloatArray x,
+            FloatArray out,
+            TornadoTensor w,
+            int n,
+            int d,
+            boolean residual) {
+        HalfFloatArray weights16 = state.workspace.contiguousF16WeightsScratch;
+        HalfFloatArray x16 = state.workspace.wrapXbFP16Batch;
+        String qualified = layer.getTaskGraphName() + "." + name;
+        int elements = n * d;
+        // Q8_0 decodes a lane per weight, the K-quants four.
+        int lanes = w.dataType() == DataType.Q8_0 ? elements : elements / 4;
+        dequantTasks.put(qualified + "_dequant", lanes);
+        dequantTasks.put(qualified + "_x16", batchSize * n);
+        layer.task(name + "_x16", Qwen35MMAKernels::convertToFP16, context, x, x16);
+        layer.task(
+                name + "_dequant",
+                switch (w.dataType()) {
+                    case Q8_0 -> TransformerBatchPrefillKernels::dequantizeQ8_0ToFP16;
+                    case Q4_K -> TransformerComputeKernelsQ4_K::dequantizeQ4_KToFP16;
+                    default -> TransformerComputeKernelsQ6_K::dequantizeQ6_KToFP16;
+                },
+                context,
+                w.asByteArray(),
+                weights16,
+                0,
+                elements);
+        layer.libraryTask(
+                name,
+                uk.ac.manchester.tornado.cublas.CuBlas::cublasGemmExFP16FP32,
+                1,
+                0,
+                d,
+                batchSize,
+                n,
+                1.0f,
+                weights16,
+                n,
+                x16,
+                n,
+                residual ? 1.0f : 0.0f,
+                out,
+                d);
     }
 
     /** The gated short convolution over the chunk, rows in order, into {@code wrapXBatch}. */
@@ -408,7 +527,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 config.dim(),
                 config.shortConvCache(),
                 config.convLayerIndex(layerIndex) * config.convStateSize());
-        projections.projection(
+        project(
                 layer,
                 "conv_out_proj",
                 ws.wrapSsmConvOutBatch,
@@ -629,6 +748,11 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
             valueStore(),
             ws.wrapConvState
         };
+        if (cublas) {
+            scratch = java.util.Arrays.copyOf(scratch, scratch.length + 2);
+            scratch[scratch.length - 2] = ws.contiguousF16WeightsScratch;
+            scratch[scratch.length - 1] = ws.wrapXbFP16Batch;
+        }
         if (layerIndex == 0) {
             layer.transferToDevice(DataTransferMode.EVERY_EXECUTION, ws.batchStartPosHolder);
             layer.transferToDevice(DataTransferMode.EVERY_EXECUTION, ws.wrapBlockTable);
@@ -719,15 +843,18 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
             scheduler.addWorkerGrid(prefix + "ffn_rms_reduce", rmsReduce);
             scheduler.addWorkerGrid(prefix + "attn_rms_apply", rmsApply);
             if (config.isAttentionLayer(layer)) {
-                scheduler.addWorkerGrid(
-                        prefix + "attn_q_proj",
-                        projections.worker(weights.wqLayered[layer], config.dim()));
-                scheduler.addWorkerGrid(
+                projectionGrid(
+                        scheduler, prefix + "attn_q_proj", weights.wqLayered[layer], config.dim());
+                projectionGrid(
+                        scheduler,
                         prefix + "attn_k_proj",
-                        projections.worker(weights.wkLayered[layer], config.kvDim()));
-                scheduler.addWorkerGrid(
+                        weights.wkLayered[layer],
+                        config.kvDim());
+                projectionGrid(
+                        scheduler,
                         prefix + "attn_v_proj",
-                        projections.worker(weights.wvLayered[layer], config.kvDim()));
+                        weights.wvLayered[layer],
+                        config.kvDim());
                 for (String store : new String[] {"attn_q_proj", "attn_k_proj", "attn_v_proj"}) {
                     scheduler.addWorkerGrid(prefix + store + "_zero", zero);
                 }
@@ -735,19 +862,24 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 scheduler.addWorkerGrid(prefix + "attn_rope", rope);
                 scheduler.addWorkerGrid(prefix + "attn_kv_append", kvAppend);
                 scheduler.addWorkerGrid(prefix + "attention", attention);
-                scheduler.addWorkerGrid(
+                projectionGrid(
+                        scheduler,
                         prefix + "attn_output_proj",
-                        projections.worker(weights.woLayered[layer], config.dim()));
+                        weights.woLayered[layer],
+                        config.dim());
             } else {
-                scheduler.addWorkerGrid(
+                projectionGrid(
+                        scheduler,
                         prefix + "conv_in_proj",
-                        projections.worker(
-                                weights.convInProj[layer], config.shortConvProjectionDim()));
+                        weights.convInProj[layer],
+                        config.shortConvProjectionDim());
                 scheduler.addWorkerGrid(prefix + "conv_in_proj_zero", zero);
                 scheduler.addWorkerGrid(prefix + "conv", conv);
-                scheduler.addWorkerGrid(
+                projectionGrid(
+                        scheduler,
                         prefix + "conv_out_proj",
-                        projections.worker(weights.convOutProj[layer], config.dim()));
+                        weights.convOutProj[layer],
+                        config.dim());
             }
             if (config.isMoeLayer(layer)) {
                 scheduler.addWorkerGrid(prefix + "ffn_rms_apply", rmsApply);
@@ -795,6 +927,19 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                         prefix + "ffn_down_proj",
                         projections.worker(weights.w2Layered[layer], config.dim()));
             }
+        }
+        dequantTasks.forEach(
+                (task, elements) ->
+                        scheduler.addWorkerGrid(
+                                task,
+                                WorkerGridFactory.genericWorker(
+                                        ((elements + 255) / 256) * 256, 256)));
+    }
+
+    /** The grid of projection {@code task}, none for a cuBLAS GEMM (its decode task has one). */
+    private void projectionGrid(GridScheduler scheduler, String task, TornadoTensor w, int rows) {
+        if (!cublasForm(w)) {
+            scheduler.addWorkerGrid(task, projections.worker(w, rows));
         }
     }
 }

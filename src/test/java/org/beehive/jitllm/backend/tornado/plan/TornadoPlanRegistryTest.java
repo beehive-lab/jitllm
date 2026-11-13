@@ -166,6 +166,33 @@ public class TornadoPlanRegistryTest {
         assertEquals(Set.of(ExecutionMode.values()), lfm2.supportedModes());
     }
 
+    /**
+     * {@code lfm2moe}'s native libraries are cuBLAS for the batched prefill's dense projections, on
+     * CUDA only: MLX's prefill reads F16, Q8_0 and Q4_0, not LFM2's K-quants. Its Q8_0 projections
+     * are prepacked only without native libraries, whose cuBLAS projections decode the file's own
+     * blocks.
+     */
+    @Test
+    public void lfm2moeNativeLibrariesAreCublasAndExcludePrepacking() {
+        var lfm2 = provider("lfm2moe");
+        assertEquals(
+                Set.of(DataType.Q4_K),
+                lfm2.nativeLibraryWeights(org.beehive.jitllm.runtime.backend.BackendId.CUDA));
+        assertEquals(
+                Set.of(),
+                lfm2.nativeLibraryWeights(org.beehive.jitllm.runtime.backend.BackendId.METAL));
+        var jit =
+                org.beehive.jitllm.runtime.policy.ExecutionPolicy.builder()
+                        .nativeLibraries(false)
+                        .build();
+        var nativeLibraries =
+                org.beehive.jitllm.runtime.policy.ExecutionPolicy.builder()
+                        .nativeLibraries(true)
+                        .build();
+        assertEquals(Set.of(DataType.Q8_0), lfm2.prepackableTypes(jit));
+        assertEquals(Set.of(), lfm2.prepackableTypes(nativeLibraries));
+    }
+
     private static TornadoPlanProvider provider(String architecture) {
         ArchitectureId id = ArchitectureId.of(architecture);
         return TornadoPlanRegistry.discover().stream()

@@ -227,8 +227,10 @@ projection, its RoPE) rather than copying the layer graph.
   (`NativeLibrarySupport.defaultFor`): every one of these GEMMs is then
   `cublasGemmExFP16FP32`; Q, K and V (and gate and up) are copied into one contiguous buffer so one call
   covers them. The flag is accepted for Llama (Q4_0, Q8_0, F16), Mistral, Qwen2 / DeepSeek, Qwen3,
-  Phi-3 and Granite (Q8_0, F16), Devstral (Q8_0, Q4_K, F16), Gemma 4 (Q8_0, Q4_0) and Qwen3.5 (Q8_0); the
-  JIT kernels run elsewhere. Where the path exists but cuBLAS does not load, the run notes once
+  Phi-3 and Granite (Q8_0, F16), Devstral (Q8_0, Q4_K, F16), Gemma 4 (Q8_0, Q4_0), Qwen3.5 (Q8_0)
+  and LFM2 (`lfm2moe`, Q4_K files: the attention and short-convolution projections, each weight
+  decoded into one FP16 scratch per call; its experts stay on the grouped JIT kernels, since the
+  cuBLAS binding has no grouped GEMM); the JIT kernels run elsewhere. Where the path exists but cuBLAS does not load, the run notes once
   (`For maximum performance please install cuBLAS 12 and cuDNN 9; falling back to the JIT
   kernels.`) and runs the JIT kernels. `--with-native-libraries` requires the path and refuses
   any configuration without one; `--no-native-libraries` keeps the JIT kernels. The TornadoVM binding loads `libcublasLt.so.12`. For Qwen3 F16 the first
@@ -241,7 +243,8 @@ projection, its RoPE) rather than copying the layer graph.
   own queue and buffers (`MlxPrefill`). Decode stays on the JIT kernels. Each provider declares
   the weights it implements per backend (`TornadoPlanProvider.nativeLibraryWeights(BackendId)`):
   on Metal Llama (F16, Q8_0, Q4_0), Mistral, Qwen2 / DeepSeek, Qwen3, Phi-3 and Granite
-  (F16, Q8_0), and Gemma 4 (Q8_0); everything else runs the JIT kernels.
+  (F16, Q8_0), and Gemma 4 (Q8_0); everything else runs the JIT kernels. LFM2 has no MLX path:
+  `MlxPrefill` reads F16, Q8_0 and Q4_0, and LFM2's K-quant weights would have to be converted.
   `--with-native-libraries` requires the MLX path and refuses any configuration without one;
   `--no-native-libraries` keeps the JIT kernels. F16 weights are multiplied as they are, split Q/K/V
   and gate/up copied into one contiguous buffer each. Q8_0 and Q4_0 weights are either decoded once into
