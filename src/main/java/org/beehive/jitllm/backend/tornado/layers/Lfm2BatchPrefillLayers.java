@@ -1171,13 +1171,8 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 if (mmaExperts) {
                     int inBlocks = batchSize * config.dim() / 32;
                     int hiddenBlocks = assignments * hidden / 32;
-                    scheduler.addWorkerGrid(
-                            prefix + "moe_x16",
-                            WorkerGridFactory.genericWorker(((inBlocks + 127) / 128) * 128, 128));
-                    scheduler.addWorkerGrid(
-                            prefix + "moe_h16",
-                            WorkerGridFactory.genericWorker(
-                                    ((hiddenBlocks + 127) / 128) * 128, 128));
+                    scheduler.addWorkerGrid(prefix + "moe_x16", halvesWorker(inBlocks));
+                    scheduler.addWorkerGrid(prefix + "moe_h16", halvesWorker(hiddenBlocks));
                 }
                 scheduler.addWorkerGrid(
                         prefix + "moe_down",
@@ -1222,6 +1217,13 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                                 task,
                                 WorkerGridFactory.genericWorker(
                                         ((elements + 255) / 256) * 256, 256)));
+    }
+
+    /** The grid of {@link Lfm2BatchKernels#halvesWithBlockSums} over {@code blocks} blocks. */
+    private static WorkerGrid halvesWorker(int blocks) {
+        int groups = (blocks + Lfm2BatchKernels.HALVES_BLOCKS - 1) / Lfm2BatchKernels.HALVES_BLOCKS;
+        return WorkerGridFactory.genericWorker(
+                groups * Lfm2BatchKernels.HALVES_THREADS, Lfm2BatchKernels.HALVES_THREADS);
     }
 
     /** The grid of projection {@code task}, none for a cuBLAS GEMM (its decode task has one). */

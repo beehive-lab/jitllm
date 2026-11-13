@@ -251,23 +251,43 @@ public final class Lfm2BatchKernels {
         x.set(i, x.get(i) + sum);
     }
 
+    /** Threads of a {@link #halvesWithBlockSums} workgroup. */
+    public static final int HALVES_THREADS = 256;
+
+    /** Blocks of 32 values a {@link #halvesWithBlockSums} workgroup converts. */
+    public static final int HALVES_BLOCKS = 32;
+
     /**
      * {@code out = half(in)} and {@code sums[b]} the sum of {@code out}'s 32 values of block {@code
-     * b}, a lane per block of 32, for {@code blocks} blocks: the operands of {@code
-     * GroupedExpertMmaKernels}. Example: a chunk of 512 normed rows of 2048 gives 32768 blocks.
+     * b}, in order, for {@code blocks} blocks: the operands of {@code GroupedExpertMmaKernels}. A
+     * workgroup converts {@link #HALVES_BLOCKS} blocks, consecutive lanes on consecutive values,
+     * and keeps the rounded values in local memory, where one lane per block sums them. Example: a
+     * chunk of 512 normed rows of 2048 gives 32768 blocks, 1024 workgroups. Grid: {@code (blocks +
+     * 31) / 32} workgroups of {@link #HALVES_THREADS} threads.
      */
     public static void halvesWithBlockSums(
             KernelContext context, FloatArray in, HalfFloatArray out, FloatArray sums, int blocks) {
-        int b = context.globalIdx;
-        if (b < blocks) {
-            int base = b << 5;
+        // Rows of 33: a lane's block starts one bank after the previous lane's.
+        float[] rounded = context.allocateFloatLocalArray(HALVES_BLOCKS * 33);
+        int tid = context.localIdx;
+        int firstBlock = context.groupIdx * HALVES_BLOCKS;
+        int base = firstBlock << 5;
+        int limit = Math.min(blocks - firstBlock, HALVES_BLOCKS) << 5;
+        for (int j = tid; j < HALVES_BLOCKS * 32; j += HALVES_THREADS) {
+            if (j < limit) {
+                HalfFloat h = new HalfFloat(in.get(base + j));
+                out.set(base + j, h);
+                // The rounded value, which is what the GEMM multiplies the weights' codes by.
+                rounded[(j >> 5) * 33 + (j & 31)] = h.getFloat32();
+            }
+        }
+        context.localBarrier();
+        if (tid < HALVES_BLOCKS && firstBlock + tid < blocks) {
             float sum = 0.0f;
             for (int i = 0; i < 32; i++) {
-                out.set(base + i, new HalfFloat(in.get(base + i)));
-                // The rounded value, which is what the GEMM multiplies the weights' codes by.
-                sum += out.get(base + i).getFloat32();
+                sum += rounded[tid * 33 + i];
             }
-            sums.set(b, sum);
+            sums.set(firstBlock + tid, sum);
         }
     }
 }

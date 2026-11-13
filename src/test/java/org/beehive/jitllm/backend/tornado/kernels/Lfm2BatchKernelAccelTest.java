@@ -414,6 +414,12 @@ public class Lfm2BatchKernelAccelTest {
         }
     }
 
+    /** The grid of {@code Lfm2BatchKernels.halvesWithBlockSums} over {@code blocks} blocks. */
+    private static WorkerGrid halvesGrid(int blocks) {
+        int groups = (blocks + Lfm2BatchKernels.HALVES_BLOCKS - 1) / Lfm2BatchKernels.HALVES_BLOCKS;
+        return grid(groups * Lfm2BatchKernels.HALVES_THREADS, Lfm2BatchKernels.HALVES_THREADS);
+    }
+
     private static final int TILED_LOCAL = 128;
 
     /** Which grouped expert GEMMs run: Metal's SIMD-group ones, the tiled ones, or CUDA's MMA. */
@@ -615,10 +621,9 @@ public class Lfm2BatchKernelAccelTest {
         scheduler.addWorkerGrid("moe.swiglu", grid(assignments * HIDDEN, 256));
         scheduler.addWorkerGrid("moe.down", groupedGrid(downType, DIM, maxTiles, kind));
         scheduler.addWorkerGrid("moe.combine", grid(ROWS * DIM, 256));
-        scheduler.addWorkerGrid("moe.gate16", grid(((ROWS * DIM / 32 + 127) / 128) * 128, 128));
-        scheduler.addWorkerGrid("moe.up16", grid(((ROWS * DIM / 32 + 127) / 128) * 128, 128));
-        scheduler.addWorkerGrid(
-                "moe.down16", grid(((assignments * HIDDEN / 32 + 127) / 128) * 128, 128));
+        scheduler.addWorkerGrid("moe.gate16", halvesGrid(ROWS * DIM / 32));
+        scheduler.addWorkerGrid("moe.up16", halvesGrid(ROWS * DIM / 32));
+        scheduler.addWorkerGrid("moe.down16", halvesGrid(assignments * HIDDEN / 32));
         run(graph, scheduler);
 
         try (Arena arena = Arena.ofShared()) {
