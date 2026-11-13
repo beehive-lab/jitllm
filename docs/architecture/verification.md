@@ -455,7 +455,8 @@ parity numbers match CUDA's; the batched prefill is refused there, since OpenCL 
 the attention and convolution projections run on cuBLAS in FP16: batched parity 2.2e-4 on the 24B
 and up to 1.4e-3 on the 8B against the 2e-3 bound, FP16-cache batched 0.049 / 0.066 against 0.12
 (router near-ties); LFM2.5-24B-A2B pp512 434 to 544 tok/s on the RTX 5090 Laptop. Without them
-the Q8_0 projections are prepacked (decode +1.6%). Tool calling
+the Q8_0 projections are prepacked (decode +1.6%). Splitting across devices and continuous
+batching are refused by name. Tool calling
 (`ToolCallingFamiliesAccelTest`, greedy): LFM2.5-24B-A2B passes all four exchanges on CUDA;
 LFM2-8B-A1B passes the call, the answer and the two calls on Metal, and writes the no-argument call
 as `getCurrent Time()`, which is not a tool name and stays text. The family has no

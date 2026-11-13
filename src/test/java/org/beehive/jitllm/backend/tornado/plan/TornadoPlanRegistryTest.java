@@ -193,6 +193,20 @@ public class TornadoPlanRegistryTest {
         assertEquals(Set.of(), lfm2.prepackableTypes(nativeLibraries));
     }
 
+    /**
+     * {@code lfm2moe} is not split across devices and has no continuous-batching layers: both are
+     * refused by name (the owner left them unsupported). Its short-convolution windows are
+     * per-session state a shared batched decode would have to carry per slot.
+     */
+    @Test
+    public void lfm2moeRefusesSplitAndContinuousBatching() {
+        var lfm2 = provider("lfm2moe");
+        var policy = org.beehive.jitllm.runtime.policy.ExecutionPolicy.builder().build();
+        assertTrue(
+                lfm2.splitUnsupported(DataType.Q4_K, policy, 2).orElseThrow().contains("lfm2moe"));
+        assertTrue(lfm2.batchDecodeLayers(null, null, null).isEmpty());
+    }
+
     private static TornadoPlanProvider provider(String architecture) {
         ArchitectureId id = ArchitectureId.of(architecture);
         return TornadoPlanRegistry.discover().stream()
