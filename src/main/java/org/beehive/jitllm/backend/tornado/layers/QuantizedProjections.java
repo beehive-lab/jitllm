@@ -63,6 +63,9 @@ public final class QuantizedProjections {
      */
     private final boolean shuffle32;
 
+    /** Whether Q8_0 projections run the SIMD-group kernel too: LFM2's constructor, on Metal. */
+    private final boolean simdgroupQ8_0;
+
     /** The grids of the SIMD-group tasks, by {@code graph.task} name; see {@link #addGrids}. */
     private final Map<String, WorkerGrid> grids = new LinkedHashMap<>();
 
@@ -77,13 +80,15 @@ public final class QuantizedProjections {
                 ws,
                 floatLocal,
                 packedLocal,
-                SchedulerDetectionService.isSubgroupShuffle32Supported());
+                SchedulerDetectionService.isSubgroupShuffle32Supported(),
+                false);
     }
 
     /**
      * @param shuffle32 whether the SIMD-group Q4_K kernels run: a device whose 32-lane shuffle the
-     *     family has verified, Metal by default. Example: LFM2 on CUDA, whose warp shuffle its own
-     *     expert kernels already reduce with.
+     *     family has verified. Example: LFM2 on CUDA, whose warp shuffle its own expert kernels
+     *     already reduce with. Q8_0 takes the SIMD-group kernel on Metal only: on CUDA the per-row
+     *     kernel is faster (LFM2.5-24B-A2B tg128 198.7 against 196.7 tok/s).
      */
     public QuantizedProjections(
             KernelContext context,
@@ -91,11 +96,33 @@ public final class QuantizedProjections {
             int floatLocal,
             int packedLocal,
             boolean shuffle32) {
+        this(
+                context,
+                ws,
+                floatLocal,
+                packedLocal,
+                shuffle32,
+                shuffle32 && SchedulerDetectionService.isSubgroupShuffle32Supported());
+    }
+
+    private QuantizedProjections(
+            KernelContext context,
+            TornadoWorkspace ws,
+            int floatLocal,
+            int packedLocal,
+            boolean shuffle32,
+            boolean simdgroupQ8_0) {
         this.context = context;
         this.ws = ws;
         this.floatLocal = floatLocal;
         this.packedLocal = packedLocal;
         this.shuffle32 = shuffle32;
+        this.simdgroupQ8_0 = simdgroupQ8_0;
+    }
+
+    /** Whether {@code w} runs the SIMD-group Q8_0 kernels on the floating-point path. */
+    private boolean simdgroupQ8_0(TornadoTensor w) {
+        return simdgroupQ8_0 && !packed() && w.dataType() == DataType.Q8_0 && !prepacked(w);
     }
 
     /**
@@ -287,6 +314,19 @@ public final class QuantizedProjections {
                     floatLocal);
             return;
         }
+        if (simdgroupQ8_0(w)) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsLayered::matrixVectorQ8_0Simdgroup,
+                    context,
+                    x,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d);
+            simdgroupGrid(graph, name, d);
+            return;
+        }
         if (simdgroup(w)) {
             graph.task(
                     name,
@@ -351,6 +391,19 @@ public final class QuantizedProjections {
                     n,
                     d,
                     packed() ? packedLocal : floatLocal);
+            return;
+        }
+        if (simdgroupQ8_0(w)) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsLayered::matrixVectorWithResidualQ8_0Simdgroup,
+                    context,
+                    x,
+                    ws.wrapX,
+                    w.asByteArray(),
+                    n,
+                    d);
+            simdgroupGrid(graph, name, d);
             return;
         }
         if (simdgroup(w)) {

@@ -58,7 +58,13 @@ public class Lfm2PlanComponents implements BatchPrefillDecodeForwardPlanComponen
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new LogitsQ8_0Layer(state, weights, config, previousGraphId, schedulerType);
+        return new LogitsQ8_0Layer(state, weights, config, previousGraphId, schedulerType) {
+            @Override
+            protected boolean simdgroupQ8_0Vocabulary() {
+                // Metal: on CUDA the per-row kernel is the faster of the two.
+                return SchedulerDetectionService.isSubgroupShuffle32Supported();
+            }
+        };
     }
 
     // ── Sequential prefill/decode ─────────────────────────────────────────────

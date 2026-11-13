@@ -581,4 +581,100 @@ public class Lfm2KernelAccelTest {
             assertEquals("weight " + j, mix[j], weights.get(j), 1e-6f);
         }
     }
+
+    /**
+     * The SIMD-group Q8_0 matrix-vector product, both forms, against the per-row block kernel: the
+     * same products summed in another order. 1001 rows, so the last workgroup holds a partial SIMD
+     * group; LFM2's width.
+     */
+    @Test
+    public void simdgroupQ8_0MatchesTheBlockKernel() {
+        assumeTrue(
+                "the kernel reduces with 32-lane shuffles",
+                org.beehive.jitllm.backend.tornado.layers.Lfm2Layers.shuffle32());
+        int n = 2048;
+        int d = 1001;
+        ByteArray w = device(blocks(DataType.Q8_0, n * d));
+        float[] xs = new float[n];
+        for (int i = 0; i < n; i++) {
+            xs[i] = (float) random.nextGaussian();
+        }
+        FloatArray x = device(xs);
+        FloatArray ref = new FloatArray(d);
+        FloatArray got = new FloatArray(d);
+        float[] start = new float[d];
+        for (int i = 0; i < d; i++) {
+            start[i] = 0.5f * i;
+        }
+        FloatArray refAdded = device(start);
+        FloatArray gotAdded = device(start);
+        KernelContext context = new KernelContext();
+        TaskGraph graph =
+                new TaskGraph("q8s")
+                        .transferToDevice(
+                                DataTransferMode.EVERY_EXECUTION,
+                                w,
+                                x,
+                                ref,
+                                got,
+                                refAdded,
+                                gotAdded)
+                        .task(
+                                "ref",
+                                TransformerComputeKernelsLayered::matrixVectorGenericQ8Byte,
+                                context,
+                                x,
+                                ref,
+                                w,
+                                n,
+                                d,
+                                128)
+                        .task(
+                                "got",
+                                TransformerComputeKernelsLayered::matrixVectorQ8_0Simdgroup,
+                                context,
+                                x,
+                                got,
+                                w,
+                                n,
+                                d)
+                        .task(
+                                "refAdded",
+                                TransformerComputeKernelsLayered
+                                        ::matrixVectorGenericWithResidualQ8_0Byte,
+                                context,
+                                x,
+                                refAdded,
+                                w,
+                                n,
+                                d,
+                                128)
+                        .task(
+                                "gotAdded",
+                                TransformerComputeKernelsLayered
+                                        ::matrixVectorWithResidualQ8_0Simdgroup,
+                                context,
+                                x,
+                                gotAdded,
+                                w,
+                                n,
+                                d)
+                        .transferToHost(
+                                DataTransferMode.EVERY_EXECUTION, ref, got, refAdded, gotAdded);
+        int groups =
+                (d + TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS - 1)
+                        / TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS;
+        int threads = 32 * TransformerComputeKernelsQ4_K.SIMDGROUPS;
+        GridScheduler scheduler = new GridScheduler();
+        scheduler.addWorkerGrid("q8s.ref", grid(d * 128, 128));
+        scheduler.addWorkerGrid("q8s.refAdded", grid(d * 128, 128));
+        scheduler.addWorkerGrid("q8s.got", grid(groups * threads, threads));
+        scheduler.addWorkerGrid("q8s.gotAdded", grid(groups * threads, threads));
+        run(graph, scheduler);
+        for (int i = 0; i < d; i++) {
+            float tol = 1e-4f * Math.max(1f, Math.abs(ref.get(i)));
+            assertEquals("row " + i, ref.get(i), got.get(i), tol);
+            assertEquals("residual row " + i, refAdded.get(i), gotAdded.get(i), tol);
+        }
+    }
 }

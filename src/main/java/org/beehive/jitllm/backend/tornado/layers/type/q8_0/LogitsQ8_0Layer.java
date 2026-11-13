@@ -172,6 +172,19 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
     }
 
     /**
+     * Whether a Q8_0 output projection read in floating point runs the SIMD-group kernel ({@code
+     * TransformerComputeKernelsLayered.matrixVectorQ8_0Simdgroup}), four rows per SIMD group: a
+     * family whose layers verified the 32-lane shuffle on this device. Example: LFM2's 128000-row
+     * tied output on Metal.
+     */
+    protected boolean simdgroupQ8_0Vocabulary() {
+        return false;
+    }
+
+    /** Whether {@link #addVocabularyProjection} took the SIMD-group kernel; read by the grid. */
+    private boolean simdgroupVocabularyTaken;
+
+    /**
      * The vocabulary projection, by the output tensor's own representation.
      *
      * <p>Visible to subclasses because a family that overrides {@link #setupLogitsTaskGraph} still
@@ -235,7 +248,19 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
             return;
         }
         switch (w.dataType()) {
-            case Q8_0 ->
+            case Q8_0 -> {
+                if (simdgroupQ8_0Vocabulary()) {
+                    simdgroupVocabularyTaken = true;
+                    logits.task(
+                            "vocab_proj",
+                            TransformerComputeKernelsLayered::matrixVectorQ8_0Simdgroup,
+                            context,
+                            state.workspace.wrapX,
+                            state.workspace.wrapLogits,
+                            w.asByteArray(),
+                            config.dim(),
+                            config.vocabularySize());
+                } else {
                     logits.task(
                             "vocab_proj",
                             TransformerComputeKernelsLayered::matrixVectorGenericQ8Byte,
@@ -246,6 +271,8 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
                             config.dim(),
                             config.vocabularySize(),
                             localSize);
+                }
+            }
             case F16 ->
                     // A UD-Q8_K_XL file: Q8_0 layers, the output projection (tied to the
                     // embeddings) F16.
@@ -342,7 +369,17 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
         var logitsRMS = WorkerGridFactory.createRmsNormWorker(config.dim(), rmsLocalSize());
         int vocabThreads = LogitsWorkgroupPolicy.q8Threads();
         var vocabSizeRowMajor = config.vocabularySize() * vocabThreads;
-        WorkerGrid vocabWorker = WorkerGridFactory.genericWorker(vocabSizeRowMajor, vocabThreads);
+        WorkerGrid vocabWorker =
+                simdgroupVocabularyTaken
+                        ? WorkerGridFactory.genericWorker(
+                                (config.vocabularySize()
+                                                + TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS
+                                                - 1)
+                                        / TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS
+                                        * 32
+                                        * TransformerComputeKernelsQ4_K.SIMDGROUPS,
+                                32 * TransformerComputeKernelsQ4_K.SIMDGROUPS)
+                        : WorkerGridFactory.genericWorker(vocabSizeRowMajor, vocabThreads);
         tornadoForwardScheduler.addWorkerGrid("logits.vocab_proj", vocabWorker);
         tornadoForwardScheduler.addWorkerGrid("logits.rms_reduce", rmsReduceWorker(logitsRMS));
         if (schedulerType == SchedulerType.NON_NVIDIA) {
