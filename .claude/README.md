@@ -1,48 +1,37 @@
-# Claude Agents And Skills For jitllm
+# JitLLM agents and skills
 
-This directory contains project-local Claude Code agents and skills for jitllm work, including building, benchmarking, profiling, model porting, and framework integrations.
+Skills live in `.agents/skills/`. The matching `.claude/skills/` entries are relative symlinks to that source, so Claude Code and Codex use the same instructions. Keep canonical directories and links together when sharing the repository.
 
-The scope is broad enough to support future repo work:
+Start with `jitllm-performance-analysis` for an end-to-end investigation. It loads only the relevant tools:
 
-- jitllm benchmarking and profiling
-- TornadoVM backend/codegen investigation
-- correctness debugging for precision and kernel changes
-- accelerator feature validation
+Its modes are **Analyze** (default: diagnose without production changes), **Compare** (measure/explain differences without fixes), and **Optimize** (diagnose, change, measure and verify when requested). Investigations maintain falsifiable hypotheses with proposed/supported/contradicted/unresolved statuses. Agents exchange compact evidence records linked to raw artifacts instead of rereading whole traces.
 
-After adding or editing files here, restart Claude Code from the repository root and run `/agents` and `/skills` to verify discovery.
+| Skill | Responsibility |
+| --- | --- |
+| `jitllm-benchmark` | Cold/startup, warmed forwards, end-to-end and paired measurement |
+| `jitllm-java-analysis` | JFR, async-profiler, Java/JVM/native CPU, waits and memory |
+| `jitllm-tornado-analysis` | Compilation, plans, transfers, residency and native interop |
+| `jitllm-nsys-analysis` | CUDA streams/graphs, copies, waits and critical path |
+| `jitllm-ncu-analysis` | Counters for identified consequential CUDA kernels |
+| `jitllm-metal-analysis` | Apple tool discovery, Metal timelines/counters, native MLX |
+| `jitllm-jmh` | Isolated measured Java costs |
+| `jitllm-performance-verify` | Correctness, paired acceptance and experiment history |
 
-## Portability Rules
+Thin role definitions live in `.claude/agents/*.md` and `.codex/agents/*.toml`:
 
-- Do not hardcode user-specific paths. Discover the repository root from the current working directory and external project roots from environment variables, local config, documentation, or explicit user input.
-- Do not bake current experiment settings into durable guidance. Prompt text, model paths, token limits, memory limits, feature flags, and backend choices come from the user request, checked-in scripts, or benchmark manifests.
-- Keep current performance conclusions in result artifacts, not in reusable agent policy. Agents should collect evidence before classifying bottlenecks.
-- Prefer commands that run from the repository root or use named environment variables such as `TORNADOVM_HOME` and `MODEL_DIR`.
-- When local machine details are needed, record them in the benchmark artifact directory rather than in `.claude`.
+| Agent | Claude model | Responsibility |
+| --- | --- | --- |
+| `jitllm-benchmarking-specialist` | Sonnet | Controlled measurement |
+| `jitllm-perf-profiling-specialist` | Inherit | Cross-layer diagnosis and tool selection |
+| `jitllm-perf-optimizer` | Inherit | One evidence-backed candidate in assigned files |
+| `jitllm-perf-verifier` | Sonnet | Independent acceptance/rejection/inconclusive verdict |
 
-## Agent Boundaries
+Codex roles inherit the session model; select a cheaper available Codex model at dispatch when supported. No Claude model alias is assigned to Codex. Verify the actual role/model in the client; if delegation is unavailable, run the roles sequentially. Measurements sharing an accelerator must be serialized; artifact analysis can be parallel.
 
-| Agent | Use For |
-|---|---|
-| `jitllm-benchmarking-specialist` | Reproducible benchmarks: baseline/target comparisons, backend matrices, metrics JSON, before/after reports |
-| `jitllm-perf-profiling-specialist` | Root-causing performance with the TornadoVM profiler, nsys and ncu once a benchmark shows a regression or target; bottleneck classification |
+Example request: “Use jitllm-performance-analysis to explain first-token latency and warmed decode on this model/backend. Separate Java, TornadoVM and device costs; optimize only after evidence and verify any candidate.” For measurement alone, invoke `jitllm-benchmark` directly.
 
-## Skill Boundaries
+Preserve raw evidence and failed experiments under ignored `perf-results/`; keep current machine settings and performance conclusions out of reusable instructions. No external plugin installation is required. Tool-specific captures require the corresponding installed profiler; Metal timelines need full Xcode with Instruments/`xctrace`. Without it, the Metal skill routes to task-level and host evidence and states the missing timeline coverage. JFRDoctor is optional when already connected: the local-tool-only Claude roles request its analysis from the parent rather than invoke MCP tools directly. Research/adoption decisions are in [sources.md](../.agents/skills/jitllm-performance-analysis/references/sources.md).
 
-| Skill | Use For |
-|---|---|
-| `build-tornado` | Building a TornadoVM SDK (8.1 or newer) for the chosen JDK line and backend |
-| `build-n-run-engine` | Building jitllm with Maven and running it on an accelerator |
-| `jitllm-nsys-analysis` | Nsight Systems timeline on CUDA: generated kernels, launch overhead, sync, transfers, GPU idle |
-| `jitllm-ncu-analysis` | Nsight Compute analysis of one already-identified hot CUDA kernel |
-| `port-model-to-jitllm` | Porting a new model architecture, or deciding whether an existing family can be reused |
-| `update-langchain4j-integration` | Updating the LangChain4j jitllm integration to a new jitllm release |
-| `update-quarkus-langchain4j-integration` | Updating the Quarkus LangChain4j jitllm extension to a new jitllm release |
-| `update-spring-ai-integration` | Creating or updating the Spring AI jitllm integration for a jitllm release |
+Deferred scenarios for behavioral evaluation are recorded in [evaluation-scenarios.md](../.agents/skills/jitllm-performance-analysis/references/evaluation-scenarios.md); recording them does not run or authorize an evaluation.
 
-## Operating Rules
-
-- Do not invent performance numbers. Every claim must come from metrics JSON, TornadoVM profiler output, system profilers, kernel profilers, or generated kernel evidence.
-- Use `nsys` before `ncu`: identify hot kernels and launch/sync behavior first, then profile a specific kernel.
-- Keep artifacts under timestamped directories, preferably `perf-results/<timestamp>/` or a clearly named scratch directory.
-- For codegen-sensitive work, inspect generated kernel source and add tests that fail if emission regresses.
-- Match the backend and profiler to the task. CUDA-specific work should use CUDA evidence; backend comparisons should measure each requested backend under equivalent conditions.
+After changing skills/agents, reload or restart the clients and inspect their available skill/agent inventories. File-format checks do not establish live profiler availability or hardware validation.
