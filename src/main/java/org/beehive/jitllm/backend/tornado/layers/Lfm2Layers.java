@@ -14,12 +14,15 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvKernels;
 import org.beehive.jitllm.backend.tornado.plan.FusedOperandSupport;
+import org.beehive.jitllm.backend.tornado.scheduling.LaneAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
+import org.beehive.jitllm.backend.tornado.scheduling.SplitKvAttentionPolicy;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspace;
 import org.beehive.jitllm.inference.state.Lfm2State;
+import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.Lfm2TornadoWeights;
 import org.beehive.jitllm.model.lfm2.Lfm2Configuration;
 import org.beehive.jitllm.runtime.backend.BackendId;
@@ -107,8 +110,20 @@ public class Lfm2Layers
         this.afterBatchPrefill = afterBatchPrefill;
         this.lfm2State = state;
         this.activationGraphName = activationGraphName;
-        this.projections = new QuantizedProjections(context, state.workspace, MATVEC_LOCAL);
+        this.projections =
+                new QuantizedProjections(context, state.workspace, MATVEC_LOCAL, 0, shuffle32());
         setupFFNLayers();
+    }
+
+    /**
+     * The split-KV partitions of decode attention over the FP16 cache, or 0 for the per-head
+     * kernel: split where the lane-cooperative kernel exists for the head width on this device
+     * (CUDA, 64-wide heads), as Qwen3 does.
+     */
+    private int attentionSplits() {
+        return fp16Kv() && laneAttention(config.headSize())
+                ? SplitKvAttentionPolicy.splits(State.SPLIT_KV)
+                : 0;
     }
 
     // ── validation ────────────────────────────────────────────────────────────
@@ -396,23 +411,55 @@ public class Lfm2Layers
                     kvLayer,
                     lfm2State.kvBlockCfg,
                     lfm2State.kvBlockStride);
-            layer.task(
-                    "attention",
-                    TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
-                    context,
-                    ws.wrapQ,
-                    ws.wrapKeyCacheFP16,
-                    ws.wrapValueCacheFP16,
-                    ws.wrapXb,
-                    config.numberOfHeads(),
-                    headDim,
-                    kvDim,
-                    config.kvMul(),
-                    ws.positionHolder,
-                    kvLayer,
-                    ws.wrapBlockTable,
-                    lfm2State.kvBlockCfg,
-                    lfm2State.kvBlockStride);
+            if (attentionSplits() > 0) {
+                // Flash-decoding: each head's positions across several workgroups of whole
+                // warps, merged by a combine pass, so a long context keeps the device busy.
+                layer.task(
+                        "attention",
+                        LaneAttentionPolicy.kernel(headDim),
+                        context,
+                        ws.wrapQ,
+                        ws.wrapKeyCacheFP16,
+                        ws.wrapValueCacheFP16,
+                        ws.wrapAttSplit,
+                        config.numberOfHeads(),
+                        headDim,
+                        kvDim,
+                        config.kvMul(),
+                        ws.positionHolder,
+                        kvLayer,
+                        ws.wrapBlockTable,
+                        lfm2State.kvBlockCfg,
+                        lfm2State.kvBlockStride,
+                        attentionSplits());
+                layer.task(
+                        "attention_combine",
+                        TransformerComputeKernelsLayered::combineSplitKVAttention,
+                        context,
+                        ws.wrapAttSplit,
+                        ws.wrapXb,
+                        config.numberOfHeads(),
+                        headDim,
+                        attentionSplits());
+            } else {
+                layer.task(
+                        "attention",
+                        TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
+                        context,
+                        ws.wrapQ,
+                        ws.wrapKeyCacheFP16,
+                        ws.wrapValueCacheFP16,
+                        ws.wrapXb,
+                        config.numberOfHeads(),
+                        headDim,
+                        kvDim,
+                        config.kvMul(),
+                        ws.positionHolder,
+                        kvLayer,
+                        ws.wrapBlockTable,
+                        lfm2State.kvBlockCfg,
+                        lfm2State.kvBlockStride);
+            }
         } else {
             layer.task(
                     "attn_kv_append",
@@ -865,6 +912,7 @@ public class Lfm2Layers
                     ws.wrapK,
                     ws.wrapV,
                     ws.wrapAtt,
+                    ws.wrapAttSplit,
                     ws.wrapHb,
                     ws.wrapHb2,
                     ws.wrapSsmQkv,
@@ -891,6 +939,7 @@ public class Lfm2Layers
                     keyStore(),
                     valueStore(),
                     ws.wrapAtt,
+                    ws.wrapAttSplit,
                     ws.wrapHb,
                     ws.wrapHb2,
                     ws.wrapSsmQkv,
@@ -911,6 +960,7 @@ public class Lfm2Layers
                     keyStore(),
                     valueStore(),
                     ws.wrapAtt,
+                    ws.wrapAttSplit,
                     ws.wrapHb,
                     ws.wrapHb2,
                     ws.wrapSsmQkv,
@@ -947,6 +997,11 @@ public class Lfm2Layers
                 WorkerGridFactory.genericWorker(config.numberOfHeads() * (headDim / 2), 32);
         WorkerGrid kvAppend = WorkerGridFactory.genericWorker(config.kvDim(), ELEMENTWISE_LOCAL);
         WorkerGrid attention =
+                attentionSplits() > 0
+                        ? LaneAttentionPolicy.worker(
+                                config.numberOfHeads() * attentionSplits(), headDim)
+                        : WorkerGridFactory.createAttentionWorker(config.numberOfHeads(), headDim);
+        WorkerGrid attentionCombine =
                 WorkerGridFactory.createAttentionWorker(config.numberOfHeads(), headDim);
         WorkerGrid conv = WorkerGridFactory.genericWorker(config.dim(), ELEMENTWISE_LOCAL);
         WorkerGrid single =
@@ -973,6 +1028,7 @@ public class Lfm2Layers
                 scheduler.addWorkerGrid(prefix + "attn_rope", rope);
                 scheduler.addWorkerGrid(prefix + "attn_kv_append", kvAppend);
                 scheduler.addWorkerGrid(prefix + "attention", attention);
+                scheduler.addWorkerGrid(prefix + "attention_combine", attentionCombine);
                 scheduler.addWorkerGrid(prefix + "attn_output_proj", matVecWorker(config.dim()));
             } else {
                 scheduler.addWorkerGrid(

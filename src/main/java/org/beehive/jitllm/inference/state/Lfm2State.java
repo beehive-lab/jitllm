@@ -201,6 +201,9 @@ public final class Lfm2State extends State {
         workspace.wrapV = TornadoWorkspaces.floats(kvDim);
         workspace.wrapAtt =
                 TornadoWorkspaces.floats(config.numberOfHeads() * config.contextLength());
+        workspace.wrapAttSplit =
+                TornadoWorkspaces.floats(
+                        config.numberOfHeads() * SPLIT_KV * (config.headSize() + 2));
 
         workspace.wrapSsmQkv = TornadoWorkspaces.floats(config.shortConvProjectionDim());
         workspace.wrapSsmConvOut = TornadoWorkspaces.floats(config.dim());

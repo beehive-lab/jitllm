@@ -57,6 +57,12 @@ public final class QuantizedProjections {
     private final int floatLocal;
     private final int packedLocal;
 
+    /**
+     * Whether the device's 32-lane shuffle runs the SIMD-group Q4_K kernels; see {@link
+     * #simdgroup}.
+     */
+    private final boolean shuffle32;
+
     /** The grids of the SIMD-group tasks, by {@code graph.task} name; see {@link #addGrids}. */
     private final Map<String, WorkerGrid> grids = new LinkedHashMap<>();
 
@@ -66,10 +72,30 @@ public final class QuantizedProjections {
      */
     public QuantizedProjections(
             KernelContext context, TornadoWorkspace ws, int floatLocal, int packedLocal) {
+        this(
+                context,
+                ws,
+                floatLocal,
+                packedLocal,
+                SchedulerDetectionService.isSubgroupShuffle32Supported());
+    }
+
+    /**
+     * @param shuffle32 whether the SIMD-group Q4_K kernels run: a device whose 32-lane shuffle the
+     *     family has verified, Metal by default. Example: LFM2 on CUDA, whose warp shuffle its own
+     *     expert kernels already reduce with.
+     */
+    public QuantizedProjections(
+            KernelContext context,
+            TornadoWorkspace ws,
+            int floatLocal,
+            int packedLocal,
+            boolean shuffle32) {
         this.context = context;
         this.ws = ws;
         this.floatLocal = floatLocal;
         this.packedLocal = packedLocal;
+        this.shuffle32 = shuffle32;
     }
 
     /**
@@ -82,12 +108,10 @@ public final class QuantizedProjections {
 
     /**
      * Whether {@code w} runs the SIMD-group Q4_K kernels, four output rows per SIMD group: a Q4_K
-     * weight on the floating-point path, on a device with a verified 32-lane shuffle (Metal).
+     * weight on the floating-point path, on a device with a verified 32-lane shuffle.
      */
     private boolean simdgroup(TornadoTensor w) {
-        return !packed()
-                && w.dataType() == DataType.Q4_K
-                && SchedulerDetectionService.isSubgroupShuffle32Supported();
+        return !packed() && w.dataType() == DataType.Q4_K && shuffle32;
     }
 
     /** Whether the plan prepacked {@code w}, a Q8_0 projection. */
