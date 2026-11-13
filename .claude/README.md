@@ -1,6 +1,6 @@
 # JitLLM agents and skills
 
-Performance procedures live in `.agents/skills/`. The matching `.claude/skills/` directories are relative symlinks to that source, so Claude Code and Codex use the same instructions. Keep canonical directories and links together when sharing the repository. Other existing build, model-porting and integration skills remain available.
+Skills live in `.agents/skills/`. The matching `.claude/skills/` entries are relative symlinks to that source, so Claude Code and Codex use the same instructions. Keep canonical directories and links together when sharing the repository.
 
 Start with `jitllm-performance-analysis` for an end-to-end investigation. It loads only the relevant tools:
 
