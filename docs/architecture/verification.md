@@ -456,7 +456,10 @@ parity numbers match CUDA's; the batched prefill is refused there, since OpenCL 
 the attention and convolution projections run on cuBLAS in FP16, so every prefill GEMM has FP16
 operands, and the class is held to the FP16 cache's near-tie envelope
 (`Lfm2NativeBatchedPrefillParityAccelTest`): 24B ≤ 3.4e-4, 8B up to 5.8e-2, argmax 63/63.
-LFM2.5-24B-A2B on the RTX 5090 Laptop: pp512 2573 tok/s, tg128 196. Without them
+With the FP16 cache as well, the batched attention runs on tensor cores (the flash head-64
+kernel), held to the same envelope (`Lfm2Fp16KvParityAccelTest`, native cases: 24B ≤ 4.9e-4, 8B
+6.5e-2); greedy text over an 890-token prompt is unchanged at chunk widths 64 and 512.
+LFM2.5-24B-A2B on the RTX 5090 Laptop: pp512 4049 tok/s, tg128 220. Without them
 the Q8_0 projections are prepacked (decode +1.6%). Splitting across devices and continuous
 batching are refused by name. Tool calling
 (`ToolCallingFamiliesAccelTest`, greedy): LFM2.5-24B-A2B passes all four exchanges on CUDA;
