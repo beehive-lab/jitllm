@@ -13,7 +13,8 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * Grouped expert GEMMs on tensor cores (CUDA), for a batched mixture-of-experts prefill: one
  * workgroup per tile of one expert's assignments and 128 outputs, the expert's weights read in
  * place from the stacked tensor once per tile. Eight warps, two by four, each 32 rows by 32 outputs
- * as {@code M16N8K16} MMAs over FP16 inputs; the depth advances 16 at a time.
+ * as {@code M16N8K16} MMAs over FP16 inputs; the depth advances 16 at a time, the next step's loads
+ * in flight while this step multiplies.
  *
  * <p>The weights enter the MMA as their integer codes, which FP16 holds exactly: a code's bits come
  * from a 256-entry table in shared memory, so no weight is converted to floating point. Each scale
@@ -60,9 +61,10 @@ public final class GroupedExpertMmaKernels {
      * tile, one workgroup per tile and 128 outputs. Row {@code i} of a tile reads FP16 input row
      * {@code sortedToken[first + i]} when {@code gather} is 1, {@code first + i} otherwise. The
      * weights enter the MMA as their integer codes, exact in FP16, and each scale group's sums are
-     * scaled in FP32 by its scale and minimum, the minimum through {@code blockSums}, the input
-     * rows' sums per 32 inputs; only the tile's rows are written, to output row {@code first + i}.
-     * Requires {@code d % 128 == 0}. Grid: {@code maxTiles * d / 128} workgroups of {@link
+     * scaled in FP32 by its scale, and the group's minimum through {@code blockSums}, the FP16
+     * rows' sums per 32 inputs. Each step's loads are issued before the previous step's multiplies,
+     * so their latency overlaps them. Only the tile's rows are written, to output row {@code first
+     * + i}. Requires {@code d % 128 == 0}. Grid: {@code maxTiles * d / 128} workgroups of {@link
      * #THREADS} threads; a workgroup past the tile count returns before its first barrier.
      */
     // @formatter:on
@@ -99,41 +101,41 @@ public final class GroupedExpertMmaKernels {
         float[] colMin = ctx.allocateFloatLocalArray(BN);
         codes[tid] = TransformerBatchPrefillKernels.fp16BitsOf((float) (tid - 128));
         float[] s00 = ctx.mmaFragment(0.0f);
+        float[] s01 = ctx.mmaFragment(0.0f);
+        float[] s02 = ctx.mmaFragment(0.0f);
+        float[] s03 = ctx.mmaFragment(0.0f);
+        float[] s10 = ctx.mmaFragment(0.0f);
+        float[] s11 = ctx.mmaFragment(0.0f);
+        float[] s12 = ctx.mmaFragment(0.0f);
+        float[] s13 = ctx.mmaFragment(0.0f);
         float t00_0 = 0.0f;
         float t00_1 = 0.0f;
         float t00_2 = 0.0f;
         float t00_3 = 0.0f;
-        float[] s01 = ctx.mmaFragment(0.0f);
         float t01_0 = 0.0f;
         float t01_1 = 0.0f;
         float t01_2 = 0.0f;
         float t01_3 = 0.0f;
-        float[] s02 = ctx.mmaFragment(0.0f);
         float t02_0 = 0.0f;
         float t02_1 = 0.0f;
         float t02_2 = 0.0f;
         float t02_3 = 0.0f;
-        float[] s03 = ctx.mmaFragment(0.0f);
         float t03_0 = 0.0f;
         float t03_1 = 0.0f;
         float t03_2 = 0.0f;
         float t03_3 = 0.0f;
-        float[] s10 = ctx.mmaFragment(0.0f);
         float t10_0 = 0.0f;
         float t10_1 = 0.0f;
         float t10_2 = 0.0f;
         float t10_3 = 0.0f;
-        float[] s11 = ctx.mmaFragment(0.0f);
         float t11_0 = 0.0f;
         float t11_1 = 0.0f;
         float t11_2 = 0.0f;
         float t11_3 = 0.0f;
-        float[] s12 = ctx.mmaFragment(0.0f);
         float t12_0 = 0.0f;
         float t12_1 = 0.0f;
         float t12_2 = 0.0f;
         float t12_3 = 0.0f;
-        float[] s13 = ctx.mmaFragment(0.0f);
         float t13_0 = 0.0f;
         float t13_1 = 0.0f;
         float t13_2 = 0.0f;
@@ -164,43 +166,91 @@ public final class GroupedExpertMmaKernels {
         int xr1 = sourceRow(sortedToken, gather, first, Math.min(r0 + 8, rows - 1)) * sumsPerRow;
         int xr2 = sourceRow(sortedToken, gather, first, Math.min(r1, rows - 1)) * sumsPerRow;
         int xr3 = sourceRow(sortedToken, gather, first, Math.min(r1 + 8, rows - 1)) * sumsPerRow;
+
+        int ra0 = 0;
+        int ra1 = 0;
+        float rs0 = 0.0f;
+        float rs1 = 0.0f;
+        int rq0 = 0;
+        int rq1 = 0;
+        int rHigh = 0;
+        int rSub = 0;
+        float rm0 = 0.0f;
+        float rm1 = 0.0f;
+        ctx.localBarrier();
+        ra0 = packHalves(input16, aBase0 + 0);
+        ra1 = packHalves(input16, aBase1 + 0);
+        {
+            int k = 0 + kQuarter;
+            int within = k & 255;
+            int pairIndex = within >> 6;
+            rHigh = (within >> 5) & 1;
+            rSub = (pairIndex << 1) + rHigh;
+            int base0 = (wRow * blocksPerRow + (k >> 8)) * 144;
+            int base1 = base0 + blocksPerRow * 144;
+            rq0 = w.getInt(base0 + 16 + pairIndex * 32 + (within & 31));
+            rq1 = w.getInt(base1 + 16 + pairIndex * 32 + (within & 31));
+            if (kQuarter == 0) {
+                int sm0 = TransformerComputeKernelsQ4_K.scaleAndMin(w, base0 + 4, rSub);
+                int sm1 = TransformerComputeKernelsQ4_K.scaleAndMin(w, base1 + 4, rSub);
+                rs0 = w.getHalfFloat(base0).getFloat32() * (sm0 >> 8);
+                rs1 = w.getHalfFloat(base1).getFloat32() * (sm1 >> 8);
+                rm0 = w.getHalfFloat(base0 + 2).getFloat32() * (sm0 & 0xFF);
+                rm1 = w.getHalfFloat(base1 + 2).getFloat32() * (sm1 & 0xFF);
+            }
+        }
+        aTile[aIdx0] = ra0;
+        aTile[aIdx1] = ra1;
+        {
+            int q0 = rq0;
+            int q1 = rq1;
+            if (rHigh == 1) {
+                q0 = q0 >>> 4;
+                q1 = q1 >>> 4;
+            }
+            bTile[bSlot + 0] = codes[128 + (q0 & 15)] | (codes[128 + (q1 & 15)] << 16);
+            bTile[bSlot + 4] =
+                    codes[128 + ((q0 >>> 8) & 15)] | (codes[128 + ((q1 >>> 8) & 15)] << 16);
+            bTile[bSlot + 8] =
+                    codes[128 + ((q0 >>> 16) & 15)] | (codes[128 + ((q1 >>> 16) & 15)] << 16);
+            bTile[bSlot + 12] =
+                    codes[128 + ((q0 >>> 24) & 15)] | (codes[128 + ((q1 >>> 24) & 15)] << 16);
+        }
+        if (kQuarter == 0) {
+            colScale[pairCol] = rs0;
+            colScale[pairCol + 1] = rs1;
+            colMin[pairCol] = rm0;
+            colMin[pairCol + 1] = rm1;
+        }
         ctx.localBarrier();
 
         int numKSteps = n >> 4;
         for (int kStep = 0; kStep < numKSteps; kStep++) {
             int kBase = kStep << 4;
-            aTile[aIdx0] = packHalves(input16, aBase0 + kBase);
-            aTile[aIdx1] = packHalves(input16, aBase1 + kBase);
-            int k = kBase + kQuarter;
-            int blk = k >> 8;
-            int within = k & 255;
-            int pairIndex = within >> 6;
-            int high = (within >> 5) & 1;
-            int sub = (pairIndex << 1) + high;
-            int base0 = (wRow * blocksPerRow + blk) * 144;
-            int base1 = base0 + blocksPerRow * 144;
-            int qs0 = w.getInt(base0 + 16 + pairIndex * 32 + (within & 31));
-            int qs1 = w.getInt(base1 + 16 + pairIndex * 32 + (within & 31));
-            if (high == 1) {
-                qs0 = qs0 >>> 4;
-                qs1 = qs1 >>> 4;
+            boolean next = kStep + 1 < numKSteps;
+            if (next) {
+                ra0 = packHalves(input16, aBase0 + kBase + BK);
+                ra1 = packHalves(input16, aBase1 + kBase + BK);
+                {
+                    int k = kBase + BK + kQuarter;
+                    int within = k & 255;
+                    int pairIndex = within >> 6;
+                    rHigh = (within >> 5) & 1;
+                    rSub = (pairIndex << 1) + rHigh;
+                    int base0 = (wRow * blocksPerRow + (k >> 8)) * 144;
+                    int base1 = base0 + blocksPerRow * 144;
+                    rq0 = w.getInt(base0 + 16 + pairIndex * 32 + (within & 31));
+                    rq1 = w.getInt(base1 + 16 + pairIndex * 32 + (within & 31));
+                    if (kQuarter == 0) {
+                        int sm0 = TransformerComputeKernelsQ4_K.scaleAndMin(w, base0 + 4, rSub);
+                        int sm1 = TransformerComputeKernelsQ4_K.scaleAndMin(w, base1 + 4, rSub);
+                        rs0 = w.getHalfFloat(base0).getFloat32() * (sm0 >> 8);
+                        rs1 = w.getHalfFloat(base1).getFloat32() * (sm1 >> 8);
+                        rm0 = w.getHalfFloat(base0 + 2).getFloat32() * (sm0 & 0xFF);
+                        rm1 = w.getHalfFloat(base1 + 2).getFloat32() * (sm1 & 0xFF);
+                    }
+                }
             }
-            bTile[bSlot] = codes[128 + (qs0 & 15)] | (codes[128 + (qs1 & 15)] << 16);
-            bTile[bSlot + 4] =
-                    codes[128 + ((qs0 >>> 8) & 15)] | (codes[128 + ((qs1 >>> 8) & 15)] << 16);
-            bTile[bSlot + 8] =
-                    codes[128 + ((qs0 >>> 16) & 15)] | (codes[128 + ((qs1 >>> 16) & 15)] << 16);
-            bTile[bSlot + 12] =
-                    codes[128 + ((qs0 >>> 24) & 15)] | (codes[128 + ((qs1 >>> 24) & 15)] << 16);
-            if (kQuarter == 0) {
-                int sm0 = TransformerComputeKernelsQ4_K.scaleAndMin(w, base0 + 4, sub);
-                int sm1 = TransformerComputeKernelsQ4_K.scaleAndMin(w, base1 + 4, sub);
-                colScale[pairCol] = w.getHalfFloat(base0).getFloat32() * (sm0 >> 8);
-                colScale[pairCol + 1] = w.getHalfFloat(base1).getFloat32() * (sm1 >> 8);
-                colMin[pairCol] = w.getHalfFloat(base0 + 2).getFloat32() * (sm0 & 0xFF);
-                colMin[pairCol + 1] = w.getHalfFloat(base1 + 2).getFloat32() * (sm1 & 0xFF);
-            }
-            ctx.localBarrier();
             // A warp whose rows all lie past the tile's multiplies nothing it stores.
             if (warpM * 32 < rows) {
                 HalfFloat[] a0 = ctx.mmaLoadA(aTile, BK, warpM * 1024);
@@ -264,6 +314,34 @@ public final class GroupedExpertMmaKernels {
                 s11 = ctx.mmaFragment(0.0f);
                 s12 = ctx.mmaFragment(0.0f);
                 s13 = ctx.mmaFragment(0.0f);
+            }
+            ctx.localBarrier();
+            if (next) {
+                aTile[aIdx0] = ra0;
+                aTile[aIdx1] = ra1;
+                {
+                    int q0 = rq0;
+                    int q1 = rq1;
+                    if (rHigh == 1) {
+                        q0 = q0 >>> 4;
+                        q1 = q1 >>> 4;
+                    }
+                    bTile[bSlot + 0] = codes[128 + (q0 & 15)] | (codes[128 + (q1 & 15)] << 16);
+                    bTile[bSlot + 4] =
+                            codes[128 + ((q0 >>> 8) & 15)] | (codes[128 + ((q1 >>> 8) & 15)] << 16);
+                    bTile[bSlot + 8] =
+                            codes[128 + ((q0 >>> 16) & 15)]
+                                    | (codes[128 + ((q1 >>> 16) & 15)] << 16);
+                    bTile[bSlot + 12] =
+                            codes[128 + ((q0 >>> 24) & 15)]
+                                    | (codes[128 + ((q1 >>> 24) & 15)] << 16);
+                }
+                if (kQuarter == 0) {
+                    colScale[pairCol] = rs0;
+                    colScale[pairCol + 1] = rs1;
+                    colMin[pairCol] = rm0;
+                    colMin[pairCol + 1] = rm1;
+                }
             }
             ctx.localBarrier();
         }
@@ -345,9 +423,10 @@ public final class GroupedExpertMmaKernels {
      * tile, one workgroup per tile and 128 outputs. Row {@code i} of a tile reads FP16 input row
      * {@code sortedToken[first + i]} when {@code gather} is 1, {@code first + i} otherwise. The
      * weights enter the MMA as their integer codes, exact in FP16, and each scale group's sums are
-     * scaled in FP32 by its scale and minimum, the minimum through {@code blockSums}, the input
-     * rows' sums per 32 inputs; only the tile's rows are written, to output row {@code first + i}.
-     * Requires {@code d % 128 == 0}. Grid: {@code maxTiles * d / 128} workgroups of {@link
+     * scaled in FP32 by its scale, and the group's minimum through {@code blockSums}, the FP16
+     * rows' sums per 32 inputs. Each step's loads are issued before the previous step's multiplies,
+     * so their latency overlaps them. Only the tile's rows are written, to output row {@code first
+     * + i}. Requires {@code d % 128 == 0}. Grid: {@code maxTiles * d / 128} workgroups of {@link
      * #THREADS} threads; a workgroup past the tile count returns before its first barrier.
      */
     // @formatter:on
@@ -384,41 +463,41 @@ public final class GroupedExpertMmaKernels {
         float[] colMin = ctx.allocateFloatLocalArray(BN);
         codes[tid] = TransformerBatchPrefillKernels.fp16BitsOf((float) (tid - 128));
         float[] s00 = ctx.mmaFragment(0.0f);
+        float[] s01 = ctx.mmaFragment(0.0f);
+        float[] s02 = ctx.mmaFragment(0.0f);
+        float[] s03 = ctx.mmaFragment(0.0f);
+        float[] s10 = ctx.mmaFragment(0.0f);
+        float[] s11 = ctx.mmaFragment(0.0f);
+        float[] s12 = ctx.mmaFragment(0.0f);
+        float[] s13 = ctx.mmaFragment(0.0f);
         float t00_0 = 0.0f;
         float t00_1 = 0.0f;
         float t00_2 = 0.0f;
         float t00_3 = 0.0f;
-        float[] s01 = ctx.mmaFragment(0.0f);
         float t01_0 = 0.0f;
         float t01_1 = 0.0f;
         float t01_2 = 0.0f;
         float t01_3 = 0.0f;
-        float[] s02 = ctx.mmaFragment(0.0f);
         float t02_0 = 0.0f;
         float t02_1 = 0.0f;
         float t02_2 = 0.0f;
         float t02_3 = 0.0f;
-        float[] s03 = ctx.mmaFragment(0.0f);
         float t03_0 = 0.0f;
         float t03_1 = 0.0f;
         float t03_2 = 0.0f;
         float t03_3 = 0.0f;
-        float[] s10 = ctx.mmaFragment(0.0f);
         float t10_0 = 0.0f;
         float t10_1 = 0.0f;
         float t10_2 = 0.0f;
         float t10_3 = 0.0f;
-        float[] s11 = ctx.mmaFragment(0.0f);
         float t11_0 = 0.0f;
         float t11_1 = 0.0f;
         float t11_2 = 0.0f;
         float t11_3 = 0.0f;
-        float[] s12 = ctx.mmaFragment(0.0f);
         float t12_0 = 0.0f;
         float t12_1 = 0.0f;
         float t12_2 = 0.0f;
         float t12_3 = 0.0f;
-        float[] s13 = ctx.mmaFragment(0.0f);
         float t13_0 = 0.0f;
         float t13_1 = 0.0f;
         float t13_2 = 0.0f;
@@ -449,69 +528,123 @@ public final class GroupedExpertMmaKernels {
         int xr1 = sourceRow(sortedToken, gather, first, Math.min(r0 + 8, rows - 1)) * sumsPerRow;
         int xr2 = sourceRow(sortedToken, gather, first, Math.min(r1, rows - 1)) * sumsPerRow;
         int xr3 = sourceRow(sortedToken, gather, first, Math.min(r1 + 8, rows - 1)) * sumsPerRow;
+
+        int ra0 = 0;
+        int ra1 = 0;
+        float rs0 = 0.0f;
+        float rs1 = 0.0f;
+        int rq0 = 0;
+        int rq1 = 0;
+        int rHigh = 0;
+        int rSub = 0;
+        float rm0 = 0.0f;
+        float rm1 = 0.0f;
+        int rh0 = 0;
+        int rh1 = 0;
+        ctx.localBarrier();
+        ra0 = packHalves(input16, aBase0 + 0);
+        ra1 = packHalves(input16, aBase1 + 0);
+        {
+            int k = 0 + kQuarter;
+            int within = k & 255;
+            int pairIndex = within >> 6;
+            rHigh = (within >> 5) & 1;
+            rSub = (pairIndex << 1) + rHigh;
+            int base0 = (wRow * blocksPerRow + (k >> 8)) * 176;
+            int base1 = base0 + blocksPerRow * 176;
+            rq0 = w.getInt(base0 + 48 + pairIndex * 32 + (within & 31));
+            rq1 = w.getInt(base1 + 48 + pairIndex * 32 + (within & 31));
+            rh0 = w.getInt(base0 + 16 + (within & 31));
+            rh1 = w.getInt(base1 + 16 + (within & 31));
+            if (kQuarter == 0) {
+                int sm0 = TransformerComputeKernelsQ4_K.scaleAndMin(w, base0 + 4, rSub);
+                int sm1 = TransformerComputeKernelsQ4_K.scaleAndMin(w, base1 + 4, rSub);
+                rs0 = w.getHalfFloat(base0).getFloat32() * (sm0 >> 8);
+                rs1 = w.getHalfFloat(base1).getFloat32() * (sm1 >> 8);
+                rm0 = w.getHalfFloat(base0 + 2).getFloat32() * (sm0 & 0xFF);
+                rm1 = w.getHalfFloat(base1 + 2).getFloat32() * (sm1 & 0xFF);
+            }
+        }
+        aTile[aIdx0] = ra0;
+        aTile[aIdx1] = ra1;
+        {
+            int q0 = rq0;
+            int q1 = rq1;
+            if (rHigh == 1) {
+                q0 = q0 >>> 4;
+                q1 = q1 >>> 4;
+            }
+            int h0 = rh0;
+            int h1 = rh1;
+            if (rSub == 1) {
+                h0 = h0 >>> 1;
+                h1 = h1 >>> 1;
+            } else if (rSub == 2) {
+                h0 = h0 >>> 2;
+                h1 = h1 >>> 2;
+            } else if (rSub == 3) {
+                h0 = h0 >>> 3;
+                h1 = h1 >>> 3;
+            } else if (rSub == 4) {
+                h0 = h0 >>> 4;
+                h1 = h1 >>> 4;
+            } else if (rSub == 5) {
+                h0 = h0 >>> 5;
+                h1 = h1 >>> 5;
+            } else if (rSub == 6) {
+                h0 = h0 >>> 6;
+                h1 = h1 >>> 6;
+            } else if (rSub == 7) {
+                h0 = h0 >>> 7;
+                h1 = h1 >>> 7;
+            }
+            q0 = (q0 & 0x0F0F0F0F) | ((h0 & 0x01010101) << 4);
+            q1 = (q1 & 0x0F0F0F0F) | ((h1 & 0x01010101) << 4);
+            bTile[bSlot + 0] = codes[128 + (q0 & 31)] | (codes[128 + (q1 & 31)] << 16);
+            bTile[bSlot + 4] =
+                    codes[128 + ((q0 >>> 8) & 31)] | (codes[128 + ((q1 >>> 8) & 31)] << 16);
+            bTile[bSlot + 8] =
+                    codes[128 + ((q0 >>> 16) & 31)] | (codes[128 + ((q1 >>> 16) & 31)] << 16);
+            bTile[bSlot + 12] =
+                    codes[128 + ((q0 >>> 24) & 31)] | (codes[128 + ((q1 >>> 24) & 31)] << 16);
+        }
+        if (kQuarter == 0) {
+            colScale[pairCol] = rs0;
+            colScale[pairCol + 1] = rs1;
+            colMin[pairCol] = rm0;
+            colMin[pairCol + 1] = rm1;
+        }
         ctx.localBarrier();
 
         int numKSteps = n >> 4;
         for (int kStep = 0; kStep < numKSteps; kStep++) {
             int kBase = kStep << 4;
-            aTile[aIdx0] = packHalves(input16, aBase0 + kBase);
-            aTile[aIdx1] = packHalves(input16, aBase1 + kBase);
-            int k = kBase + kQuarter;
-            int blk = k >> 8;
-            int within = k & 255;
-            int pairIndex = within >> 6;
-            int high = (within >> 5) & 1;
-            int sub = (pairIndex << 1) + high;
-            int base0 = (wRow * blocksPerRow + blk) * 176;
-            int base1 = base0 + blocksPerRow * 176;
-            int qs0 = w.getInt(base0 + 48 + pairIndex * 32 + (within & 31));
-            int qs1 = w.getInt(base1 + 48 + pairIndex * 32 + (within & 31));
-            int qh0 = w.getInt(base0 + 16 + (within & 31));
-            int qh1 = w.getInt(base1 + 16 + (within & 31));
-            if (high == 1) {
-                qs0 = qs0 >>> 4;
-                qs1 = qs1 >>> 4;
+            boolean next = kStep + 1 < numKSteps;
+            if (next) {
+                ra0 = packHalves(input16, aBase0 + kBase + BK);
+                ra1 = packHalves(input16, aBase1 + kBase + BK);
+                {
+                    int k = kBase + BK + kQuarter;
+                    int within = k & 255;
+                    int pairIndex = within >> 6;
+                    rHigh = (within >> 5) & 1;
+                    rSub = (pairIndex << 1) + rHigh;
+                    int base0 = (wRow * blocksPerRow + (k >> 8)) * 176;
+                    int base1 = base0 + blocksPerRow * 176;
+                    rq0 = w.getInt(base0 + 48 + pairIndex * 32 + (within & 31));
+                    rq1 = w.getInt(base1 + 48 + pairIndex * 32 + (within & 31));
+                    rh0 = w.getInt(base0 + 16 + (within & 31));
+                    rh1 = w.getInt(base1 + 16 + (within & 31));
+                    if (kQuarter == 0) {
+                        int sm0 = TransformerComputeKernelsQ4_K.scaleAndMin(w, base0 + 4, rSub);
+                        int sm1 = TransformerComputeKernelsQ4_K.scaleAndMin(w, base1 + 4, rSub);
+                        rs0 = w.getHalfFloat(base0).getFloat32() * (sm0 >> 8);
+                        rs1 = w.getHalfFloat(base1).getFloat32() * (sm1 >> 8);
+                        rm0 = w.getHalfFloat(base0 + 2).getFloat32() * (sm0 & 0xFF);
+                        rm1 = w.getHalfFloat(base1 + 2).getFloat32() * (sm1 & 0xFF);
+                    }
+                }
             }
-            if (sub == 1) {
-                qh0 = qh0 >>> 1;
-                qh1 = qh1 >>> 1;
-            } else if (sub == 2) {
-                qh0 = qh0 >>> 2;
-                qh1 = qh1 >>> 2;
-            } else if (sub == 3) {
-                qh0 = qh0 >>> 3;
-                qh1 = qh1 >>> 3;
-            } else if (sub == 4) {
-                qh0 = qh0 >>> 4;
-                qh1 = qh1 >>> 4;
-            } else if (sub == 5) {
-                qh0 = qh0 >>> 5;
-                qh1 = qh1 >>> 5;
-            } else if (sub == 6) {
-                qh0 = qh0 >>> 6;
-                qh1 = qh1 >>> 6;
-            } else if (sub == 7) {
-                qh0 = qh0 >>> 7;
-                qh1 = qh1 >>> 7;
-            }
-            qs0 = (qs0 & 0x0F0F0F0F) | ((qh0 & 0x01010101) << 4);
-            qs1 = (qs1 & 0x0F0F0F0F) | ((qh1 & 0x01010101) << 4);
-            bTile[bSlot] = codes[128 + (qs0 & 31)] | (codes[128 + (qs1 & 31)] << 16);
-            bTile[bSlot + 4] =
-                    codes[128 + ((qs0 >>> 8) & 31)] | (codes[128 + ((qs1 >>> 8) & 31)] << 16);
-            bTile[bSlot + 8] =
-                    codes[128 + ((qs0 >>> 16) & 31)] | (codes[128 + ((qs1 >>> 16) & 31)] << 16);
-            bTile[bSlot + 12] =
-                    codes[128 + ((qs0 >>> 24) & 31)] | (codes[128 + ((qs1 >>> 24) & 31)] << 16);
-            if (kQuarter == 0) {
-                int sm0 = TransformerComputeKernelsQ4_K.scaleAndMin(w, base0 + 4, sub);
-                int sm1 = TransformerComputeKernelsQ4_K.scaleAndMin(w, base1 + 4, sub);
-                colScale[pairCol] = w.getHalfFloat(base0).getFloat32() * (sm0 >> 8);
-                colScale[pairCol + 1] = w.getHalfFloat(base1).getFloat32() * (sm1 >> 8);
-                colMin[pairCol] = w.getHalfFloat(base0 + 2).getFloat32() * (sm0 & 0xFF);
-                colMin[pairCol + 1] = w.getHalfFloat(base1 + 2).getFloat32() * (sm1 & 0xFF);
-            }
-            ctx.localBarrier();
             // A warp whose rows all lie past the tile's multiplies nothing it stores.
             if (warpM * 32 < rows) {
                 HalfFloat[] a0 = ctx.mmaLoadA(aTile, BK, warpM * 1024);
@@ -575,6 +708,60 @@ public final class GroupedExpertMmaKernels {
                 s11 = ctx.mmaFragment(0.0f);
                 s12 = ctx.mmaFragment(0.0f);
                 s13 = ctx.mmaFragment(0.0f);
+            }
+            ctx.localBarrier();
+            if (next) {
+                aTile[aIdx0] = ra0;
+                aTile[aIdx1] = ra1;
+                {
+                    int q0 = rq0;
+                    int q1 = rq1;
+                    if (rHigh == 1) {
+                        q0 = q0 >>> 4;
+                        q1 = q1 >>> 4;
+                    }
+                    int h0 = rh0;
+                    int h1 = rh1;
+                    if (rSub == 1) {
+                        h0 = h0 >>> 1;
+                        h1 = h1 >>> 1;
+                    } else if (rSub == 2) {
+                        h0 = h0 >>> 2;
+                        h1 = h1 >>> 2;
+                    } else if (rSub == 3) {
+                        h0 = h0 >>> 3;
+                        h1 = h1 >>> 3;
+                    } else if (rSub == 4) {
+                        h0 = h0 >>> 4;
+                        h1 = h1 >>> 4;
+                    } else if (rSub == 5) {
+                        h0 = h0 >>> 5;
+                        h1 = h1 >>> 5;
+                    } else if (rSub == 6) {
+                        h0 = h0 >>> 6;
+                        h1 = h1 >>> 6;
+                    } else if (rSub == 7) {
+                        h0 = h0 >>> 7;
+                        h1 = h1 >>> 7;
+                    }
+                    q0 = (q0 & 0x0F0F0F0F) | ((h0 & 0x01010101) << 4);
+                    q1 = (q1 & 0x0F0F0F0F) | ((h1 & 0x01010101) << 4);
+                    bTile[bSlot + 0] = codes[128 + (q0 & 31)] | (codes[128 + (q1 & 31)] << 16);
+                    bTile[bSlot + 4] =
+                            codes[128 + ((q0 >>> 8) & 31)] | (codes[128 + ((q1 >>> 8) & 31)] << 16);
+                    bTile[bSlot + 8] =
+                            codes[128 + ((q0 >>> 16) & 31)]
+                                    | (codes[128 + ((q1 >>> 16) & 31)] << 16);
+                    bTile[bSlot + 12] =
+                            codes[128 + ((q0 >>> 24) & 31)]
+                                    | (codes[128 + ((q1 >>> 24) & 31)] << 16);
+                }
+                if (kQuarter == 0) {
+                    colScale[pairCol] = rs0;
+                    colScale[pairCol + 1] = rs1;
+                    colMin[pairCol] = rm0;
+                    colMin[pairCol + 1] = rm1;
+                }
             }
             ctx.localBarrier();
         }
@@ -656,9 +843,11 @@ public final class GroupedExpertMmaKernels {
      * tile, one workgroup per tile and 128 outputs. Row {@code i} of a tile reads FP16 input row
      * {@code sortedToken[first + i]} when {@code gather} is 1, {@code first + i} otherwise. The
      * weights enter the MMA as their integer codes, exact in FP16, and each scale group's sums are
-     * scaled in FP32 by its scale; only the tile's rows are written, to output row {@code first +
-     * i}. Requires {@code d % 128 == 0}. Grid: {@code maxTiles * d / 128} workgroups of {@link
-     * #THREADS} threads; a workgroup past the tile count returns before its first barrier.
+     * scaled in FP32 by its scale. Each step's loads are issued before the previous step's
+     * multiplies, so their latency overlaps them. Only the tile's rows are written, to output row
+     * {@code first + i}. Requires {@code d % 128 == 0}. Grid: {@code maxTiles * d / 128} workgroups
+     * of {@link #THREADS} threads; a workgroup past the tile count returns before its first
+     * barrier.
      */
     // @formatter:on
     public static void groupedExpertMmaQ6_K(
@@ -693,41 +882,41 @@ public final class GroupedExpertMmaKernels {
         float[] colScale = ctx.allocateFloatLocalArray(BN);
         codes[tid] = TransformerBatchPrefillKernels.fp16BitsOf((float) (tid - 128));
         float[] s00 = ctx.mmaFragment(0.0f);
+        float[] s01 = ctx.mmaFragment(0.0f);
+        float[] s02 = ctx.mmaFragment(0.0f);
+        float[] s03 = ctx.mmaFragment(0.0f);
+        float[] s10 = ctx.mmaFragment(0.0f);
+        float[] s11 = ctx.mmaFragment(0.0f);
+        float[] s12 = ctx.mmaFragment(0.0f);
+        float[] s13 = ctx.mmaFragment(0.0f);
         float t00_0 = 0.0f;
         float t00_1 = 0.0f;
         float t00_2 = 0.0f;
         float t00_3 = 0.0f;
-        float[] s01 = ctx.mmaFragment(0.0f);
         float t01_0 = 0.0f;
         float t01_1 = 0.0f;
         float t01_2 = 0.0f;
         float t01_3 = 0.0f;
-        float[] s02 = ctx.mmaFragment(0.0f);
         float t02_0 = 0.0f;
         float t02_1 = 0.0f;
         float t02_2 = 0.0f;
         float t02_3 = 0.0f;
-        float[] s03 = ctx.mmaFragment(0.0f);
         float t03_0 = 0.0f;
         float t03_1 = 0.0f;
         float t03_2 = 0.0f;
         float t03_3 = 0.0f;
-        float[] s10 = ctx.mmaFragment(0.0f);
         float t10_0 = 0.0f;
         float t10_1 = 0.0f;
         float t10_2 = 0.0f;
         float t10_3 = 0.0f;
-        float[] s11 = ctx.mmaFragment(0.0f);
         float t11_0 = 0.0f;
         float t11_1 = 0.0f;
         float t11_2 = 0.0f;
         float t11_3 = 0.0f;
-        float[] s12 = ctx.mmaFragment(0.0f);
         float t12_0 = 0.0f;
         float t12_1 = 0.0f;
         float t12_2 = 0.0f;
         float t12_3 = 0.0f;
-        float[] s13 = ctx.mmaFragment(0.0f);
         float t13_0 = 0.0f;
         float t13_1 = 0.0f;
         float t13_2 = 0.0f;
@@ -753,94 +942,121 @@ public final class GroupedExpertMmaKernels {
         int lc1 = lc0 + 8;
         int lc2 = lc0 + 16;
         int lc3 = lc0 + 24;
-        ctx.localBarrier();
 
-        int numKSteps = n >> 4;
-        for (int kStep = 0; kStep < numKSteps; kStep++) {
-            int kBase = kStep << 4;
-            aTile[aIdx0] = packHalves(input16, aBase0 + kBase);
-            aTile[aIdx1] = packHalves(input16, aBase1 + kBase);
-            int k = kBase + kQuarter;
-            int blk = k >> 8;
+        int ra0 = 0;
+        int ra1 = 0;
+        float rs0 = 0.0f;
+        float rs1 = 0.0f;
+        int rGroup = 0;
+        int rl0_0 = 0;
+        int rl1_0 = 0;
+        int rh0_0 = 0;
+        int rh1_0 = 0;
+        int rl0_1 = 0;
+        int rl1_1 = 0;
+        int rh0_1 = 0;
+        int rh1_1 = 0;
+        int rl0_2 = 0;
+        int rl1_2 = 0;
+        int rh0_2 = 0;
+        int rh1_2 = 0;
+        int rl0_3 = 0;
+        int rl1_3 = 0;
+        int rh0_3 = 0;
+        int rh1_3 = 0;
+        ctx.localBarrier();
+        ra0 = packHalves(input16, aBase0 + 0);
+        ra1 = packHalves(input16, aBase1 + 0);
+        {
+            int k = 0 + kQuarter;
             int within = k & 255;
             int halfIndex = within >> 7;
-            int groupInHalf = (within >> 5) & 3;
+            rGroup = (within >> 5) & 3;
             int posInGroup = within & 31;
-            int base0 = (wRow * blocksPerRow + blk) * 210;
+            int base0 = (wRow * blocksPerRow + (k >> 8)) * 210;
             int base1 = base0 + blocksPerRow * 210;
-            int ql0 = base0 + halfIndex * 64 + (groupInHalf & 1) * 32 + posInGroup;
-            int ql1 = base1 + halfIndex * 64 + (groupInHalf & 1) * 32 + posInGroup;
+            int ql0 = base0 + halfIndex * 64 + (rGroup & 1) * 32 + posInGroup;
+            int ql1 = base1 + halfIndex * 64 + (rGroup & 1) * 32 + posInGroup;
             int qh0 = base0 + 128 + halfIndex * 32 + posInGroup;
             int qh1 = base1 + 128 + halfIndex * 32 + posInGroup;
-            int ql0_0 = w.get(ql0 + 0) & 0xFF;
-            int ql1_0 = w.get(ql1 + 0) & 0xFF;
-            int qh0_0 = w.get(qh0 + 0) & 0xFF;
-            int qh1_0 = w.get(qh1 + 0) & 0xFF;
-            int ql0_1 = w.get(ql0 + 1) & 0xFF;
-            int ql1_1 = w.get(ql1 + 1) & 0xFF;
-            int qh0_1 = w.get(qh0 + 1) & 0xFF;
-            int qh1_1 = w.get(qh1 + 1) & 0xFF;
-            int ql0_2 = w.get(ql0 + 2) & 0xFF;
-            int ql1_2 = w.get(ql1 + 2) & 0xFF;
-            int qh0_2 = w.get(qh0 + 2) & 0xFF;
-            int qh1_2 = w.get(qh1 + 2) & 0xFF;
-            int ql0_3 = w.get(ql0 + 3) & 0xFF;
-            int ql1_3 = w.get(ql1 + 3) & 0xFF;
-            int qh0_3 = w.get(qh0 + 3) & 0xFF;
-            int qh1_3 = w.get(qh1 + 3) & 0xFF;
-            int v0_0 = ql0_0 & 15;
-            int v1_0 = ql1_0 & 15;
-            int v0_1 = ql0_1 & 15;
-            int v1_1 = ql1_1 & 15;
-            int v0_2 = ql0_2 & 15;
-            int v1_2 = ql1_2 & 15;
-            int v0_3 = ql0_3 & 15;
-            int v1_3 = ql1_3 & 15;
-            if ((groupInHalf >> 1) == 1) {
-                v0_0 = (ql0_0 >> 4) & 15;
-                v1_0 = (ql1_0 >> 4) & 15;
-                v0_1 = (ql0_1 >> 4) & 15;
-                v1_1 = (ql1_1 >> 4) & 15;
-                v0_2 = (ql0_2 >> 4) & 15;
-                v1_2 = (ql1_2 >> 4) & 15;
-                v0_3 = (ql0_3 >> 4) & 15;
-                v1_3 = (ql1_3 >> 4) & 15;
+            rl0_0 = w.get(ql0 + 0) & 0xFF;
+            rl1_0 = w.get(ql1 + 0) & 0xFF;
+            rh0_0 = w.get(qh0 + 0) & 0xFF;
+            rh1_0 = w.get(qh1 + 0) & 0xFF;
+            rl0_1 = w.get(ql0 + 1) & 0xFF;
+            rl1_1 = w.get(ql1 + 1) & 0xFF;
+            rh0_1 = w.get(qh0 + 1) & 0xFF;
+            rh1_1 = w.get(qh1 + 1) & 0xFF;
+            rl0_2 = w.get(ql0 + 2) & 0xFF;
+            rl1_2 = w.get(ql1 + 2) & 0xFF;
+            rh0_2 = w.get(qh0 + 2) & 0xFF;
+            rh1_2 = w.get(qh1 + 2) & 0xFF;
+            rl0_3 = w.get(ql0 + 3) & 0xFF;
+            rl1_3 = w.get(ql1 + 3) & 0xFF;
+            rh0_3 = w.get(qh0 + 3) & 0xFF;
+            rh1_3 = w.get(qh1 + 3) & 0xFF;
+            if (kQuarter == 0) {
+                int sc = halfIndex * 8 + (posInGroup >> 4) + rGroup * 2;
+                rs0 = w.getHalfFloat(base0 + 208).getFloat32() * w.get(base0 + 192 + sc);
+                rs1 = w.getHalfFloat(base1 + 208).getFloat32() * w.get(base1 + 192 + sc);
             }
-            int h0_0 = qh0_0 & 3;
-            int h1_0 = qh1_0 & 3;
-            int h0_1 = qh0_1 & 3;
-            int h1_1 = qh1_1 & 3;
-            int h0_2 = qh0_2 & 3;
-            int h1_2 = qh1_2 & 3;
-            int h0_3 = qh0_3 & 3;
-            int h1_3 = qh1_3 & 3;
-            if (groupInHalf == 1) {
-                h0_0 = (qh0_0 >> 2) & 3;
-                h1_0 = (qh1_0 >> 2) & 3;
-                h0_1 = (qh0_1 >> 2) & 3;
-                h1_1 = (qh1_1 >> 2) & 3;
-                h0_2 = (qh0_2 >> 2) & 3;
-                h1_2 = (qh1_2 >> 2) & 3;
-                h0_3 = (qh0_3 >> 2) & 3;
-                h1_3 = (qh1_3 >> 2) & 3;
-            } else if (groupInHalf == 2) {
-                h0_0 = (qh0_0 >> 4) & 3;
-                h1_0 = (qh1_0 >> 4) & 3;
-                h0_1 = (qh0_1 >> 4) & 3;
-                h1_1 = (qh1_1 >> 4) & 3;
-                h0_2 = (qh0_2 >> 4) & 3;
-                h1_2 = (qh1_2 >> 4) & 3;
-                h0_3 = (qh0_3 >> 4) & 3;
-                h1_3 = (qh1_3 >> 4) & 3;
-            } else if (groupInHalf == 3) {
-                h0_0 = (qh0_0 >> 6) & 3;
-                h1_0 = (qh1_0 >> 6) & 3;
-                h0_1 = (qh0_1 >> 6) & 3;
-                h1_1 = (qh1_1 >> 6) & 3;
-                h0_2 = (qh0_2 >> 6) & 3;
-                h1_2 = (qh1_2 >> 6) & 3;
-                h0_3 = (qh0_3 >> 6) & 3;
-                h1_3 = (qh1_3 >> 6) & 3;
+        }
+        aTile[aIdx0] = ra0;
+        aTile[aIdx1] = ra1;
+        {
+            int v0_0 = rl0_0 & 15;
+            int v1_0 = rl1_0 & 15;
+            int h0_0 = rh0_0 & 3;
+            int h1_0 = rh1_0 & 3;
+            int v0_1 = rl0_1 & 15;
+            int v1_1 = rl1_1 & 15;
+            int h0_1 = rh0_1 & 3;
+            int h1_1 = rh1_1 & 3;
+            int v0_2 = rl0_2 & 15;
+            int v1_2 = rl1_2 & 15;
+            int h0_2 = rh0_2 & 3;
+            int h1_2 = rh1_2 & 3;
+            int v0_3 = rl0_3 & 15;
+            int v1_3 = rl1_3 & 15;
+            int h0_3 = rh0_3 & 3;
+            int h1_3 = rh1_3 & 3;
+            if ((rGroup >> 1) == 1) {
+                v0_0 = (rl0_0 >> 4) & 15;
+                v1_0 = (rl1_0 >> 4) & 15;
+                v0_1 = (rl0_1 >> 4) & 15;
+                v1_1 = (rl1_1 >> 4) & 15;
+                v0_2 = (rl0_2 >> 4) & 15;
+                v1_2 = (rl1_2 >> 4) & 15;
+                v0_3 = (rl0_3 >> 4) & 15;
+                v1_3 = (rl1_3 >> 4) & 15;
+            }
+            if (rGroup == 1) {
+                h0_0 = (rh0_0 >> 2) & 3;
+                h1_0 = (rh1_0 >> 2) & 3;
+                h0_1 = (rh0_1 >> 2) & 3;
+                h1_1 = (rh1_1 >> 2) & 3;
+                h0_2 = (rh0_2 >> 2) & 3;
+                h1_2 = (rh1_2 >> 2) & 3;
+                h0_3 = (rh0_3 >> 2) & 3;
+                h1_3 = (rh1_3 >> 2) & 3;
+            } else if (rGroup == 2) {
+                h0_0 = (rh0_0 >> 4) & 3;
+                h1_0 = (rh1_0 >> 4) & 3;
+                h0_1 = (rh0_1 >> 4) & 3;
+                h1_1 = (rh1_1 >> 4) & 3;
+                h0_2 = (rh0_2 >> 4) & 3;
+                h1_2 = (rh1_2 >> 4) & 3;
+                h0_3 = (rh0_3 >> 4) & 3;
+                h1_3 = (rh1_3 >> 4) & 3;
+            } else if (rGroup == 3) {
+                h0_0 = (rh0_0 >> 6) & 3;
+                h1_0 = (rh1_0 >> 6) & 3;
+                h0_1 = (rh0_1 >> 6) & 3;
+                h1_1 = (rh1_1 >> 6) & 3;
+                h0_2 = (rh0_2 >> 6) & 3;
+                h1_2 = (rh1_2 >> 6) & 3;
+                h0_3 = (rh0_3 >> 6) & 3;
+                h1_3 = (rh1_3 >> 6) & 3;
             }
             bTile[bSlot + 0] =
                     codes[96 + (v0_0 | (h0_0 << 4))] | (codes[96 + (v1_0 | (h1_0 << 4))] << 16);
@@ -850,13 +1066,55 @@ public final class GroupedExpertMmaKernels {
                     codes[96 + (v0_2 | (h0_2 << 4))] | (codes[96 + (v1_2 | (h1_2 << 4))] << 16);
             bTile[bSlot + 12] =
                     codes[96 + (v0_3 | (h0_3 << 4))] | (codes[96 + (v1_3 | (h1_3 << 4))] << 16);
-            if (kQuarter == 0) {
-                int sc0 = w.get(base0 + 192 + halfIndex * 8 + (posInGroup >> 4) + groupInHalf * 2);
-                int sc1 = w.get(base1 + 192 + halfIndex * 8 + (posInGroup >> 4) + groupInHalf * 2);
-                colScale[pairCol] = w.getHalfFloat(base0 + 208).getFloat32() * sc0;
-                colScale[pairCol + 1] = w.getHalfFloat(base1 + 208).getFloat32() * sc1;
+        }
+        if (kQuarter == 0) {
+            colScale[pairCol] = rs0;
+            colScale[pairCol + 1] = rs1;
+        }
+        ctx.localBarrier();
+
+        int numKSteps = n >> 4;
+        for (int kStep = 0; kStep < numKSteps; kStep++) {
+            int kBase = kStep << 4;
+            boolean next = kStep + 1 < numKSteps;
+            if (next) {
+                ra0 = packHalves(input16, aBase0 + kBase + BK);
+                ra1 = packHalves(input16, aBase1 + kBase + BK);
+                {
+                    int k = kBase + BK + kQuarter;
+                    int within = k & 255;
+                    int halfIndex = within >> 7;
+                    rGroup = (within >> 5) & 3;
+                    int posInGroup = within & 31;
+                    int base0 = (wRow * blocksPerRow + (k >> 8)) * 210;
+                    int base1 = base0 + blocksPerRow * 210;
+                    int ql0 = base0 + halfIndex * 64 + (rGroup & 1) * 32 + posInGroup;
+                    int ql1 = base1 + halfIndex * 64 + (rGroup & 1) * 32 + posInGroup;
+                    int qh0 = base0 + 128 + halfIndex * 32 + posInGroup;
+                    int qh1 = base1 + 128 + halfIndex * 32 + posInGroup;
+                    rl0_0 = w.get(ql0 + 0) & 0xFF;
+                    rl1_0 = w.get(ql1 + 0) & 0xFF;
+                    rh0_0 = w.get(qh0 + 0) & 0xFF;
+                    rh1_0 = w.get(qh1 + 0) & 0xFF;
+                    rl0_1 = w.get(ql0 + 1) & 0xFF;
+                    rl1_1 = w.get(ql1 + 1) & 0xFF;
+                    rh0_1 = w.get(qh0 + 1) & 0xFF;
+                    rh1_1 = w.get(qh1 + 1) & 0xFF;
+                    rl0_2 = w.get(ql0 + 2) & 0xFF;
+                    rl1_2 = w.get(ql1 + 2) & 0xFF;
+                    rh0_2 = w.get(qh0 + 2) & 0xFF;
+                    rh1_2 = w.get(qh1 + 2) & 0xFF;
+                    rl0_3 = w.get(ql0 + 3) & 0xFF;
+                    rl1_3 = w.get(ql1 + 3) & 0xFF;
+                    rh0_3 = w.get(qh0 + 3) & 0xFF;
+                    rh1_3 = w.get(qh1 + 3) & 0xFF;
+                    if (kQuarter == 0) {
+                        int sc = halfIndex * 8 + (posInGroup >> 4) + rGroup * 2;
+                        rs0 = w.getHalfFloat(base0 + 208).getFloat32() * w.get(base0 + 192 + sc);
+                        rs1 = w.getHalfFloat(base1 + 208).getFloat32() * w.get(base1 + 192 + sc);
+                    }
+                }
             }
-            ctx.localBarrier();
             // A warp whose rows all lie past the tile's multiplies nothing it stores.
             if (warpM * 32 < rows) {
                 HalfFloat[] a0 = ctx.mmaLoadA(aTile, BK, warpM * 1024);
@@ -915,6 +1173,83 @@ public final class GroupedExpertMmaKernels {
                 s11 = ctx.mmaFragment(0.0f);
                 s12 = ctx.mmaFragment(0.0f);
                 s13 = ctx.mmaFragment(0.0f);
+            }
+            ctx.localBarrier();
+            if (next) {
+                aTile[aIdx0] = ra0;
+                aTile[aIdx1] = ra1;
+                {
+                    int v0_0 = rl0_0 & 15;
+                    int v1_0 = rl1_0 & 15;
+                    int h0_0 = rh0_0 & 3;
+                    int h1_0 = rh1_0 & 3;
+                    int v0_1 = rl0_1 & 15;
+                    int v1_1 = rl1_1 & 15;
+                    int h0_1 = rh0_1 & 3;
+                    int h1_1 = rh1_1 & 3;
+                    int v0_2 = rl0_2 & 15;
+                    int v1_2 = rl1_2 & 15;
+                    int h0_2 = rh0_2 & 3;
+                    int h1_2 = rh1_2 & 3;
+                    int v0_3 = rl0_3 & 15;
+                    int v1_3 = rl1_3 & 15;
+                    int h0_3 = rh0_3 & 3;
+                    int h1_3 = rh1_3 & 3;
+                    if ((rGroup >> 1) == 1) {
+                        v0_0 = (rl0_0 >> 4) & 15;
+                        v1_0 = (rl1_0 >> 4) & 15;
+                        v0_1 = (rl0_1 >> 4) & 15;
+                        v1_1 = (rl1_1 >> 4) & 15;
+                        v0_2 = (rl0_2 >> 4) & 15;
+                        v1_2 = (rl1_2 >> 4) & 15;
+                        v0_3 = (rl0_3 >> 4) & 15;
+                        v1_3 = (rl1_3 >> 4) & 15;
+                    }
+                    if (rGroup == 1) {
+                        h0_0 = (rh0_0 >> 2) & 3;
+                        h1_0 = (rh1_0 >> 2) & 3;
+                        h0_1 = (rh0_1 >> 2) & 3;
+                        h1_1 = (rh1_1 >> 2) & 3;
+                        h0_2 = (rh0_2 >> 2) & 3;
+                        h1_2 = (rh1_2 >> 2) & 3;
+                        h0_3 = (rh0_3 >> 2) & 3;
+                        h1_3 = (rh1_3 >> 2) & 3;
+                    } else if (rGroup == 2) {
+                        h0_0 = (rh0_0 >> 4) & 3;
+                        h1_0 = (rh1_0 >> 4) & 3;
+                        h0_1 = (rh0_1 >> 4) & 3;
+                        h1_1 = (rh1_1 >> 4) & 3;
+                        h0_2 = (rh0_2 >> 4) & 3;
+                        h1_2 = (rh1_2 >> 4) & 3;
+                        h0_3 = (rh0_3 >> 4) & 3;
+                        h1_3 = (rh1_3 >> 4) & 3;
+                    } else if (rGroup == 3) {
+                        h0_0 = (rh0_0 >> 6) & 3;
+                        h1_0 = (rh1_0 >> 6) & 3;
+                        h0_1 = (rh0_1 >> 6) & 3;
+                        h1_1 = (rh1_1 >> 6) & 3;
+                        h0_2 = (rh0_2 >> 6) & 3;
+                        h1_2 = (rh1_2 >> 6) & 3;
+                        h0_3 = (rh0_3 >> 6) & 3;
+                        h1_3 = (rh1_3 >> 6) & 3;
+                    }
+                    bTile[bSlot + 0] =
+                            codes[96 + (v0_0 | (h0_0 << 4))]
+                                    | (codes[96 + (v1_0 | (h1_0 << 4))] << 16);
+                    bTile[bSlot + 4] =
+                            codes[96 + (v0_1 | (h0_1 << 4))]
+                                    | (codes[96 + (v1_1 | (h1_1 << 4))] << 16);
+                    bTile[bSlot + 8] =
+                            codes[96 + (v0_2 | (h0_2 << 4))]
+                                    | (codes[96 + (v1_2 | (h1_2 << 4))] << 16);
+                    bTile[bSlot + 12] =
+                            codes[96 + (v0_3 | (h0_3 << 4))]
+                                    | (codes[96 + (v1_3 | (h1_3 << 4))] << 16);
+                }
+                if (kQuarter == 0) {
+                    colScale[pairCol] = rs0;
+                    colScale[pairCol + 1] = rs1;
+                }
             }
             ctx.localBarrier();
         }
@@ -996,9 +1331,11 @@ public final class GroupedExpertMmaKernels {
      * tile, one workgroup per tile and 128 outputs. Row {@code i} of a tile reads FP16 input row
      * {@code sortedToken[first + i]} when {@code gather} is 1, {@code first + i} otherwise. The
      * weights enter the MMA as their integer codes, exact in FP16, and each scale group's sums are
-     * scaled in FP32 by its scale; only the tile's rows are written, to output row {@code first +
-     * i}. Requires {@code d % 128 == 0}. Grid: {@code maxTiles * d / 128} workgroups of {@link
-     * #THREADS} threads; a workgroup past the tile count returns before its first barrier.
+     * scaled in FP32 by its scale. Each step's loads are issued before the previous step's
+     * multiplies, so their latency overlaps them. Only the tile's rows are written, to output row
+     * {@code first + i}. Requires {@code d % 128 == 0}. Grid: {@code maxTiles * d / 128} workgroups
+     * of {@link #THREADS} threads; a workgroup past the tile count returns before its first
+     * barrier.
      */
     // @formatter:on
     public static void groupedExpertMmaQ8_0(
@@ -1033,41 +1370,41 @@ public final class GroupedExpertMmaKernels {
         float[] colScale = ctx.allocateFloatLocalArray(BN);
         codes[tid] = TransformerBatchPrefillKernels.fp16BitsOf((float) (tid - 128));
         float[] s00 = ctx.mmaFragment(0.0f);
+        float[] s01 = ctx.mmaFragment(0.0f);
+        float[] s02 = ctx.mmaFragment(0.0f);
+        float[] s03 = ctx.mmaFragment(0.0f);
+        float[] s10 = ctx.mmaFragment(0.0f);
+        float[] s11 = ctx.mmaFragment(0.0f);
+        float[] s12 = ctx.mmaFragment(0.0f);
+        float[] s13 = ctx.mmaFragment(0.0f);
         float t00_0 = 0.0f;
         float t00_1 = 0.0f;
         float t00_2 = 0.0f;
         float t00_3 = 0.0f;
-        float[] s01 = ctx.mmaFragment(0.0f);
         float t01_0 = 0.0f;
         float t01_1 = 0.0f;
         float t01_2 = 0.0f;
         float t01_3 = 0.0f;
-        float[] s02 = ctx.mmaFragment(0.0f);
         float t02_0 = 0.0f;
         float t02_1 = 0.0f;
         float t02_2 = 0.0f;
         float t02_3 = 0.0f;
-        float[] s03 = ctx.mmaFragment(0.0f);
         float t03_0 = 0.0f;
         float t03_1 = 0.0f;
         float t03_2 = 0.0f;
         float t03_3 = 0.0f;
-        float[] s10 = ctx.mmaFragment(0.0f);
         float t10_0 = 0.0f;
         float t10_1 = 0.0f;
         float t10_2 = 0.0f;
         float t10_3 = 0.0f;
-        float[] s11 = ctx.mmaFragment(0.0f);
         float t11_0 = 0.0f;
         float t11_1 = 0.0f;
         float t11_2 = 0.0f;
         float t11_3 = 0.0f;
-        float[] s12 = ctx.mmaFragment(0.0f);
         float t12_0 = 0.0f;
         float t12_1 = 0.0f;
         float t12_2 = 0.0f;
         float t12_3 = 0.0f;
-        float[] s13 = ctx.mmaFragment(0.0f);
         float t13_0 = 0.0f;
         float t13_1 = 0.0f;
         float t13_2 = 0.0f;
@@ -1093,27 +1430,80 @@ public final class GroupedExpertMmaKernels {
         int lc1 = lc0 + 8;
         int lc2 = lc0 + 16;
         int lc3 = lc0 + 24;
+
+        int ra0 = 0;
+        int ra1 = 0;
+        float rs0 = 0.0f;
+        float rs1 = 0.0f;
+        int rb0_0 = 0;
+        int rb1_0 = 0;
+        int rb0_1 = 0;
+        int rb1_1 = 0;
+        int rb0_2 = 0;
+        int rb1_2 = 0;
+        int rb0_3 = 0;
+        int rb1_3 = 0;
+        ctx.localBarrier();
+        ra0 = packHalves(input16, aBase0 + 0);
+        ra1 = packHalves(input16, aBase1 + 0);
+        {
+            int k = 0 + kQuarter;
+            int base0 = (wRow * blocksPerRow + (k >> 5)) * 34;
+            int base1 = base0 + blocksPerRow * 34;
+            int q0 = base0 + 2 + (k & 31);
+            int q1 = base1 + 2 + (k & 31);
+            rb0_0 = w.get(q0 + 0);
+            rb1_0 = w.get(q1 + 0);
+            rb0_1 = w.get(q0 + 1);
+            rb1_1 = w.get(q1 + 1);
+            rb0_2 = w.get(q0 + 2);
+            rb1_2 = w.get(q1 + 2);
+            rb0_3 = w.get(q0 + 3);
+            rb1_3 = w.get(q1 + 3);
+            if (kQuarter == 0) {
+                rs0 = w.getHalfFloat(base0).getFloat32();
+                rs1 = w.getHalfFloat(base1).getFloat32();
+            }
+        }
+        aTile[aIdx0] = ra0;
+        aTile[aIdx1] = ra1;
+        bTile[bSlot + 0] = codes[128 + rb0_0] | (codes[128 + rb1_0] << 16);
+        bTile[bSlot + 4] = codes[128 + rb0_1] | (codes[128 + rb1_1] << 16);
+        bTile[bSlot + 8] = codes[128 + rb0_2] | (codes[128 + rb1_2] << 16);
+        bTile[bSlot + 12] = codes[128 + rb0_3] | (codes[128 + rb1_3] << 16);
+        if (kQuarter == 0) {
+            colScale[pairCol] = rs0;
+            colScale[pairCol + 1] = rs1;
+        }
         ctx.localBarrier();
 
         int numKSteps = n >> 4;
         for (int kStep = 0; kStep < numKSteps; kStep++) {
             int kBase = kStep << 4;
-            aTile[aIdx0] = packHalves(input16, aBase0 + kBase);
-            aTile[aIdx1] = packHalves(input16, aBase1 + kBase);
-            int k = kBase + kQuarter;
-            int base0 = (wRow * blocksPerRow + (k >> 5)) * 34;
-            int base1 = base0 + blocksPerRow * 34;
-            int q0 = base0 + 2 + (k & 31);
-            int q1 = base1 + 2 + (k & 31);
-            bTile[bSlot + 0] = codes[128 + w.get(q0 + 0)] | (codes[128 + w.get(q1 + 0)] << 16);
-            bTile[bSlot + 4] = codes[128 + w.get(q0 + 1)] | (codes[128 + w.get(q1 + 1)] << 16);
-            bTile[bSlot + 8] = codes[128 + w.get(q0 + 2)] | (codes[128 + w.get(q1 + 2)] << 16);
-            bTile[bSlot + 12] = codes[128 + w.get(q0 + 3)] | (codes[128 + w.get(q1 + 3)] << 16);
-            if (kQuarter == 0) {
-                colScale[pairCol] = w.getHalfFloat(base0).getFloat32();
-                colScale[pairCol + 1] = w.getHalfFloat(base1).getFloat32();
+            boolean next = kStep + 1 < numKSteps;
+            if (next) {
+                ra0 = packHalves(input16, aBase0 + kBase + BK);
+                ra1 = packHalves(input16, aBase1 + kBase + BK);
+                {
+                    int k = kBase + BK + kQuarter;
+                    int base0 = (wRow * blocksPerRow + (k >> 5)) * 34;
+                    int base1 = base0 + blocksPerRow * 34;
+                    int q0 = base0 + 2 + (k & 31);
+                    int q1 = base1 + 2 + (k & 31);
+                    rb0_0 = w.get(q0 + 0);
+                    rb1_0 = w.get(q1 + 0);
+                    rb0_1 = w.get(q0 + 1);
+                    rb1_1 = w.get(q1 + 1);
+                    rb0_2 = w.get(q0 + 2);
+                    rb1_2 = w.get(q1 + 2);
+                    rb0_3 = w.get(q0 + 3);
+                    rb1_3 = w.get(q1 + 3);
+                    if (kQuarter == 0) {
+                        rs0 = w.getHalfFloat(base0).getFloat32();
+                        rs1 = w.getHalfFloat(base1).getFloat32();
+                    }
+                }
             }
-            ctx.localBarrier();
             // A warp whose rows all lie past the tile's multiplies nothing it stores.
             if (warpM * 32 < rows) {
                 HalfFloat[] a0 = ctx.mmaLoadA(aTile, BK, warpM * 1024);
@@ -1172,6 +1562,19 @@ public final class GroupedExpertMmaKernels {
                 s11 = ctx.mmaFragment(0.0f);
                 s12 = ctx.mmaFragment(0.0f);
                 s13 = ctx.mmaFragment(0.0f);
+            }
+            ctx.localBarrier();
+            if (next) {
+                aTile[aIdx0] = ra0;
+                aTile[aIdx1] = ra1;
+                bTile[bSlot + 0] = codes[128 + rb0_0] | (codes[128 + rb1_0] << 16);
+                bTile[bSlot + 4] = codes[128 + rb0_1] | (codes[128 + rb1_1] << 16);
+                bTile[bSlot + 8] = codes[128 + rb0_2] | (codes[128 + rb1_2] << 16);
+                bTile[bSlot + 12] = codes[128 + rb0_3] | (codes[128 + rb1_3] << 16);
+                if (kQuarter == 0) {
+                    colScale[pairCol] = rs0;
+                    colScale[pairCol + 1] = rs1;
+                }
             }
             ctx.localBarrier();
         }
