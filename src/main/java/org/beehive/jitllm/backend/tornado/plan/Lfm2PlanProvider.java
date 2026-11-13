@@ -77,6 +77,15 @@ public final class Lfm2PlanProvider implements TornadoPlanProvider {
                 : Optional.empty();
     }
 
+    /**
+     * Q8_0 projections (LFM2.5's attention and dense layers) read prepacked on CUDA, against the
+     * floating-point activation in decode and in the batched prefill.
+     */
+    @Override
+    public Set<DataType> prepackableTypes(ExecutionPolicy policy) {
+        return Set.of(DataType.Q8_0);
+    }
+
     /** The batched prefill is the default on Metal, where its GEMMs are tuned. */
     @Override
     public boolean metalBatchedPrefillDefault(DataType weights) {

@@ -1,7 +1,9 @@
 package org.beehive.jitllm.backend.tornado.layers;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.Lfm2Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35AttentionKernels;
@@ -16,6 +18,7 @@ import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
+import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspace;
 import org.beehive.jitllm.inference.state.Lfm2State;
 import org.beehive.jitllm.inference.weights.tornado.Lfm2TornadoWeights;
 import org.beehive.jitllm.model.lfm2.Lfm2Configuration;
@@ -799,7 +802,39 @@ public class Lfm2Layers
             tensors.add(
                     deviceArray(require(weights.convOutProj, layerIndex, "shortconv.out_proj")));
         }
+        bindPrepacked(layer, lfm2State.workspace, weights, layerIndex);
+        tensors.removeIf(lfm2State.workspace.prepacking::prepackedArray);
         bindLayerWeights(layer, tensors.toArray());
+    }
+
+    /**
+     * Binds layer {@code layerIndex}'s prepacked projections in {@code graph}: from the graph that
+     * bound them first, or, in that graph, through the prepacker, which rearranges them on the
+     * device before any layer graph runs. Example: LFM2.5's Q8_0 attention on CUDA, prepacked in
+     * {@code prepack_batchPrefillLayer_3} and bound from {@code batchPrefillLayer_3} by {@code
+     * layer_3}.
+     */
+    static void bindPrepacked(
+            TaskGraph graph, TornadoWorkspace ws, Lfm2TornadoWeights weights, int layerIndex) {
+        List<TornadoTensor> fresh = new ArrayList<>();
+        Map<String, List<Object>> bound = new LinkedHashMap<>();
+        for (TornadoTensor[] role : weights.projections()) {
+            TornadoTensor w = role == null || layerIndex >= role.length ? null : role[layerIndex];
+            if (w == null || !ws.prepacking.prepacked(w)) {
+                continue;
+            }
+            String owner = ws.weightBindings.owner(w.asByteArray());
+            if (owner == null) {
+                fresh.add(w);
+            } else {
+                bound.computeIfAbsent(owner, o -> new ArrayList<>()).add(w.asByteArray());
+            }
+        }
+        bound.forEach((owner, arrays) -> graph.consumeFromDevice(owner, arrays.toArray()));
+        if (!fresh.isEmpty()) {
+            ws.prepacker.configureGraphInputs(graph, ws.prepacking, fresh.toArray());
+            fresh.forEach(w -> ws.weightBindings.record(w.asByteArray(), graph.getTaskGraphName()));
+        }
     }
 
     private static Object deviceArray(TornadoTensor tensor) {

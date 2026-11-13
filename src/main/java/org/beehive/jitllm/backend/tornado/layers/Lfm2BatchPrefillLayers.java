@@ -361,7 +361,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
 
     /**
      * {@code out = w · x} over the chunk. A Q8_0 weight off SIMD-group matrices has only the tiled
-     * GEMM that adds into its output, so the output is zeroed first.
+     * GEMM that adds into its output, so the output is zeroed first; a prepacked one stores.
      */
     private void store(
             TaskGraph layer,
@@ -371,7 +371,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
             TornadoTensor w,
             int n,
             int d) {
-        if (!simdgroup && w.dataType() == DataType.Q8_0) {
+        if (!simdgroup && w.dataType() == DataType.Q8_0 && !projections.prepacked(w)) {
             layer.task(
                     name + "_zero",
                     Lfm2BatchKernels::zeroRows,
@@ -557,6 +557,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
      * once otherwise and recorded, so the decode graphs bind the same buffers.
      */
     private void bindLayerWeights(TaskGraph layer, int layerIndex) {
+        Lfm2Layers.bindPrepacked(layer, state.workspace, weights, layerIndex);
         List<Object> tensors = new ArrayList<>();
         tensors.add(require(weights.rms_att_weightLayered, layerIndex, "attn_norm"));
         tensors.add(require(weights.rms_ffn_weightLayered, layerIndex, "ffn_norm"));
@@ -583,6 +584,8 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
             tensors.add(require(weights.convKernel, layerIndex, "shortconv.conv"));
             tensors.add(require(weights.convOutProj, layerIndex, "shortconv.out_proj"));
         }
+        tensors.removeIf(
+                t -> t instanceof TornadoTensor w && state.workspace.prepacking.prepacked(w));
         Object[] uploaded =
                 UnifiedMemoryWeights.consume(
                         layer, state.workspace, WeightPrepacker.deviceArrays(tensors.toArray()));

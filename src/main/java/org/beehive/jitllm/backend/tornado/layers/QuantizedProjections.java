@@ -11,6 +11,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0Packed;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -44,6 +45,9 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * kernel exists (Q8_0, Q4_0, Q4_K and Q5_K), and otherwise as two projections into {@code wrapHb}
  * and {@code wrapHb2} and an elementwise SwiGLU, so a layer that splits them needs {@code wrapHb2}
  * bound.
+ *
+ * <p>A Q8_0 weight the plan prepacked ({@link WeightPrepacking}) runs {@code
+ * matrixVectorQ8_0PackedF32}, against the floating-point activation; its gate and up are not fused.
  */
 // @formatter:on
 public final class QuantizedProjections {
@@ -84,6 +88,41 @@ public final class QuantizedProjections {
         return !packed()
                 && w.dataType() == DataType.Q4_K
                 && SchedulerDetectionService.isSubgroupShuffle32Supported();
+    }
+
+    /** Whether the plan prepacked {@code w}, a Q8_0 projection. */
+    private boolean prepacked(TornadoTensor w) {
+        return ws.prepacking != null && ws.prepacking.prepackedQ8(w);
+    }
+
+    /**
+     * {@code out (+)= w·x} for a prepacked {@code w}, eight rows to a workgroup; its grid is
+     * recorded for {@link #addGrids}.
+     */
+    private void prepackedMatvec(
+            TaskGraph graph,
+            String name,
+            FloatArray x,
+            FloatArray out,
+            TornadoTensor w,
+            int n,
+            int d,
+            boolean residual) {
+        graph.task(
+                name,
+                TransformerComputeKernelsQ8_0Packed::matrixVectorQ8_0PackedF32,
+                context,
+                x,
+                out,
+                w.asByteArray(),
+                n,
+                d,
+                residual ? 1 : 0);
+        grids.put(
+                graph.getTaskGraphName() + "." + name,
+                WorkerGridFactory.genericWorker(
+                        d / 8 * TransformerComputeKernelsQ8_0Packed.LOCAL,
+                        TransformerComputeKernelsQ8_0Packed.LOCAL));
     }
 
     /** Records the grid of the SIMD-group task {@code name} of {@code graph}, over {@code rows}. */
@@ -140,7 +179,9 @@ public final class QuantizedProjections {
     public void matvec(
             TaskGraph graph, String name, FloatArray out, TornadoTensor w, int n, int d) {
         DataType type = w.dataType();
-        if (type == DataType.F16) {
+        if (prepacked(w)) {
+            prepackedMatvec(graph, name, ws.wrapXb, out, w, n, d, false);
+        } else if (type == DataType.F16) {
             // F16 has no packed kernel; the packed RMS apply writes wrapXb as well. The lanes per
             // row are the grid's (worker).
             graph.task(
@@ -205,6 +246,10 @@ public final class QuantizedProjections {
             TornadoTensor w,
             int n,
             int d) {
+        if (prepacked(w)) {
+            prepackedMatvec(graph, name, x, out, w, n, d, false);
+            return;
+        }
         if (w.dataType() == DataType.F16) {
             graph.task(
                     name,
@@ -266,6 +311,10 @@ public final class QuantizedProjections {
             int n,
             int d) {
         DataType type = w.dataType();
+        if (prepacked(w)) {
+            prepackedMatvec(graph, name, x, ws.wrapX, w, n, d, true);
+            return;
+        }
         if (type == DataType.F16) {
             // F16 has no packed kernel, so x is read as it is and not quantized.
             graph.task(
@@ -385,7 +434,9 @@ public final class QuantizedProjections {
      */
     public boolean fusedGateUp(TornadoTensor w1, TornadoTensor w3) {
         DataType type = w1.dataType();
-        return type == w3.dataType()
+        return !prepacked(w1)
+                && !prepacked(w3)
+                && type == w3.dataType()
                 && (type == DataType.Q8_0
                         || type == DataType.Q4_0
                         || type == DataType.Q4_K
