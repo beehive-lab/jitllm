@@ -12,6 +12,7 @@ import org.beehive.jitllm.backend.tornado.kernels.Lfm2BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TensorCoreAttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
@@ -33,6 +34,7 @@ import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.WorkerGrid;
+import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
@@ -87,6 +89,16 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
     /** Whether the dense projections run on cuBLAS ({@link Target#cublas}). */
     private final boolean cublas;
 
+    /**
+     * Whether attention runs on tensor cores ({@link
+     * TensorCoreAttentionKernels#flashAttentionHead64}): see {@link #flashAttention}. Null keys and
+     * values otherwise.
+     */
+    private final boolean flash;
+
+    private final HalfFloatArray flashKeys;
+    private final HalfFloatArray flashValues;
+
     /** The decode and conversion tasks ahead of the cuBLAS GEMMs, by qualified name, with lanes. */
     private final Map<String, Integer> dequantTasks = new LinkedHashMap<>();
 
@@ -139,6 +151,12 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 state.workspace.contiguousF16WeightsScratch = TornadoWorkspaces.halfFloats(widest);
             }
         }
+        this.flash =
+                flashAttention(cublas, state.usesFp16KeyValueCache(), config)
+                        && batchSize % TensorCoreAttentionKernels.FLASH_ROWS == 0;
+        int keyValueHalves = config.kvDim() * flashPositions(config);
+        this.flashKeys = flash ? TornadoWorkspaces.halfFloats(keyValueHalves) : null;
+        this.flashValues = flash ? TornadoWorkspaces.halfFloats(keyValueHalves) : null;
         this.graphs =
                 IntStream.range(0, config.numberOfLayers())
                         .mapToObj(this::buildLayer)
@@ -180,6 +198,32 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
     public static long nativeScratchBytes(Lfm2Configuration config) {
         long dim = config.dim();
         return 2 * dim * Math.max(dim, config.shortConvProjectionDim());
+    }
+
+    /**
+     * Whether attention runs on tensor cores: cuBLAS output projections (they read the attention's
+     * FP16 rows), the FP16 cache, heads 64 wide, and a device with tensor cores.
+     */
+    public static boolean flashAttention(
+            boolean cublas, boolean fp16Cache, Lfm2Configuration config) {
+        return cublas
+                && fp16Cache
+                && config.headSize() == 64
+                && TensorCoreSupport.isTensorCoreCapableBackend();
+    }
+
+    /**
+     * The keys and values {@link TensorCoreAttentionKernels#gatherPagedKeysTransposed} copies the
+     * cache into, FP16, when {@link #flashAttention} holds. Example: LFM2.5-24B-A2B at 4096
+     * positions, 8 MB.
+     */
+    public static long flashAttentionBytes(Lfm2Configuration config) {
+        return 2L * config.kvDim() * flashPositions(config) * Short.BYTES;
+    }
+
+    /** The context's positions rounded up to whole 128-key tiles. */
+    private static int flashPositions(Lfm2Configuration config) {
+        return (config.contextLength() + 127) / 128 * 128;
     }
 
     @Override
@@ -360,6 +404,19 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                     kvLayer,
                     state.kvBlockCfg,
                     state.kvBlockStride);
+            if (flashLayer(layerIndex)) {
+                flashAttentionTasks(layer, kvLayer);
+                cublasGemm(
+                        layer,
+                        "attn_output_proj",
+                        ws.wrapXbFP16Batch,
+                        ws.wrapXBatch,
+                        weights.woLayered[layerIndex],
+                        dim,
+                        dim,
+                        true);
+                return;
+            }
             layer.task(
                     "attention",
                     Qwen35BatchKernels::attentionBatchFP16Paged,
@@ -421,6 +478,64 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 dim,
                 dim,
                 true);
+    }
+
+    /** Whether layer {@code layerIndex} runs {@link #flashAttentionTasks}. */
+    private boolean flashLayer(int layerIndex) {
+        return flash && cublasForm(require(weights.woLayered, layerIndex, "attn_output"));
+    }
+
+    /**
+     * Attention on tensor cores, from {@code wrapQBatch} into {@code wrapXbFP16Batch}, the FP16
+     * rows the output projection's cuBLAS GEMM reads: the queries converted in place there, the
+     * layer's cache up to the chunk's last position gathered into {@code flashKeys} and {@code
+     * flashValues}, then {@link TensorCoreAttentionKernels#flashAttentionHead64}. A workgroup reads
+     * its rows of one head's queries before it writes the same rows of that head's output, and no
+     * other workgroup reads them, so the output can overwrite the queries.
+     */
+    private void flashAttentionTasks(TaskGraph layer, int kvLayer) {
+        var ws = state.workspace;
+        int qDim = config.dim();
+        layer.task(
+                "attn_q16",
+                TensorCoreAttentionKernels::queriesToHalf,
+                context,
+                ws.wrapQBatch,
+                ws.wrapXbFP16Batch,
+                qDim,
+                qDim,
+                batchSize * qDim);
+        layer.task(
+                "attn_gather",
+                TensorCoreAttentionKernels::gatherPagedKeysTransposed,
+                context,
+                ws.batchStartPosHolder,
+                ws.wrapKeyCacheFP16,
+                ws.wrapValueCacheFP16,
+                flashKeys,
+                flashValues,
+                kvLayer,
+                config.kvDim(),
+                config.headSize(),
+                ws.wrapBlockTable,
+                state.kvBlockCfg,
+                state.kvBlockStride,
+                flashPositions(config));
+        layer.task(
+                "attention",
+                TensorCoreAttentionKernels::flashAttentionHead64,
+                context,
+                ws.batchStartPosHolder,
+                ws.wrapXbFP16Batch,
+                flashKeys,
+                flashValues,
+                ws.wrapXbFP16Batch,
+                config.numberOfHeads(),
+                config.kvMul(),
+                qDim,
+                batchSize / TensorCoreAttentionKernels.FLASH_ROWS,
+                flashPositions(config),
+                (float) (1.0 / Math.sqrt(config.headSize())));
     }
 
     /**
@@ -494,15 +609,30 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
             int n,
             int d,
             boolean residual) {
-        HalfFloatArray weights16 = state.workspace.contiguousF16WeightsScratch;
         HalfFloatArray x16 = state.workspace.wrapXbFP16Batch;
-        String qualified = layer.getTaskGraphName() + "." + name;
+        dequantTasks.put(layer.getTaskGraphName() + "." + name + "_x16", batchSize * n);
+        layer.task(name + "_x16", Qwen35MMAKernels::convertToFP16, context, x, x16);
+        cublasGemm(layer, name, x16, out, w, n, d, residual);
+    }
+
+    /**
+     * {@link #cublasProjection} over FP16 rows {@code x16} already in place: {@code w} decoded into
+     * the FP16 scratch by {@code name + "_dequant"}, then the GEMM.
+     */
+    private void cublasGemm(
+            TaskGraph layer,
+            String name,
+            HalfFloatArray x16,
+            FloatArray out,
+            TornadoTensor w,
+            int n,
+            int d,
+            boolean residual) {
+        HalfFloatArray weights16 = state.workspace.contiguousF16WeightsScratch;
         int elements = n * d;
         // Q8_0 decodes a lane per weight, the K-quants four.
         int lanes = w.dataType() == DataType.Q8_0 ? elements : elements / 4;
-        dequantTasks.put(qualified + "_dequant", lanes);
-        dequantTasks.put(qualified + "_x16", batchSize * n);
-        layer.task(name + "_x16", Qwen35MMAKernels::convertToFP16, context, x, x16);
+        dequantTasks.put(layer.getTaskGraphName() + "." + name + "_dequant", lanes);
         layer.task(
                 name + "_dequant",
                 switch (w.dataType()) {
@@ -843,6 +973,11 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
             scratch[scratch.length - 2] = ws.contiguousF16WeightsScratch;
             scratch[scratch.length - 1] = ws.wrapXbFP16Batch;
         }
+        if (flash) {
+            scratch = java.util.Arrays.copyOf(scratch, scratch.length + 2);
+            scratch[scratch.length - 2] = flashKeys;
+            scratch[scratch.length - 1] = flashValues;
+        }
         if (mmaExperts) {
             boolean shared = ws.wrapMoeHalvesBatch == ws.contiguousF16WeightsScratch;
             scratch = java.util.Arrays.copyOf(scratch, scratch.length + (shared ? 1 : 2));
@@ -922,6 +1057,18 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 WorkerGridFactory.genericWorker(
                         batchSize * config.numberOfHeads() * ATTENTION_LOCAL, ATTENTION_LOCAL);
         WorkerGrid conv = WorkerGridFactory.genericWorker(config.dim(), ELEMENTWISE_LOCAL);
+        WorkerGrid flashQueries =
+                WorkerGridFactory.genericWorker(batchSize * config.dim(), ELEMENTWISE_LOCAL);
+        WorkerGrid flashGather =
+                WorkerGridFactory.genericWorker(
+                        flashPositions(config) * config.kvDim(), ELEMENTWISE_LOCAL);
+        WorkerGrid1D flashGrid =
+                new WorkerGrid1D(
+                        batchSize
+                                / TensorCoreAttentionKernels.FLASH_ROWS
+                                * config.numberOfHeads()
+                                * TensorCoreAttentionKernels.FLASH_THREADS);
+        flashGrid.setLocalWork(TensorCoreAttentionKernels.FLASH_THREADS, 1, 1);
 
         int used = config.expertUsedCount();
         int assignments = batchSize * used;
@@ -981,7 +1128,13 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 scheduler.addWorkerGrid(prefix + "attn_qk_norm", qkNorm);
                 scheduler.addWorkerGrid(prefix + "attn_rope", rope);
                 scheduler.addWorkerGrid(prefix + "attn_kv_append", kvAppend);
-                scheduler.addWorkerGrid(prefix + "attention", attention);
+                if (flashLayer(layer)) {
+                    scheduler.addWorkerGrid(prefix + "attn_q16", flashQueries);
+                    scheduler.addWorkerGrid(prefix + "attn_gather", flashGather);
+                    scheduler.addWorkerGrid(prefix + "attention", flashGrid);
+                } else {
+                    scheduler.addWorkerGrid(prefix + "attention", attention);
+                }
                 projectionGrid(
                         scheduler,
                         prefix + "attn_output_proj",

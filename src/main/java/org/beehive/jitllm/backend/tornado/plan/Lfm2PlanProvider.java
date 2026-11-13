@@ -111,6 +111,10 @@ public final class Lfm2PlanProvider implements TornadoPlanProvider {
                                 Lfm2BatchPrefillLayers.workspaceBytes(lfm2, batchSize)
                                         + (Target.of(policy).cublas()
                                                 ? Lfm2BatchPrefillLayers.nativeScratchBytes(lfm2)
+                                                : 0)
+                                        + (Lfm2BatchPrefillLayers.flashAttention(
+                                                        Target.of(policy).cublas(), fp16Cache, lfm2)
+                                                ? Lfm2BatchPrefillLayers.flashAttentionBytes(lfm2)
                                                 : 0)))
                 : Optional.empty();
     }
