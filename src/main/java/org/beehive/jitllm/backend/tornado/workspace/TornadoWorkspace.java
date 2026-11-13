@@ -355,6 +355,16 @@ public final class TornadoWorkspace {
     public IntArray wrapMoeSortedToken;
     public IntArray wrapMoePosition;
     public IntArray wrapMoeTiles;
+
+    /**
+     * The tensor-core expert GEMMs' FP16 rows: the normed chunk for gate and up, then the SwiGLU
+     * rows for down. LFM2 on CUDA.
+     */
+    public HalfFloatArray wrapMoeHalvesBatch;
+
+    /** The sums of {@link #wrapMoeHalvesBatch}'s rows per 32 inputs. */
+    public FloatArray wrapMoeBlockSums;
+
     public FloatArray wrapMoeHiddenBatch;
     public ByteArray wrapMoeHiddenQ8;
     public FloatArray wrapMoeHiddenScales;

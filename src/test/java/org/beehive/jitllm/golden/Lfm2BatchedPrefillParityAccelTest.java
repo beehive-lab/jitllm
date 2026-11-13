@@ -12,8 +12,9 @@ import org.junit.Test;
  * FP16, and the experts are grouped GEMMs over the chunk's assignments; decode then continues on
  * the single-token graphs from the key/value store and the convolution windows the chunks left.
  *
- * <p>Measured on an M4 Pro against the FP16 bounds: LFM2-8B-A1B relative L2 3.0e-4, 2.7e-4 and
- * 7.6e-4 at widths 7, 64 and 512; LFM2.5-24B-A2B 6.0e-5 and 1.6e-4 at 64 and 512; argmax 63/63
+ * <p>Measured against the FP16 bounds. M4 Pro (experts on FP16-tile SIMD-group GEMMs at 512):
+ * LFM2-8B-A1B relative L2 at most 5.5e-4, LFM2.5-24B-A2B at most 2.6e-4. RTX 5090 Laptop (experts
+ * on tensor cores over FP16 inputs): 8B 1.6e-4 at every width, 24B at most 2.0e-4. Argmax 63/63
  * throughout.
  */
 // @formatter:on

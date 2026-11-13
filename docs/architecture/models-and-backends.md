@@ -194,10 +194,11 @@ batched; greedy text is identical in every row:
 | Qwen3.5-0.8B Q4_0 | 60 | 2057 |
 | Gemma-4-E2B Q8_0 | 69 | 1067 |
 
-On CUDA every family but `lfm2moe` has a batched prefill on the tensor cores: Llama (F16, Q8_0,
-Q4_0), Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Phi-3, Granite, Devstral (F16, Q8_0,
-Q4_K), Qwen2-MoE, Gemma 4, Qwen3.5 / 3.6 / 3.8 and deepseek2; `lfm2moe`'s runs tiled FP32 batch
-kernels, its experts grouped by expert. It is the default,
+On CUDA every family has a batched prefill on the tensor cores: Llama (F16, Q8_0, Q4_0), Mistral,
+Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Phi-3, Granite, Devstral (F16, Q8_0, Q4_K), Qwen2-MoE,
+Gemma 4, Qwen3.5 / 3.6 / 3.8, deepseek2 and `lfm2moe`, whose experts are grouped by expert and run
+`GroupedExpertMmaKernels` over the weights' integer codes, each group's scale applied in FP32. It
+is the default,
 in chunks of 512, wherever the family's batched prefill builds on the device; elsewhere the
 single-token plan runs. `--with-prefill-decode --batch-prefill-size N` chooses the chunk, and an
 explicit request the device cannot build is refused with `GPUL-CFG-002`, naming the flag to drop. The Llama-shaped families share

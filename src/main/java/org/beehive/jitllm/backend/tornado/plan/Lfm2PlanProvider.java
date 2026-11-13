@@ -60,21 +60,15 @@ public final class Lfm2PlanProvider implements TornadoPlanProvider {
     }
 
     /**
-     * The batched prefill on Metal (SIMD-group GEMMs) and CUDA (tiled batch kernels), for K-quant
-     * experts. OpenCL miscompiles the shuffles its router and selection reduce with, and a Q8_0
-     * file's experts are Q8_0, which has no grouped GEMM.
+     * The batched prefill on Metal (SIMD-group GEMMs) and CUDA (batch kernels), for K-quant and
+     * Q8_0 experts. OpenCL miscompiles the shuffles its router and selection reduce with.
      */
     @Override
     public Optional<String> batchPrefillUnsupported(Combination c) {
-        if (BackendId.OPENCL.equals(c.backend())) {
-            return Optional.of(
-                    "the lfm2moe batched prefill reduces with 32-lane shuffles, which the"
-                            + " OpenCL backend miscompiles");
-        }
-        return c.weights() == DataType.Q8_0
+        return BackendId.OPENCL.equals(c.backend())
                 ? Optional.of(
-                        "the lfm2moe batched prefill groups Q4_K, Q5_K and Q6_K experts only, and a"
-                                + " Q8_0 file's experts are Q8_0")
+                        "the lfm2moe batched prefill reduces with 32-lane shuffles, which the"
+                                + " OpenCL backend miscompiles")
                 : Optional.empty();
     }
 

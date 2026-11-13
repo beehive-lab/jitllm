@@ -448,13 +448,15 @@ at widths 7 to 512 (rel L2 ≤ 7.6e-4). Against
 the CPU reference with an FP32 cache on both sides, both files meet the Q8_0 bounds in both modes
 (rel L2 ≤ 4.7e-5 on the 8B, ≤ 3.4e-6 on the 24B, argmax 63/63); with the FP16 cache on both sides,
 see [`kv-cache-support.md`](kv-cache-support.md#matrix). On CUDA (RTX 5090 Laptop) the same
-classes pass: FP32-cache parity rel L2 ≤ 5.1e-5, the batched prefill's tiled FP32 kernels 4.7e-5
-at widths 7, 64 and 512 with identical numbers at every width. On OpenCL over the same device the
+classes pass: FP32-cache parity rel L2 ≤ 5.7e-5; the batched prefill, its experts on tensor cores
+over FP16 inputs, ≤ 2.0e-4 against the 2e-3 bound, the 8B's identical at every width. Q8_0 experts
+batch too, verified against the host only (no Q8_0 file here). On OpenCL over the same device the
 parity numbers match CUDA's; the batched prefill is refused there, since OpenCL miscompiles the
 32-lane shuffles its router and selection reduce with. With native libraries (the CUDA default)
-the attention and convolution projections run on cuBLAS in FP16: batched parity 2.2e-4 on the 24B
-and up to 1.4e-3 on the 8B against the 2e-3 bound, FP16-cache batched 0.049 / 0.066 against 0.12
-(router near-ties); LFM2.5-24B-A2B pp512 434 to 544 tok/s on the RTX 5090 Laptop. Without them
+the attention and convolution projections run on cuBLAS in FP16, so every prefill GEMM has FP16
+operands, and the class is held to the FP16 cache's near-tie envelope
+(`Lfm2NativeBatchedPrefillParityAccelTest`): 24B ≤ 3.4e-4, 8B up to 5.8e-2, argmax 63/63.
+LFM2.5-24B-A2B on the RTX 5090 Laptop: pp512 2573 tok/s, tg128 196. Without them
 the Q8_0 projections are prepacked (decode +1.6%). Splitting across devices and continuous
 batching are refused by name. Tool calling
 (`ToolCallingFamiliesAccelTest`, greedy): LFM2.5-24B-A2B passes all four exchanges on CUDA;

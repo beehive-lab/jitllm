@@ -5,12 +5,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
+import org.beehive.jitllm.backend.tornado.TensorCoreSupport;
+import org.beehive.jitllm.backend.tornado.kernels.GroupedExpertMmaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.GroupedExpertSimdgroupKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Lfm2BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MMAKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillKernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgroupKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
@@ -75,6 +78,12 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
     private final KernelContext context = new KernelContext();
     private final QuantizedBatchProjections projections;
 
+    /**
+     * Whether the grouped expert GEMMs run on tensor cores ({@link GroupedExpertMmaKernels}): a
+     * CUDA device with them, and expert widths that fill whole 128-output blocks.
+     */
+    private final boolean mmaExperts;
+
     /** Whether the dense projections run on cuBLAS ({@link Target#cublas}). */
     private final boolean cublas;
 
@@ -103,6 +112,26 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 new QuantizedBatchProjections(
                         context, state.workspace, batchSize, simdgroup, true, TILED_LOCAL);
         this.cublas = Target.of(state.executionPolicy()).cublas();
+        this.mmaExperts =
+                !simdgroup
+                        && TensorCoreSupport.isTensorCoreCapableBackend()
+                        && config.expertHiddenDim() % 128 == 0
+                        && config.dim() % 128 == 0;
+        if (mmaExperts) {
+            // The FP16 rows share the cuBLAS weight scratch where there is one: the experts run
+            // after the layer's projections, which leave it free.
+            long halves =
+                    Math.max(
+                            (long) batchSize * config.dim(),
+                            (long) assignments() * config.expertHiddenDim());
+            HalfFloatArray scratch = state.workspace.contiguousF16WeightsScratch;
+            state.workspace.wrapMoeHalvesBatch =
+                    cublas && scratch != null && scratch.getSize() >= halves
+                            ? scratch
+                            : TornadoWorkspaces.halfFloats(Math.toIntExact(halves));
+            state.workspace.wrapMoeBlockSums =
+                    TornadoWorkspaces.floats(Math.toIntExact(halves / 32));
+        }
         if (cublas) {
             int widest = Math.toIntExact(nativeScratchBytes(config) / 2);
             HalfFloatArray current = state.workspace.contiguousF16WeightsScratch;
@@ -589,6 +618,16 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
         TornadoTensor gate = require(weights.ffnGateExps, layerIndex, "ffn_gate_exps");
         TornadoTensor up = require(weights.ffnUpExps, layerIndex, "ffn_up_exps");
         TornadoTensor down = require(weights.ffnDownExps, layerIndex, "ffn_down_exps");
+        if (mmaExperts) {
+            layer.task(
+                    "moe_x16",
+                    Lfm2BatchKernels::halvesWithBlockSums,
+                    context,
+                    ws.wrapNormedBatch,
+                    ws.wrapMoeHalvesBatch,
+                    ws.wrapMoeBlockSums,
+                    batchSize * dim / 32);
+        }
         grouped(layer, "moe_gate", gate, ws.wrapNormedBatch, ws.wrapMoeHiddenBatch, 1, dim, hidden);
         grouped(layer, "moe_up", up, ws.wrapNormedBatch, ws.wrapMoeOutBatch, 1, dim, hidden);
         layer.task(
@@ -600,6 +639,16 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 ws.wrapMoeOutBatch,
                 hidden,
                 used);
+        if (mmaExperts) {
+            layer.task(
+                    "moe_h16",
+                    Lfm2BatchKernels::halvesWithBlockSums,
+                    context,
+                    ws.wrapMoeHiddenBatch,
+                    ws.wrapMoeHalvesBatch,
+                    ws.wrapMoeBlockSums,
+                    assignments() * hidden / 32);
+        }
         grouped(layer, "moe_down", down, ws.wrapMoeHiddenBatch, ws.wrapMoeOutBatch, 0, hidden, dim);
         layer.task(
                 "moe_combine",
@@ -614,6 +663,11 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 used);
     }
 
+    /** A chunk's expert assignments: {@code batchSize} rows, each to the used experts. */
+    private int assignments() {
+        return batchSize * config.expertUsedCount();
+    }
+
     /** One grouped expert GEMM over the tiles {@code moe_group} wrote. */
     private void grouped(
             TaskGraph layer,
@@ -625,6 +679,30 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
             int n,
             int d) {
         var ws = state.workspace;
+        if (mmaExperts) {
+            layer.task(
+                    name,
+                    switch (w.dataType()) {
+                        case Q4_K -> GroupedExpertMmaKernels::groupedExpertMmaQ4_K;
+                        case Q5_K -> GroupedExpertMmaKernels::groupedExpertMmaQ5_K;
+                        case Q6_K -> GroupedExpertMmaKernels::groupedExpertMmaQ6_K;
+                        case Q8_0 -> GroupedExpertMmaKernels::groupedExpertMmaQ8_0;
+                        default ->
+                                throw new UnsupportedOperationException(
+                                        "no batched lfm2moe expert GEMM for " + w.dataType());
+                    },
+                    context,
+                    ws.wrapMoeHalvesBatch,
+                    ws.wrapMoeBlockSums,
+                    out,
+                    w.asByteArray(),
+                    ws.wrapMoeTiles,
+                    ws.wrapMoeSortedToken,
+                    gather,
+                    n,
+                    d);
+            return;
+        }
         if (!simdgroup) {
             layer.task(
                     name,
@@ -632,6 +710,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                         case Q4_K -> TransformerComputeKernelsQ4_K::groupedExpertTiledBatchQ4_K;
                         case Q5_K -> TransformerComputeKernelsQ5_K::groupedExpertTiledBatchQ5_K;
                         case Q6_K -> TransformerComputeKernelsQ6_K::groupedExpertTiledBatchQ6_K;
+                        case Q8_0 -> TransformerBatchPrefillKernels::groupedExpertTiledBatchQ8_0;
                         default ->
                                 throw new UnsupportedOperationException(
                                         "no batched lfm2moe expert GEMM for " + w.dataType());
@@ -648,12 +727,23 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                     TILED_LOCAL);
             return;
         }
+        boolean halfTiles = groupedHalfTiles(w.dataType(), d);
         layer.task(
                 name,
                 switch (w.dataType()) {
-                    case Q4_K -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ4_K;
-                    case Q5_K -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ5_K;
-                    case Q6_K -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ6_K;
+                    case Q4_K ->
+                            halfTiles
+                                    ? GroupedExpertSimdgroupKernels::groupedExpertGemmQ4_KHalfTiles
+                                    : GroupedExpertSimdgroupKernels::groupedExpertGemmQ4_K;
+                    case Q5_K ->
+                            halfTiles
+                                    ? GroupedExpertSimdgroupKernels::groupedExpertGemmQ5_KHalfTiles
+                                    : GroupedExpertSimdgroupKernels::groupedExpertGemmQ5_K;
+                    case Q6_K ->
+                            halfTiles
+                                    ? GroupedExpertSimdgroupKernels::groupedExpertGemmQ6_KHalfTiles
+                                    : GroupedExpertSimdgroupKernels::groupedExpertGemmQ6_K;
+                    case Q8_0 -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ8_0;
                     default ->
                             throw new UnsupportedOperationException(
                                     "no batched lfm2moe expert GEMM for " + w.dataType());
@@ -753,6 +843,14 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
             scratch[scratch.length - 2] = ws.contiguousF16WeightsScratch;
             scratch[scratch.length - 1] = ws.wrapXbFP16Batch;
         }
+        if (mmaExperts) {
+            boolean shared = ws.wrapMoeHalvesBatch == ws.contiguousF16WeightsScratch;
+            scratch = java.util.Arrays.copyOf(scratch, scratch.length + (shared ? 1 : 2));
+            scratch[scratch.length - 1] = ws.wrapMoeBlockSums;
+            if (!shared) {
+                scratch[scratch.length - 2] = ws.wrapMoeHalvesBatch;
+            }
+        }
         if (layerIndex == 0) {
             layer.transferToDevice(DataTransferMode.EVERY_EXECUTION, ws.batchStartPosHolder);
             layer.transferToDevice(DataTransferMode.EVERY_EXECUTION, ws.wrapBlockTable);
@@ -766,18 +864,40 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
     // ── worker grids ──────────────────────────────────────────────────────────
 
     /** The grid of a grouped expert GEMM to {@code d} outputs of a tensor in {@code type}. */
+    /**
+     * Whether a grouped SIMD-group GEMM to {@code d} outputs of a K-quant tensor stages FP16 weight
+     * tiles: over the chunk's whole tile table its grid is wide enough, as the dense GEMMs' rule
+     * says ({@code TransformerBatchPrefillSimdgroupKernels.halfTiles}).
+     */
+    private boolean groupedHalfTiles(DataType type, int d) {
+        int maxTiles =
+                Qwen35MoeBatchKernels.maxTiles(
+                        batchSize * config.expertUsedCount(), config.expertCount());
+        return type != DataType.Q8_0
+                && TransformerBatchPrefillSimdgroupKernels.halfTiles((d + 63) / 64, maxTiles * 64);
+    }
+
     private WorkerGrid groupedWorker(DataType type, int d, int maxTiles) {
+        if (mmaExperts) {
+            int threads = GroupedExpertMmaKernels.THREADS;
+            return WorkerGridFactory.genericWorker(maxTiles * (d / 128) * threads, threads);
+        }
         if (simdgroup) {
-            int threads = GroupedExpertSimdgroupKernels.THREADS;
+            int threads =
+                    TransformerBatchPrefillSimdgroupKernels.threads(groupedHalfTiles(type, d));
             return WorkerGridFactory.genericWorker(((d + 63) / 64) * maxTiles * threads, threads);
         }
         int colTile =
                 switch (type) {
                     case Q4_K -> TransformerComputeKernelsQ4_K.colTile();
                     case Q5_K -> TransformerComputeKernelsQ5_K.colTile();
+                    case Q8_0 -> TransformerBatchPrefillKernels.GROUPED_Q8_COL_TILE;
                     default -> TransformerComputeKernelsQ6_K.colTile();
                 };
-        int subTiles = TransformerComputeKernelsQ4_K.GROUPED_SUB_TILES;
+        int subTiles =
+                type == DataType.Q8_0
+                        ? TransformerBatchPrefillKernels.GROUPED_Q8_SUB_TILES
+                        : TransformerComputeKernelsQ4_K.GROUPED_SUB_TILES;
         return WorkerGridFactory.genericWorker(
                 maxTiles * subTiles * ((d + colTile - 1) / colTile) * TILED_LOCAL, TILED_LOCAL);
     }
@@ -891,6 +1011,17 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 scheduler.addWorkerGrid(prefix + "moe_gate", gateUp);
                 scheduler.addWorkerGrid(prefix + "moe_up", gateUp);
                 scheduler.addWorkerGrid(prefix + "moe_swiglu", swiglu);
+                if (mmaExperts) {
+                    int inBlocks = batchSize * config.dim() / 32;
+                    int hiddenBlocks = assignments * hidden / 32;
+                    scheduler.addWorkerGrid(
+                            prefix + "moe_x16",
+                            WorkerGridFactory.genericWorker(((inBlocks + 127) / 128) * 128, 128));
+                    scheduler.addWorkerGrid(
+                            prefix + "moe_h16",
+                            WorkerGridFactory.genericWorker(
+                                    ((hiddenBlocks + 127) / 128) * 128, 128));
+                }
                 scheduler.addWorkerGrid(
                         prefix + "moe_down",
                         groupedWorker(

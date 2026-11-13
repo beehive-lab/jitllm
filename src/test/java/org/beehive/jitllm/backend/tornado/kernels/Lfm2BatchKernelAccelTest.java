@@ -15,6 +15,7 @@ import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_KFloatTensor;
 import org.beehive.jitllm.tensor.standard.Q5_KFloatTensor;
 import org.beehive.jitllm.tensor.standard.Q6_KFloatTensor;
+import org.beehive.jitllm.tensor.standard.Q8_0FloatTensor;
 import org.junit.Test;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;
@@ -25,6 +26,7 @@ import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 /**
@@ -42,7 +44,7 @@ public class Lfm2BatchKernelAccelTest {
     private static final int HIDDEN = 256;
     private static final int EXPERTS = 8;
     private static final int USED = 2;
-    private static final int ROWS = 37;
+    private static final int ROWS = 157;
 
     private final Random random = new Random(20261112L);
 
@@ -81,18 +83,26 @@ public class Lfm2BatchKernelAccelTest {
             case Q4_K -> 144;
             case Q5_K -> 176;
             case Q6_K -> 210;
+            case Q8_0 -> 34;
             default -> throw new IllegalArgumentException(type.toString());
         };
     }
 
-    /** Random K-quant blocks whose FP16 scales are small and finite. */
+    private static int blockElements(DataType type) {
+        return type == DataType.Q8_0 ? 32 : 256;
+    }
+
+    /** Random K-quant or Q8_0 blocks whose FP16 scales are small and finite. */
     private byte[] blocks(DataType type, int elements) {
         int size = blockBytes(type);
-        byte[] raw = new byte[elements / 256 * size];
+        int count = elements / blockElements(type);
+        byte[] raw = new byte[count * size];
         random.nextBytes(raw);
-        for (int b = 0; b < elements / 256; b++) {
+        for (int b = 0; b < count; b++) {
             int base = b * size;
-            if (type == DataType.Q6_K) {
+            if (type == DataType.Q8_0) {
+                putHalf(raw, base, 0x1C00 + random.nextInt(0x400));
+            } else if (type == DataType.Q6_K) {
                 putHalf(raw, base + 208, 0x1C00 + random.nextInt(0x400));
             } else {
                 putHalf(raw, base, 0x2000 + random.nextInt(0x400));
@@ -114,6 +124,7 @@ public class Lfm2BatchKernelAccelTest {
             case Q4_K -> new Q4_KFloatTensor(elements, segment);
             case Q5_K -> new Q5_KFloatTensor(elements, segment);
             case Q6_K -> new Q6_KFloatTensor(elements, segment);
+            case Q8_0 -> new Q8_0FloatTensor(elements, segment);
             default -> throw new IllegalArgumentException(type.toString());
         };
     }
@@ -205,6 +216,35 @@ public class Lfm2BatchKernelAccelTest {
         assertMixtureMatchesHost(DataType.Q4_K, DataType.Q5_K);
     }
 
+    /** A Q8_0 file's experts. */
+    @Test
+    public void mixtureQ8_0() {
+        assertMixtureMatchesHost(DataType.Q8_0, DataType.Q8_0);
+    }
+
+    /** The FP16-tile twins Metal takes for a chunk's wide tile table. */
+    @Test
+    public void mixtureHalfTilesQ4_K() {
+        assertMixtureMatchesHostOnHalfTiles(DataType.Q4_K, DataType.Q4_K);
+    }
+
+    @Test
+    public void mixtureHalfTilesQ5_KGateUpQ6_KDown() {
+        assertMixtureMatchesHostOnHalfTiles(DataType.Q5_K, DataType.Q6_K);
+    }
+
+    @Test
+    public void mixtureHalfTilesQ4_KGateUpQ5_KDown() {
+        assertMixtureMatchesHostOnHalfTiles(DataType.Q4_K, DataType.Q5_K);
+    }
+
+    private void assertMixtureMatchesHostOnHalfTiles(DataType gateType, DataType downType) {
+        assumeTrue(
+                "no SIMD-group matrices on this device",
+                SchedulerDetectionService.isSubgroupShuffle32Supported());
+        assertMixtureMatchesHost(gateType, downType, Grouped.SIMDGROUP_HALF_TILES);
+    }
+
     private IntArray batchInfo() {
         IntArray info = new IntArray(3);
         info.set(0, 5);
@@ -217,23 +257,60 @@ public class Lfm2BatchKernelAccelTest {
         assumeTrue(
                 "no SIMD-group matrices on this device",
                 SchedulerDetectionService.isSubgroupShuffle32Supported());
-        assertMixtureMatchesHost(gateType, downType, false);
+        assertMixtureMatchesHost(gateType, downType, Grouped.SIMDGROUP);
     }
 
     /** The grouped tiled kernels the batched prefill takes off Metal (CUDA). */
     @Test
     public void mixtureTiledQ4_K() {
-        assertMixtureMatchesHost(DataType.Q4_K, DataType.Q4_K, true);
+        assertMixtureMatchesHost(DataType.Q4_K, DataType.Q4_K, Grouped.TILED);
     }
 
     @Test
     public void mixtureTiledQ5_KGateUpQ6_KDown() {
-        assertMixtureMatchesHost(DataType.Q5_K, DataType.Q6_K, true);
+        assertMixtureMatchesHost(DataType.Q5_K, DataType.Q6_K, Grouped.TILED);
     }
 
     @Test
     public void mixtureTiledQ4_KGateUpQ5_KDown() {
-        assertMixtureMatchesHost(DataType.Q4_K, DataType.Q5_K, true);
+        assertMixtureMatchesHost(DataType.Q4_K, DataType.Q5_K, Grouped.TILED);
+    }
+
+    @Test
+    public void mixtureTiledQ8_0() {
+        assertMixtureMatchesHost(DataType.Q8_0, DataType.Q8_0, Grouped.TILED);
+    }
+
+    /**
+     * The grouped tensor-core kernels CUDA's batched prefill takes, held to the host within FP16
+     * operand rounding: inputs and decoded weights are rounded to FP16, products accumulate in
+     * FP32.
+     */
+    @Test
+    public void mixtureMmaQ4_K() {
+        assertMixtureMatchesHostOnTensorCores(DataType.Q4_K, DataType.Q4_K);
+    }
+
+    @Test
+    public void mixtureMmaQ5_KGateUpQ6_KDown() {
+        assertMixtureMatchesHostOnTensorCores(DataType.Q5_K, DataType.Q6_K);
+    }
+
+    @Test
+    public void mixtureMmaQ4_KGateUpQ5_KDown() {
+        assertMixtureMatchesHostOnTensorCores(DataType.Q4_K, DataType.Q5_K);
+    }
+
+    @Test
+    public void mixtureMmaQ8_0() {
+        assertMixtureMatchesHostOnTensorCores(DataType.Q8_0, DataType.Q8_0);
+    }
+
+    private void assertMixtureMatchesHostOnTensorCores(DataType gateType, DataType downType) {
+        assumeTrue(
+                "no tensor cores on this device",
+                org.beehive.jitllm.backend.tornado.TensorCoreSupport.isTensorCoreCapableBackend());
+        assertMixtureMatchesHost(gateType, downType, Grouped.MMA);
     }
 
     private static void addGrouped(
@@ -249,13 +326,61 @@ public class Lfm2BatchKernelAccelTest {
             int gather,
             int n,
             int d,
-            boolean tiled) {
-        if (tiled) {
+            Grouped kind,
+            HalfFloatArray halves,
+            FloatArray sums,
+            int inputRows) {
+        if (kind == Grouped.MMA) {
+            graph.task(
+                    name + "16",
+                    Lfm2BatchKernels::halvesWithBlockSums,
+                    context,
+                    in,
+                    halves,
+                    sums,
+                    inputRows * n / 32);
+            graph.task(
+                    name,
+                    switch (type) {
+                        case Q4_K -> GroupedExpertMmaKernels::groupedExpertMmaQ4_K;
+                        case Q5_K -> GroupedExpertMmaKernels::groupedExpertMmaQ5_K;
+                        case Q8_0 -> GroupedExpertMmaKernels::groupedExpertMmaQ8_0;
+                        default -> GroupedExpertMmaKernels::groupedExpertMmaQ6_K;
+                    },
+                    context,
+                    halves,
+                    sums,
+                    out,
+                    w,
+                    tiles,
+                    sorted,
+                    gather,
+                    n,
+                    d);
+        } else if (kind == Grouped.SIMDGROUP_HALF_TILES) {
+            graph.task(
+                    name,
+                    switch (type) {
+                        case Q4_K -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ4_KHalfTiles;
+                        case Q5_K -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ5_KHalfTiles;
+                        default -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ6_KHalfTiles;
+                    },
+                    context,
+                    in,
+                    out,
+                    w,
+                    tiles,
+                    sorted,
+                    gather,
+                    n,
+                    d);
+        } else if (kind == Grouped.TILED) {
             graph.task(
                     name,
                     switch (type) {
                         case Q4_K -> TransformerComputeKernelsQ4_K::groupedExpertTiledBatchQ4_K;
                         case Q5_K -> TransformerComputeKernelsQ5_K::groupedExpertTiledBatchQ5_K;
+                        case Q8_0 -> TransformerBatchPrefillKernels::groupedExpertTiledBatchQ8_0;
                         default -> TransformerComputeKernelsQ6_K::groupedExpertTiledBatchQ6_K;
                     },
                     context,
@@ -274,6 +399,7 @@ public class Lfm2BatchKernelAccelTest {
                     switch (type) {
                         case Q4_K -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ4_K;
                         case Q5_K -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ5_K;
+                        case Q8_0 -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ8_0;
                         default -> GroupedExpertSimdgroupKernels::groupedExpertGemmQ6_K;
                     },
                     context,
@@ -290,8 +416,25 @@ public class Lfm2BatchKernelAccelTest {
 
     private static final int TILED_LOCAL = 128;
 
-    private static WorkerGrid groupedGrid(DataType type, int d, int maxTiles, boolean tiled) {
-        if (!tiled) {
+    /** Which grouped expert GEMMs run: Metal's SIMD-group ones, the tiled ones, or CUDA's MMA. */
+    private enum Grouped {
+        SIMDGROUP,
+        SIMDGROUP_HALF_TILES,
+        TILED,
+        MMA
+    }
+
+    private static WorkerGrid groupedGrid(DataType type, int d, int maxTiles, Grouped kind) {
+        if (kind == Grouped.MMA) {
+            return grid(
+                    maxTiles * (d / 128) * GroupedExpertMmaKernels.THREADS,
+                    GroupedExpertMmaKernels.THREADS);
+        }
+        if (kind == Grouped.SIMDGROUP_HALF_TILES) {
+            int threads = TransformerBatchPrefillSimdgroupKernels.HALF_TILES_THREADS;
+            return grid(((d + 63) / 64) * maxTiles * threads, threads);
+        }
+        if (kind == Grouped.SIMDGROUP) {
             int threads = GroupedExpertSimdgroupKernels.THREADS;
             return grid(((d + 63) / 64) * maxTiles * threads, threads);
         }
@@ -299,17 +442,20 @@ public class Lfm2BatchKernelAccelTest {
                 switch (type) {
                     case Q4_K -> TransformerComputeKernelsQ4_K.colTile();
                     case Q5_K -> TransformerComputeKernelsQ5_K.colTile();
+                    case Q8_0 -> TransformerBatchPrefillKernels.GROUPED_Q8_COL_TILE;
                     default -> TransformerComputeKernelsQ6_K.colTile();
                 };
         return grid(
                 maxTiles
-                        * TransformerComputeKernelsQ4_K.GROUPED_SUB_TILES
+                        * (type == DataType.Q8_0
+                                ? TransformerBatchPrefillKernels.GROUPED_Q8_SUB_TILES
+                                : TransformerComputeKernelsQ4_K.GROUPED_SUB_TILES)
                         * ((d + colTile - 1) / colTile)
                         * TILED_LOCAL,
                 TILED_LOCAL);
     }
 
-    private void assertMixtureMatchesHost(DataType gateType, DataType downType, boolean tiled) {
+    private void assertMixtureMatchesHost(DataType gateType, DataType downType, Grouped kind) {
         assumeTrue(
                 "the router and selection reduce with 32-lane shuffles",
                 org.beehive.jitllm.backend.tornado.layers.Lfm2Layers.shuffle32());
@@ -319,7 +465,12 @@ public class Lfm2BatchKernelAccelTest {
         byte[] down = blocks(downType, gateElements);
         float[] router = noise(EXPERTS * DIM, 0.1f);
         float[] bias = noise(EXPERTS, 0.2f);
-        float[] x = noise(ROWS * DIM, 1f);
+        // FP16 operands hold at most 65504: a smaller input keeps the synthetic experts' SwiGLU
+        // outputs, which the down GEMM rounds to FP16, inside that range.
+        float[] x =
+                noise(
+                        ROWS * DIM,
+                        kind == Grouped.MMA || kind == Grouped.SIMDGROUP_HALF_TILES ? 0.05f : 1f);
         float[] residual = noise(ROWS * DIM, 1f);
 
         int assignments = ROWS * USED;
@@ -341,6 +492,8 @@ public class Lfm2BatchKernelAccelTest {
         FloatArray hidden = new FloatArray(assignments * HIDDEN);
         FloatArray hiddenUp = new FloatArray(assignments * HIDDEN);
         FloatArray expertOut = new FloatArray(assignments * DIM);
+        HalfFloatArray halves = new HalfFloatArray(Math.max(ROWS * DIM, assignments * HIDDEN));
+        FloatArray sums = new FloatArray(Math.max(ROWS * DIM, assignments * HIDDEN) / 32);
 
         KernelContext context = new KernelContext();
         TaskGraph graph =
@@ -391,10 +544,10 @@ public class Lfm2BatchKernelAccelTest {
                                 ROWS);
         addGrouped(
                 graph, context, "gate", gateType, dx, hidden, dGate, tiles, sorted, 1, DIM, HIDDEN,
-                tiled);
+                kind, halves, sums, ROWS);
         addGrouped(
                 graph, context, "up", gateType, dx, hiddenUp, dUp, tiles, sorted, 1, DIM, HIDDEN,
-                tiled);
+                kind, halves, sums, ROWS);
         graph.task(
                 "swiglu",
                 Lfm2BatchKernels::siluMultiplyAssignments,
@@ -405,8 +558,22 @@ public class Lfm2BatchKernelAccelTest {
                 HIDDEN,
                 USED);
         addGrouped(
-                graph, context, "down", downType, hidden, expertOut, dDown, tiles, sorted, 0,
-                HIDDEN, DIM, tiled);
+                graph,
+                context,
+                "down",
+                downType,
+                hidden,
+                expertOut,
+                dDown,
+                tiles,
+                sorted,
+                0,
+                HIDDEN,
+                DIM,
+                kind,
+                halves,
+                sums,
+                assignments);
         graph.task(
                         "combine",
                         Lfm2BatchKernels::combineBatch,
@@ -440,11 +607,15 @@ public class Lfm2BatchKernelAccelTest {
         scheduler.addWorkerGrid(
                 "moe.group",
                 grid(Qwen35MoeBatchKernels.GROUP_THREADS, Qwen35MoeBatchKernels.GROUP_THREADS));
-        scheduler.addWorkerGrid("moe.gate", groupedGrid(gateType, HIDDEN, maxTiles, tiled));
-        scheduler.addWorkerGrid("moe.up", groupedGrid(gateType, HIDDEN, maxTiles, tiled));
+        scheduler.addWorkerGrid("moe.gate", groupedGrid(gateType, HIDDEN, maxTiles, kind));
+        scheduler.addWorkerGrid("moe.up", groupedGrid(gateType, HIDDEN, maxTiles, kind));
         scheduler.addWorkerGrid("moe.swiglu", grid(assignments * HIDDEN, 256));
-        scheduler.addWorkerGrid("moe.down", groupedGrid(downType, DIM, maxTiles, tiled));
+        scheduler.addWorkerGrid("moe.down", groupedGrid(downType, DIM, maxTiles, kind));
         scheduler.addWorkerGrid("moe.combine", grid(ROWS * DIM, 256));
+        scheduler.addWorkerGrid("moe.gate16", grid(((ROWS * DIM / 32 + 127) / 128) * 128, 128));
+        scheduler.addWorkerGrid("moe.up16", grid(((ROWS * DIM / 32 + 127) / 128) * 128, 128));
+        scheduler.addWorkerGrid(
+                "moe.down16", grid(((assignments * HIDDEN / 32 + 127) / 128) * 128, 128));
         run(graph, scheduler);
 
         try (Arena arena = Arena.ofShared()) {
@@ -472,9 +643,15 @@ public class Lfm2BatchKernelAccelTest {
                     assertEquals("row " + t + " expert " + j, chosen[j], ids.get(t * USED + j));
                     assertEquals(
                             "row " + t + " weight " + j, weights[j], mix.get(t * USED + j), 1e-5f);
-                    CpuOperations.expertFeedForward(
-                            hx, chosen[j], hGate, hUp, hDown, h, hu, y, HIDDEN, DIM);
-                    CpuOperations.weightedAccumulate(hs, y, weights[j], DIM);
+                    if (kind == Grouped.MMA) {
+                        float[] yh = expertOnHalves(row, chosen[j], hGate, hUp, hDown);
+                        CpuOperations.weightedAccumulate(
+                                hs, new ArrayFloatTensor(yh), weights[j], DIM);
+                    } else {
+                        CpuOperations.expertFeedForward(
+                                hx, chosen[j], hGate, hUp, hDown, h, hu, y, HIDDEN, DIM);
+                        CpuOperations.weightedAccumulate(hs, y, weights[j], DIM);
+                    }
                 }
                 float scale = 0f;
                 for (int c = 0; c < DIM; c++) {
@@ -485,9 +662,48 @@ public class Lfm2BatchKernelAccelTest {
                             gateType + "/" + downType + " row " + t + " column " + c,
                             hs.getFloat(c),
                             dResidual.get(t * DIM + c),
-                            Math.max(1e-4f, scale * 1e-4f));
+                            Math.max(
+                                    1e-4f,
+                                    scale
+                                            * (kind == Grouped.SIMDGROUP_HALF_TILES
+                                                    ? 4e-3f
+                                                    : kind == Grouped.MMA ? 2e-4f : 1e-4f)));
                 }
             }
         }
+    }
+
+    /** {@code v} rounded to FP16, as the tensor-core GEMMs round their inputs. */
+    private static float half(float v) {
+        return Float.float16ToFloat(Float.floatToFloat16(v));
+    }
+
+    /**
+     * One expert's feed-forward with every GEMM input rounded to FP16 and the weights exact: what
+     * {@code GroupedExpertMmaKernels} computes, but for the order of its sums.
+     */
+    private static float[] expertOnHalves(
+            float[] x, int expert, FloatTensor gate, FloatTensor up, FloatTensor down) {
+        float[] hidden = new float[HIDDEN];
+        for (int r = 0; r < HIDDEN; r++) {
+            double g = 0;
+            double u = 0;
+            for (int c = 0; c < DIM; c++) {
+                float xv = half(x[c]);
+                g += gate.getFloat((expert * HIDDEN + r) * DIM + c) * xv;
+                u += up.getFloat((expert * HIDDEN + r) * DIM + c) * xv;
+            }
+            float gf = (float) g;
+            hidden[r] = (gf / (1.0f + (float) Math.exp(-gf))) * (float) u;
+        }
+        float[] y = new float[DIM];
+        for (int r = 0; r < DIM; r++) {
+            double sum = 0;
+            for (int c = 0; c < HIDDEN; c++) {
+                sum += down.getFloat((expert * DIM + r) * HIDDEN + c) * half(hidden[c]);
+            }
+            y[r] = (float) sum;
+        }
+        return y;
     }
 }

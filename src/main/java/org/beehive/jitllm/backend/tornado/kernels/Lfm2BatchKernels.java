@@ -2,7 +2,9 @@ package org.beehive.jitllm.backend.tornado.kernels;
 
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.math.TornadoMath;
+import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 // @formatter:off
@@ -247,5 +249,25 @@ public final class Lfm2BatchKernels {
             sum += weights.get(a) * out.get(position.get(a) * dim + c);
         }
         x.set(i, x.get(i) + sum);
+    }
+
+    /**
+     * {@code out = half(in)} and {@code sums[b]} the sum of {@code out}'s 32 values of block {@code
+     * b}, a lane per block of 32, for {@code blocks} blocks: the operands of {@code
+     * GroupedExpertMmaKernels}. Example: a chunk of 512 normed rows of 2048 gives 32768 blocks.
+     */
+    public static void halvesWithBlockSums(
+            KernelContext context, FloatArray in, HalfFloatArray out, FloatArray sums, int blocks) {
+        int b = context.globalIdx;
+        if (b < blocks) {
+            int base = b << 5;
+            float sum = 0.0f;
+            for (int i = 0; i < 32; i++) {
+                out.set(base + i, new HalfFloat(in.get(base + i)));
+                // The rounded value, which is what the GEMM multiplies the weights' codes by.
+                sum += out.get(base + i).getFloat32();
+            }
+            sums.set(b, sum);
+        }
     }
 }
