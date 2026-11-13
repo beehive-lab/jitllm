@@ -7,6 +7,7 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Random;
+import org.beehive.jitllm.backend.tornado.layers.Lfm2Layers;
 import org.beehive.jitllm.inference.op.CpuOperations;
 import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
@@ -136,6 +137,17 @@ public class Lfm2KernelAccelTest {
         return grid(((rows + groupRows - 1) / groupRows) * 32 * groupRows, 32 * groupRows);
     }
 
+    /** The grid of the down kernel for {@code type}, as {@code Lfm2Layers} sets it. */
+    private static WorkerGrid simdDownGrid(DataType type, int rows) {
+        if (type == DataType.Q5_K && Lfm2Layers.warpPerSlotDown()) {
+            int groups =
+                    (rows + TransformerComputeKernelsQ5_K.SLOT_ROWS - 1)
+                            / TransformerComputeKernelsQ5_K.SLOT_ROWS;
+            return grid(groups * 32 * USED, 32 * USED);
+        }
+        return simdGrid(type, rows);
+    }
+
     /** The gate/up task the layers select for {@code type}: SIMD-group, or generic for Q6_K. */
     private static void addSimdExperts(
             TaskGraph graph,
@@ -238,9 +250,7 @@ public class Lfm2KernelAccelTest {
 
     private void assertExpertsMatchHost(DataType type, boolean simd) {
         if (simd) {
-            assumeTrue(
-                    "no 32-lane shuffle on this device",
-                    org.beehive.jitllm.backend.tornado.layers.Lfm2Layers.shuffle32());
+            assumeTrue("no 32-lane shuffle on this device", Lfm2Layers.shuffle32());
         }
         int gateElements = EXPERTS * EXPERT_HIDDEN * DIM;
         byte[] gate = blocks(type, gateElements);
@@ -284,7 +294,12 @@ public class Lfm2KernelAccelTest {
                     "down",
                     switch (type) {
                         case Q4_K -> TransformerComputeKernelsQ4_K::expertDownResidualQ4_KSimdgroup;
-                        case Q5_K -> TransformerComputeKernelsQ5_K::expertDownResidualQ5_KSimd32;
+                        case Q5_K ->
+                                Lfm2Layers.warpPerSlotDown()
+                                        ? TransformerComputeKernelsQ5_K
+                                                ::expertDownResidualQ5_KWarpPerSlot
+                                        : TransformerComputeKernelsQ5_K
+                                                ::expertDownResidualQ5_KSimd32;
                         default -> TransformerComputeKernelsQ6_K::expertDownResidualQ6_KSimd32;
                     },
                     context,
@@ -296,7 +311,7 @@ public class Lfm2KernelAccelTest {
                     DIM,
                     EXPERT_HIDDEN,
                     USED);
-            scheduler.addWorkerGrid("moe.down", simdGrid(type, DIM));
+            scheduler.addWorkerGrid("moe.down", simdDownGrid(type, DIM));
         } else {
             scheduler.addWorkerGrid("moe.gateUp", grid(USED * EXPERT_HIDDEN * LOCAL, LOCAL));
             scheduler.addWorkerGrid("moe.down", grid(DIM * LOCAL, LOCAL));
@@ -527,9 +542,7 @@ public class Lfm2KernelAccelTest {
 
     private void assertRouterMatchesHost(float[] logits, float[] bias, boolean simd) {
         if (simd) {
-            assumeTrue(
-                    "no 32-lane shuffle on this device",
-                    org.beehive.jitllm.backend.tornado.layers.Lfm2Layers.shuffle32());
+            assumeTrue("no 32-lane shuffle on this device", Lfm2Layers.shuffle32());
         }
         int experts = logits.length;
         int used = 4;
@@ -589,9 +602,7 @@ public class Lfm2KernelAccelTest {
      */
     @Test
     public void simdgroupQ8_0MatchesTheBlockKernel() {
-        assumeTrue(
-                "the kernel reduces with 32-lane shuffles",
-                org.beehive.jitllm.backend.tornado.layers.Lfm2Layers.shuffle32());
+        assumeTrue("the kernel reduces with 32-lane shuffles", Lfm2Layers.shuffle32());
         int n = 2048;
         int d = 1001;
         ByteArray w = device(blocks(DataType.Q8_0, n * d));

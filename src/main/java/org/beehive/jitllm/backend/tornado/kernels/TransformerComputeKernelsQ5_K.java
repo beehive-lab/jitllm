@@ -7,6 +7,7 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
+import uk.ac.manchester.tornado.api.types.vectors.Float4;
 import uk.ac.manchester.tornado.api.utils.QuantizationUtils;
 
 /**
@@ -53,6 +54,12 @@ public final class TransformerComputeKernelsQ5_K {
 
     /** Byte offset of the low four bits. */
     private static final int QS_OFFSET = 48;
+
+    /** {@code 2^-8}, {@code 2^-16}, {@code 2^-24}: a byte's weight read in place, not shifted. */
+    private static final float S1 = 1.0f / 256.0f;
+
+    private static final float S2 = 1.0f / 65536.0f;
+    private static final float S3 = 1.0f / 16777216.0f;
 
     /**
      * Prompt rows a tiled batch workgroup covers.
@@ -1373,5 +1380,245 @@ public final class TransformerComputeKernelsQ5_K {
         if (lane == 0) {
             out.set(r, out.get(r) + sum);
         }
+    }
+
+    /** Expert slots a workgroup of {@link #expertDownResidualQ5_KWarpPerSlot} can hold. */
+    public static final int MAX_SLOTS = 8;
+
+    /** Output rows of a {@link #expertDownResidualQ5_KWarpPerSlot} workgroup. */
+    public static final int SLOT_ROWS = 4;
+
+    /**
+     * {@code out[r] += Σ_s weights[s] · (down_e[r] · x[s·H ..])}, {@code e = selected[s]}: a
+     * workgroup of {@code used} warps for {@link #SLOT_ROWS} rows, warp {@code s} taking slot
+     * {@code s}. In a warp, eight lanes cover a super-block, four at a time, each reading 32
+     * weights as words and their fifth bits beside them; the four rows share the activations a lane
+     * loads. The weighted slots are added in selection order. Example: LFM2.5-24B-A2B, 512
+     * workgroups of 4 warps, 2048 rows over {@code H = 1536}. Launch {@code d / SLOT_ROWS}
+     * workgroups of {@code 32 * used} threads, {@code used <= MAX_SLOTS}.
+     */
+    public static void expertDownResidualQ5_KWarpPerSlot(
+            KernelContext context,
+            FloatArray x,
+            FloatArray out,
+            ByteArray down,
+            IntArray selected,
+            FloatArray weights,
+            int d,
+            int expertHidden,
+            int used) {
+        float[] partial = context.allocateFloatLocalArray(MAX_SLOTS * SLOT_ROWS);
+        int lane = context.localIdx & 31;
+        int s = context.localIdx >> 5;
+        int row0 = context.groupIdx * SLOT_ROWS;
+        int blocks = expertHidden / QK_K;
+        int rowBytes = blocks * BLOCK_BYTES;
+        int ix = lane >> 3;
+        int iq = (lane & 7) >> 2;
+        int ir = lane & 3;
+        int wrow0 = selected.get(s) * d + row0;
+        int xo = s * expertHidden;
+        float p0 = 0.0f;
+        float p1 = 0.0f;
+        float p2 = 0.0f;
+        float p3 = 0.0f;
+        for (int ib = ix; ib < blocks; ib += 4) {
+            int xb = xo + ib * QK_K + 64 * iq + 8 * ir;
+            Float4 xa0 = x.getFloat4(xb + 0);
+            Float4 xa1 = x.getFloat4(xb + 4);
+            Float4 xb0 = x.getFloat4(xb + 32);
+            Float4 xb1 = x.getFloat4(xb + 36);
+            Float4 xc0 = x.getFloat4(xb + 128);
+            Float4 xc1 = x.getFloat4(xb + 132);
+            Float4 xd0 = x.getFloat4(xb + 160);
+            Float4 xd1 = x.getFloat4(xb + 164);
+            float sa =
+                    xa0.getX()
+                            + xa0.getY()
+                            + xa0.getZ()
+                            + xa0.getW()
+                            + xa1.getX()
+                            + xa1.getY()
+                            + xa1.getZ()
+                            + xa1.getW();
+            float sb =
+                    xb0.getX()
+                            + xb0.getY()
+                            + xb0.getZ()
+                            + xb0.getW()
+                            + xb1.getX()
+                            + xb1.getY()
+                            + xb1.getZ()
+                            + xb1.getW();
+            float sc =
+                    xc0.getX()
+                            + xc0.getY()
+                            + xc0.getZ()
+                            + xc0.getW()
+                            + xc1.getX()
+                            + xc1.getY()
+                            + xc1.getZ()
+                            + xc1.getW();
+            float sd =
+                    xd0.getX()
+                            + xd0.getY()
+                            + xd0.getZ()
+                            + xd0.getW()
+                            + xd1.getX()
+                            + xd1.getY()
+                            + xd1.getZ()
+                            + xd1.getW();
+            int at = wrow0 * rowBytes + ib * BLOCK_BYTES;
+            p0 +=
+                    blockDot5(
+                            down, at, iq, ir, xa0, xa1, xb0, xb1, xc0, xc1, xd0, xd1, sa, sb, sc,
+                            sd);
+            p1 +=
+                    blockDot5(
+                            down,
+                            at + rowBytes,
+                            iq,
+                            ir,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1,
+                            sa,
+                            sb,
+                            sc,
+                            sd);
+            p2 +=
+                    blockDot5(
+                            down,
+                            at + 2 * rowBytes,
+                            iq,
+                            ir,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1,
+                            sa,
+                            sb,
+                            sc,
+                            sd);
+            p3 +=
+                    blockDot5(
+                            down,
+                            at + 3 * rowBytes,
+                            iq,
+                            ir,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1,
+                            sa,
+                            sb,
+                            sc,
+                            sd);
+        }
+        p0 = simdSum(context, p0);
+        p1 = simdSum(context, p1);
+        p2 = simdSum(context, p2);
+        p3 = simdSum(context, p3);
+        if (lane == 0) {
+            float weight = weights.get(s);
+            partial[s * SLOT_ROWS] = weight * p0;
+            partial[s * SLOT_ROWS + 1] = weight * p1;
+            partial[s * SLOT_ROWS + 2] = weight * p2;
+            partial[s * SLOT_ROWS + 3] = weight * p3;
+        }
+        context.localBarrier();
+        int t = context.localIdx;
+        if (t < SLOT_ROWS && row0 + t < d) {
+            float sum = 0.0f;
+            for (int i = 0; i < used; i++) {
+                sum += partial[i * SLOT_ROWS + t];
+            }
+            out.set(row0 + t, out.get(row0 + t) + sum);
+        }
+    }
+
+    /**
+     * One lane's part of a super-block at {@code base}: weights {@code 8 * ir} to {@code 8 * ir +
+     * 7} of sub-blocks {@code 2iq}, {@code 2iq + 1}, {@code 2iq + 4} and {@code 2iq + 5}, against
+     * activations {@code xa..xd} and their sums {@code sa..sd} (for the minima).
+     */
+    private static float blockDot5(
+            ByteArray w,
+            int base,
+            int iq,
+            int ir,
+            Float4 xa0,
+            Float4 xa1,
+            Float4 xb0,
+            Float4 xb1,
+            Float4 xc0,
+            Float4 xc1,
+            Float4 xd0,
+            Float4 xd1,
+            float sa,
+            float sb,
+            float sc,
+            float sd) {
+        int shift = 16 * iq;
+        float dd = w.getHalfFloat(base).getFloat32();
+        float dmin = w.getHalfFloat(base + 2).getFloat32();
+        int a = (w.getInt(base + SCALES_OFFSET) >>> shift) & 0xFFFF;
+        int b = (w.getInt(base + SCALES_OFFSET + 4) >>> shift) & 0xFFFF;
+        int c = (w.getInt(base + SCALES_OFFSET + 8) >>> shift) & 0xFFFF;
+        int qa = base + QS_OFFSET + 32 * iq + 8 * ir;
+        int q0 = w.getInt(qa);
+        int q1 = w.getInt(qa + 4);
+        int q2 = w.getInt(qa + 64);
+        int q3 = w.getInt(qa + 68);
+        int ha = base + QH_OFFSET + 8 * ir;
+        int h0 = w.getInt(ha);
+        int h1 = w.getInt(ha + 4);
+        // Bit k of each qh byte moved to bit 4, beside the nibble: one 5-bit weight per byte.
+        int bit = 2 * iq;
+        int a0 = (q0 & 0x0F0F0F0F) | (((h0 >>> bit) << 4) & 0x10101010);
+        int a1 = (q1 & 0x0F0F0F0F) | (((h1 >>> bit) << 4) & 0x10101010);
+        int b0 = ((q0 >>> 4) & 0x0F0F0F0F) | (((h0 >>> (bit + 1)) << 4) & 0x10101010);
+        int b1 = ((q1 >>> 4) & 0x0F0F0F0F) | (((h1 >>> (bit + 1)) << 4) & 0x10101010);
+        int c0 = (q2 & 0x0F0F0F0F) | (((h0 >>> (bit + 4)) << 4) & 0x10101010);
+        int c1 = (q3 & 0x0F0F0F0F) | (((h1 >>> (bit + 4)) << 4) & 0x10101010);
+        int e0 = ((q2 >>> 4) & 0x0F0F0F0F) | (((h0 >>> (bit + 5)) << 4) & 0x10101010);
+        int e1 = ((q3 >>> 4) & 0x0F0F0F0F) | (((h1 >>> (bit + 5)) << 4) & 0x10101010);
+        float da = bytesDot(a0, xa0) + bytesDot(a1, xa1);
+        float db = bytesDot(b0, xb0) + bytesDot(b1, xb1);
+        float dc = bytesDot(c0, xc0) + bytesDot(c1, xc1);
+        float de = bytesDot(e0, xd0) + bytesDot(e1, xd1);
+        // Sub-blocks 2iq and 2iq+1 take the plain 6-bit pairs; 2iq+4 and 2iq+5 take four bits
+        // from c and two from the top of a (scale) and b (min).
+        int sc0 = a & 63;
+        int sc1 = (a >>> 8) & 63;
+        int m0 = b & 63;
+        int m1 = (b >>> 8) & 63;
+        int sc4 = (c & 0xF) | (((a >>> 6) & 3) << 4);
+        int sc5 = ((c >>> 8) & 0xF) | (((a >>> 14) & 3) << 4);
+        int m4 = ((c >>> 4) & 0xF) | (((b >>> 6) & 3) << 4);
+        int m5 = ((c >>> 12) & 0xF) | (((b >>> 14) & 3) << 4);
+        return dd * (sc0 * da + sc1 * db + sc4 * dc + sc5 * de)
+                - dmin * (m0 * sa + m1 * sb + m4 * sc + m5 * sd);
+    }
+
+    /** The four bytes of {@code q}, each an unsigned weight, against {@code x}: read in place. */
+    private static float bytesDot(int q, Float4 x) {
+        return x.getX() * (q & 0xFF)
+                + x.getY() * S1 * (q & 0xFF00)
+                + x.getZ() * S2 * (q & 0xFF0000)
+                + x.getW() * S3 * (q & 0xFF000000);
     }
 }

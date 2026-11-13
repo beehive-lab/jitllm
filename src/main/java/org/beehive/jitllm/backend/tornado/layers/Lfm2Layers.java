@@ -636,7 +636,12 @@ public class Lfm2Layers
                     "moe_down",
                     switch (down.dataType()) {
                         case Q4_K -> TransformerComputeKernelsQ4_K::expertDownResidualQ4_KSimdgroup;
-                        case Q5_K -> TransformerComputeKernelsQ5_K::expertDownResidualQ5_KSimd32;
+                        case Q5_K ->
+                                warpPerSlotDown()
+                                        ? TransformerComputeKernelsQ5_K
+                                                ::expertDownResidualQ5_KWarpPerSlot
+                                        : TransformerComputeKernelsQ5_K
+                                                ::expertDownResidualQ5_KSimd32;
                         default -> TransformerComputeKernelsQ6_K::expertDownResidualQ6_KSimd32;
                     },
                     context,
@@ -1043,10 +1048,18 @@ public class Lfm2Layers
                 int expertRows = config.expertUsedCount() * config.expertHiddenDim();
                 scheduler.addWorkerGrid(
                         prefix + "moe_gate_up",
-                        expertWorker(weights.ffnGateExps[layer].dataType(), true, expertRows));
+                        expertWorker(
+                                weights.ffnGateExps[layer].dataType(),
+                                true,
+                                expertRows,
+                                config.expertUsedCount()));
                 scheduler.addWorkerGrid(
                         prefix + "moe_down",
-                        expertWorker(weights.ffnDownExps[layer].dataType(), false, config.dim()));
+                        expertWorker(
+                                weights.ffnDownExps[layer].dataType(),
+                                false,
+                                config.dim(),
+                                config.expertUsedCount()));
             } else {
                 projections.addGateUpGrids(
                         scheduler,
@@ -1062,13 +1075,25 @@ public class Lfm2Layers
         return scheduler;
     }
 
+    /**
+     * Whether the Q5_K expert down projection runs one warp per expert slot ({@code
+     * expertDownResidualQ5_KWarpPerSlot}): on CUDA, where the kernel with all slots in one warp
+     * leaves too few loads in flight. Metal keeps {@code expertDownResidualQ5_KSimd32}.
+     */
+    public static boolean warpPerSlotDown() {
+        return TornadoDevices.current().backend().equals(BackendId.CUDA);
+    }
+
     /** Whether the router's selection runs on one SIMD group rather than one lane. */
     private boolean simdgroupSelect() {
         return config.expertCount() <= Lfm2Kernels.MAX_EXPERTS && shuffle32();
     }
 
-    /** The grid of an expert projection over {@code rows} rows of a tensor in {@code type}. */
-    private static WorkerGrid expertWorker(DataType type, boolean gateUp, int rows) {
+    /**
+     * The grid of an expert projection over {@code rows} rows of a tensor in {@code type}, {@code
+     * used} experts per token.
+     */
+    private static WorkerGrid expertWorker(DataType type, boolean gateUp, int rows, int used) {
         if (!simdgroupExperts(type, gateUp)) {
             return matVecWorker(rows);
         }
@@ -1077,6 +1102,12 @@ public class Lfm2Layers
             int threads = 32 * TransformerComputeKernelsQ4_K.SIMDGROUPS;
             return WorkerGridFactory.genericWorker(
                     ((rows + groupRows - 1) / groupRows) * threads, threads);
+        }
+        if (type == DataType.Q5_K && !gateUp && warpPerSlotDown()) {
+            int groups =
+                    (rows + TransformerComputeKernelsQ5_K.SLOT_ROWS - 1)
+                            / TransformerComputeKernelsQ5_K.SLOT_ROWS;
+            return WorkerGridFactory.genericWorker(groups * 32 * used, 32 * used);
         }
         int groupRows = TransformerComputeKernelsQ5_K.EXPERT_SIMD_ROWS;
         return WorkerGridFactory.genericWorker(
