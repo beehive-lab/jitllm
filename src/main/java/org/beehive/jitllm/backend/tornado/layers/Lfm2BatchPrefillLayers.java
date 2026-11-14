@@ -18,6 +18,8 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerBatchPrefillSimdgro
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupFP16Kernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerPagedKvBatchPrefillSimdgroupKernels;
 import org.beehive.jitllm.backend.tornado.ops.Target;
 import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacker;
@@ -47,11 +49,13 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  *
  * <p>The same two choices per layer as {@link Lfm2Layers}: attention or the short convolution,
  * dense or routed feed-forward. The dense projections are SIMD-group GEMMs ({@link
- * QuantizedBatchProjections}); attention, the per-head norms and the rotation are the kernels the
- * Qwen3.5 prefill runs on Metal. The routed feed-forward sorts the chunk's assignments by expert
- * ({@code Qwen35MoeBatchKernels.groupByExpert}) and runs one GEMM per tile of an expert's rows
- * ({@link GroupedExpertSimdgroupKernels}), so each selected expert's weights are read once per tile
- * rather than once per token: a chunk of 512 tokens over 64 experts gives each about 32 rows.
+ * QuantizedBatchProjections}); the per-head norms and the rotation are the kernels the Qwen3.5
+ * prefill runs on Metal, and attention runs on SIMD-group matrices there ({@code
+ * TransformerPagedKvBatchPrefillSimdgroupFP16Kernels}). The routed feed-forward sorts the chunk's
+ * assignments by expert ({@code Qwen35MoeBatchKernels.groupByExpert}) and runs one GEMM per tile of
+ * an expert's rows ({@link GroupedExpertSimdgroupKernels}), so each selected expert's weights are
+ * read once per tile rather than once per token: a chunk of 512 tokens over 64 experts gives each
+ * about 32 rows.
  *
  * <p>On Metal the GEMMs are SIMD-group matrices; elsewhere they are the tiled batch kernels,
  * decoding each weight once per eight rows, with the experts' as grouped tiled kernels. With native
@@ -417,24 +421,46 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                         true);
                 return;
             }
-            layer.task(
-                    "attention",
-                    Qwen35BatchKernels::attentionBatchFP16Paged,
-                    context,
-                    ws.batchStartPosHolder,
-                    ws.wrapQBatch,
-                    ws.wrapKeyCacheFP16,
-                    ws.wrapValueCacheFP16,
-                    ws.wrapXbBatch,
-                    config.numberOfHeads(),
-                    headDim,
-                    kvDim,
-                    config.kvMul(),
-                    kvLayer,
-                    ws.wrapBlockTable,
-                    state.kvBlockCfg,
-                    state.kvBlockStride,
-                    ATTENTION_LOCAL);
+            if (simdgroupAttention()) {
+                layer.task(
+                        "attention",
+                        TransformerPagedKvBatchPrefillSimdgroupFP16Kernels
+                                ::batchedFlashAttentionKVFP16PagedHead64,
+                        context,
+                        ws.batchStartPosHolder,
+                        ws.wrapQBatch,
+                        ws.wrapKeyCacheFP16,
+                        ws.wrapValueCacheFP16,
+                        ws.wrapXbBatch,
+                        config.numberOfHeads(),
+                        headDim,
+                        kvDim,
+                        config.kvMul(),
+                        kvLayer,
+                        ws.wrapBlockTable,
+                        state.kvBlockCfg,
+                        state.kvBlockStride,
+                        dim);
+            } else {
+                layer.task(
+                        "attention",
+                        Qwen35BatchKernels::attentionBatchFP16Paged,
+                        context,
+                        ws.batchStartPosHolder,
+                        ws.wrapQBatch,
+                        ws.wrapKeyCacheFP16,
+                        ws.wrapValueCacheFP16,
+                        ws.wrapXbBatch,
+                        config.numberOfHeads(),
+                        headDim,
+                        kvDim,
+                        config.kvMul(),
+                        kvLayer,
+                        ws.wrapBlockTable,
+                        state.kvBlockCfg,
+                        state.kvBlockStride,
+                        ATTENTION_LOCAL);
+            }
         } else {
             layer.task(
                     "attn_kv_append",
@@ -450,24 +476,46 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                     kvLayer,
                     state.kvBlockCfg,
                     state.kvBlockStride);
-            layer.task(
-                    "attention",
-                    Qwen35BatchKernels::attentionBatchPaged,
-                    context,
-                    ws.batchStartPosHolder,
-                    ws.wrapQBatch,
-                    ws.wrapKeyCache,
-                    ws.wrapValueCache,
-                    ws.wrapXbBatch,
-                    config.numberOfHeads(),
-                    headDim,
-                    kvDim,
-                    config.kvMul(),
-                    kvLayer,
-                    ws.wrapBlockTable,
-                    state.kvBlockCfg,
-                    state.kvBlockStride,
-                    ATTENTION_LOCAL);
+            if (simdgroupAttention()) {
+                layer.task(
+                        "attention",
+                        TransformerPagedKvBatchPrefillSimdgroupKernels
+                                ::batchedFlashAttentionPagedHead64,
+                        context,
+                        ws.batchStartPosHolder,
+                        ws.wrapQBatch,
+                        ws.wrapKeyCache,
+                        ws.wrapValueCache,
+                        ws.wrapXbBatch,
+                        config.numberOfHeads(),
+                        headDim,
+                        kvDim,
+                        config.kvMul(),
+                        kvLayer,
+                        ws.wrapBlockTable,
+                        state.kvBlockCfg,
+                        state.kvBlockStride,
+                        dim);
+            } else {
+                layer.task(
+                        "attention",
+                        Qwen35BatchKernels::attentionBatchPaged,
+                        context,
+                        ws.batchStartPosHolder,
+                        ws.wrapQBatch,
+                        ws.wrapKeyCache,
+                        ws.wrapValueCache,
+                        ws.wrapXbBatch,
+                        config.numberOfHeads(),
+                        headDim,
+                        kvDim,
+                        config.kvMul(),
+                        kvLayer,
+                        ws.wrapBlockTable,
+                        state.kvBlockCfg,
+                        state.kvBlockStride,
+                        ATTENTION_LOCAL);
+            }
         }
         project(
                 layer,
@@ -478,6 +526,17 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 dim,
                 dim,
                 true);
+    }
+
+    /**
+     * Whether attention runs on SIMD-group matrices (Metal): {@code
+     * TransformerPagedKvBatchPrefillSimdgroupFP16Kernels} over the FP16 cache, {@code
+     * TransformerPagedKvBatchPrefillSimdgroupKernels} over the FP32 one, for heads 64 wide.
+     */
+    private boolean simdgroupAttention() {
+        return simdgroup
+                && config.headSize() == 64
+                && BatchPrefillGemmPolicy.simdgroupAttention(config.headSize());
     }
 
     /** Whether layer {@code layerIndex} runs {@link #flashAttentionTasks}. */
@@ -1085,6 +1144,12 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                                 * config.numberOfHeads()
                                 * TensorCoreAttentionKernels.FLASH_THREADS);
         flashGrid.setLocalWork(TensorCoreAttentionKernels.FLASH_THREADS, 1, 1);
+        int threads = TransformerPagedKvBatchPrefillSimdgroupKernels.THREADS;
+        int queryTile = TransformerPagedKvBatchPrefillSimdgroupKernels.QUERY_TILE;
+        WorkerGrid simdgroupAttentionGrid =
+                WorkerGridFactory.genericWorker(
+                        (batchSize + queryTile - 1) / queryTile * config.numberOfHeads() * threads,
+                        threads);
 
         int used = config.expertUsedCount();
         int assignments = batchSize * used;
@@ -1148,6 +1213,8 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                     scheduler.addWorkerGrid(prefix + "attn_q16", flashQueries);
                     scheduler.addWorkerGrid(prefix + "attn_gather", flashGather);
                     scheduler.addWorkerGrid(prefix + "attention", flashGrid);
+                } else if (simdgroupAttention()) {
+                    scheduler.addWorkerGrid(prefix + "attention", simdgroupAttentionGrid);
                 } else {
                     scheduler.addWorkerGrid(prefix + "attention", attention);
                 }
