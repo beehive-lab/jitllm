@@ -563,6 +563,91 @@ public final class TransformerComputeKernelsQ6_K {
         }
     }
 
+    /**
+     * Rows of a {@link #matrixVectorQ6_KWarp} workgroup, one warp each: as many as {@code
+     * Gemma4Kernels.matrixVectorQ8_0Warp}'s, so one vocabulary grid serves both.
+     */
+    public static final int WARP_ROWS_PER_GROUP = Gemma4Kernels.WARP_ROWS_PER_GROUP;
+
+    // @formatter:off
+    /**
+     * {@code output[row] = w[row]·x}, one warp per row and {@value #WARP_ROWS_PER_GROUP} rows per
+     * workgroup. Lane {@code l} takes the 32-weight units {@code l, l + 32, ...} of its row, each
+     * decoded as {@link #rowDotShared} decodes it, and a shuffle tree sums the lanes. The generic
+     * kernel gives every row a workgroup and a shared-memory tree, with half its lanes idle when
+     * the row has fewer units than lanes. Same products; the sum is reassociated across lanes.
+     * Example: LFM2-8B-A1B's 65536-row output, {@code n = 2048}: two units a lane. Worker: {@code
+     * ceil(d / 8) * 256} lanes, local 256.
+     */
+    // @formatter:on
+    public static void matrixVectorQ6_KWarp(
+            KernelContext context, FloatArray x, FloatArray output, ByteArray w, int n, int d) {
+        int warp = context.localIdx >> 5;
+        int lane = context.localIdx & 31;
+        int rowId = context.groupIdx * WARP_ROWS_PER_GROUP + warp;
+        if (rowId >= d) {
+            return;
+        }
+        int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
+        float sum = 0.0f;
+        for (int unit = lane; unit < n / 32; unit += 32) {
+            int half = unit / 4;
+            int posInGroup = (unit - half * 4) * 8;
+            int blockIdx = half / 2;
+            int halfIndex = half - blockIdx * 2;
+            int blockByteOffset = rowByteOffset + blockIdx * BLOCK_BYTES;
+            float scale = w.getHalfFloat(blockByteOffset + D_OFFSET).getFloat32();
+
+            int scaleAt = blockByteOffset + SCALES_OFFSET + halfIndex * 8 + posInGroup / 16;
+            float dScale0 = scale * signedByte(w, scaleAt);
+            float dScale1 = scale * signedByte(w, scaleAt + 2);
+            float dScale2 = scale * signedByte(w, scaleAt + 4);
+            float dScale3 = scale * signedByte(w, scaleAt + 6);
+
+            int qlAt = blockByteOffset + halfIndex * 64 + posInGroup;
+            int qhAt = blockByteOffset + QH_OFFSET + halfIndex * 32 + posInGroup;
+            int xAt = blockIdx * QK_K + halfIndex * 128 + posInGroup;
+            float sum0 = 0.0f;
+            float sum1 = 0.0f;
+            float sum2 = 0.0f;
+            float sum3 = 0.0f;
+            for (int k = 0; k < 8; k += 4) {
+                int ql1Word =
+                        (w.getHalfFloat(qlAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int ql2Word =
+                        (w.getHalfFloat(qlAt + 32 + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + 34 + k).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int qhWord =
+                        (w.getHalfFloat(qhAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qhAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int raw0 = (ql1Word & 0x0F0F0F0F) | ((qhWord & 0x03030303) << 4);
+                int raw1 = (ql2Word & 0x0F0F0F0F) | (((qhWord >>> 2) & 0x03030303) << 4);
+                int raw2 = ((ql1Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 4) & 0x03030303) << 4);
+                int raw3 = ((ql2Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 6) & 0x03030303) << 4);
+                for (int b = 0; b < 4; b++) {
+                    int shift = 8 * b;
+                    sum0 += (((raw0 >>> shift) & 0xFF) - 32) * x.get(xAt + k + b);
+                    sum1 += (((raw1 >>> shift) & 0xFF) - 32) * x.get(xAt + 32 + k + b);
+                    sum2 += (((raw2 >>> shift) & 0xFF) - 32) * x.get(xAt + 64 + k + b);
+                    sum3 += (((raw3 >>> shift) & 0xFF) - 32) * x.get(xAt + 96 + k + b);
+                }
+            }
+            sum += dScale0 * sum0 + dScale1 * sum1 + dScale2 * sum2 + dScale3 * sum3;
+        }
+        sum += context.simdShuffleDown(sum, 16);
+        sum += context.simdShuffleDown(sum, 8);
+        sum += context.simdShuffleDown(sum, 4);
+        sum += context.simdShuffleDown(sum, 2);
+        sum += context.simdShuffleDown(sum, 1);
+        if (lane == 0) {
+            output.set(rowId, sum);
+        }
+    }
+
     /** {@code hb[row] += w[row]·x}. */
     public static void matrixVectorGenericWithResidualQ6_K(
             KernelContext context,

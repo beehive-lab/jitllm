@@ -193,7 +193,16 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
         return false;
     }
 
-    /** Whether {@link #addVocabularyProjection} took the warp kernel; read by the grid. */
+    /**
+     * Whether a Q6_K output projection runs one warp per row ({@code
+     * TransformerComputeKernelsQ6_K.matrixVectorQ6_KWarp}). Example: LFM2-8B-A1B's 65536-row output
+     * on CUDA.
+     */
+    protected boolean warpQ6_KVocabulary() {
+        return false;
+    }
+
+    /** Whether {@link #addVocabularyProjection} took a warp kernel; read by the grid. */
     private boolean warpVocabularyTaken;
 
     /**
@@ -364,7 +373,19 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
                             config.dim(),
                             config.vocabularySize(),
                             localSize);
-            case Q6_K ->
+            case Q6_K -> {
+                if (warpQ6_KVocabulary()) {
+                    warpVocabularyTaken = true;
+                    logits.task(
+                            "vocab_proj",
+                            TransformerComputeKernelsQ6_K::matrixVectorQ6_KWarp,
+                            context,
+                            state.workspace.wrapX,
+                            state.workspace.wrapLogits,
+                            w.asByteArray(),
+                            config.dim(),
+                            config.vocabularySize());
+                } else {
                     logits.task(
                             "vocab_proj",
                             TransformerComputeKernelsQ6_K::matrixVectorGenericQ6_K,
@@ -375,6 +396,8 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
                             config.dim(),
                             config.vocabularySize(),
                             localSize);
+                }
+            }
             default ->
                     throw new UnsupportedOperationException(
                             "the vocabulary projection is "

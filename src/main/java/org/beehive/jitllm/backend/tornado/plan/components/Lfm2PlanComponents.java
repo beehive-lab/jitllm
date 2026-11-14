@@ -72,6 +72,11 @@ public class Lfm2PlanComponents implements BatchPrefillDecodeForwardPlanComponen
                 // CUDA: one warp per row instead of a workgroup per row.
                 return TornadoDevices.current().backend().equals(BackendId.CUDA);
             }
+
+            @Override
+            protected boolean warpQ6_KVocabulary() {
+                return TornadoDevices.current().backend().equals(BackendId.CUDA);
+            }
         };
     }
 
