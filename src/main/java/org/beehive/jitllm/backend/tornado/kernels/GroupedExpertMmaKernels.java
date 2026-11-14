@@ -69,6 +69,22 @@ public final class GroupedExpertMmaKernels {
         return gather != 0 ? sortedToken.get(first + local) : first + local;
     }
 
+    /**
+     * {@code TransformerComputeKernelsQ4_K.scaleAndMin} of sub-block {@code sub} from the twelve
+     * scale bytes held as three words {@code s0..s2}, little-endian: {@code scale << 8 | min}.
+     */
+    private static int scaleAndMinOf(int s0, int s1, int s2, int sub) {
+        if (sub < 4) {
+            int sh = 8 * sub;
+            return (((s0 >>> sh) & 63) << 8) | ((s1 >>> sh) & 63);
+        }
+        int sh = 8 * (sub - 4);
+        int low = (s2 >>> sh) & 0xFF;
+        int sc = (low & 0xF) | ((((s0 >>> sh) & 0xFF) >> 6) << 4);
+        int m = ((low >> 4) & 0xF) | ((((s1 >>> sh) & 0xFF) >> 6) << 4);
+        return (sc << 8) | m;
+    }
+
     /** Halves {@code i} and {@code i + 1} of {@code x} as one int. */
     private static int packHalves(HalfFloatArray x, int i) {
         return (x.get(i).getHalfFloatValue() & 0xFFFF)
@@ -213,10 +229,10 @@ public final class GroupedExpertMmaKernels {
         int q2b = 0;
         int q3a = 0;
         int q3b = 0;
-        float rs0 = 0.0f;
-        float rs1 = 0.0f;
-        float rm0 = 0.0f;
-        float rm1 = 0.0f;
+        int rHead = 0;
+        int rS0 = 0;
+        int rS1 = 0;
+        int rS2 = 0;
         int rPair = 0;
         ctx.asyncCopyToLocal16(aTile, aDst, input16, aSrc);
         ctx.asyncCopyCommit();
@@ -239,14 +255,10 @@ public final class GroupedExpertMmaKernels {
             q3a = w.getInt(c3);
             q3b = w.getInt(c3 + rowStride);
             int sBase = (sRow + kBlock) * 144;
-            int sm0 = TransformerComputeKernelsQ4_K.scaleAndMin(w, sBase + 4, 2 * pairIndex);
-            int sm1 = TransformerComputeKernelsQ4_K.scaleAndMin(w, sBase + 4, 2 * pairIndex + 1);
-            float dd = w.getHalfFloat(sBase).getFloat32();
-            float dm = w.getHalfFloat(sBase + 2).getFloat32();
-            rs0 = dd * (sm0 >> 8);
-            rs1 = dd * (sm1 >> 8);
-            rm0 = dm * (sm0 & 0xFF);
-            rm1 = dm * (sm1 & 0xFF);
+            rHead = w.getInt(sBase);
+            rS0 = w.getInt(sBase + 4);
+            rS1 = w.getInt(sBase + 8);
+            rS2 = w.getInt(sBase + 12);
         }
 
         int kSteps = n >> 6;
@@ -317,10 +329,18 @@ public final class GroupedExpertMmaKernels {
                 bTile[slot + 4104] = codes[(ha >>> 16) & 0xFF] | (codes[(hb >>> 16) & 0xFF] << 16);
                 bTile[slot + 4108] = codes[ha >>> 24] | (codes[hb >>> 24] << 16);
             }
-            colScale[tid] = rs0;
-            colScale[SPLIT_OUTPUTS + tid] = rs1;
-            colMin[tid] = rm0;
-            colMin[SPLIT_OUTPUTS + tid] = rm1;
+            {
+                // The step's scale words, loaded raw a step ahead, decoded after the multiplies
+                // they overlapped.
+                float dd = new HalfFloat((short) rHead).getFloat32();
+                float dm = new HalfFloat((short) (rHead >>> 16)).getFloat32();
+                int sm0 = scaleAndMinOf(rS0, rS1, rS2, 2 * rPair);
+                int sm1 = scaleAndMinOf(rS0, rS1, rS2, 2 * rPair + 1);
+                colScale[tid] = dd * (sm0 >> 8);
+                colScale[SPLIT_OUTPUTS + tid] = dd * (sm1 >> 8);
+                colMin[tid] = dm * (sm0 & 0xFF);
+                colMin[SPLIT_OUTPUTS + tid] = dm * (sm1 & 0xFF);
+            }
             ctx.asyncCopyWaitGroup(0);
             ctx.localBarrier();
             if (step + 1 < kSteps) {
@@ -349,17 +369,10 @@ public final class GroupedExpertMmaKernels {
                     q3a = w.getInt(c3);
                     q3b = w.getInt(c3 + rowStride);
                     int sBase = (sRow + kBlock) * 144;
-                    int sm0 =
-                            TransformerComputeKernelsQ4_K.scaleAndMin(w, sBase + 4, 2 * pairIndex);
-                    int sm1 =
-                            TransformerComputeKernelsQ4_K.scaleAndMin(
-                                    w, sBase + 4, 2 * pairIndex + 1);
-                    float dd = w.getHalfFloat(sBase).getFloat32();
-                    float dm = w.getHalfFloat(sBase + 2).getFloat32();
-                    rs0 = dd * (sm0 >> 8);
-                    rs1 = dd * (sm1 >> 8);
-                    rm0 = dm * (sm0 & 0xFF);
-                    rm1 = dm * (sm1 & 0xFF);
+                    rHead = w.getInt(sBase);
+                    rS0 = w.getInt(sBase + 4);
+                    rS1 = w.getInt(sBase + 8);
+                    rS2 = w.getInt(sBase + 12);
                 }
             }
             int aByte = buf * SPLIT_INPUT_INTS * 4;
@@ -647,10 +660,10 @@ public final class GroupedExpertMmaKernels {
         int q3b = 0;
         int h3a = 0;
         int h3b = 0;
-        float rs0 = 0.0f;
-        float rs1 = 0.0f;
-        float rm0 = 0.0f;
-        float rm1 = 0.0f;
+        int rHead = 0;
+        int rS0 = 0;
+        int rS1 = 0;
+        int rS2 = 0;
         int rPair = 0;
         ctx.asyncCopyToLocal16(aTile, aDst, input16, aSrc);
         ctx.asyncCopyCommit();
@@ -681,14 +694,10 @@ public final class GroupedExpertMmaKernels {
             h3a = w.getInt(c3 - 48 - pairIndex * 32 + 16);
             h3b = w.getInt(c3 + rowStride - 48 - pairIndex * 32 + 16);
             int sBase = (sRow + kBlock) * 176;
-            int sm0 = TransformerComputeKernelsQ4_K.scaleAndMin(w, sBase + 4, 2 * pairIndex);
-            int sm1 = TransformerComputeKernelsQ4_K.scaleAndMin(w, sBase + 4, 2 * pairIndex + 1);
-            float dd = w.getHalfFloat(sBase).getFloat32();
-            float dm = w.getHalfFloat(sBase + 2).getFloat32();
-            rs0 = dd * (sm0 >> 8);
-            rs1 = dd * (sm1 >> 8);
-            rm0 = dm * (sm0 & 0xFF);
-            rm1 = dm * (sm1 & 0xFF);
+            rHead = w.getInt(sBase);
+            rS0 = w.getInt(sBase + 4);
+            rS1 = w.getInt(sBase + 8);
+            rS2 = w.getInt(sBase + 12);
         }
 
         int kSteps = n >> 6;
@@ -760,10 +769,18 @@ public final class GroupedExpertMmaKernels {
                 bTile[slot + 4104] = codes[(ha >>> 16) & 0xFF] | (codes[(hb >>> 16) & 0xFF] << 16);
                 bTile[slot + 4108] = codes[ha >>> 24] | (codes[hb >>> 24] << 16);
             }
-            colScale[tid] = rs0;
-            colScale[SPLIT_OUTPUTS + tid] = rs1;
-            colMin[tid] = rm0;
-            colMin[SPLIT_OUTPUTS + tid] = rm1;
+            {
+                // The step's scale words, loaded raw a step ahead, decoded after the multiplies
+                // they overlapped.
+                float dd = new HalfFloat((short) rHead).getFloat32();
+                float dm = new HalfFloat((short) (rHead >>> 16)).getFloat32();
+                int sm0 = scaleAndMinOf(rS0, rS1, rS2, 2 * rPair);
+                int sm1 = scaleAndMinOf(rS0, rS1, rS2, 2 * rPair + 1);
+                colScale[tid] = dd * (sm0 >> 8);
+                colScale[SPLIT_OUTPUTS + tid] = dd * (sm1 >> 8);
+                colMin[tid] = dm * (sm0 & 0xFF);
+                colMin[SPLIT_OUTPUTS + tid] = dm * (sm1 & 0xFF);
+            }
             ctx.asyncCopyWaitGroup(0);
             ctx.localBarrier();
             if (step + 1 < kSteps) {
@@ -800,17 +817,10 @@ public final class GroupedExpertMmaKernels {
                     h3a = w.getInt(c3 - 48 - pairIndex * 32 + 16);
                     h3b = w.getInt(c3 + rowStride - 48 - pairIndex * 32 + 16);
                     int sBase = (sRow + kBlock) * 176;
-                    int sm0 =
-                            TransformerComputeKernelsQ4_K.scaleAndMin(w, sBase + 4, 2 * pairIndex);
-                    int sm1 =
-                            TransformerComputeKernelsQ4_K.scaleAndMin(
-                                    w, sBase + 4, 2 * pairIndex + 1);
-                    float dd = w.getHalfFloat(sBase).getFloat32();
-                    float dm = w.getHalfFloat(sBase + 2).getFloat32();
-                    rs0 = dd * (sm0 >> 8);
-                    rs1 = dd * (sm1 >> 8);
-                    rm0 = dm * (sm0 & 0xFF);
-                    rm1 = dm * (sm1 & 0xFF);
+                    rHead = w.getInt(sBase);
+                    rS0 = w.getInt(sBase + 4);
+                    rS1 = w.getInt(sBase + 8);
+                    rS2 = w.getInt(sBase + 12);
                 }
             }
             int aByte = buf * SPLIT_INPUT_INTS * 4;
