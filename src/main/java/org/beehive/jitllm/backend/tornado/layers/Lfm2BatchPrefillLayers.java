@@ -40,6 +40,7 @@ import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 // @formatter:off
 /**
@@ -94,6 +95,13 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
     private final boolean cublas;
 
     /**
+     * The tiles the dense feed-forward's tensor-core GEMMs take: the whole chunk in 64-row tiles of
+     * expert 0, so the grouped expert kernels compute a dense projection. Null when no dense layer
+     * runs them.
+     */
+    private final IntArray denseTiles;
+
+    /**
      * Whether attention runs on tensor cores ({@link
      * TensorCoreAttentionKernels#flashAttentionHead64}): see {@link #flashAttention}. Null keys and
      * values otherwise.
@@ -133,13 +141,23 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                         && TensorCoreSupport.isTensorCoreCapableBackend()
                         && config.expertHiddenDim() % 128 == 0
                         && config.dim() % 128 == 0;
+        // The cuBLAS weight scratch first, so the FP16 rows below can share it.
+        if (cublas) {
+            int widest = Math.toIntExact(nativeScratchBytes(config) / 2);
+            HalfFloatArray current = state.workspace.contiguousF16WeightsScratch;
+            if (current == null || current.getSize() < widest) {
+                state.workspace.contiguousF16WeightsScratch = TornadoWorkspaces.halfFloats(widest);
+            }
+        }
         if (mmaExperts) {
             // The FP16 rows share the cuBLAS weight scratch where there is one: the experts run
             // after the layer's projections, which leave it free.
             long halves =
                     Math.max(
-                            (long) batchSize * config.dim(),
-                            (long) assignments() * config.expertHiddenDim());
+                            Math.max(
+                                    (long) batchSize * config.dim(),
+                                    (long) assignments() * config.expertHiddenDim()),
+                            denseMmaShape() ? (long) batchSize * config.hiddenDim() : 0);
             HalfFloatArray scratch = state.workspace.contiguousF16WeightsScratch;
             state.workspace.wrapMoeHalvesBatch =
                     cublas && scratch != null && scratch.getSize() >= halves
@@ -148,13 +166,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
             state.workspace.wrapMoeBlockSums =
                     TornadoWorkspaces.floats(Math.toIntExact(halves / 32));
         }
-        if (cublas) {
-            int widest = Math.toIntExact(nativeScratchBytes(config) / 2);
-            HalfFloatArray current = state.workspace.contiguousF16WeightsScratch;
-            if (current == null || current.getSize() < widest) {
-                state.workspace.contiguousF16WeightsScratch = TornadoWorkspaces.halfFloats(widest);
-            }
-        }
+        this.denseTiles = mmaExperts && denseMmaShape() ? denseTiles(batchSize) : null;
         this.flash =
                 flashAttention(cublas, state.usesFp16KeyValueCache(), config)
                         && batchSize % TensorCoreAttentionKernels.FLASH_ROWS == 0;
@@ -301,6 +313,8 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
         rmsReduce(layer, "ffn_rms_reduce", ws.ffnScaleBatch);
         if (config.isMoeLayer(layerIndex)) {
             mixtureOfExperts(layer, layerIndex);
+        } else if (denseMma(layerIndex)) {
+            denseFeedForwardMma(layer, layerIndex);
         } else {
             projections.gateUp(
                     layer,
@@ -642,6 +656,148 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
         } else {
             projections.projection(layer, name, x, out, w, n, d, residual);
         }
+    }
+
+    /**
+     * Whether the dense feed-forward's widths fit the tensor-core expert kernels: a hidden width of
+     * whole 256-column blocks and a chunk of whole 64-row tiles.
+     */
+    private boolean denseMmaShape() {
+        return config.leadingDenseBlockCount() > 0
+                && config.hiddenDim() % 256 == 0
+                && config.dim() % 256 == 0
+                && batchSize % Qwen35MoeBatchKernels.TILE_ROWS == 0;
+    }
+
+    /** Whether dense layer {@code layerIndex} runs on the tensor-core expert kernels. */
+    private boolean denseMma(int layerIndex) {
+        return denseTiles != null
+                && mmaWeight(require(weights.w1Layered, layerIndex, "ffn_gate"))
+                && mmaWeight(require(weights.w3Layered, layerIndex, "ffn_up"))
+                && mmaWeight(require(weights.w2Layered, layerIndex, "ffn_down"));
+    }
+
+    /**
+     * Whether the expert kernels read {@code w}: a type they decode, in its GGUF layout. Example: a
+     * Q8_0 weight the plan prepacked, as on CUDA without native libraries, keeps the int8 GEMM.
+     */
+    private boolean mmaWeight(TornadoTensor w) {
+        DataType type = w.dataType();
+        var prepacking = state.workspace.prepacking;
+        return (type == DataType.Q4_K
+                        || type == DataType.Q5_K
+                        || type == DataType.Q6_K
+                        || type == DataType.Q8_0)
+                && (prepacking == null || !prepacking.prepacked(w));
+    }
+
+    /** {@code (count, expert 0, first row, 64 rows)...} over {@code rows} rows. */
+    private static IntArray denseTiles(int rows) {
+        int count = rows / Qwen35MoeBatchKernels.TILE_ROWS;
+        IntArray tiles = new IntArray(1 + 3 * count);
+        tiles.set(0, count);
+        for (int t = 0; t < count; t++) {
+            tiles.set(1 + 3 * t, 0);
+            tiles.set(2 + 3 * t, t * Qwen35MoeBatchKernels.TILE_ROWS);
+            tiles.set(3 + 3 * t, Qwen35MoeBatchKernels.TILE_ROWS);
+        }
+        return tiles;
+    }
+
+    /**
+     * The dense feed-forward on the tensor-core expert kernels, the dense weight as expert 0: the
+     * norm, the FP16 rows and block sums, gate and up into {@code wrapHbBatch} and {@code
+     * ffnUpResult}, SwiGLU, then down into {@code wrapMoeOutBatch}, added into {@code wrapXBatch}.
+     */
+    private void denseFeedForwardMma(TaskGraph layer, int layerIndex) {
+        var ws = state.workspace;
+        int dim = config.dim();
+        int hidden = config.hiddenDim();
+        layer.task(
+                "ffn_rms_apply",
+                TransformerBatchPrefillKernels::batchedRmsApplyFP32,
+                context,
+                ws.wrapNormedBatch,
+                ws.wrapXBatch,
+                require(weights.rms_ffn_weightLayered, layerIndex, "ffn_norm").asFloatArray(),
+                ws.ffnScaleBatch,
+                dim);
+        layer.task(
+                "ffn_x16",
+                Lfm2BatchKernels::halvesWithBlockSums,
+                context,
+                ws.wrapNormedBatch,
+                ws.wrapMoeHalvesBatch,
+                ws.wrapMoeBlockSums,
+                batchSize * dim / 32);
+        denseGemm(
+                layer,
+                "ffn_gate",
+                require(weights.w1Layered, layerIndex, "ffn_gate"),
+                ws.wrapHbBatch,
+                dim,
+                hidden);
+        denseGemm(
+                layer,
+                "ffn_up",
+                require(weights.w3Layered, layerIndex, "ffn_up"),
+                ws.ffnUpResult,
+                dim,
+                hidden);
+        layer.task(
+                "ffn_swiglu",
+                Lfm2BatchKernels::siluMultiplyAssignments,
+                context,
+                ws.batchStartPosHolder,
+                ws.wrapHbBatch,
+                ws.ffnUpResult,
+                hidden,
+                1);
+        layer.task(
+                "ffn_h16",
+                Lfm2BatchKernels::halvesWithBlockSums,
+                context,
+                ws.wrapHbBatch,
+                ws.wrapMoeHalvesBatch,
+                ws.wrapMoeBlockSums,
+                batchSize * hidden / 32);
+        denseGemm(
+                layer,
+                "ffn_down",
+                require(weights.w2Layered, layerIndex, "ffn_down"),
+                ws.wrapMoeOutBatch,
+                hidden,
+                dim);
+        layer.task(
+                "ffn_residual",
+                Qwen35MMAKernels::residualAdd,
+                context,
+                ws.wrapXBatch,
+                ws.wrapMoeOutBatch);
+    }
+
+    /** {@code out = w · rows} over the FP16 rows in {@code wrapMoeHalvesBatch}, on tensor cores. */
+    private void denseGemm(
+            TaskGraph layer, String name, TornadoTensor w, FloatArray out, int n, int d) {
+        var ws = state.workspace;
+        layer.task(
+                name,
+                switch (w.dataType()) {
+                    case Q4_K -> GroupedExpertMmaKernels::groupedExpertMmaQ4_K;
+                    case Q5_K -> GroupedExpertMmaKernels::groupedExpertMmaQ5_K;
+                    case Q6_K -> GroupedExpertMmaKernels::groupedExpertMmaQ6_K;
+                    default -> GroupedExpertMmaKernels::groupedExpertMmaQ8_0;
+                },
+                context,
+                ws.wrapMoeHalvesBatch,
+                ws.wrapMoeBlockSums,
+                out,
+                w.asByteArray(),
+                denseTiles,
+                ws.wrapMoeSortedToken,
+                0,
+                n,
+                d);
     }
 
     /**
@@ -1047,6 +1203,10 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
             scratch[scratch.length - 2] = flashKeys;
             scratch[scratch.length - 1] = flashValues;
         }
+        if (denseTiles != null) {
+            scratch = java.util.Arrays.copyOf(scratch, scratch.length + 1);
+            scratch[scratch.length - 1] = denseTiles;
+        }
         if (mmaExperts) {
             boolean shared = ws.wrapMoeHalvesBatch == ws.contiguousF16WeightsScratch;
             scratch = java.util.Arrays.copyOf(scratch, scratch.length + (shared ? 1 : 2));
@@ -1259,6 +1419,34 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                         groupedWorker(
                                 weights.ffnDownExps[layer].dataType(), config.dim(), maxTiles));
                 scheduler.addWorkerGrid(prefix + "moe_combine", combine);
+            } else if (denseMma(layer)) {
+                int denseHidden = config.hiddenDim();
+                int denseTileCount = batchSize / Qwen35MoeBatchKernels.TILE_ROWS;
+                scheduler.addWorkerGrid(prefix + "ffn_rms_apply", rmsApply);
+                scheduler.addWorkerGrid(
+                        prefix + "ffn_x16", halvesWorker(batchSize * config.dim() / 32));
+                scheduler.addWorkerGrid(
+                        prefix + "ffn_h16", halvesWorker(batchSize * denseHidden / 32));
+                scheduler.addWorkerGrid(
+                        prefix + "ffn_gate",
+                        groupedWorker(
+                                weights.w1Layered[layer].dataType(), denseHidden, denseTileCount));
+                scheduler.addWorkerGrid(
+                        prefix + "ffn_up",
+                        groupedWorker(
+                                weights.w3Layered[layer].dataType(), denseHidden, denseTileCount));
+                scheduler.addWorkerGrid(
+                        prefix + "ffn_down",
+                        groupedWorker(
+                                weights.w2Layered[layer].dataType(), config.dim(), denseTileCount));
+                scheduler.addWorkerGrid(
+                        prefix + "ffn_swiglu",
+                        WorkerGridFactory.genericWorker(
+                                ((batchSize * denseHidden + 255) / 256) * 256, 256));
+                scheduler.addWorkerGrid(
+                        prefix + "ffn_residual",
+                        WorkerGridFactory.genericWorker(
+                                ((batchSize * config.dim() + 255) / 256) * 256, 256));
             } else {
                 TornadoTensor w1 = weights.w1Layered[layer];
                 if (projections.fusedGateUp(w1, weights.w3Layered[layer]) && simdgroup) {
