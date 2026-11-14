@@ -7,6 +7,7 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
+import uk.ac.manchester.tornado.api.types.vectors.Float4;
 import uk.ac.manchester.tornado.api.utils.QuantizationUtils;
 
 /**
@@ -628,13 +629,31 @@ public final class TransformerComputeKernelsQ6_K {
                 int raw1 = (ql2Word & 0x0F0F0F0F) | (((qhWord >>> 2) & 0x03030303) << 4);
                 int raw2 = ((ql1Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 4) & 0x03030303) << 4);
                 int raw3 = ((ql2Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 6) & 0x03030303) << 4);
-                for (int b = 0; b < 4; b++) {
-                    int shift = 8 * b;
-                    sum0 += (((raw0 >>> shift) & 0xFF) - 32) * x.get(xAt + k + b);
-                    sum1 += (((raw1 >>> shift) & 0xFF) - 32) * x.get(xAt + 32 + k + b);
-                    sum2 += (((raw2 >>> shift) & 0xFF) - 32) * x.get(xAt + 64 + k + b);
-                    sum3 += (((raw3 >>> shift) & 0xFF) - 32) * x.get(xAt + 96 + k + b);
-                }
+                // Four activations per load: xAt is a multiple of 8.
+                Float4 x0 = x.getFloat4(xAt + k);
+                Float4 x1 = x.getFloat4(xAt + 32 + k);
+                Float4 x2 = x.getFloat4(xAt + 64 + k);
+                Float4 x3 = x.getFloat4(xAt + 96 + k);
+                sum0 +=
+                        ((raw0 & 0xFF) - 32) * x0.getX()
+                                + (((raw0 >>> 8) & 0xFF) - 32) * x0.getY()
+                                + (((raw0 >>> 16) & 0xFF) - 32) * x0.getZ()
+                                + ((raw0 >>> 24) - 32) * x0.getW();
+                sum1 +=
+                        ((raw1 & 0xFF) - 32) * x1.getX()
+                                + (((raw1 >>> 8) & 0xFF) - 32) * x1.getY()
+                                + (((raw1 >>> 16) & 0xFF) - 32) * x1.getZ()
+                                + ((raw1 >>> 24) - 32) * x1.getW();
+                sum2 +=
+                        ((raw2 & 0xFF) - 32) * x2.getX()
+                                + (((raw2 >>> 8) & 0xFF) - 32) * x2.getY()
+                                + (((raw2 >>> 16) & 0xFF) - 32) * x2.getZ()
+                                + ((raw2 >>> 24) - 32) * x2.getW();
+                sum3 +=
+                        ((raw3 & 0xFF) - 32) * x3.getX()
+                                + (((raw3 >>> 8) & 0xFF) - 32) * x3.getY()
+                                + (((raw3 >>> 16) & 0xFF) - 32) * x3.getZ()
+                                + ((raw3 >>> 24) - 32) * x3.getW();
             }
             sum += dScale0 * sum0 + dScale1 * sum1 + dScale2 * sum2 + dScale3 * sum3;
         }
