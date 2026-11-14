@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.plan.components;
 
+import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.layers.AbstractLogitsTaskGraph;
 import org.beehive.jitllm.backend.tornado.layers.Activation;
 import org.beehive.jitllm.backend.tornado.layers.ActivationTaskGraph;
@@ -18,6 +19,7 @@ import org.beehive.jitllm.inference.state.Lfm2State;
 import org.beehive.jitllm.inference.weights.tornado.Lfm2TornadoWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.lfm2.Lfm2Configuration;
+import org.beehive.jitllm.runtime.backend.BackendId;
 import org.beehive.jitllm.runtime.tensor.DataType;
 
 /**
@@ -63,6 +65,12 @@ public class Lfm2PlanComponents implements BatchPrefillDecodeForwardPlanComponen
             protected boolean simdgroupQ8_0Vocabulary() {
                 // Metal: on CUDA the per-row kernel is the faster of the two.
                 return SchedulerDetectionService.isSubgroupShuffle32Supported();
+            }
+
+            @Override
+            protected boolean warpQ8_0Vocabulary() {
+                // CUDA: one warp per row instead of a workgroup per row.
+                return TornadoDevices.current().backend().equals(BackendId.CUDA);
             }
         };
     }

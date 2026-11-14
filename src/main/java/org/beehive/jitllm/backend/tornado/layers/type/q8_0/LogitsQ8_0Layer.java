@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.layers.type.q8_0;
 
+import org.beehive.jitllm.backend.tornado.kernels.Gemma4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
@@ -185,6 +186,17 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
     private boolean simdgroupVocabularyTaken;
 
     /**
+     * Whether a Q8_0 output projection read in floating point runs one warp per row ({@code
+     * Gemma4Kernels.matrixVectorQ8_0Warp}). Example: LFM2's 128000-row tied output on CUDA.
+     */
+    protected boolean warpQ8_0Vocabulary() {
+        return false;
+    }
+
+    /** Whether {@link #addVocabularyProjection} took the warp kernel; read by the grid. */
+    private boolean warpVocabularyTaken;
+
+    /**
      * The vocabulary projection, by the output tensor's own representation.
      *
      * <p>Visible to subclasses because a family that overrides {@link #setupLogitsTaskGraph} still
@@ -249,7 +261,18 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
         }
         switch (w.dataType()) {
             case Q8_0 -> {
-                if (simdgroupQ8_0Vocabulary()) {
+                if (warpQ8_0Vocabulary()) {
+                    warpVocabularyTaken = true;
+                    logits.task(
+                            "vocab_proj",
+                            Gemma4Kernels::matrixVectorQ8_0Warp,
+                            context,
+                            state.workspace.wrapX,
+                            state.workspace.wrapLogits,
+                            w.asByteArray(),
+                            config.dim(),
+                            config.vocabularySize());
+                } else if (simdgroupQ8_0Vocabulary()) {
                     simdgroupVocabularyTaken = true;
                     logits.task(
                             "vocab_proj",
@@ -370,16 +393,23 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
         int vocabThreads = LogitsWorkgroupPolicy.q8Threads();
         var vocabSizeRowMajor = config.vocabularySize() * vocabThreads;
         WorkerGrid vocabWorker =
-                simdgroupVocabularyTaken
+                warpVocabularyTaken
                         ? WorkerGridFactory.genericWorker(
-                                (config.vocabularySize()
-                                                + TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS
-                                                - 1)
-                                        / TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS
-                                        * 32
-                                        * TransformerComputeKernelsQ4_K.SIMDGROUPS,
-                                32 * TransformerComputeKernelsQ4_K.SIMDGROUPS)
-                        : WorkerGridFactory.genericWorker(vocabSizeRowMajor, vocabThreads);
+                                (config.vocabularySize() + Gemma4Kernels.WARP_ROWS_PER_GROUP - 1)
+                                        / Gemma4Kernels.WARP_ROWS_PER_GROUP
+                                        * 256,
+                                256)
+                        : simdgroupVocabularyTaken
+                                ? WorkerGridFactory.genericWorker(
+                                        (config.vocabularySize()
+                                                        + TransformerComputeKernelsQ4_K
+                                                                .SIMDGROUP_GROUP_ROWS
+                                                        - 1)
+                                                / TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS
+                                                * 32
+                                                * TransformerComputeKernelsQ4_K.SIMDGROUPS,
+                                        32 * TransformerComputeKernelsQ4_K.SIMDGROUPS)
+                                : WorkerGridFactory.genericWorker(vocabSizeRowMajor, vocabThreads);
         tornadoForwardScheduler.addWorkerGrid("logits.vocab_proj", vocabWorker);
         tornadoForwardScheduler.addWorkerGrid("logits.rms_reduce", rmsReduceWorker(logitsRMS));
         if (schedulerType == SchedulerType.NON_NVIDIA) {
