@@ -66,6 +66,13 @@ public final class QuantizedProjections {
     /** Whether Q8_0 projections run the SIMD-group kernel too: LFM2's constructor, on Metal. */
     private final boolean simdgroupQ8_0;
 
+    /**
+     * Whether a Q4_K weight on the floating-point path runs one row per warp ({@code
+     * TransformerComputeKernelsQ4_K.matrixVectorQ4_KWarp}) instead of four per SIMD group: LFM2 on
+     * CUDA, whose narrow projections leave the four-row grid short of warps.
+     */
+    private final boolean warpQ4_K;
+
     /** The grids of the SIMD-group tasks, by {@code graph.task} name; see {@link #addGrids}. */
     private final Map<String, WorkerGrid> grids = new LinkedHashMap<>();
 
@@ -81,6 +88,7 @@ public final class QuantizedProjections {
                 floatLocal,
                 packedLocal,
                 SchedulerDetectionService.isSubgroupShuffle32Supported(),
+                false,
                 false);
     }
 
@@ -96,13 +104,27 @@ public final class QuantizedProjections {
             int floatLocal,
             int packedLocal,
             boolean shuffle32) {
+        this(context, ws, floatLocal, packedLocal, shuffle32, false);
+    }
+
+    /**
+     * @param warpQ4_K see {@link #warpQ4_K}; requires {@code shuffle32}
+     */
+    public QuantizedProjections(
+            KernelContext context,
+            TornadoWorkspace ws,
+            int floatLocal,
+            int packedLocal,
+            boolean shuffle32,
+            boolean warpQ4_K) {
         this(
                 context,
                 ws,
                 floatLocal,
                 packedLocal,
                 shuffle32,
-                shuffle32 && SchedulerDetectionService.isSubgroupShuffle32Supported());
+                shuffle32 && SchedulerDetectionService.isSubgroupShuffle32Supported(),
+                warpQ4_K);
     }
 
     private QuantizedProjections(
@@ -111,13 +133,15 @@ public final class QuantizedProjections {
             int floatLocal,
             int packedLocal,
             boolean shuffle32,
-            boolean simdgroupQ8_0) {
+            boolean simdgroupQ8_0,
+            boolean warpQ4_K) {
         this.context = context;
         this.ws = ws;
         this.floatLocal = floatLocal;
         this.packedLocal = packedLocal;
         this.shuffle32 = shuffle32;
         this.simdgroupQ8_0 = simdgroupQ8_0;
+        this.warpQ4_K = warpQ4_K;
     }
 
     /** Whether {@code w} runs the SIMD-group Q8_0 kernels on the floating-point path. */
@@ -182,6 +206,17 @@ public final class QuantizedProjections {
                 (rows + TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS - 1)
                         / TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS;
         int threads = 32 * TransformerComputeKernelsQ4_K.SIMDGROUPS;
+        grids.put(
+                graph.getTaskGraphName() + "." + name,
+                WorkerGridFactory.genericWorker(groups * threads, threads));
+    }
+
+    /** Records the grid of the one-row-per-warp Q4_K task {@code name} of {@code graph}. */
+    private void warpGrid(TaskGraph graph, String name, int rows) {
+        int groups =
+                (rows + TransformerComputeKernelsQ4_K.WARP_GROUP_ROWS - 1)
+                        / TransformerComputeKernelsQ4_K.WARP_GROUP_ROWS;
+        int threads = 32 * TransformerComputeKernelsQ4_K.WARP_GROUP_ROWS;
         grids.put(
                 graph.getTaskGraphName() + "." + name,
                 WorkerGridFactory.genericWorker(groups * threads, threads));
@@ -327,6 +362,19 @@ public final class QuantizedProjections {
             simdgroupGrid(graph, name, d);
             return;
         }
+        if (simdgroup(w) && warpQ4_K) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsQ4_K::matrixVectorQ4_KWarp,
+                    context,
+                    x,
+                    out,
+                    bytes(w),
+                    n,
+                    d);
+            warpGrid(graph, name, d);
+            return;
+        }
         if (simdgroup(w)) {
             graph.task(
                     name,
@@ -404,6 +452,19 @@ public final class QuantizedProjections {
                     n,
                     d);
             simdgroupGrid(graph, name, d);
+            return;
+        }
+        if (simdgroup(w) && warpQ4_K) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsQ4_K::matrixVectorWithResidualQ4_KWarp,
+                    context,
+                    x,
+                    ws.wrapX,
+                    bytes(w),
+                    n,
+                    d);
+            warpGrid(graph, name, d);
             return;
         }
         if (simdgroup(w)) {

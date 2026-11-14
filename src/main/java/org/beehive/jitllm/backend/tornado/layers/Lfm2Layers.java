@@ -111,7 +111,13 @@ public class Lfm2Layers
         this.lfm2State = state;
         this.activationGraphName = activationGraphName;
         this.projections =
-                new QuantizedProjections(context, state.workspace, MATVEC_LOCAL, 0, shuffle32());
+                new QuantizedProjections(
+                        context,
+                        state.workspace,
+                        MATVEC_LOCAL,
+                        0,
+                        shuffle32(),
+                        TornadoDevices.current().backend().equals(BackendId.CUDA));
         setupFFNLayers();
     }
 

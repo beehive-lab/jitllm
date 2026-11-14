@@ -1941,6 +1941,299 @@ public final class TransformerComputeKernelsQ4_K {
         }
     }
 
+    /** Rows per workgroup of {@link #matrixVectorQ4_KWarp}: one warp each. */
+    public static final int WARP_GROUP_ROWS = 4;
+
+    /**
+     * {@code output[row] = w[row]·x}: {@link #matrixVectorQ4_KSimdgroup} with one row per warp
+     * instead of four (CUDA), so four times the warps, for a narrow projection whose four-row grid
+     * leaves most of the device idle. Example: LFM2-8B-A1B's 512-row key and value projections, 128
+     * warps in the four-row form. The same lane work per row. Launch {@link #WARP_GROUP_ROWS} rows
+     * per workgroup of {@code 32 * WARP_GROUP_ROWS} threads.
+     */
+    public static void matrixVectorQ4_KWarp(
+            KernelContext context, FloatArray x, FloatArray out, ByteArray w, int n, int d) {
+        int lane = context.localIdx & 31;
+        int row = context.groupIdx * WARP_GROUP_ROWS + (context.localIdx >> 5);
+        if (row >= d) {
+            return;
+        }
+        int blocks = n / QK_K;
+        int rowBytes = blocks * BLOCK_BYTES;
+        int ix = lane >> 3;
+        int iq = (lane & 7) >> 2;
+        int ir = lane & 3;
+        int shift = 16 * iq;
+        float sum = 0.0f;
+        for (int ib = ix; ib < blocks; ib += 4) {
+            int xb = ib * QK_K + 64 * iq + 8 * ir;
+            Float4 xa0 = x.getFloat4(xb + 0);
+            Float4 xa1 = x.getFloat4(xb + 4);
+            Float4 xb0 = x.getFloat4(xb + 32);
+            Float4 xb1 = x.getFloat4(xb + 36);
+            Float4 xc0 = x.getFloat4(xb + 128);
+            Float4 xc1 = x.getFloat4(xb + 132);
+            Float4 xd0 = x.getFloat4(xb + 160);
+            Float4 xd1 = x.getFloat4(xb + 164);
+            float sa =
+                    xa0.getX()
+                            + xa0.getY()
+                            + xa0.getZ()
+                            + xa0.getW()
+                            + xa1.getX()
+                            + xa1.getY()
+                            + xa1.getZ()
+                            + xa1.getW();
+            float sb =
+                    xb0.getX()
+                            + xb0.getY()
+                            + xb0.getZ()
+                            + xb0.getW()
+                            + xb1.getX()
+                            + xb1.getY()
+                            + xb1.getZ()
+                            + xb1.getW();
+            float sc =
+                    xc0.getX()
+                            + xc0.getY()
+                            + xc0.getZ()
+                            + xc0.getW()
+                            + xc1.getX()
+                            + xc1.getY()
+                            + xc1.getZ()
+                            + xc1.getW();
+            float sd =
+                    xd0.getX()
+                            + xd0.getY()
+                            + xd0.getZ()
+                            + xd0.getW()
+                            + xd1.getX()
+                            + xd1.getY()
+                            + xd1.getZ()
+                            + xd1.getW();
+            float ya0 = xa0.getX();
+            float ya1 = xa0.getY() * S1;
+            float ya2 = xa0.getZ() * S2;
+            float ya3 = xa0.getW() * S3;
+            float ya4 = xa1.getX();
+            float ya5 = xa1.getY() * S1;
+            float ya6 = xa1.getZ() * S2;
+            float ya7 = xa1.getW() * S3;
+            float yb0 = xb0.getX();
+            float yb1 = xb0.getY() * S1;
+            float yb2 = xb0.getZ() * S2;
+            float yb3 = xb0.getW() * S3;
+            float yb4 = xb1.getX();
+            float yb5 = xb1.getY() * S1;
+            float yb6 = xb1.getZ() * S2;
+            float yb7 = xb1.getW() * S3;
+            float yc0 = xc0.getX();
+            float yc1 = xc0.getY() * S1;
+            float yc2 = xc0.getZ() * S2;
+            float yc3 = xc0.getW() * S3;
+            float yc4 = xc1.getX();
+            float yc5 = xc1.getY() * S1;
+            float yc6 = xc1.getZ() * S2;
+            float yc7 = xc1.getW() * S3;
+            float yd0 = xd0.getX();
+            float yd1 = xd0.getY() * S1;
+            float yd2 = xd0.getZ() * S2;
+            float yd3 = xd0.getW() * S3;
+            float yd4 = xd1.getX();
+            float yd5 = xd1.getY() * S1;
+            float yd6 = xd1.getZ() * S2;
+            float yd7 = xd1.getW() * S3;
+            sum +=
+                    blockDot(
+                            w,
+                            row * rowBytes + ib * BLOCK_BYTES,
+                            shift,
+                            32 * iq + 8 * ir,
+                            ya0,
+                            ya1,
+                            ya2,
+                            ya3,
+                            ya4,
+                            ya5,
+                            ya6,
+                            ya7,
+                            yb0,
+                            yb1,
+                            yb2,
+                            yb3,
+                            yb4,
+                            yb5,
+                            yb6,
+                            yb7,
+                            yc0,
+                            yc1,
+                            yc2,
+                            yc3,
+                            yc4,
+                            yc5,
+                            yc6,
+                            yc7,
+                            yd0,
+                            yd1,
+                            yd2,
+                            yd3,
+                            yd4,
+                            yd5,
+                            yd6,
+                            yd7,
+                            sa,
+                            sb,
+                            sc,
+                            sd);
+        }
+        sum = simdSum(context, sum);
+        if (lane == 0) {
+            store(out, row, d, sum, false);
+        }
+    }
+
+    /** {@code hb[row] += w[row]·x}; see {@link #matrixVectorQ4_KWarp}. */
+    public static void matrixVectorWithResidualQ4_KWarp(
+            KernelContext context, FloatArray x, FloatArray hb, ByteArray w, int n, int d) {
+        int lane = context.localIdx & 31;
+        int row = context.groupIdx * WARP_GROUP_ROWS + (context.localIdx >> 5);
+        if (row >= d) {
+            return;
+        }
+        int blocks = n / QK_K;
+        int rowBytes = blocks * BLOCK_BYTES;
+        int ix = lane >> 3;
+        int iq = (lane & 7) >> 2;
+        int ir = lane & 3;
+        int shift = 16 * iq;
+        float sum = 0.0f;
+        for (int ib = ix; ib < blocks; ib += 4) {
+            int xb = ib * QK_K + 64 * iq + 8 * ir;
+            Float4 xa0 = x.getFloat4(xb + 0);
+            Float4 xa1 = x.getFloat4(xb + 4);
+            Float4 xb0 = x.getFloat4(xb + 32);
+            Float4 xb1 = x.getFloat4(xb + 36);
+            Float4 xc0 = x.getFloat4(xb + 128);
+            Float4 xc1 = x.getFloat4(xb + 132);
+            Float4 xd0 = x.getFloat4(xb + 160);
+            Float4 xd1 = x.getFloat4(xb + 164);
+            float sa =
+                    xa0.getX()
+                            + xa0.getY()
+                            + xa0.getZ()
+                            + xa0.getW()
+                            + xa1.getX()
+                            + xa1.getY()
+                            + xa1.getZ()
+                            + xa1.getW();
+            float sb =
+                    xb0.getX()
+                            + xb0.getY()
+                            + xb0.getZ()
+                            + xb0.getW()
+                            + xb1.getX()
+                            + xb1.getY()
+                            + xb1.getZ()
+                            + xb1.getW();
+            float sc =
+                    xc0.getX()
+                            + xc0.getY()
+                            + xc0.getZ()
+                            + xc0.getW()
+                            + xc1.getX()
+                            + xc1.getY()
+                            + xc1.getZ()
+                            + xc1.getW();
+            float sd =
+                    xd0.getX()
+                            + xd0.getY()
+                            + xd0.getZ()
+                            + xd0.getW()
+                            + xd1.getX()
+                            + xd1.getY()
+                            + xd1.getZ()
+                            + xd1.getW();
+            float ya0 = xa0.getX();
+            float ya1 = xa0.getY() * S1;
+            float ya2 = xa0.getZ() * S2;
+            float ya3 = xa0.getW() * S3;
+            float ya4 = xa1.getX();
+            float ya5 = xa1.getY() * S1;
+            float ya6 = xa1.getZ() * S2;
+            float ya7 = xa1.getW() * S3;
+            float yb0 = xb0.getX();
+            float yb1 = xb0.getY() * S1;
+            float yb2 = xb0.getZ() * S2;
+            float yb3 = xb0.getW() * S3;
+            float yb4 = xb1.getX();
+            float yb5 = xb1.getY() * S1;
+            float yb6 = xb1.getZ() * S2;
+            float yb7 = xb1.getW() * S3;
+            float yc0 = xc0.getX();
+            float yc1 = xc0.getY() * S1;
+            float yc2 = xc0.getZ() * S2;
+            float yc3 = xc0.getW() * S3;
+            float yc4 = xc1.getX();
+            float yc5 = xc1.getY() * S1;
+            float yc6 = xc1.getZ() * S2;
+            float yc7 = xc1.getW() * S3;
+            float yd0 = xd0.getX();
+            float yd1 = xd0.getY() * S1;
+            float yd2 = xd0.getZ() * S2;
+            float yd3 = xd0.getW() * S3;
+            float yd4 = xd1.getX();
+            float yd5 = xd1.getY() * S1;
+            float yd6 = xd1.getZ() * S2;
+            float yd7 = xd1.getW() * S3;
+            sum +=
+                    blockDot(
+                            w,
+                            row * rowBytes + ib * BLOCK_BYTES,
+                            shift,
+                            32 * iq + 8 * ir,
+                            ya0,
+                            ya1,
+                            ya2,
+                            ya3,
+                            ya4,
+                            ya5,
+                            ya6,
+                            ya7,
+                            yb0,
+                            yb1,
+                            yb2,
+                            yb3,
+                            yb4,
+                            yb5,
+                            yb6,
+                            yb7,
+                            yc0,
+                            yc1,
+                            yc2,
+                            yc3,
+                            yc4,
+                            yc5,
+                            yc6,
+                            yc7,
+                            yd0,
+                            yd1,
+                            yd2,
+                            yd3,
+                            yd4,
+                            yd5,
+                            yd6,
+                            yd7,
+                            sa,
+                            sb,
+                            sc,
+                            sd);
+        }
+        sum = simdSum(context, sum);
+        if (lane == 0) {
+            store(hb, row, d, sum, true);
+        }
+    }
+
     /**
      * {@code hb[s·H + r] = silu(gate_e[r]·x) · (up_e[r]·x)} for every selected slot {@code s} and
      * expert row {@code r}, {@code e = selected[s]}, over stacked {@code [experts·H, n]} gate and
