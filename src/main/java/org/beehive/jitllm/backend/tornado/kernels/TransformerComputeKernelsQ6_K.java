@@ -735,6 +735,151 @@ public final class TransformerComputeKernelsQ6_K {
     }
 
     /**
+     * Sub-tiles of {@link #ROW_TILE} rows in one expert tile of {@link
+     * #groupedExpertTiledBatchQ6_K}.
+     */
+    public static final int GROUPED_SUB_TILES = 64 / ROW_TILE;
+
+    // @formatter:off
+    /**
+     * {@link #matrixVectorTiledBatchQ6_K} over one tile of expert rows, for a batched
+     * mixture-of-experts prefill off Metal: {@code tiles} as {@code
+     * Qwen35MoeBatchKernels.groupByExpert} writes it, {@code (expert, first sorted row, rows)},
+     * each cut into {@link #GROUPED_SUB_TILES} sub-tiles of {@link #ROW_TILE} rows. The expert's
+     * {@code d} weight rows are read in place from the stacked tensor; row {@code i} reads input
+     * row {@code sortedToken[first + i]} when {@code gather} is 1, {@code first + i} otherwise, and
+     * writes output row {@code first + i}. Grid: {@code maxTiles * GROUPED_SUB_TILES * ceil(d /
+     * COL_TILE)} workgroups of {@code localWorkGroupSize} lanes.
+     */
+    // @formatter:on
+    public static void groupedExpertTiledBatchQ6_K(
+            KernelContext context,
+            FloatArray xBatch,
+            FloatArray outBatch,
+            ByteArray w,
+            IntArray tiles,
+            IntArray sortedToken,
+            int gather,
+            int n,
+            int d,
+            int localWorkGroupSize) {
+        int colGroups = (d + COL_TILE - 1) / COL_TILE;
+        int groupId = context.groupIdx;
+        int job = groupId / colGroups;
+        int tile = job / GROUPED_SUB_TILES;
+        if (tile >= tiles.get(0)) {
+            return;
+        }
+        int expert = tiles.get(1 + 3 * tile);
+        int sub = job - tile * GROUPED_SUB_TILES;
+        int first = tiles.get(2 + 3 * tile) + sub * ROW_TILE;
+        int activeRows = tiles.get(3 + 3 * tile) - sub * ROW_TILE;
+        int colGroup = groupId - job * colGroups;
+        int firstRow = 0;
+        int firstCol = colGroup * COL_TILE;
+        if (firstRow >= activeRows) {
+            return;
+        }
+        int localId = context.localIdx;
+
+        float[] localSums =
+                context.allocateFloatLocalArray(localWorkGroupSize * ROW_TILE * COL_TILE);
+        int blocksPerRow = (n + QK_K - 1) / QK_K;
+        int subBlocks = n / 32;
+
+        // Zeroed explicitly: a private array in generated device code is uninitialized stack.
+        float[] acc = new float[ROW_TILE * COL_TILE];
+        for (int t = 0; t < ROW_TILE * COL_TILE; t++) {
+            acc[t] = 0.0f;
+        }
+        float[] xs = new float[ROW_TILE];
+
+        int lane = localId & 31;
+        int warp = localId >> 5;
+        int warps = localWorkGroupSize >> 5;
+
+        for (int sb = warp; sb < subBlocks; sb += warps) {
+            int block = sb / 8;
+            int subInBlock = sb - block * 8;
+            int halfIndex = subInBlock >> 2;
+            int groupInHalf = subInBlock & 3;
+            int lowShift = (groupInHalf >> 1) * 4;
+            int highShift = groupInHalf * 2;
+            int j = sb * 32 + lane;
+
+            for (int r = 0; r < ROW_TILE; r++) {
+                int row = firstRow + r;
+                float value = 0.0f;
+                if (row < activeRows) {
+                    value =
+                            xBatch.get(
+                                    (gather != 0 ? sortedToken.get(first + row) : first + row) * n
+                                            + j);
+                }
+                xs[r] = value;
+            }
+
+            for (int c = 0; c < COL_TILE; c++) {
+                int outRow = firstCol + c;
+                if (outRow < d) {
+                    int blockByteOffset =
+                            ((expert * d + outRow) * blocksPerRow + block) * BLOCK_BYTES;
+                    float dScale = halfFromBytes(w, blockByteOffset + D_OFFSET);
+                    int ql =
+                            w.get(blockByteOffset + halfIndex * 64 + (groupInHalf & 1) * 32 + lane)
+                                    & 0xFF;
+                    int qh = w.get(blockByteOffset + QH_OFFSET + halfIndex * 32 + lane) & 0xFF;
+                    int q = (((ql >> lowShift) & 0xF) | (((qh >> highShift) & 3) << 4)) - 32;
+                    int scale =
+                            w.get(
+                                            blockByteOffset
+                                                    + SCALES_OFFSET
+                                                    + halfIndex * 8
+                                                    + (lane >> 4)
+                                                    + groupInHalf * 2)
+                                    & 0xFF;
+                    if (scale > 127) {
+                        scale = scale - 256;
+                    }
+                    float weight = dScale * scale * q;
+                    for (int r = 0; r < ROW_TILE; r++) {
+                        acc[c * ROW_TILE + r] += weight * xs[r];
+                    }
+                }
+            }
+        }
+
+        for (int t = 0; t < ROW_TILE * COL_TILE; t++) {
+            localSums[t * localWorkGroupSize + localId] = acc[t];
+        }
+        context.localBarrier();
+
+        for (int stride = localWorkGroupSize / 2; stride > 0; stride >>= 1) {
+            if (localId < stride) {
+                for (int t = 0; t < ROW_TILE * COL_TILE; t++) {
+                    localSums[t * localWorkGroupSize + localId] +=
+                            localSums[t * localWorkGroupSize + localId + stride];
+                }
+            }
+            context.localBarrier();
+        }
+
+        if (localId == 0) {
+            for (int c = 0; c < COL_TILE; c++) {
+                int outRow = firstCol + c;
+                for (int r = 0; r < ROW_TILE; r++) {
+                    int row = firstRow + r;
+                    int slot = c * ROW_TILE + r;
+                    if (outRow < d && row < activeRows) {
+                        outBatch.set(
+                                (first + row) * d + outRow, localSums[slot * localWorkGroupSize]);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * {@code out[b][row] += w[row]·x[b]} for a tile of rows. See {@link
      * #matrixVectorTiledBatchQ6_K}.
      */
@@ -849,6 +994,119 @@ public final class TransformerComputeKernelsQ6_K {
                     }
                 }
             }
+        }
+    }
+
+    /** Expert rows per workgroup of the {@code expert...Simd32} kernels: one SIMD group each. */
+    public static final int EXPERT_SIMD_ROWS = 4;
+
+    /**
+     * One lane's share of row {@code rowId}'s dot product with {@code x} from {@code xOffset}:
+     * every 32nd unit of {@link #rowDotShared}, for a SIMD group to reduce.
+     */
+    private static float rowPartialSimd(
+            int lane, FloatArray x, int xOffset, ByteArray w, int n, int rowId) {
+        int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
+
+        float partialSum = 0.0f;
+        for (int unit = lane; unit < n / 32; unit += 32) {
+            int half = unit / 4;
+            int posInGroup = (unit - half * 4) * 8;
+            int blockIdx = half / 2;
+            int halfIndex = half - blockIdx * 2;
+            int blockByteOffset = rowByteOffset + blockIdx * BLOCK_BYTES;
+            float d = w.getHalfFloat(blockByteOffset + D_OFFSET).getFloat32();
+
+            int scaleAt = blockByteOffset + SCALES_OFFSET + halfIndex * 8 + posInGroup / 16;
+            float dScale0 = d * signedByte(w, scaleAt);
+            float dScale1 = d * signedByte(w, scaleAt + 2);
+            float dScale2 = d * signedByte(w, scaleAt + 4);
+            float dScale3 = d * signedByte(w, scaleAt + 6);
+
+            int qlAt = blockByteOffset + halfIndex * 64 + posInGroup;
+            int qhAt = blockByteOffset + QH_OFFSET + halfIndex * 32 + posInGroup;
+            int xAt = xOffset + blockIdx * QK_K + halfIndex * 128 + posInGroup;
+            float sum0 = 0.0f;
+            float sum1 = 0.0f;
+            float sum2 = 0.0f;
+            float sum3 = 0.0f;
+            for (int k = 0; k < 8; k += 4) {
+                int ql1Word =
+                        (w.getHalfFloat(qlAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int ql2Word =
+                        (w.getHalfFloat(qlAt + 32 + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + 34 + k).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int qhWord =
+                        (w.getHalfFloat(qhAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qhAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int raw0 = (ql1Word & 0x0F0F0F0F) | ((qhWord & 0x03030303) << 4);
+                int raw1 = (ql2Word & 0x0F0F0F0F) | (((qhWord >>> 2) & 0x03030303) << 4);
+                int raw2 = ((ql1Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 4) & 0x03030303) << 4);
+                int raw3 = ((ql2Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 6) & 0x03030303) << 4);
+                for (int b = 0; b < 4; b++) {
+                    int shift = 8 * b;
+                    sum0 += (((raw0 >>> shift) & 0xFF) - 32) * x.get(xAt + k + b);
+                    sum1 += (((raw1 >>> shift) & 0xFF) - 32) * x.get(xAt + 32 + k + b);
+                    sum2 += (((raw2 >>> shift) & 0xFF) - 32) * x.get(xAt + 64 + k + b);
+                    sum3 += (((raw3 >>> shift) & 0xFF) - 32) * x.get(xAt + 96 + k + b);
+                }
+            }
+            partialSum += dScale0 * sum0 + dScale1 * sum1 + dScale2 * sum2 + dScale3 * sum3;
+        }
+
+        return partialSum;
+    }
+
+    /** The sum over a SIMD group's 32 lanes, in lane 0. */
+    private static float simdSum(KernelContext context, float v) {
+        v += context.simdShuffleDown(v, 16);
+        v += context.simdShuffleDown(v, 8);
+        v += context.simdShuffleDown(v, 4);
+        v += context.simdShuffleDown(v, 2);
+        v += context.simdShuffleDown(v, 1);
+        return v;
+    }
+
+    /**
+     * {@code out[r] += Σ_s weights[s] · (down_e[r] · x[s·H ..])}, {@code e = selected[s]}, over a
+     * stacked {@code [experts·d, H]} down tensor: one SIMD group per output row, the slots summed
+     * in selection order before it reduces; {@link #EXPERT_SIMD_ROWS} rows per workgroup of {@code
+     * 32 * EXPERT_SIMD_ROWS} threads. Example: LFM2.5-24B-A2B, 2048 rows over {@code H = 1536}.
+     */
+    public static void expertDownResidualQ6_KSimd32(
+            KernelContext context,
+            FloatArray x,
+            FloatArray out,
+            ByteArray down,
+            IntArray selected,
+            FloatArray weights,
+            int d,
+            int expertHidden,
+            int used) {
+        int lane = context.localIdx & 31;
+        int r = context.groupIdx * EXPERT_SIMD_ROWS + (context.localIdx >> 5);
+        if (r >= d) {
+            return;
+        }
+        float sum = 0.0f;
+        for (int s = 0; s < used; s++) {
+            sum +=
+                    weights.get(s)
+                            * rowPartialSimd(
+                                    lane,
+                                    x,
+                                    s * expertHidden,
+                                    down,
+                                    expertHidden,
+                                    selected.get(s) * d + r);
+        }
+        sum = simdSum(context, sum);
+        if (lane == 0) {
+            out.set(r, out.get(r) + sum);
         }
     }
 }

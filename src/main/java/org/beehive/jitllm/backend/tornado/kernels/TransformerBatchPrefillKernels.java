@@ -4651,4 +4651,132 @@ public final class TransformerBatchPrefillKernels {
             }
         }
     }
+
+    /** Input rows of a {@link #groupedExpertTiledBatchQ8_0} sub-tile. */
+    public static final int GROUPED_Q8_ROW_TILE = 8;
+
+    /** Output rows of a {@link #groupedExpertTiledBatchQ8_0} workgroup. */
+    public static final int GROUPED_Q8_COL_TILE = 2;
+
+    /** Sub-tiles in one 64-row expert tile of {@link #groupedExpertTiledBatchQ8_0}. */
+    public static final int GROUPED_Q8_SUB_TILES = 64 / GROUPED_Q8_ROW_TILE;
+
+    // @formatter:off
+    /**
+     * {@code TransformerComputeKernelsQ4_K.groupedExpertTiledBatchQ4_K} for Q8_0 experts: the same
+     * tiling, each 32-weight block decoded as its scale times its signed bytes. One tile of expert
+     * rows, for a batched mixture-of-experts prefill off Metal: {@code tiles} as {@code
+     * Qwen35MoeBatchKernels.groupByExpert} writes it, {@code (expert, first sorted row, rows)},
+     * each cut into {@link #GROUPED_Q8_SUB_TILES} sub-tiles of {@link #GROUPED_Q8_ROW_TILE} rows.
+     * The expert's {@code d} weight rows are read in place from the stacked tensor; row {@code i}
+     * reads input row {@code sortedToken[first + i]} when {@code gather} is 1, {@code first + i}
+     * otherwise, and writes output row {@code first + i}. Grid: {@code maxTiles *
+     * GROUPED_Q8_SUB_TILES * ceil(d / GROUPED_Q8_COL_TILE)} workgroups of {@code
+     * localWorkGroupSize} lanes.
+     */
+    // @formatter:on
+    public static void groupedExpertTiledBatchQ8_0(
+            KernelContext context,
+            FloatArray xBatch,
+            FloatArray outBatch,
+            ByteArray w,
+            IntArray tiles,
+            IntArray sortedToken,
+            int gather,
+            int n,
+            int d,
+            int localWorkGroupSize) {
+        int colGroups = (d + GROUPED_Q8_COL_TILE - 1) / GROUPED_Q8_COL_TILE;
+        int groupId = context.groupIdx;
+        int job = groupId / colGroups;
+        int tile = job / GROUPED_Q8_SUB_TILES;
+        if (tile >= tiles.get(0)) {
+            return;
+        }
+        int expert = tiles.get(1 + 3 * tile);
+        int sub = job - tile * GROUPED_Q8_SUB_TILES;
+        int first = tiles.get(2 + 3 * tile) + sub * GROUPED_Q8_ROW_TILE;
+        int activeRows = tiles.get(3 + 3 * tile) - sub * GROUPED_Q8_ROW_TILE;
+        int colGroup = groupId - job * colGroups;
+        int firstRow = 0;
+        int firstCol = colGroup * GROUPED_Q8_COL_TILE;
+        if (firstRow >= activeRows) {
+            return;
+        }
+        int localId = context.localIdx;
+
+        float[] localSums =
+                context.allocateFloatLocalArray(
+                        localWorkGroupSize * GROUPED_Q8_ROW_TILE * GROUPED_Q8_COL_TILE);
+        int blocksPerRow = n / 32;
+
+        // Zeroed explicitly: a private array in generated device code is uninitialized stack.
+        float[] acc = new float[GROUPED_Q8_ROW_TILE * GROUPED_Q8_COL_TILE];
+        for (int t = 0; t < GROUPED_Q8_ROW_TILE * GROUPED_Q8_COL_TILE; t++) {
+            acc[t] = 0.0f;
+        }
+        float[] xs = new float[GROUPED_Q8_ROW_TILE];
+
+        int lane = localId & 31;
+        int warp = localId >> 5;
+        int warps = localWorkGroupSize >> 5;
+
+        for (int sb = warp; sb < blocksPerRow; sb += warps) {
+            int j = sb * 32 + lane;
+
+            for (int r = 0; r < GROUPED_Q8_ROW_TILE; r++) {
+                int row = firstRow + r;
+                float value = 0.0f;
+                if (row < activeRows) {
+                    value =
+                            xBatch.get(
+                                    (gather != 0 ? sortedToken.get(first + row) : first + row) * n
+                                            + j);
+                }
+                xs[r] = value;
+            }
+
+            for (int c = 0; c < GROUPED_Q8_COL_TILE; c++) {
+                int outRow = firstCol + c;
+                if (outRow < d) {
+                    int blockByteOffset = ((expert * d + outRow) * blocksPerRow + sb) * 34;
+                    float weight =
+                            w.getHalfFloat(blockByteOffset).getFloat32()
+                                    * w.get(blockByteOffset + 2 + lane);
+                    for (int r = 0; r < GROUPED_Q8_ROW_TILE; r++) {
+                        acc[c * GROUPED_Q8_ROW_TILE + r] += weight * xs[r];
+                    }
+                }
+            }
+        }
+
+        for (int t = 0; t < GROUPED_Q8_ROW_TILE * GROUPED_Q8_COL_TILE; t++) {
+            localSums[t * localWorkGroupSize + localId] = acc[t];
+        }
+        context.localBarrier();
+
+        for (int stride = localWorkGroupSize / 2; stride > 0; stride >>= 1) {
+            if (localId < stride) {
+                for (int t = 0; t < GROUPED_Q8_ROW_TILE * GROUPED_Q8_COL_TILE; t++) {
+                    localSums[t * localWorkGroupSize + localId] +=
+                            localSums[t * localWorkGroupSize + localId + stride];
+                }
+            }
+            context.localBarrier();
+        }
+
+        if (localId == 0) {
+            for (int c = 0; c < GROUPED_Q8_COL_TILE; c++) {
+                int outRow = firstCol + c;
+                for (int r = 0; r < GROUPED_Q8_ROW_TILE; r++) {
+                    int row = firstRow + r;
+                    int slot = c * GROUPED_Q8_ROW_TILE + r;
+                    if (outRow < d && row < activeRows) {
+                        outBatch.set(
+                                (first + row) * d + outRow, localSums[slot * localWorkGroupSize]);
+                    }
+                }
+            }
+        }
+    }
 }

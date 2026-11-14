@@ -91,6 +91,15 @@ public class UnifiedMemoryWeightsAccelTest {
     }
 
     /**
+     * A mixed model: Q4_K, Q5_K and Q6_K experts, Q8_0 attention, F32 norms and convolution taps,
+     * each read in place. LFM2 keeps an FP32 key/value cache on Metal.
+     */
+    @Test
+    public void lfm2SingleToken() throws Exception {
+        check(Fixture.LFM2_8B_A1B_Q4_K_XL, 1, PROMPT_TOKENS, DataType.F32);
+    }
+
+    /**
      * A plan 512 wide with its narrow family: 40 tokens run on the narrow graphs alone, 600 on a
      * full chunk and then a narrow one. Narrow graphs read the weights in place as their twins do.
      */
@@ -222,6 +231,11 @@ public class UnifiedMemoryWeightsAccelTest {
     }
 
     private static void check(Fixture fixture, int batch, int promptTokens) throws Exception {
+        check(fixture, batch, promptTokens, DataType.F16);
+    }
+
+    private static void check(Fixture fixture, int batch, int promptTokens, DataType keyValue)
+            throws Exception {
         assumeTrue("no TornadoVM device", TupleInfo.acceleratorPresent());
         assumeTrue(
                 "the device does not share memory with the host",
@@ -250,11 +264,11 @@ public class UnifiedMemoryWeightsAccelTest {
             System.setProperty(UnifiedMemoryWeights.PROPERTY, "false");
             var copied =
                     KvPrecisionHarness.run(
-                            model, true, DataType.F16, batch, prompt, DECODE_STEPS, null);
+                            model, true, keyValue, batch, prompt, DECODE_STEPS, null);
             System.setProperty(UnifiedMemoryWeights.PROPERTY, "true");
             var inPlace =
                     KvPrecisionHarness.run(
-                            model, true, DataType.F16, batch, prompt, DECODE_STEPS, null);
+                            model, true, keyValue, batch, prompt, DECODE_STEPS, null);
             assertEquals(copied.executionMode(), inPlace.executionMode());
             assertArrayEquals(fixture + " tokens", copied.tokens(), inPlace.tokens());
             for (int r = 0; r < copied.rows().size(); r++) {

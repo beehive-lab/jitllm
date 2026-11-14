@@ -95,7 +95,8 @@ public class TornadoPlanRegistryTest {
                     "granite",
                     "qwen35",
                     "qwen35moe",
-                    "deepseek2"
+                    "deepseek2",
+                    "lfm2moe"
                 }) {
             assertTrue(
                     architecture
@@ -103,7 +104,7 @@ public class TornadoPlanRegistryTest {
                             + " switches are gone",
                     registered.contains(ArchitectureId.of(architecture)));
         }
-        assertEquals("the matrix has thirteen architectures", 13, registered.size());
+        assertEquals("the matrix has fourteen architectures", 14, registered.size());
     }
 
     /**
@@ -151,6 +152,59 @@ public class TornadoPlanRegistryTest {
                 "admitted on every type its layers read per tensor, as Qwen3",
                 TornadoSupportSets.F16_AND_NATIVE_QUANTIZED,
                 qwen35.supportedDataTypes());
+    }
+
+    /**
+     * {@code lfm2moe} is admitted on the two representations its files report, Q4_K and Q8_0; F16,
+     * BF16 and model-wide Q5_K or Q6_K files are refused by name, not run on kernels never measured
+     * for them.
+     */
+    @Test
+    public void lfm2moeAdmitsQ4KAndQ8Only() {
+        var lfm2 = provider("lfm2moe");
+        assertEquals(Set.of(DataType.Q4_K, DataType.Q8_0), lfm2.supportedDataTypes());
+        assertEquals(Set.of(ExecutionMode.values()), lfm2.supportedModes());
+    }
+
+    /**
+     * {@code lfm2moe}'s native libraries are cuBLAS for the batched prefill's dense projections, on
+     * CUDA only: MLX's prefill reads F16, Q8_0 and Q4_0, not LFM2's K-quants. Its Q8_0 projections
+     * are prepacked only without native libraries, whose cuBLAS projections decode the file's own
+     * blocks.
+     */
+    @Test
+    public void lfm2moeNativeLibrariesAreCublasAndExcludePrepacking() {
+        var lfm2 = provider("lfm2moe");
+        assertEquals(
+                Set.of(DataType.Q4_K),
+                lfm2.nativeLibraryWeights(org.beehive.jitllm.runtime.backend.BackendId.CUDA));
+        assertEquals(
+                Set.of(),
+                lfm2.nativeLibraryWeights(org.beehive.jitllm.runtime.backend.BackendId.METAL));
+        var jit =
+                org.beehive.jitllm.runtime.policy.ExecutionPolicy.builder()
+                        .nativeLibraries(false)
+                        .build();
+        var nativeLibraries =
+                org.beehive.jitllm.runtime.policy.ExecutionPolicy.builder()
+                        .nativeLibraries(true)
+                        .build();
+        assertEquals(Set.of(DataType.Q8_0), lfm2.prepackableTypes(jit));
+        assertEquals(Set.of(), lfm2.prepackableTypes(nativeLibraries));
+    }
+
+    /**
+     * {@code lfm2moe} is not split across devices and has no continuous-batching layers: both are
+     * refused by name (the owner left them unsupported). Its short-convolution windows are
+     * per-session state a shared batched decode would have to carry per slot.
+     */
+    @Test
+    public void lfm2moeRefusesSplitAndContinuousBatching() {
+        var lfm2 = provider("lfm2moe");
+        var policy = org.beehive.jitllm.runtime.policy.ExecutionPolicy.builder().build();
+        assertTrue(
+                lfm2.splitUnsupported(DataType.Q4_K, policy, 2).orElseThrow().contains("lfm2moe"));
+        assertTrue(lfm2.batchDecodeLayers(null, null, null).isEmpty());
     }
 
     private static TornadoPlanProvider provider(String architecture) {

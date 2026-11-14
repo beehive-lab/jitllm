@@ -360,6 +360,15 @@ public interface ChatFormat {
         return List.of();
     }
 
+    /**
+     * What the file's own template writes after the assistant header when no reasoning mode is
+     * asked for, or nothing. Example: LFM2.5-24B-A2B's template opens every reply with {@code
+     * <think>}, so the default turn does too.
+     */
+    default List<Integer> defaultGenerationPrimer() {
+        return List.of();
+    }
+
     record ChatTokens(
             String tStartHeader,
             String tEndHeader,

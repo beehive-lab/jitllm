@@ -11,6 +11,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0Packed;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepacking;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
@@ -44,6 +45,9 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  * kernel exists (Q8_0, Q4_0, Q4_K and Q5_K), and otherwise as two projections into {@code wrapHb}
  * and {@code wrapHb2} and an elementwise SwiGLU, so a layer that splits them needs {@code wrapHb2}
  * bound.
+ *
+ * <p>A Q8_0 weight the plan prepacked ({@link WeightPrepacking}) runs {@code
+ * matrixVectorQ8_0PackedF32}, against the floating-point activation; its gate and up are not fused.
  */
 // @formatter:on
 public final class QuantizedProjections {
@@ -52,6 +56,15 @@ public final class QuantizedProjections {
     private final TornadoWorkspace ws;
     private final int floatLocal;
     private final int packedLocal;
+
+    /**
+     * Whether the device's 32-lane shuffle runs the SIMD-group Q4_K kernels; see {@link
+     * #simdgroup}.
+     */
+    private final boolean shuffle32;
+
+    /** Whether Q8_0 projections run the SIMD-group kernel too: LFM2's constructor, on Metal. */
+    private final boolean simdgroupQ8_0;
 
     /** The grids of the SIMD-group tasks, by {@code graph.task} name; see {@link #addGrids}. */
     private final Map<String, WorkerGrid> grids = new LinkedHashMap<>();
@@ -62,10 +75,54 @@ public final class QuantizedProjections {
      */
     public QuantizedProjections(
             KernelContext context, TornadoWorkspace ws, int floatLocal, int packedLocal) {
+        this(
+                context,
+                ws,
+                floatLocal,
+                packedLocal,
+                SchedulerDetectionService.isSubgroupShuffle32Supported(),
+                false);
+    }
+
+    /**
+     * @param shuffle32 whether the SIMD-group Q4_K kernels run: a device whose 32-lane shuffle the
+     *     family has verified. Example: LFM2 on CUDA, whose warp shuffle its own expert kernels
+     *     already reduce with. Q8_0 takes the SIMD-group kernel on Metal only: on CUDA the per-row
+     *     kernel is faster (LFM2.5-24B-A2B tg128 198.7 against 196.7 tok/s).
+     */
+    public QuantizedProjections(
+            KernelContext context,
+            TornadoWorkspace ws,
+            int floatLocal,
+            int packedLocal,
+            boolean shuffle32) {
+        this(
+                context,
+                ws,
+                floatLocal,
+                packedLocal,
+                shuffle32,
+                shuffle32 && SchedulerDetectionService.isSubgroupShuffle32Supported());
+    }
+
+    private QuantizedProjections(
+            KernelContext context,
+            TornadoWorkspace ws,
+            int floatLocal,
+            int packedLocal,
+            boolean shuffle32,
+            boolean simdgroupQ8_0) {
         this.context = context;
         this.ws = ws;
         this.floatLocal = floatLocal;
         this.packedLocal = packedLocal;
+        this.shuffle32 = shuffle32;
+        this.simdgroupQ8_0 = simdgroupQ8_0;
+    }
+
+    /** Whether {@code w} runs the SIMD-group Q8_0 kernels on the floating-point path. */
+    private boolean simdgroupQ8_0(TornadoTensor w) {
+        return simdgroupQ8_0 && !packed() && w.dataType() == DataType.Q8_0 && !prepacked(w);
     }
 
     /**
@@ -78,12 +135,45 @@ public final class QuantizedProjections {
 
     /**
      * Whether {@code w} runs the SIMD-group Q4_K kernels, four output rows per SIMD group: a Q4_K
-     * weight on the floating-point path, on a device with a verified 32-lane shuffle (Metal).
+     * weight on the floating-point path, on a device with a verified 32-lane shuffle.
      */
     private boolean simdgroup(TornadoTensor w) {
-        return !packed()
-                && w.dataType() == DataType.Q4_K
-                && SchedulerDetectionService.isSubgroupShuffle32Supported();
+        return !packed() && w.dataType() == DataType.Q4_K && shuffle32;
+    }
+
+    /** Whether the plan prepacked {@code w}, a Q8_0 projection. */
+    private boolean prepacked(TornadoTensor w) {
+        return ws.prepacking != null && ws.prepacking.prepackedQ8(w);
+    }
+
+    /**
+     * {@code out (+)= w·x} for a prepacked {@code w}, eight rows to a workgroup; its grid is
+     * recorded for {@link #addGrids}.
+     */
+    private void prepackedMatvec(
+            TaskGraph graph,
+            String name,
+            FloatArray x,
+            FloatArray out,
+            TornadoTensor w,
+            int n,
+            int d,
+            boolean residual) {
+        graph.task(
+                name,
+                TransformerComputeKernelsQ8_0Packed::matrixVectorQ8_0PackedF32,
+                context,
+                x,
+                out,
+                w.asByteArray(),
+                n,
+                d,
+                residual ? 1 : 0);
+        grids.put(
+                graph.getTaskGraphName() + "." + name,
+                WorkerGridFactory.genericWorker(
+                        d / 8 * TransformerComputeKernelsQ8_0Packed.LOCAL,
+                        TransformerComputeKernelsQ8_0Packed.LOCAL));
     }
 
     /** Records the grid of the SIMD-group task {@code name} of {@code graph}, over {@code rows}. */
@@ -140,7 +230,9 @@ public final class QuantizedProjections {
     public void matvec(
             TaskGraph graph, String name, FloatArray out, TornadoTensor w, int n, int d) {
         DataType type = w.dataType();
-        if (type == DataType.F16) {
+        if (prepacked(w)) {
+            prepackedMatvec(graph, name, ws.wrapXb, out, w, n, d, false);
+        } else if (type == DataType.F16) {
             // F16 has no packed kernel; the packed RMS apply writes wrapXb as well. The lanes per
             // row are the grid's (worker).
             graph.task(
@@ -205,6 +297,10 @@ public final class QuantizedProjections {
             TornadoTensor w,
             int n,
             int d) {
+        if (prepacked(w)) {
+            prepackedMatvec(graph, name, x, out, w, n, d, false);
+            return;
+        }
         if (w.dataType() == DataType.F16) {
             graph.task(
                     name,
@@ -216,6 +312,19 @@ public final class QuantizedProjections {
                     n,
                     d,
                     floatLocal);
+            return;
+        }
+        if (simdgroupQ8_0(w)) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsLayered::matrixVectorQ8_0Simdgroup,
+                    context,
+                    x,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d);
+            simdgroupGrid(graph, name, d);
             return;
         }
         if (simdgroup(w)) {
@@ -266,6 +375,10 @@ public final class QuantizedProjections {
             int n,
             int d) {
         DataType type = w.dataType();
+        if (prepacked(w)) {
+            prepackedMatvec(graph, name, x, ws.wrapX, w, n, d, true);
+            return;
+        }
         if (type == DataType.F16) {
             // F16 has no packed kernel, so x is read as it is and not quantized.
             graph.task(
@@ -278,6 +391,19 @@ public final class QuantizedProjections {
                     n,
                     d,
                     packed() ? packedLocal : floatLocal);
+            return;
+        }
+        if (simdgroupQ8_0(w)) {
+            graph.task(
+                    name,
+                    TransformerComputeKernelsLayered::matrixVectorWithResidualQ8_0Simdgroup,
+                    context,
+                    x,
+                    ws.wrapX,
+                    w.asByteArray(),
+                    n,
+                    d);
+            simdgroupGrid(graph, name, d);
             return;
         }
         if (simdgroup(w)) {
@@ -385,7 +511,9 @@ public final class QuantizedProjections {
      */
     public boolean fusedGateUp(TornadoTensor w1, TornadoTensor w3) {
         DataType type = w1.dataType();
-        return type == w3.dataType()
+        return !prepacked(w1)
+                && !prepacked(w3)
+                && type == w3.dataType()
                 && (type == DataType.Q8_0
                         || type == DataType.Q4_0
                         || type == DataType.Q4_K
