@@ -520,6 +520,45 @@ public class Lfm2KernelAccelTest {
         }
     }
 
+    /**
+     * {@code Lfm2Kernels.routerLogitsWarps}, the F32 router CUDA takes, over an odd row count so
+     * the last workgroup holds a row past the router.
+     */
+    @Test
+    public void routerLogitsWarpsMatchTheHost() {
+        int rows = 33;
+        float[] x = noise(DIM, 1f);
+        float[] w = noise(rows * DIM, 0.1f);
+        FloatArray logits = new FloatArray(rows);
+        KernelContext context = new KernelContext();
+        FloatArray dx = device(x);
+        FloatArray dw = device(w);
+        TaskGraph graph =
+                new TaskGraph("router")
+                        .transferToDevice(DataTransferMode.FIRST_EXECUTION, context, dx, dw)
+                        .task(
+                                "logits",
+                                Lfm2Kernels::routerLogitsWarps,
+                                context,
+                                dx,
+                                logits,
+                                dw,
+                                DIM,
+                                rows)
+                        .transferToHost(DataTransferMode.EVERY_EXECUTION, logits);
+        GridScheduler scheduler = new GridScheduler();
+        int groups = (rows + Lfm2Kernels.ROUTER_ROWS - 1) / Lfm2Kernels.ROUTER_ROWS;
+        scheduler.addWorkerGrid("router.logits", grid(groups * 256, 256));
+        run(graph, scheduler);
+        for (int r = 0; r < rows; r++) {
+            double expected = 0;
+            for (int i = 0; i < DIM; i++) {
+                expected += (double) w[r * DIM + i] * x[i];
+            }
+            assertEquals("logit " + r, expected, logits.get(r), 1e-4);
+        }
+    }
+
     @Test
     public void routerSelectionMatchesTheHost() {
         assertRouterMatchesHost(noise(64, 2f), noise(64, 0.5f), false);

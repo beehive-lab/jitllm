@@ -124,6 +124,48 @@ public final class Lfm2Kernels {
     /** Experts {@link #selectExpertsSigmoidSimdgroup} holds in threadgroup memory. */
     public static final int MAX_EXPERTS = 256;
 
+    /** Router rows per workgroup of {@link #routerLogitsWarps}: four warps each. */
+    public static final int ROUTER_ROWS = 2;
+
+    /**
+     * {@code logits[e] = w[e] · x} over the F32 router, four warps per row: warp {@code q} sums
+     * quarter {@code q} of the row, lane-strided, and the quarters are added in order. Example:
+     * LFM2.5-24B-A2B's 64 experts over 2048, 32 workgroups. Launch {@code rows / ROUTER_ROWS}
+     * workgroups of 256 threads; {@code n % 128 == 0}.
+     */
+    public static void routerLogitsWarps(
+            KernelContext context, FloatArray x, FloatArray logits, FloatArray w, int n, int rows) {
+        float[] partial = context.allocateFloatLocalArray(8);
+        int warp = context.localIdx >> 5;
+        int lane = context.localIdx & 31;
+        int row = context.groupIdx * ROUTER_ROWS + (warp >> 2);
+        int quarter = n >> 2;
+        int start = (warp & 3) * quarter;
+        float sum = 0.0f;
+        if (row < rows) {
+            int base = row * n;
+            for (int i = start + lane; i < start + quarter; i += 32) {
+                sum += w.get(base + i) * x.get(i);
+            }
+        }
+        sum += context.simdShuffleDown(sum, 16);
+        sum += context.simdShuffleDown(sum, 8);
+        sum += context.simdShuffleDown(sum, 4);
+        sum += context.simdShuffleDown(sum, 2);
+        sum += context.simdShuffleDown(sum, 1);
+        if (lane == 0) {
+            partial[warp] = sum;
+        }
+        context.localBarrier();
+        int t = context.localIdx;
+        int r = context.groupIdx * ROUTER_ROWS + t;
+        if (t < ROUTER_ROWS && r < rows) {
+            logits.set(
+                    r,
+                    partial[4 * t] + partial[4 * t + 1] + partial[4 * t + 2] + partial[4 * t + 3]);
+        }
+    }
+
     /**
      * {@link #selectExpertsSigmoid} on one SIMD group: each round takes the largest score across
      * the lanes, then the lowest index among the lanes that hold it, so the same tie rule. Example:

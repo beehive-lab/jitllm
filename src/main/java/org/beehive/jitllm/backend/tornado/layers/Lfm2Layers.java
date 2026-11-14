@@ -207,6 +207,18 @@ public class Lfm2Layers
             if (residual) {
                 throw unsupported(layer, task, role, w.dataType());
             }
+            if (warpRouter()) {
+                graph.task(
+                        task,
+                        Lfm2Kernels::routerLogitsWarps,
+                        context,
+                        x,
+                        out,
+                        w.asFloatArray(),
+                        n,
+                        d);
+                return;
+            }
             graph.task(
                     task,
                     TransformerComputeKernelsLayered::matrixVectorGeneric,
@@ -710,6 +722,14 @@ public class Lfm2Layers
      * device: Metal's grant, and CUDA's warp shuffle, which the packed kernels already reduce with.
      * Not OpenCL, whose backend miscompiles the shuffle.
      */
+    /**
+     * Whether the F32 router runs four warps per row ({@code Lfm2Kernels.routerLogitsWarps}): on
+     * CUDA, where the workgroup-per-row kernel leaves most lanes waiting on its reduction tree.
+     */
+    private boolean warpRouter() {
+        return TornadoDevices.current().backend().equals(BackendId.CUDA) && config.dim() % 128 == 0;
+    }
+
     public static boolean shuffle32() {
         return SchedulerDetectionService.isSubgroupShuffle32Supported()
                 || TornadoDevices.current().backend().equals(BackendId.CUDA);
@@ -1077,7 +1097,15 @@ public class Lfm2Layers
             }
 
             if (config.isMoeLayer(layer)) {
-                scheduler.addWorkerGrid(prefix + "moe_router", matVecWorker(config.expertCount()));
+                scheduler.addWorkerGrid(
+                        prefix + "moe_router",
+                        warpRouter()
+                                ? WorkerGridFactory.genericWorker(
+                                        (config.expertCount() + Lfm2Kernels.ROUTER_ROWS - 1)
+                                                / Lfm2Kernels.ROUTER_ROWS
+                                                * 256,
+                                        256)
+                                : matVecWorker(config.expertCount()));
                 scheduler.addWorkerGrid(prefix + "moe_select", single);
                 int expertRows = config.expertUsedCount() * config.expertHiddenDim();
                 scheduler.addWorkerGrid(
