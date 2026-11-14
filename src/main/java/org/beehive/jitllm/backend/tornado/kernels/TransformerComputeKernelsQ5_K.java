@@ -1343,45 +1343,6 @@ public final class TransformerComputeKernelsQ5_K {
         }
     }
 
-    /**
-     * {@code out[r] += Σ_s weights[s] · (down_e[r] · x[s·H ..])}, {@code e = selected[s]}, over a
-     * stacked {@code [experts·d, H]} down tensor: one SIMD group per output row, the slots summed
-     * in selection order before it reduces; {@link #EXPERT_SIMD_ROWS} rows per workgroup of {@code
-     * 32 * EXPERT_SIMD_ROWS} threads. Example: LFM2.5-24B-A2B, 2048 rows over {@code H = 1536}.
-     */
-    public static void expertDownResidualQ5_KSimd32(
-            KernelContext context,
-            FloatArray x,
-            FloatArray out,
-            ByteArray down,
-            IntArray selected,
-            FloatArray weights,
-            int d,
-            int expertHidden,
-            int used) {
-        int lane = context.localIdx & 31;
-        int r = context.groupIdx * EXPERT_SIMD_ROWS + (context.localIdx >> 5);
-        if (r >= d) {
-            return;
-        }
-        float sum = 0.0f;
-        for (int s = 0; s < used; s++) {
-            sum +=
-                    weights.get(s)
-                            * rowPartialSimd(
-                                    lane,
-                                    x,
-                                    s * expertHidden,
-                                    down,
-                                    expertHidden,
-                                    selected.get(s) * d + r);
-        }
-        sum = simdSum(context, sum);
-        if (lane == 0) {
-            out.set(r, out.get(r) + sum);
-        }
-    }
-
     /** Expert slots a workgroup of {@link #expertDownResidualQ5_KWarpPerSlot} can hold. */
     public static final int MAX_SLOTS = 8;
 

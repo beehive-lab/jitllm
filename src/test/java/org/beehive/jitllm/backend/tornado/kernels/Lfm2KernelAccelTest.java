@@ -139,7 +139,7 @@ public class Lfm2KernelAccelTest {
 
     /** The grid of the down kernel for {@code type}, as {@code Lfm2Layers} sets it. */
     private static WorkerGrid simdDownGrid(DataType type, int rows) {
-        if (type == DataType.Q5_K && Lfm2Layers.warpPerSlotDown()) {
+        if (type == DataType.Q5_K) {
             int groups =
                     (rows + TransformerComputeKernelsQ5_K.SLOT_ROWS - 1)
                             / TransformerComputeKernelsQ5_K.SLOT_ROWS;
@@ -295,11 +295,7 @@ public class Lfm2KernelAccelTest {
                     switch (type) {
                         case Q4_K -> TransformerComputeKernelsQ4_K::expertDownResidualQ4_KSimdgroup;
                         case Q5_K ->
-                                Lfm2Layers.warpPerSlotDown()
-                                        ? TransformerComputeKernelsQ5_K
-                                                ::expertDownResidualQ5_KWarpPerSlot
-                                        : TransformerComputeKernelsQ5_K
-                                                ::expertDownResidualQ5_KSimd32;
+                                TransformerComputeKernelsQ5_K::expertDownResidualQ5_KWarpPerSlot;
                         default -> TransformerComputeKernelsQ6_K::expertDownResidualQ6_KSimd32;
                     },
                     context,

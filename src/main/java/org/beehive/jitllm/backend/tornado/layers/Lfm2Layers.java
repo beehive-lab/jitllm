@@ -637,11 +637,7 @@ public class Lfm2Layers
                     switch (down.dataType()) {
                         case Q4_K -> TransformerComputeKernelsQ4_K::expertDownResidualQ4_KSimdgroup;
                         case Q5_K ->
-                                warpPerSlotDown()
-                                        ? TransformerComputeKernelsQ5_K
-                                                ::expertDownResidualQ5_KWarpPerSlot
-                                        : TransformerComputeKernelsQ5_K
-                                                ::expertDownResidualQ5_KSimd32;
+                                TransformerComputeKernelsQ5_K::expertDownResidualQ5_KWarpPerSlot;
                         default -> TransformerComputeKernelsQ6_K::expertDownResidualQ6_KSimd32;
                     },
                     context,
@@ -1075,15 +1071,6 @@ public class Lfm2Layers
         return scheduler;
     }
 
-    /**
-     * Whether the Q5_K expert down projection runs one warp per expert slot ({@code
-     * expertDownResidualQ5_KWarpPerSlot}): on CUDA, where the kernel with all slots in one warp
-     * leaves too few loads in flight. Metal keeps {@code expertDownResidualQ5_KSimd32}.
-     */
-    public static boolean warpPerSlotDown() {
-        return TornadoDevices.current().backend().equals(BackendId.CUDA);
-    }
-
     /** Whether the router's selection runs on one SIMD group rather than one lane. */
     private boolean simdgroupSelect() {
         return config.expertCount() <= Lfm2Kernels.MAX_EXPERTS && shuffle32();
@@ -1103,7 +1090,7 @@ public class Lfm2Layers
             return WorkerGridFactory.genericWorker(
                     ((rows + groupRows - 1) / groupRows) * threads, threads);
         }
-        if (type == DataType.Q5_K && !gateUp && warpPerSlotDown()) {
+        if (type == DataType.Q5_K && !gateUp) {
             int groups =
                     (rows + TransformerComputeKernelsQ5_K.SLOT_ROWS - 1)
                             / TransformerComputeKernelsQ5_K.SLOT_ROWS;
