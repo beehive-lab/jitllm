@@ -139,7 +139,7 @@ public class Lfm2KernelAccelTest {
 
     /** The grid of the down kernel for {@code type}, as {@code Lfm2Layers} sets it. */
     private static WorkerGrid simdDownGrid(DataType type, int rows) {
-        if (type == DataType.Q5_K) {
+        if (type == DataType.Q5_K || type == DataType.Q4_K) {
             int groups =
                     (rows + TransformerComputeKernelsQ5_K.SLOT_ROWS - 1)
                             / TransformerComputeKernelsQ5_K.SLOT_ROWS;
@@ -293,7 +293,8 @@ public class Lfm2KernelAccelTest {
             graph.task(
                     "down",
                     switch (type) {
-                        case Q4_K -> TransformerComputeKernelsQ4_K::expertDownResidualQ4_KSimdgroup;
+                        case Q4_K ->
+                                TransformerComputeKernelsQ4_K::expertDownResidualQ4_KWarpPerSlot;
                         case Q5_K ->
                                 TransformerComputeKernelsQ5_K::expertDownResidualQ5_KWarpPerSlot;
                         default -> TransformerComputeKernelsQ6_K::expertDownResidualQ6_KSimd32;

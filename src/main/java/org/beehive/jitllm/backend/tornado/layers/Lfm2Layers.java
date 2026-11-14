@@ -666,7 +666,8 @@ public class Lfm2Layers
             layer.task(
                     tp + "moe_down",
                     switch (down.dataType()) {
-                        case Q4_K -> TransformerComputeKernelsQ4_K::expertDownResidualQ4_KSimdgroup;
+                        case Q4_K ->
+                                TransformerComputeKernelsQ4_K::expertDownResidualQ4_KWarpPerSlot;
                         case Q5_K ->
                                 TransformerComputeKernelsQ5_K::expertDownResidualQ5_KWarpPerSlot;
                         default -> TransformerComputeKernelsQ6_K::expertDownResidualQ6_KSimd32;
@@ -1115,17 +1116,17 @@ public class Lfm2Layers
         if (!simdgroupExperts(type, gateUp)) {
             return matVecWorker(rows);
         }
+        if (!gateUp && (type == DataType.Q5_K || type == DataType.Q4_K)) {
+            int groups =
+                    (rows + TransformerComputeKernelsQ5_K.SLOT_ROWS - 1)
+                            / TransformerComputeKernelsQ5_K.SLOT_ROWS;
+            return WorkerGridFactory.genericWorker(groups * 32 * used, 32 * used);
+        }
         if (type == DataType.Q4_K) {
             int groupRows = TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS;
             int threads = 32 * TransformerComputeKernelsQ4_K.SIMDGROUPS;
             return WorkerGridFactory.genericWorker(
                     ((rows + groupRows - 1) / groupRows) * threads, threads);
-        }
-        if (type == DataType.Q5_K && !gateUp) {
-            int groups =
-                    (rows + TransformerComputeKernelsQ5_K.SLOT_ROWS - 1)
-                            / TransformerComputeKernelsQ5_K.SLOT_ROWS;
-            return WorkerGridFactory.genericWorker(groups * 32 * used, 32 * used);
         }
         int groupRows = TransformerComputeKernelsQ5_K.EXPERT_SIMD_ROWS;
         return WorkerGridFactory.genericWorker(

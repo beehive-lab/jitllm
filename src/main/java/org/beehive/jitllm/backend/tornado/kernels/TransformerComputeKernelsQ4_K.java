@@ -2176,14 +2176,18 @@ public final class TransformerComputeKernelsQ4_K {
         }
     }
 
+    /** Expert slots a workgroup of {@link #expertDownResidualQ4_KWarpPerSlot} can hold. */
+    public static final int MAX_SLOTS = 8;
+
     /**
      * {@code out[r] += Σ_s weights[s] · (down_e[r] · x[s·H ..])}, {@code e = selected[s]}, over a
-     * stacked {@code [experts·d, H]} down tensor: {@link #matrixVectorQ4_KSimdgroup}'s scheme per
-     * slot, the slots summed in selection order before the SIMD group reduces. Example:
-     * LFM2-8B-A1B, 2048 output rows over {@code H = 1792}. Launch as {@link
-     * #matrixVectorQ4_KSimdgroup} over {@code d} rows.
+     * stacked {@code [experts·d, H]} down tensor, in {@link #matrixVectorQ4_KSimdgroup}'s scheme: a
+     * workgroup of {@code used} SIMD groups for {@link #SIMDGROUP_ROWS} rows, SIMD group {@code s}
+     * taking slot {@code s}, and the weighted slots added in selection order. Example: LFM2-8B-A1B,
+     * 512 workgroups of 4 SIMD groups, 2048 rows over {@code H = 1792}. Launch {@code d /
+     * SIMDGROUP_ROWS} workgroups of {@code 32 * used} threads, {@code used <= MAX_SLOTS}.
      */
-    public static void expertDownResidualQ4_KSimdgroup(
+    public static void expertDownResidualQ4_KWarpPerSlot(
             KernelContext context,
             FloatArray x,
             FloatArray out,
@@ -2193,11 +2197,10 @@ public final class TransformerComputeKernelsQ4_K {
             int d,
             int expertHidden,
             int used) {
+        float[] partial = context.allocateFloatLocalArray(MAX_SLOTS * SIMDGROUP_ROWS);
         int lane = context.localIdx & 31;
-        int row0 = (context.groupIdx * SIMDGROUPS + (context.localIdx >> 5)) * SIMDGROUP_ROWS;
-        if (row0 >= d) {
-            return;
-        }
+        int slot = context.localIdx >> 5;
+        int row0 = context.groupIdx * SIMDGROUP_ROWS;
         int blocks = expertHidden / QK_K;
         int rowBytes = blocks * BLOCK_BYTES;
         int ix = lane >> 3;
@@ -2208,7 +2211,8 @@ public final class TransformerComputeKernelsQ4_K {
         float sum1 = 0.0f;
         float sum2 = 0.0f;
         float sum3 = 0.0f;
-        for (int s = 0; s < used; s++) {
+        {
+            int s = slot;
             int wrow0 = selected.get(s) * d + row0;
             int xo = s * expertHidden;
             float weight = weights.get(s);
@@ -2360,10 +2364,19 @@ public final class TransformerComputeKernelsQ4_K {
         sum2 = simdSum(context, sum2);
         sum3 = simdSum(context, sum3);
         if (lane == 0) {
-            store(out, row0, d, sum0, true);
-            store(out, row0 + 1, d, sum1, true);
-            store(out, row0 + 2, d, sum2, true);
-            store(out, row0 + 3, d, sum3, true);
+            partial[slot * SIMDGROUP_ROWS] = sum0;
+            partial[slot * SIMDGROUP_ROWS + 1] = sum1;
+            partial[slot * SIMDGROUP_ROWS + 2] = sum2;
+            partial[slot * SIMDGROUP_ROWS + 3] = sum3;
+        }
+        context.localBarrier();
+        int t = context.localIdx;
+        if (t < SIMDGROUP_ROWS && row0 + t < d) {
+            float total = 0.0f;
+            for (int i = 0; i < used; i++) {
+                total += partial[i * SIMDGROUP_ROWS + t];
+            }
+            out.set(row0 + t, out.get(row0 + t) + total);
         }
     }
 
