@@ -228,18 +228,41 @@ public class Lfm2Layers
 
     @Override
     protected TaskGraph createFFNLayerTaskGraph(int layerIndex) {
-        TaskGraph layer = new TaskGraph(GraphNames.layer(layerIndex));
-        String predecessor =
-                layerIndex == 0 ? activationGraphName : GraphNames.layer(layerIndex - 1);
-        layer.consumeFromDevice(predecessor, lfm2State.workspace.wrapX);
-        configureLayerDataTransfers(layer, layerIndex);
+        return appendFFNLayer(null, layerIndex);
+    }
+
+    /**
+     * Decode layers per graph. Every graph submission ends in a device wait: on CUDA about 19 µs of
+     * idle GPU between two layer graphs, 40 of them per LFM2.5-24B-A2B token at one layer per
+     * graph.
+     */
+    static final int LAYERS_PER_GRAPH = 8;
+
+    @Override
+    protected int layersPerGraph() {
+        return LAYERS_PER_GRAPH;
+    }
+
+    /** The task-name prefix of the layer being built; see {@link #layerTaskPrefix}. */
+    private String tp = "";
+
+    @Override
+    protected TaskGraph appendFFNLayer(TaskGraph existing, int layerIndex) {
+        TaskGraph layer = existing != null ? existing : new TaskGraph(layerGraphName(layerIndex));
+        tp = layerTaskPrefix(layerIndex);
+        if (opensGraph(layerIndex)) {
+            String predecessor =
+                    layerIndex == firstLayer ? activationGraphName : layerGraphName(layerIndex - 1);
+            layer.consumeFromDevice(predecessor, lfm2State.workspace.wrapX);
+            configureLayerDataTransfers(layer, layerIndex);
+        }
         transferLayerWeights(layer, layerIndex);
 
         normalize(
                 layer,
-                "attn_rms_reduce",
-                "attn_rms_finalize",
-                "attn_rms_apply",
+                tp + "attn_rms_reduce",
+                tp + "attn_rms_finalize",
+                tp + "attn_rms_apply",
                 lfm2State.workspace.temp,
                 require(weights.rms_att_weightLayered, layerIndex, "attn_norm"));
 
@@ -251,9 +274,9 @@ public class Lfm2Layers
 
         normalize(
                 layer,
-                "ffn_rms_reduce",
-                "ffn_rms_finalize",
-                "ffn_rms_apply",
+                tp + "ffn_rms_reduce",
+                tp + "ffn_rms_finalize",
+                tp + "ffn_rms_apply",
                 lfm2State.workspace.tempFFN,
                 require(weights.rms_ffn_weightLayered, layerIndex, "ffn_norm"));
 
@@ -263,12 +286,20 @@ public class Lfm2Layers
             denseFeedForward(layer, layerIndex);
         }
 
-        layer.persistOnDevice(
-                lfm2State.workspace.wrapX,
-                keyStore(),
-                valueStore(),
-                lfm2State.workspace.wrapConvState);
+        if (closesGraph(layerIndex)) {
+            layer.persistOnDevice(
+                    lfm2State.workspace.wrapX,
+                    keyStore(),
+                    valueStore(),
+                    lfm2State.workspace.wrapConvState);
+        }
         return layer;
+    }
+
+    /** Whether {@code layerIndex} is the last layer of its graph. */
+    private boolean closesGraph(int layerIndex) {
+        return (layerIndex - firstLayer) % layersPerGraph() == layersPerGraph() - 1
+                || layerIndex == config.numberOfLayers() - 1;
     }
 
     /** {@code xb = weight ⊙ rms(x)}: the reduction, its finalize where needed, and the apply. */
@@ -332,7 +363,7 @@ public class Lfm2Layers
         matVec(
                 layer,
                 layerIndex,
-                "attn_q_proj",
+                tp + "attn_q_proj",
                 "attn_q",
                 require(weights.wqLayered, layerIndex, "attn_q"),
                 ws.wrapXb,
@@ -343,7 +374,7 @@ public class Lfm2Layers
         matVec(
                 layer,
                 layerIndex,
-                "attn_k_proj",
+                tp + "attn_k_proj",
                 "attn_k",
                 require(weights.wkLayered, layerIndex, "attn_k"),
                 ws.wrapXb,
@@ -354,7 +385,7 @@ public class Lfm2Layers
         matVec(
                 layer,
                 layerIndex,
-                "attn_v_proj",
+                tp + "attn_v_proj",
                 "attn_v",
                 require(weights.wvLayered, layerIndex, "attn_v"),
                 ws.wrapXb,
@@ -364,7 +395,7 @@ public class Lfm2Layers
                 false);
 
         layer.task(
-                "attn_qk_norm",
+                tp + "attn_qk_norm",
                 Qwen3Kernels::fusedQKRmsNorm,
                 context,
                 ws.wrapQ,
@@ -380,7 +411,7 @@ public class Lfm2Layers
         // NEOX rotation over the whole head: the partial-rotation kernel with the rotary width
         // equal to the head's.
         layer.task(
-                "attn_rope",
+                tp + "attn_rope",
                 Qwen35AttentionKernels::ropeNeoxPartial,
                 context,
                 ws.positionHolder,
@@ -398,7 +429,7 @@ public class Lfm2Layers
         int kvLayer = config.keyValueLayerIndex(layerIndex);
         if (fp16Kv()) {
             layer.task(
-                    "attn_kv_append",
+                    tp + "attn_kv_append",
                     Qwen35AttentionKernels::appendKeyValueFP16Paged,
                     context,
                     ws.positionHolder,
@@ -415,7 +446,7 @@ public class Lfm2Layers
                 // Flash-decoding: each head's positions across several workgroups of whole
                 // warps, merged by a combine pass, so a long context keeps the device busy.
                 layer.task(
-                        "attention",
+                        tp + "attention",
                         LaneAttentionPolicy.kernel(headDim),
                         context,
                         ws.wrapQ,
@@ -433,7 +464,7 @@ public class Lfm2Layers
                         lfm2State.kvBlockStride,
                         attentionSplits());
                 layer.task(
-                        "attention_combine",
+                        tp + "attention_combine",
                         TransformerComputeKernelsLayered::combineSplitKVAttention,
                         context,
                         ws.wrapAttSplit,
@@ -443,7 +474,7 @@ public class Lfm2Layers
                         attentionSplits());
             } else {
                 layer.task(
-                        "attention",
+                        tp + "attention",
                         TransformerPagedKvKernels::processHeadsFlashAttentionFP16Paged,
                         context,
                         ws.wrapQ,
@@ -462,7 +493,7 @@ public class Lfm2Layers
             }
         } else {
             layer.task(
-                    "attn_kv_append",
+                    tp + "attn_kv_append",
                     Qwen35AttentionKernels::appendKeyValuePaged,
                     context,
                     ws.positionHolder,
@@ -476,7 +507,7 @@ public class Lfm2Layers
                     lfm2State.kvBlockCfg,
                     lfm2State.kvBlockStride);
             layer.task(
-                    "attention",
+                    tp + "attention",
                     TransformerPagedKvKernels::processHeadsFlashAttentionPaged,
                     context,
                     ws.wrapQ,
@@ -497,7 +528,7 @@ public class Lfm2Layers
         matVec(
                 layer,
                 layerIndex,
-                "attn_output_proj",
+                tp + "attn_output_proj",
                 "attn_output",
                 require(weights.woLayered, layerIndex, "attn_output"),
                 ws.wrapXb,
@@ -516,7 +547,7 @@ public class Lfm2Layers
         matVec(
                 layer,
                 layerIndex,
-                "conv_in_proj",
+                tp + "conv_in_proj",
                 "shortconv.in_proj",
                 require(weights.convInProj, layerIndex, "shortconv.in_proj"),
                 ws.wrapXb,
@@ -525,7 +556,7 @@ public class Lfm2Layers
                 config.shortConvProjectionDim(),
                 false);
         layer.task(
-                "conv",
+                tp + "conv",
                 Lfm2Kernels::shortConv,
                 context,
                 ws.wrapSsmQkv,
@@ -538,7 +569,7 @@ public class Lfm2Layers
         matVec(
                 layer,
                 layerIndex,
-                "conv_out_proj",
+                tp + "conv_out_proj",
                 "shortconv.out_proj",
                 require(weights.convOutProj, layerIndex, "shortconv.out_proj"),
                 ws.wrapSsmConvOut,
@@ -554,11 +585,11 @@ public class Lfm2Layers
         TornadoTensor gate = require(weights.w1Layered, layerIndex, "ffn_gate");
         TornadoTensor up = require(weights.w3Layered, layerIndex, "ffn_up");
         requireWholeBlocks(layerIndex, "ffn_gate", gate.dataType(), config.dim());
-        projections.gateUp(layer, "ffn_gate_up", gate, up, config.dim(), config.hiddenDim());
+        projections.gateUp(layer, tp + "ffn_gate_up", gate, up, config.dim(), config.hiddenDim());
         matVec(
                 layer,
                 layerIndex,
-                "ffn_down_proj",
+                tp + "ffn_down_proj",
                 "ffn_down",
                 require(weights.w2Layered, layerIndex, "ffn_down"),
                 ws.wrapHb,
@@ -581,7 +612,7 @@ public class Lfm2Layers
         matVec(
                 layer,
                 layerIndex,
-                "moe_router",
+                tp + "moe_router",
                 "ffn_gate_inp",
                 require(weights.ffnGateInp, layerIndex, "ffn_gate_inp"),
                 ws.wrapXb,
@@ -590,7 +621,7 @@ public class Lfm2Layers
                 config.expertCount(),
                 false);
         layer.task(
-                "moe_select",
+                tp + "moe_select",
                 simdgroupSelect()
                         ? Lfm2Kernels::selectExpertsSigmoidSimdgroup
                         : Lfm2Kernels::selectExpertsSigmoid,
@@ -615,7 +646,7 @@ public class Lfm2Layers
 
         if (simdgroupExperts(gate.dataType(), true)) {
             layer.task(
-                    "moe_gate_up",
+                    tp + "moe_gate_up",
                     gate.dataType() == DataType.Q4_K
                             ? TransformerComputeKernelsQ4_K::expertGateUpSiLUQ4_KSimdgroup
                             : TransformerComputeKernelsQ5_K::expertGateUpSiLUQ5_KSimd32,
@@ -633,7 +664,7 @@ public class Lfm2Layers
         }
         if (simdgroupExperts(down.dataType(), false)) {
             layer.task(
-                    "moe_down",
+                    tp + "moe_down",
                     switch (down.dataType()) {
                         case Q4_K -> TransformerComputeKernelsQ4_K::expertDownResidualQ4_KSimdgroup;
                         case Q5_K ->
@@ -687,7 +718,7 @@ public class Lfm2Layers
         switch (gate.dataType()) {
             case Q4_K ->
                     layer.task(
-                            "moe_gate_up",
+                            tp + "moe_gate_up",
                             Lfm2Kernels::expertGateUpSiLUQ4_K,
                             context,
                             ws.wrapXb,
@@ -701,7 +732,7 @@ public class Lfm2Layers
                             MATVEC_LOCAL);
             case Q5_K ->
                     layer.task(
-                            "moe_gate_up",
+                            tp + "moe_gate_up",
                             Lfm2Kernels::expertGateUpSiLUQ5_K,
                             context,
                             ws.wrapXb,
@@ -715,7 +746,7 @@ public class Lfm2Layers
                             MATVEC_LOCAL);
             case Q6_K ->
                     layer.task(
-                            "moe_gate_up",
+                            tp + "moe_gate_up",
                             Lfm2Kernels::expertGateUpSiLUQ6_K,
                             context,
                             ws.wrapXb,
@@ -729,7 +760,7 @@ public class Lfm2Layers
                             MATVEC_LOCAL);
             case Q8_0 ->
                     layer.task(
-                            "moe_gate_up",
+                            tp + "moe_gate_up",
                             Lfm2Kernels::expertGateUpSiLUQ8_0,
                             context,
                             ws.wrapXb,
@@ -757,7 +788,7 @@ public class Lfm2Layers
         switch (down.dataType()) {
             case Q4_K ->
                     layer.task(
-                            "moe_down",
+                            tp + "moe_down",
                             Lfm2Kernels::expertDownResidualQ4_K,
                             context,
                             ws.wrapHb,
@@ -771,7 +802,7 @@ public class Lfm2Layers
                             MATVEC_LOCAL);
             case Q5_K ->
                     layer.task(
-                            "moe_down",
+                            tp + "moe_down",
                             Lfm2Kernels::expertDownResidualQ5_K,
                             context,
                             ws.wrapHb,
@@ -785,7 +816,7 @@ public class Lfm2Layers
                             MATVEC_LOCAL);
             case Q6_K ->
                     layer.task(
-                            "moe_down",
+                            tp + "moe_down",
                             Lfm2Kernels::expertDownResidualQ6_K,
                             context,
                             ws.wrapHb,
@@ -799,7 +830,7 @@ public class Lfm2Layers
                             MATVEC_LOCAL);
             case Q8_0 ->
                     layer.task(
-                            "moe_down",
+                            tp + "moe_down",
                             Lfm2Kernels::expertDownResidualQ8_0,
                             context,
                             ws.wrapHb,
@@ -950,7 +981,7 @@ public class Lfm2Layers
                     ws.wrapSelectedExperts,
                     ws.wrapSelectedExpertWeights);
         } else {
-            String predecessor = GraphNames.layer(layerIndex - 1);
+            String predecessor = layerGraphName(layerIndex - 1);
             layer.consumeFromDevice(
                     predecessor,
                     context,
@@ -1011,7 +1042,7 @@ public class Lfm2Layers
                         : WorkerGridFactory.genericWorker(1, 1);
 
         for (int layer = 0; layer < config.numberOfLayers(); layer++) {
-            String prefix = GraphNames.layer(layer) + ".";
+            String prefix = layerGraphName(layer) + "." + layerTaskPrefix(layer);
             scheduler.addWorkerGrid(prefix + "attn_rms_reduce", rmsReduce);
             scheduler.addWorkerGrid(prefix + "ffn_rms_reduce", rmsReduce);
             if (shouldUseFinalNormalization()) {
