@@ -18,12 +18,13 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * typical expert's share of a 512-row chunk, so no warp multiplies empty rows: 256 outputs per
  * workgroup, the depth advancing 64 at a time.
  *
- * <p>The weights enter the MMA as their integer codes, which FP16 holds exactly: a code's bits come
- * from a table in shared memory, so no weight is converted to floating point. Each scale group's
- * partial products accumulate in their own fragments and are then scaled in FP32 by the group's
- * scale; for Q4_K and Q5_K the group's minimum is subtracted through the input rows' sums per 32
- * inputs ({@link Lfm2BatchKernels#halvesWithBlockSums}). Example: a Q4_K weight {@code d * sc * q -
- * dmin * m} contributes {@code d * sc * (x . q) - dmin * m * sum(x)} per 32 inputs.
+ * <p>The weights enter the MMA as their integer codes, which FP16 holds exactly: for Q6_K and Q8_0
+ * a code's bits come from a table in shared memory; Q4_K and Q5_K build each warp's B operand in
+ * its own registers ({@code mmaFragmentB}), since a warp is the only reader of its columns. Each
+ * scale group's partial products accumulate in their own fragments and are then scaled in FP32 by
+ * the group's scale; for Q4_K and Q5_K the group's minimum is subtracted through the input rows'
+ * sums per 32 inputs ({@link Lfm2BatchKernels#halvesWithBlockSums}). Example: a Q4_K weight {@code
+ * d * sc * q - dmin * m} contributes {@code d * sc * (x . q) - dmin * m * sum(x)} per 32 inputs.
  */
 // @formatter:on
 public final class GroupedExpertMmaKernels {
@@ -97,15 +98,17 @@ public final class GroupedExpertMmaKernels {
      * Qwen35MoeBatchKernels.groupByExpert} writes it: one workgroup per half of a tile (32 rows)
      * and 256 outputs, eight warps of 32 rows by 32 outputs, the depth advancing 64 at a time, a
      * pair of sub-blocks. Row {@code i} of a half reads FP16 input row {@code sortedToken[first +
-     * i]} when {@code gather} is 1, {@code first + i} otherwise, copied to local memory 16 bytes at
-     * a time; the next step's copy and weight loads are in flight while this step multiplies. The
-     * weights enter the MMA as their integer codes, exact in FP16 (a 32-entry table), and each
-     * scale group's sums are scaled in FP32 by its scale, and the group's minimum subtracted
-     * through {@code blockSums}, the FP16 rows' sums per 32 inputs: the sums of one workgroup per
-     * 64-row tile, in the same order. A half with no rows of its tile returns before its first
-     * barrier. Example: LFM2.5-24B-A2B's gate, 1536 outputs over {@code n = 2048}: six workgroups
-     * per half and 32 steps. Requires {@code n % 256 == 0} and {@code d % 256 == 0}. Grid: {@link
-     * #splitWorkgroups} workgroups of {@link #THREADS} threads.
+     * i]} when {@code gather} is 1, {@code first + i} otherwise, copied to local memory 4 bytes at
+     * a time in the k order the weights take; the next step's copy and weight loads are in flight
+     * while this step multiplies. The weights never reach local memory: lane {@code L} loads the
+     * code words of its own column {@code L / 4} (bytes {@code 4 (L % 4)} and {@code 16 + 4 (L %
+     * 4)} of a sub-block pair), turns each code into its exact half in registers and passes them to
+     * the MMA with {@code mmaFragmentB}. Each scale group's sums are scaled in FP32 by its scale,
+     * and the group's minimum subtracted through {@code blockSums}, the FP16 rows' sums per 32
+     * inputs: the sums of one workgroup per 64-row tile, in the same order. A half with no rows of
+     * its tile returns before its first barrier. Example: LFM2.5-24B-A2B's gate, 1536 outputs over
+     * {@code n = 2048}: six workgroups per half and 32 steps. Requires {@code n % 256 == 0} and
+     * {@code d % 256 == 0}. Grid: {@link #splitWorkgroups} workgroups of {@link #THREADS} threads.
      */
     // @formatter:on
     public static void groupedExpertMmaQ4_K(
@@ -140,14 +143,8 @@ public final class GroupedExpertMmaKernels {
         int first = tiles.get(2 + 3 * tile) + rowStart;
 
         int[] aTile = ctx.allocateIntLocalArray(2 * SPLIT_INPUT_INTS);
-        int[] bTile = ctx.allocateIntLocalArray(SPLIT_DEPTH * SPLIT_OUTPUTS / 2);
         float[] colScale = ctx.allocateFloatLocalArray(2 * SPLIT_OUTPUTS);
         float[] colMin = ctx.allocateFloatLocalArray(2 * SPLIT_OUTPUTS);
-        int[] codes = ctx.allocateIntLocalArray(32);
-        if (tid < 32) {
-            codes[tid] = TransformerBatchPrefillKernels.fp16BitsOf((float) tid);
-        }
-        ctx.localBarrier();
         float[] s00 = ctx.mmaFragment(0.0f);
         float[] s01 = ctx.mmaFragment(0.0f);
         float[] s02 = ctx.mmaFragment(0.0f);
@@ -196,16 +193,14 @@ public final class GroupedExpertMmaKernels {
         int aSrc =
                 sourceRow(sortedToken, gather, first, Math.min(aRow, rows - 1)) * n
                         + aChunk * 16
-                        + aHalf * 8;
+                        + aHalf * 2;
         int aDst = aChunk * 256 + aRow * 8 + aHalf * 4;
         // B: four column pairs per thread, word i of each column's 32 code bytes for the step.
-        int wi = lane & 7;
-        int pairBase = warp * 4 + (lane >> 3);
+        int bCol = warp * 32 + (lane >> 2);
+        int bByte = 4 * (lane & 3);
         int blocksPerRow = n >> 8;
         int rowStride = blocksPerRow * 144;
         int wRow = expert * d + blockCol;
-        int lowChunk = wi >> 2;
-        int kk0 = 4 * (wi & 3);
         // Scales: one column per thread, both sub-blocks of the step.
         int sRow = (wRow + tid) * blocksPerRow;
 
@@ -234,26 +229,29 @@ public final class GroupedExpertMmaKernels {
         int rS1 = 0;
         int rS2 = 0;
         int rPair = 0;
-        ctx.asyncCopyToLocal16(aTile, aDst, input16, aSrc);
+        ctx.asyncCopyToLocal(aTile, aDst, input16, aSrc);
+        ctx.asyncCopyToLocal(aTile, aDst + 1, input16, aSrc + 4);
+        ctx.asyncCopyToLocal(aTile, aDst + 2, input16, aSrc + 8);
+        ctx.asyncCopyToLocal(aTile, aDst + 3, input16, aSrc + 12);
         ctx.asyncCopyCommit();
         {
             int k = 0;
             int pairIndex = (k & 255) >> 6;
             int kBlock = k >> 8;
             rPair = pairIndex;
-            int qOff = kBlock * 144 + 16 + pairIndex * 32 + 4 * wi;
-            int c0 = (wRow + 2 * (pairBase + 0)) * rowStride + qOff;
+            int qOff = kBlock * 144 + 16 + pairIndex * 32 + bByte;
+            int c0 = (wRow + bCol) * rowStride + qOff;
             q0a = w.getInt(c0);
-            q0b = w.getInt(c0 + rowStride);
-            int c1 = (wRow + 2 * (pairBase + 32)) * rowStride + qOff;
+            q0b = w.getInt(c0 + 16);
+            int c1 = c0 + 8 * rowStride;
             q1a = w.getInt(c1);
-            q1b = w.getInt(c1 + rowStride);
-            int c2 = (wRow + 2 * (pairBase + 64)) * rowStride + qOff;
+            q1b = w.getInt(c1 + 16);
+            int c2 = c0 + 16 * rowStride;
             q2a = w.getInt(c2);
-            q2b = w.getInt(c2 + rowStride);
-            int c3 = (wRow + 2 * (pairBase + 96)) * rowStride + qOff;
+            q2b = w.getInt(c2 + 16);
+            int c3 = c0 + 24 * rowStride;
             q3a = w.getInt(c3);
-            q3b = w.getInt(c3 + rowStride);
+            q3b = w.getInt(c3 + 16);
             int sBase = (sRow + kBlock) * 144;
             rHead = w.getInt(sBase);
             rS0 = w.getInt(sBase + 4);
@@ -265,70 +263,15 @@ public final class GroupedExpertMmaKernels {
         for (int step = 0; step < kSteps; step++) {
             int kBase = step << 6;
             int buf = step & 1;
-            {
-                int pairCol = pairBase + 0;
-                int slot = (lowChunk * 32 + (pairCol >> 2)) * 64 + kk0 * 4 + (pairCol & 3);
-                int la = q0a & 0x0F0F0F0F;
-                int lb = q0b & 0x0F0F0F0F;
-                int ha = (q0a >>> 4) & 0x0F0F0F0F;
-                int hb = (q0b >>> 4) & 0x0F0F0F0F;
-                bTile[slot] = codes[la & 0xFF] | (codes[lb & 0xFF] << 16);
-                bTile[slot + 4] = codes[(la >>> 8) & 0xFF] | (codes[(lb >>> 8) & 0xFF] << 16);
-                bTile[slot + 8] = codes[(la >>> 16) & 0xFF] | (codes[(lb >>> 16) & 0xFF] << 16);
-                bTile[slot + 12] = codes[la >>> 24] | (codes[lb >>> 24] << 16);
-                bTile[slot + 4096] = codes[ha & 0xFF] | (codes[hb & 0xFF] << 16);
-                bTile[slot + 4100] = codes[(ha >>> 8) & 0xFF] | (codes[(hb >>> 8) & 0xFF] << 16);
-                bTile[slot + 4104] = codes[(ha >>> 16) & 0xFF] | (codes[(hb >>> 16) & 0xFF] << 16);
-                bTile[slot + 4108] = codes[ha >>> 24] | (codes[hb >>> 24] << 16);
-            }
-            {
-                int pairCol = pairBase + 32;
-                int slot = (lowChunk * 32 + (pairCol >> 2)) * 64 + kk0 * 4 + (pairCol & 3);
-                int la = q1a & 0x0F0F0F0F;
-                int lb = q1b & 0x0F0F0F0F;
-                int ha = (q1a >>> 4) & 0x0F0F0F0F;
-                int hb = (q1b >>> 4) & 0x0F0F0F0F;
-                bTile[slot] = codes[la & 0xFF] | (codes[lb & 0xFF] << 16);
-                bTile[slot + 4] = codes[(la >>> 8) & 0xFF] | (codes[(lb >>> 8) & 0xFF] << 16);
-                bTile[slot + 8] = codes[(la >>> 16) & 0xFF] | (codes[(lb >>> 16) & 0xFF] << 16);
-                bTile[slot + 12] = codes[la >>> 24] | (codes[lb >>> 24] << 16);
-                bTile[slot + 4096] = codes[ha & 0xFF] | (codes[hb & 0xFF] << 16);
-                bTile[slot + 4100] = codes[(ha >>> 8) & 0xFF] | (codes[(hb >>> 8) & 0xFF] << 16);
-                bTile[slot + 4104] = codes[(ha >>> 16) & 0xFF] | (codes[(hb >>> 16) & 0xFF] << 16);
-                bTile[slot + 4108] = codes[ha >>> 24] | (codes[hb >>> 24] << 16);
-            }
-            {
-                int pairCol = pairBase + 64;
-                int slot = (lowChunk * 32 + (pairCol >> 2)) * 64 + kk0 * 4 + (pairCol & 3);
-                int la = q2a & 0x0F0F0F0F;
-                int lb = q2b & 0x0F0F0F0F;
-                int ha = (q2a >>> 4) & 0x0F0F0F0F;
-                int hb = (q2b >>> 4) & 0x0F0F0F0F;
-                bTile[slot] = codes[la & 0xFF] | (codes[lb & 0xFF] << 16);
-                bTile[slot + 4] = codes[(la >>> 8) & 0xFF] | (codes[(lb >>> 8) & 0xFF] << 16);
-                bTile[slot + 8] = codes[(la >>> 16) & 0xFF] | (codes[(lb >>> 16) & 0xFF] << 16);
-                bTile[slot + 12] = codes[la >>> 24] | (codes[lb >>> 24] << 16);
-                bTile[slot + 4096] = codes[ha & 0xFF] | (codes[hb & 0xFF] << 16);
-                bTile[slot + 4100] = codes[(ha >>> 8) & 0xFF] | (codes[(hb >>> 8) & 0xFF] << 16);
-                bTile[slot + 4104] = codes[(ha >>> 16) & 0xFF] | (codes[(hb >>> 16) & 0xFF] << 16);
-                bTile[slot + 4108] = codes[ha >>> 24] | (codes[hb >>> 24] << 16);
-            }
-            {
-                int pairCol = pairBase + 96;
-                int slot = (lowChunk * 32 + (pairCol >> 2)) * 64 + kk0 * 4 + (pairCol & 3);
-                int la = q3a & 0x0F0F0F0F;
-                int lb = q3b & 0x0F0F0F0F;
-                int ha = (q3a >>> 4) & 0x0F0F0F0F;
-                int hb = (q3b >>> 4) & 0x0F0F0F0F;
-                bTile[slot] = codes[la & 0xFF] | (codes[lb & 0xFF] << 16);
-                bTile[slot + 4] = codes[(la >>> 8) & 0xFF] | (codes[(lb >>> 8) & 0xFF] << 16);
-                bTile[slot + 8] = codes[(la >>> 16) & 0xFF] | (codes[(lb >>> 16) & 0xFF] << 16);
-                bTile[slot + 12] = codes[la >>> 24] | (codes[lb >>> 24] << 16);
-                bTile[slot + 4096] = codes[ha & 0xFF] | (codes[hb & 0xFF] << 16);
-                bTile[slot + 4100] = codes[(ha >>> 8) & 0xFF] | (codes[(hb >>> 8) & 0xFF] << 16);
-                bTile[slot + 4104] = codes[(ha >>> 16) & 0xFF] | (codes[(hb >>> 16) & 0xFF] << 16);
-                bTile[slot + 4108] = codes[ha >>> 24] | (codes[hb >>> 24] << 16);
-            }
+            // This step's code words; the registers are reloaded for the next step below.
+            int u0a = q0a;
+            int u0b = q0b;
+            int u1a = q1a;
+            int u1b = q1b;
+            int u2a = q2a;
+            int u2b = q2b;
+            int u3a = q3a;
+            int u3b = q3b;
             {
                 // The step's scale words, loaded raw a step ahead, decoded after the multiplies
                 // they overlapped.
@@ -344,30 +287,31 @@ public final class GroupedExpertMmaKernels {
             ctx.asyncCopyWaitGroup(0);
             ctx.localBarrier();
             if (step + 1 < kSteps) {
-                ctx.asyncCopyToLocal16(
-                        aTile,
-                        (buf ^ 1) * SPLIT_INPUT_INTS + aDst,
-                        input16,
-                        aSrc + kBase + SPLIT_DEPTH);
+                int nextDst = (buf ^ 1) * SPLIT_INPUT_INTS + aDst;
+                int nextSrc = aSrc + kBase + SPLIT_DEPTH;
+                ctx.asyncCopyToLocal(aTile, nextDst, input16, nextSrc);
+                ctx.asyncCopyToLocal(aTile, nextDst + 1, input16, nextSrc + 4);
+                ctx.asyncCopyToLocal(aTile, nextDst + 2, input16, nextSrc + 8);
+                ctx.asyncCopyToLocal(aTile, nextDst + 3, input16, nextSrc + 12);
                 ctx.asyncCopyCommit();
                 {
                     int k = kBase + SPLIT_DEPTH;
                     int pairIndex = (k & 255) >> 6;
                     int kBlock = k >> 8;
                     rPair = pairIndex;
-                    int qOff = kBlock * 144 + 16 + pairIndex * 32 + 4 * wi;
-                    int c0 = (wRow + 2 * (pairBase + 0)) * rowStride + qOff;
+                    int qOff = kBlock * 144 + 16 + pairIndex * 32 + bByte;
+                    int c0 = (wRow + bCol) * rowStride + qOff;
                     q0a = w.getInt(c0);
-                    q0b = w.getInt(c0 + rowStride);
-                    int c1 = (wRow + 2 * (pairBase + 32)) * rowStride + qOff;
+                    q0b = w.getInt(c0 + 16);
+                    int c1 = c0 + 8 * rowStride;
                     q1a = w.getInt(c1);
-                    q1b = w.getInt(c1 + rowStride);
-                    int c2 = (wRow + 2 * (pairBase + 64)) * rowStride + qOff;
+                    q1b = w.getInt(c1 + 16);
+                    int c2 = c0 + 16 * rowStride;
                     q2a = w.getInt(c2);
-                    q2b = w.getInt(c2 + rowStride);
-                    int c3 = (wRow + 2 * (pairBase + 96)) * rowStride + qOff;
+                    q2b = w.getInt(c2 + 16);
+                    int c3 = c0 + 24 * rowStride;
                     q3a = w.getInt(c3);
-                    q3b = w.getInt(c3 + rowStride);
+                    q3b = w.getInt(c3 + 16);
                     int sBase = (sRow + kBlock) * 144;
                     rHead = w.getInt(sBase);
                     rS0 = w.getInt(sBase + 4);
@@ -379,10 +323,61 @@ public final class GroupedExpertMmaKernels {
             for (int c = 0; c < 4; c++) {
                 HalfFloat[] a0 = ctx.mmaLoadA(aTile, 16, aByte + c * 1024);
                 HalfFloat[] a1 = ctx.mmaLoadA(aTile, 16, aByte + c * 1024 + 512);
-                HalfFloat[] b0 = ctx.mmaLoadB(bTile, 16, (c * 32 + warp * 4 + 0) * B_SUBTILE_BYTES);
-                HalfFloat[] b1 = ctx.mmaLoadB(bTile, 16, (c * 32 + warp * 4 + 1) * B_SUBTILE_BYTES);
-                HalfFloat[] b2 = ctx.mmaLoadB(bTile, 16, (c * 32 + warp * 4 + 2) * B_SUBTILE_BYTES);
-                HalfFloat[] b3 = ctx.mmaLoadB(bTile, 16, (c * 32 + warp * 4 + 3) * B_SUBTILE_BYTES);
+                // Chunk c: words a (c even) or b (c odd), low nibbles (c < 2) or high; each code
+                // becomes its exact half in the lane's own registers.
+                int sh = (c >> 1) << 2;
+                int v0 = (((c & 1) == 0 ? u0a : u0b) >>> sh) & 0x0F0F0F0F;
+                int v1 = (((c & 1) == 0 ? u1a : u1b) >>> sh) & 0x0F0F0F0F;
+                int v2 = (((c & 1) == 0 ? u2a : u2b) >>> sh) & 0x0F0F0F0F;
+                int v3 = (((c & 1) == 0 ? u3a : u3b) >>> sh) & 0x0F0F0F0F;
+                HalfFloat[] b0 =
+                        ctx.mmaFragmentB(
+                                (new HalfFloat((float) (v0 & 0xFF)).getHalfFloatValue() & 0xFFFF)
+                                        | ((new HalfFloat((float) ((v0 >>> 8) & 0xFF))
+                                                                .getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16),
+                                (new HalfFloat((float) ((v0 >>> 16) & 0xFF)).getHalfFloatValue()
+                                                & 0xFFFF)
+                                        | ((new HalfFloat((float) (v0 >>> 24)).getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16));
+                HalfFloat[] b1 =
+                        ctx.mmaFragmentB(
+                                (new HalfFloat((float) (v1 & 0xFF)).getHalfFloatValue() & 0xFFFF)
+                                        | ((new HalfFloat((float) ((v1 >>> 8) & 0xFF))
+                                                                .getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16),
+                                (new HalfFloat((float) ((v1 >>> 16) & 0xFF)).getHalfFloatValue()
+                                                & 0xFFFF)
+                                        | ((new HalfFloat((float) (v1 >>> 24)).getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16));
+                HalfFloat[] b2 =
+                        ctx.mmaFragmentB(
+                                (new HalfFloat((float) (v2 & 0xFF)).getHalfFloatValue() & 0xFFFF)
+                                        | ((new HalfFloat((float) ((v2 >>> 8) & 0xFF))
+                                                                .getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16),
+                                (new HalfFloat((float) ((v2 >>> 16) & 0xFF)).getHalfFloatValue()
+                                                & 0xFFFF)
+                                        | ((new HalfFloat((float) (v2 >>> 24)).getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16));
+                HalfFloat[] b3 =
+                        ctx.mmaFragmentB(
+                                (new HalfFloat((float) (v3 & 0xFF)).getHalfFloatValue() & 0xFFFF)
+                                        | ((new HalfFloat((float) ((v3 >>> 8) & 0xFF))
+                                                                .getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16),
+                                (new HalfFloat((float) ((v3 >>> 16) & 0xFF)).getHalfFloatValue()
+                                                & 0xFFFF)
+                                        | ((new HalfFloat((float) (v3 >>> 24)).getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16));
                 s00 = ctx.mma(a0, b0, s00, MMAShape.M16N8K16);
                 s01 = ctx.mma(a0, b1, s01, MMAShape.M16N8K16);
                 s02 = ctx.mma(a0, b2, s02, MMAShape.M16N8K16);
@@ -520,15 +515,17 @@ public final class GroupedExpertMmaKernels {
      * and 256 outputs, eight warps of 32 rows by 32 outputs, the depth advancing 64 at a time, a
      * pair of sub-blocks, each fifth bit put above its nibble. Row {@code i} of a half reads FP16
      * input row {@code sortedToken[first + i]} when {@code gather} is 1, {@code first + i}
-     * otherwise, copied to local memory 16 bytes at a time; the next step's copy and weight loads
-     * are in flight while this step multiplies. The weights enter the MMA as their integer codes,
-     * exact in FP16 (a 32-entry table), and each scale group's sums are scaled in FP32 by its
-     * scale, and the group's minimum subtracted through {@code blockSums}, the FP16 rows' sums per
-     * 32 inputs: the sums of one workgroup per 64-row tile, in the same order. A half with no rows
-     * of its tile returns before its first barrier. Example: LFM2.5-24B-A2B's down, 2048 outputs
-     * over {@code n = 1536}: eight workgroups per half and 24 steps. Requires {@code n % 256 == 0}
-     * and {@code d % 256 == 0}. Grid: {@link #splitWorkgroups} workgroups of {@link #THREADS}
-     * threads.
+     * otherwise, copied to local memory 4 bytes at a time in the k order the weights take; the next
+     * step's copy and weight loads are in flight while this step multiplies. The weights never
+     * reach local memory: each lane loads the code and fifth-bit words of its own column, turns
+     * each code into its exact half in registers and passes them to the MMA with {@code
+     * mmaFragmentB}, as {@link #groupedExpertMmaQ4_K} does. Each scale group's sums are scaled in
+     * FP32 by its scale, and the group's minimum subtracted through {@code blockSums}, the FP16
+     * rows' sums per 32 inputs: the sums of one workgroup per 64-row tile, in the same order. A
+     * half with no rows of its tile returns before its first barrier. Example: LFM2.5-24B-A2B's
+     * down, 2048 outputs over {@code n = 1536}: eight workgroups per half and 24 steps. Requires
+     * {@code n % 256 == 0} and {@code d % 256 == 0}. Grid: {@link #splitWorkgroups} workgroups of
+     * {@link #THREADS} threads.
      */
     // @formatter:on
     public static void groupedExpertMmaQ5_K(
@@ -563,14 +560,8 @@ public final class GroupedExpertMmaKernels {
         int first = tiles.get(2 + 3 * tile) + rowStart;
 
         int[] aTile = ctx.allocateIntLocalArray(2 * SPLIT_INPUT_INTS);
-        int[] bTile = ctx.allocateIntLocalArray(SPLIT_DEPTH * SPLIT_OUTPUTS / 2);
         float[] colScale = ctx.allocateFloatLocalArray(2 * SPLIT_OUTPUTS);
         float[] colMin = ctx.allocateFloatLocalArray(2 * SPLIT_OUTPUTS);
-        int[] codes = ctx.allocateIntLocalArray(32);
-        if (tid < 32) {
-            codes[tid] = TransformerBatchPrefillKernels.fp16BitsOf((float) tid);
-        }
-        ctx.localBarrier();
         float[] s00 = ctx.mmaFragment(0.0f);
         float[] s01 = ctx.mmaFragment(0.0f);
         float[] s02 = ctx.mmaFragment(0.0f);
@@ -619,16 +610,14 @@ public final class GroupedExpertMmaKernels {
         int aSrc =
                 sourceRow(sortedToken, gather, first, Math.min(aRow, rows - 1)) * n
                         + aChunk * 16
-                        + aHalf * 8;
+                        + aHalf * 2;
         int aDst = aChunk * 256 + aRow * 8 + aHalf * 4;
         // B: four column pairs per thread, word i of each column's 32 code bytes for the step.
-        int wi = lane & 7;
-        int pairBase = warp * 4 + (lane >> 3);
+        int bCol = warp * 32 + (lane >> 2);
+        int bByte = 4 * (lane & 3);
         int blocksPerRow = n >> 8;
         int rowStride = blocksPerRow * 176;
         int wRow = expert * d + blockCol;
-        int lowChunk = wi >> 2;
-        int kk0 = 4 * (wi & 3);
         // Scales: one column per thread, both sub-blocks of the step.
         int sRow = (wRow + tid) * blocksPerRow;
 
@@ -665,34 +654,38 @@ public final class GroupedExpertMmaKernels {
         int rS1 = 0;
         int rS2 = 0;
         int rPair = 0;
-        ctx.asyncCopyToLocal16(aTile, aDst, input16, aSrc);
+        ctx.asyncCopyToLocal(aTile, aDst, input16, aSrc);
+        ctx.asyncCopyToLocal(aTile, aDst + 1, input16, aSrc + 4);
+        ctx.asyncCopyToLocal(aTile, aDst + 2, input16, aSrc + 8);
+        ctx.asyncCopyToLocal(aTile, aDst + 3, input16, aSrc + 12);
         ctx.asyncCopyCommit();
         {
             int k = 0;
             int pairIndex = (k & 255) >> 6;
             int kBlock = k >> 8;
             rPair = pairIndex;
-            int qOff = kBlock * 176 + 48 + pairIndex * 32 + 4 * wi;
-            int c0 = (wRow + 2 * (pairBase + 0)) * rowStride + qOff;
-            q0a = w.getInt(c0);
-            q0b = w.getInt(c0 + rowStride);
-            h0a = w.getInt(c0 - 48 - pairIndex * 32 + 16);
-            h0b = w.getInt(c0 + rowStride - 48 - pairIndex * 32 + 16);
-            int c1 = (wRow + 2 * (pairBase + 32)) * rowStride + qOff;
-            q1a = w.getInt(c1);
-            q1b = w.getInt(c1 + rowStride);
-            h1a = w.getInt(c1 - 48 - pairIndex * 32 + 16);
-            h1b = w.getInt(c1 + rowStride - 48 - pairIndex * 32 + 16);
-            int c2 = (wRow + 2 * (pairBase + 64)) * rowStride + qOff;
-            q2a = w.getInt(c2);
-            q2b = w.getInt(c2 + rowStride);
-            h2a = w.getInt(c2 - 48 - pairIndex * 32 + 16);
-            h2b = w.getInt(c2 + rowStride - 48 - pairIndex * 32 + 16);
-            int c3 = (wRow + 2 * (pairBase + 96)) * rowStride + qOff;
-            q3a = w.getInt(c3);
-            q3b = w.getInt(c3 + rowStride);
-            h3a = w.getInt(c3 - 48 - pairIndex * 32 + 16);
-            h3b = w.getInt(c3 + rowStride - 48 - pairIndex * 32 + 16);
+            int qOff = kBlock * 176 + 48 + pairIndex * 32 + bByte;
+            int hOff = kBlock * 176 + 16 + bByte;
+            int c0 = (wRow + bCol + 0) * rowStride;
+            q0a = w.getInt(c0 + qOff);
+            q0b = w.getInt(c0 + qOff + 16);
+            h0a = w.getInt(c0 + hOff);
+            h0b = w.getInt(c0 + hOff + 16);
+            int c1 = (wRow + bCol + 8) * rowStride;
+            q1a = w.getInt(c1 + qOff);
+            q1b = w.getInt(c1 + qOff + 16);
+            h1a = w.getInt(c1 + hOff);
+            h1b = w.getInt(c1 + hOff + 16);
+            int c2 = (wRow + bCol + 16) * rowStride;
+            q2a = w.getInt(c2 + qOff);
+            q2b = w.getInt(c2 + qOff + 16);
+            h2a = w.getInt(c2 + hOff);
+            h2b = w.getInt(c2 + hOff + 16);
+            int c3 = (wRow + bCol + 24) * rowStride;
+            q3a = w.getInt(c3 + qOff);
+            q3b = w.getInt(c3 + qOff + 16);
+            h3a = w.getInt(c3 + hOff);
+            h3b = w.getInt(c3 + hOff + 16);
             int sBase = (sRow + kBlock) * 176;
             rHead = w.getInt(sBase);
             rS0 = w.getInt(sBase + 4);
@@ -705,70 +698,23 @@ public final class GroupedExpertMmaKernels {
             int kBase = step << 6;
             int buf = step & 1;
             int hShift = 2 * rPair;
-            {
-                int pairCol = pairBase + 0;
-                int slot = (lowChunk * 32 + (pairCol >> 2)) * 64 + kk0 * 4 + (pairCol & 3);
-                int la = (q0a & 0x0F0F0F0F) | (((h0a >>> hShift) << 4) & 0x10101010);
-                int lb = (q0b & 0x0F0F0F0F) | (((h0b >>> hShift) << 4) & 0x10101010);
-                int ha = ((q0a >>> 4) & 0x0F0F0F0F) | (((h0a >>> (hShift + 1)) << 4) & 0x10101010);
-                int hb = ((q0b >>> 4) & 0x0F0F0F0F) | (((h0b >>> (hShift + 1)) << 4) & 0x10101010);
-                bTile[slot] = codes[la & 0xFF] | (codes[lb & 0xFF] << 16);
-                bTile[slot + 4] = codes[(la >>> 8) & 0xFF] | (codes[(lb >>> 8) & 0xFF] << 16);
-                bTile[slot + 8] = codes[(la >>> 16) & 0xFF] | (codes[(lb >>> 16) & 0xFF] << 16);
-                bTile[slot + 12] = codes[la >>> 24] | (codes[lb >>> 24] << 16);
-                bTile[slot + 4096] = codes[ha & 0xFF] | (codes[hb & 0xFF] << 16);
-                bTile[slot + 4100] = codes[(ha >>> 8) & 0xFF] | (codes[(hb >>> 8) & 0xFF] << 16);
-                bTile[slot + 4104] = codes[(ha >>> 16) & 0xFF] | (codes[(hb >>> 16) & 0xFF] << 16);
-                bTile[slot + 4108] = codes[ha >>> 24] | (codes[hb >>> 24] << 16);
-            }
-            {
-                int pairCol = pairBase + 32;
-                int slot = (lowChunk * 32 + (pairCol >> 2)) * 64 + kk0 * 4 + (pairCol & 3);
-                int la = (q1a & 0x0F0F0F0F) | (((h1a >>> hShift) << 4) & 0x10101010);
-                int lb = (q1b & 0x0F0F0F0F) | (((h1b >>> hShift) << 4) & 0x10101010);
-                int ha = ((q1a >>> 4) & 0x0F0F0F0F) | (((h1a >>> (hShift + 1)) << 4) & 0x10101010);
-                int hb = ((q1b >>> 4) & 0x0F0F0F0F) | (((h1b >>> (hShift + 1)) << 4) & 0x10101010);
-                bTile[slot] = codes[la & 0xFF] | (codes[lb & 0xFF] << 16);
-                bTile[slot + 4] = codes[(la >>> 8) & 0xFF] | (codes[(lb >>> 8) & 0xFF] << 16);
-                bTile[slot + 8] = codes[(la >>> 16) & 0xFF] | (codes[(lb >>> 16) & 0xFF] << 16);
-                bTile[slot + 12] = codes[la >>> 24] | (codes[lb >>> 24] << 16);
-                bTile[slot + 4096] = codes[ha & 0xFF] | (codes[hb & 0xFF] << 16);
-                bTile[slot + 4100] = codes[(ha >>> 8) & 0xFF] | (codes[(hb >>> 8) & 0xFF] << 16);
-                bTile[slot + 4104] = codes[(ha >>> 16) & 0xFF] | (codes[(hb >>> 16) & 0xFF] << 16);
-                bTile[slot + 4108] = codes[ha >>> 24] | (codes[hb >>> 24] << 16);
-            }
-            {
-                int pairCol = pairBase + 64;
-                int slot = (lowChunk * 32 + (pairCol >> 2)) * 64 + kk0 * 4 + (pairCol & 3);
-                int la = (q2a & 0x0F0F0F0F) | (((h2a >>> hShift) << 4) & 0x10101010);
-                int lb = (q2b & 0x0F0F0F0F) | (((h2b >>> hShift) << 4) & 0x10101010);
-                int ha = ((q2a >>> 4) & 0x0F0F0F0F) | (((h2a >>> (hShift + 1)) << 4) & 0x10101010);
-                int hb = ((q2b >>> 4) & 0x0F0F0F0F) | (((h2b >>> (hShift + 1)) << 4) & 0x10101010);
-                bTile[slot] = codes[la & 0xFF] | (codes[lb & 0xFF] << 16);
-                bTile[slot + 4] = codes[(la >>> 8) & 0xFF] | (codes[(lb >>> 8) & 0xFF] << 16);
-                bTile[slot + 8] = codes[(la >>> 16) & 0xFF] | (codes[(lb >>> 16) & 0xFF] << 16);
-                bTile[slot + 12] = codes[la >>> 24] | (codes[lb >>> 24] << 16);
-                bTile[slot + 4096] = codes[ha & 0xFF] | (codes[hb & 0xFF] << 16);
-                bTile[slot + 4100] = codes[(ha >>> 8) & 0xFF] | (codes[(hb >>> 8) & 0xFF] << 16);
-                bTile[slot + 4104] = codes[(ha >>> 16) & 0xFF] | (codes[(hb >>> 16) & 0xFF] << 16);
-                bTile[slot + 4108] = codes[ha >>> 24] | (codes[hb >>> 24] << 16);
-            }
-            {
-                int pairCol = pairBase + 96;
-                int slot = (lowChunk * 32 + (pairCol >> 2)) * 64 + kk0 * 4 + (pairCol & 3);
-                int la = (q3a & 0x0F0F0F0F) | (((h3a >>> hShift) << 4) & 0x10101010);
-                int lb = (q3b & 0x0F0F0F0F) | (((h3b >>> hShift) << 4) & 0x10101010);
-                int ha = ((q3a >>> 4) & 0x0F0F0F0F) | (((h3a >>> (hShift + 1)) << 4) & 0x10101010);
-                int hb = ((q3b >>> 4) & 0x0F0F0F0F) | (((h3b >>> (hShift + 1)) << 4) & 0x10101010);
-                bTile[slot] = codes[la & 0xFF] | (codes[lb & 0xFF] << 16);
-                bTile[slot + 4] = codes[(la >>> 8) & 0xFF] | (codes[(lb >>> 8) & 0xFF] << 16);
-                bTile[slot + 8] = codes[(la >>> 16) & 0xFF] | (codes[(lb >>> 16) & 0xFF] << 16);
-                bTile[slot + 12] = codes[la >>> 24] | (codes[lb >>> 24] << 16);
-                bTile[slot + 4096] = codes[ha & 0xFF] | (codes[hb & 0xFF] << 16);
-                bTile[slot + 4100] = codes[(ha >>> 8) & 0xFF] | (codes[(hb >>> 8) & 0xFF] << 16);
-                bTile[slot + 4104] = codes[(ha >>> 16) & 0xFF] | (codes[(hb >>> 16) & 0xFF] << 16);
-                bTile[slot + 4108] = codes[ha >>> 24] | (codes[hb >>> 24] << 16);
-            }
+            // This step's code and fifth-bit words; reloaded for the next step below.
+            int uq0a = q0a;
+            int uq0b = q0b;
+            int uh0a = h0a;
+            int uh0b = h0b;
+            int uq1a = q1a;
+            int uq1b = q1b;
+            int uh1a = h1a;
+            int uh1b = h1b;
+            int uq2a = q2a;
+            int uq2b = q2b;
+            int uh2a = h2a;
+            int uh2b = h2b;
+            int uq3a = q3a;
+            int uq3b = q3b;
+            int uh3a = h3a;
+            int uh3b = h3b;
             {
                 // The step's scale words, loaded raw a step ahead, decoded after the multiplies
                 // they overlapped.
@@ -784,38 +730,40 @@ public final class GroupedExpertMmaKernels {
             ctx.asyncCopyWaitGroup(0);
             ctx.localBarrier();
             if (step + 1 < kSteps) {
-                ctx.asyncCopyToLocal16(
-                        aTile,
-                        (buf ^ 1) * SPLIT_INPUT_INTS + aDst,
-                        input16,
-                        aSrc + kBase + SPLIT_DEPTH);
+                int nextDst = (buf ^ 1) * SPLIT_INPUT_INTS + aDst;
+                int nextSrc = aSrc + kBase + SPLIT_DEPTH;
+                ctx.asyncCopyToLocal(aTile, nextDst, input16, nextSrc);
+                ctx.asyncCopyToLocal(aTile, nextDst + 1, input16, nextSrc + 4);
+                ctx.asyncCopyToLocal(aTile, nextDst + 2, input16, nextSrc + 8);
+                ctx.asyncCopyToLocal(aTile, nextDst + 3, input16, nextSrc + 12);
                 ctx.asyncCopyCommit();
                 {
                     int k = kBase + SPLIT_DEPTH;
                     int pairIndex = (k & 255) >> 6;
                     int kBlock = k >> 8;
                     rPair = pairIndex;
-                    int qOff = kBlock * 176 + 48 + pairIndex * 32 + 4 * wi;
-                    int c0 = (wRow + 2 * (pairBase + 0)) * rowStride + qOff;
-                    q0a = w.getInt(c0);
-                    q0b = w.getInt(c0 + rowStride);
-                    h0a = w.getInt(c0 - 48 - pairIndex * 32 + 16);
-                    h0b = w.getInt(c0 + rowStride - 48 - pairIndex * 32 + 16);
-                    int c1 = (wRow + 2 * (pairBase + 32)) * rowStride + qOff;
-                    q1a = w.getInt(c1);
-                    q1b = w.getInt(c1 + rowStride);
-                    h1a = w.getInt(c1 - 48 - pairIndex * 32 + 16);
-                    h1b = w.getInt(c1 + rowStride - 48 - pairIndex * 32 + 16);
-                    int c2 = (wRow + 2 * (pairBase + 64)) * rowStride + qOff;
-                    q2a = w.getInt(c2);
-                    q2b = w.getInt(c2 + rowStride);
-                    h2a = w.getInt(c2 - 48 - pairIndex * 32 + 16);
-                    h2b = w.getInt(c2 + rowStride - 48 - pairIndex * 32 + 16);
-                    int c3 = (wRow + 2 * (pairBase + 96)) * rowStride + qOff;
-                    q3a = w.getInt(c3);
-                    q3b = w.getInt(c3 + rowStride);
-                    h3a = w.getInt(c3 - 48 - pairIndex * 32 + 16);
-                    h3b = w.getInt(c3 + rowStride - 48 - pairIndex * 32 + 16);
+                    int qOff = kBlock * 176 + 48 + pairIndex * 32 + bByte;
+                    int hOff = kBlock * 176 + 16 + bByte;
+                    int c0 = (wRow + bCol + 0) * rowStride;
+                    q0a = w.getInt(c0 + qOff);
+                    q0b = w.getInt(c0 + qOff + 16);
+                    h0a = w.getInt(c0 + hOff);
+                    h0b = w.getInt(c0 + hOff + 16);
+                    int c1 = (wRow + bCol + 8) * rowStride;
+                    q1a = w.getInt(c1 + qOff);
+                    q1b = w.getInt(c1 + qOff + 16);
+                    h1a = w.getInt(c1 + hOff);
+                    h1b = w.getInt(c1 + hOff + 16);
+                    int c2 = (wRow + bCol + 16) * rowStride;
+                    q2a = w.getInt(c2 + qOff);
+                    q2b = w.getInt(c2 + qOff + 16);
+                    h2a = w.getInt(c2 + hOff);
+                    h2b = w.getInt(c2 + hOff + 16);
+                    int c3 = (wRow + bCol + 24) * rowStride;
+                    q3a = w.getInt(c3 + qOff);
+                    q3b = w.getInt(c3 + qOff + 16);
+                    h3a = w.getInt(c3 + hOff);
+                    h3b = w.getInt(c3 + hOff + 16);
                     int sBase = (sRow + kBlock) * 176;
                     rHead = w.getInt(sBase);
                     rS0 = w.getInt(sBase + 4);
@@ -827,10 +775,70 @@ public final class GroupedExpertMmaKernels {
             for (int c = 0; c < 4; c++) {
                 HalfFloat[] a0 = ctx.mmaLoadA(aTile, 16, aByte + c * 1024);
                 HalfFloat[] a1 = ctx.mmaLoadA(aTile, 16, aByte + c * 1024 + 512);
-                HalfFloat[] b0 = ctx.mmaLoadB(bTile, 16, (c * 32 + warp * 4 + 0) * B_SUBTILE_BYTES);
-                HalfFloat[] b1 = ctx.mmaLoadB(bTile, 16, (c * 32 + warp * 4 + 1) * B_SUBTILE_BYTES);
-                HalfFloat[] b2 = ctx.mmaLoadB(bTile, 16, (c * 32 + warp * 4 + 2) * B_SUBTILE_BYTES);
-                HalfFloat[] b3 = ctx.mmaLoadB(bTile, 16, (c * 32 + warp * 4 + 3) * B_SUBTILE_BYTES);
+                // Chunk c: words a (c even) or b (c odd), low nibbles and fifth bit 2p (c < 2) or
+                // high nibbles and bit 2p + 1; each code becomes its exact half in registers.
+                int sh = (c >> 1) << 2;
+                int hs = hShift + (c >> 1);
+                int v0 =
+                        ((((c & 1) == 0 ? uq0a : uq0b) >>> sh) & 0x0F0F0F0F)
+                                | (((((c & 1) == 0 ? uh0a : uh0b) >>> hs) << 4) & 0x10101010);
+                int v1 =
+                        ((((c & 1) == 0 ? uq1a : uq1b) >>> sh) & 0x0F0F0F0F)
+                                | (((((c & 1) == 0 ? uh1a : uh1b) >>> hs) << 4) & 0x10101010);
+                int v2 =
+                        ((((c & 1) == 0 ? uq2a : uq2b) >>> sh) & 0x0F0F0F0F)
+                                | (((((c & 1) == 0 ? uh2a : uh2b) >>> hs) << 4) & 0x10101010);
+                int v3 =
+                        ((((c & 1) == 0 ? uq3a : uq3b) >>> sh) & 0x0F0F0F0F)
+                                | (((((c & 1) == 0 ? uh3a : uh3b) >>> hs) << 4) & 0x10101010);
+                HalfFloat[] b0 =
+                        ctx.mmaFragmentB(
+                                (new HalfFloat((float) (v0 & 0xFF)).getHalfFloatValue() & 0xFFFF)
+                                        | ((new HalfFloat((float) ((v0 >>> 8) & 0xFF))
+                                                                .getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16),
+                                (new HalfFloat((float) ((v0 >>> 16) & 0xFF)).getHalfFloatValue()
+                                                & 0xFFFF)
+                                        | ((new HalfFloat((float) (v0 >>> 24)).getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16));
+                HalfFloat[] b1 =
+                        ctx.mmaFragmentB(
+                                (new HalfFloat((float) (v1 & 0xFF)).getHalfFloatValue() & 0xFFFF)
+                                        | ((new HalfFloat((float) ((v1 >>> 8) & 0xFF))
+                                                                .getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16),
+                                (new HalfFloat((float) ((v1 >>> 16) & 0xFF)).getHalfFloatValue()
+                                                & 0xFFFF)
+                                        | ((new HalfFloat((float) (v1 >>> 24)).getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16));
+                HalfFloat[] b2 =
+                        ctx.mmaFragmentB(
+                                (new HalfFloat((float) (v2 & 0xFF)).getHalfFloatValue() & 0xFFFF)
+                                        | ((new HalfFloat((float) ((v2 >>> 8) & 0xFF))
+                                                                .getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16),
+                                (new HalfFloat((float) ((v2 >>> 16) & 0xFF)).getHalfFloatValue()
+                                                & 0xFFFF)
+                                        | ((new HalfFloat((float) (v2 >>> 24)).getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16));
+                HalfFloat[] b3 =
+                        ctx.mmaFragmentB(
+                                (new HalfFloat((float) (v3 & 0xFF)).getHalfFloatValue() & 0xFFFF)
+                                        | ((new HalfFloat((float) ((v3 >>> 8) & 0xFF))
+                                                                .getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16),
+                                (new HalfFloat((float) ((v3 >>> 16) & 0xFF)).getHalfFloatValue()
+                                                & 0xFFFF)
+                                        | ((new HalfFloat((float) (v3 >>> 24)).getHalfFloatValue()
+                                                        & 0xFFFF)
+                                                << 16));
                 s00 = ctx.mma(a0, b0, s00, MMAShape.M16N8K16);
                 s01 = ctx.mma(a0, b1, s01, MMAShape.M16N8K16);
                 s02 = ctx.mma(a0, b2, s02, MMAShape.M16N8K16);
