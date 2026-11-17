@@ -1,5 +1,7 @@
 package org.beehive.jitllm.backend.tornado;
 
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.lang.foreign.MemorySegment;
@@ -17,6 +19,7 @@ import org.beehive.jitllm.inference.weights.standard.Glm5NextStandardWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.loader.Glm5NextModelLoader;
 import org.beehive.jitllm.model.loader.ModelLoader;
+import org.beehive.jitllm.runtime.backend.DeviceSplit;
 import org.beehive.jitllm.runtime.policy.ExecutionPolicy;
 import org.beehive.jitllm.runtime.policy.StorageOptions;
 import org.beehive.jitllm.tensor.standard.FloatTensor;
@@ -139,6 +142,31 @@ public class Glm5NextDecodeParityAccelTest {
         return tail[tail.length / 2];
     }
 
+    /**
+     * The whole tiny model split into three stages on one device: the residual streams cross two
+     * stage boundaries every token, and every logit must be what the plan on one stage computes.
+     */
+    @Test
+    public void theWholeModelDecodesTheSameSplitIntoStages() throws Exception {
+        Result one = run("model-Q8_0.gguf");
+        Result three = run("model-Q8_0.gguf", 0, 1, false, "0:0,0:0,0:0");
+        assertArrayEquals("errors against the host", one.errors, three.errors, 0f);
+        assertEquals("greedy agreement", one.agree, three.agree);
+    }
+
+    /**
+     * The medium model's batched prefill and decode split into two stages on one device: the
+     * chunks' streams and the decoded tokens' streams cross the boundary, and every logit must be
+     * what the plan on one stage computes.
+     */
+    @Test
+    public void theMediumModelPrefillsAndDecodesTheSameSplitIntoStages() throws Exception {
+        Result one = run("model-medium-Q8_0.gguf", PREFILL, CHUNK);
+        Result two = run("model-medium-Q8_0.gguf", PREFILL, CHUNK, true, "0:0,0:0");
+        assertArrayEquals("errors against the host", one.errors, two.errors, 0f);
+        assertEquals("greedy agreement", one.agree, two.agree);
+    }
+
     private record Result(float[] errors, int agree) {}
 
     /** Positions from {@code from} whose logits agree with the host to float rounding. */
@@ -176,6 +204,13 @@ public class Glm5NextDecodeParityAccelTest {
     // @formatter:on
     private static Result run(String modelFile, int prefill, int chunk, boolean prefillDecode)
             throws Exception {
+        return run(modelFile, prefill, chunk, prefillDecode, null);
+    }
+
+    /** {@link #run(String, int, int, boolean)} with the plan split across {@code devices}. */
+    private static Result run(
+            String modelFile, int prefill, int chunk, boolean prefillDecode, String devices)
+            throws Exception {
         Path file = resource(modelFile);
         int[] tokens =
                 (int[])
@@ -212,7 +247,17 @@ public class Glm5NextDecodeParityAccelTest {
                             .prefillBatchSize(chunk)
                             .build());
         }
-        TornadoVMMasterPlan plan = TornadoVMMasterPlan.initializeTornadoVMPlan(deviceState, device);
+        if (devices != null) {
+            System.setProperty(DeviceSplit.DEVICES_PROPERTY, devices);
+            System.setProperty(DeviceSplit.TRANSPORT_PROPERTY, "host");
+        }
+        TornadoVMMasterPlan plan;
+        try {
+            plan = TornadoVMMasterPlan.initializeTornadoVMPlan(deviceState, device);
+        } finally {
+            System.clearProperty(DeviceSplit.DEVICES_PROPERTY);
+            System.clearProperty(DeviceSplit.TRANSPORT_PROPERTY);
+        }
 
         float[] errors = new float[tokens.length];
         int agree = 0;

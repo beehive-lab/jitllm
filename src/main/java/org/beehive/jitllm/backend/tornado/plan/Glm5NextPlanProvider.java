@@ -61,11 +61,22 @@ public final class Glm5NextPlanProvider implements TornadoPlanProvider {
                 : Optional.of("the glm5next layers are written for the CUDA backend");
     }
 
+    /**
+     * The layers address the latent cache, the indexer caches and the KDA state by absolute layer,
+     * so each stage keeps the whole model's layout and uses its own layers' part.
+     */
+    @Override
+    public boolean stageCacheHoldsOnlyItsLayers() {
+        return false;
+    }
+
+    /**
+     * Every stage's layers are built from a range, single-token and batched alike; the residual
+     * streams cross between stages ({@code Glm5NextPlanComponents.stageCarrier}).
+     */
     @Override
     public Optional<String> splitUnsupported(DataType weights, ExecutionPolicy policy, int stages) {
-        return stages > 1
-                ? Optional.of("glm5next builds its whole trunk as one graph on one device")
-                : Optional.empty();
+        return Optional.empty();
     }
 
     /** The layers bind their weights directly, on CUDA only ({@link #deviceUnsupported}). */

@@ -80,14 +80,50 @@ public class Glm5NextLayers
             SchedulerType schedulerType,
             String activationGraphName,
             Glm5NextBatchPrefillLayers prefill) {
+        this(
+                state,
+                weights,
+                config,
+                schedulerType,
+                activationGraphName,
+                prefill,
+                0,
+                config.numberOfLayers());
+    }
+
+    // @formatter:off
+    /**
+     * The layers {@code [firstLayer, endLayer)}, one stage of a model split across devices. The
+     * first stage copies the embedding into the residual streams; a later one takes the streams
+     * from {@code activationGraphName}, the graph that received them. The last stage collapses the
+     * streams into the hidden state the logits read; an earlier one leaves the streams on its
+     * device for the send to the next stage. {@code prefill}, when not null, holds the same layers.
+     */
+    // @formatter:on
+    public Glm5NextLayers(
+            Glm5NextState state,
+            Glm5NextTornadoWeights weights,
+            Glm5NextConfiguration config,
+            SchedulerType schedulerType,
+            String activationGraphName,
+            Glm5NextBatchPrefillLayers prefill,
+            int firstLayer,
+            int endLayer) {
         super(state, weights, config, schedulerType);
         this.gs = state;
         this.w = weights.layers;
         this.activationGraphName = activationGraphName;
         this.prefill = prefill;
+        this.firstLayer = firstLayer;
+        this.endLayer = endLayer;
         requireSupported();
         setupFFNLayers();
     }
+
+    /** The layers this graph runs: {@code [firstLayer, endLayer)}. */
+    private final int firstLayer;
+
+    private final int endLayer;
 
     /** In the batched plan, the prefill layers whose arrays these share; otherwise null. */
     private final Glm5NextBatchPrefillLayers prefill;
@@ -96,7 +132,7 @@ public class Glm5NextLayers
         if (state.usesFp16KeyValueCache()) {
             throw new UnsupportedOperationException("glm5next keeps an FP32 latent cache");
         }
-        for (int l = 0; l < config.numberOfLayers(); l++) {
+        for (int l = firstLayer; l < endLayer; l++) {
             List<TornadoTensor> projections = new ArrayList<>();
             if (config.isKda(l)) {
                 var k = w.kda();
@@ -164,8 +200,8 @@ public class Glm5NextLayers
 
     @Override
     protected void setupFFNLayers() {
-        TaskGraph graph = new TaskGraph(layerGraphName(0));
-        for (int l = 0; l < config.numberOfLayers(); l++) {
+        TaskGraph graph = new TaskGraph(layerGraphName(firstLayer));
+        for (int l = firstLayer; l < endLayer; l++) {
             appendLayer(graph, l);
         }
         lastFFNLayerTaskGraphID = graph.getTaskGraphName();
@@ -196,10 +232,16 @@ public class Glm5NextLayers
         };
     }
 
-    private void bindScratch(TaskGraph graph) {
+    /**
+     * Binds the scratch arrays and the caches. On the first stage {@code firstStage} the hidden
+     * state arrives from the activation and the streams start here; on a later stage the streams
+     * arrive and the hidden state is scratch.
+     */
+    private void bindScratch(TaskGraph graph, boolean firstStage) {
         var ws = gs.workspace;
         Glm5NextDeviceArrays d = ws.glm5next;
         graph.transferToDevice(DataTransferMode.EVERY_EXECUTION, ws.positionHolder);
+        graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, firstStage ? d.streams : ws.wrapX);
         graph.transferToDevice(
                 DataTransferMode.FIRST_EXECUTION,
                 context,
@@ -222,7 +264,6 @@ public class Glm5NextLayers
                 ws.wrapMoeHiddenQuants,
                 ws.wrapMoeHiddenQScales,
                 ws.wrapMoeHiddenQSums,
-                d.streams,
                 d.residual,
                 d.mixes,
                 d.mixPartials,
@@ -392,9 +433,14 @@ public class Glm5NextLayers
         final float eps = config.rmsNormEps();
         var m = w.mhc();
 
+        if (l == firstLayer && l > 0) {
+            // A later stage: the streams arrive from the previous one.
+            g.consumeFromDevice(activationGraphName, d.streams);
+            bindScratch(g, false);
+        }
         if (l == 0) {
             g.consumeFromDevice(activationGraphName, ws.wrapX);
-            bindScratch(g);
+            bindScratch(g, true);
             task(
                     g,
                     l,
@@ -430,6 +476,9 @@ public class Glm5NextLayers
         }
         hyperConnectionPost(g, l, "hc_ffn");
 
+        if (l == endLayer - 1 && endLayer < config.numberOfLayers()) {
+            g.persistOnDevice(d.streams);
+        }
         if (l == config.numberOfLayers() - 1) {
             task(
                     g,

@@ -72,6 +72,26 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
             Glm5NextTornadoWeights weights,
             Glm5NextConfiguration config,
             int batch) {
+        this(state, weights, config, batch, 0, config.numberOfLayers());
+    }
+
+    // @formatter:off
+    /**
+     * The layers {@code [firstLayer, endLayer)}, one stage of a model split across devices. The
+     * first stage copies the chunk's embeddings into the residual streams; a later one takes the
+     * streams from the graph that received them. A stage before the last leaves the streams on its
+     * device for the send to the next. The weights and their FP16 copies are this stage's layers'.
+     */
+    // @formatter:on
+    public Glm5NextBatchPrefillLayers(
+            Glm5NextState state,
+            Glm5NextTornadoWeights weights,
+            Glm5NextConfiguration config,
+            int batch,
+            int firstLayer,
+            int endLayer) {
+        this.firstLayer = firstLayer;
+        this.endLayer = endLayer;
         if (state.workspace.glm5nextBatch == null) {
             throw new IllegalStateException(
                     "the glm5next batched prefill needs a state built for batch " + batch);
@@ -102,7 +122,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
         this.kBF16 = new HalfFloatArray[config.numberOfLayers()];
         this.vBF16 = new HalfFloatArray[config.numberOfLayers()];
         if (config.tensorCoreAttention()) {
-            for (int l = 0; l < config.numberOfLayers(); l++) {
+            for (int l = firstLayer; l < endLayer; l++) {
                 if (!config.isKda(l)) {
                     kBF16[l] = toHalf(w.sparse().kB()[l].asByteArray());
                     vBF16[l] = toHalf(w.sparse().vB()[l].asByteArray());
@@ -112,24 +132,31 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
         TaskGraph g = family.taskGraph(GRAPH);
         bind(g);
         var ws = state.workspace;
-        task(
-                g,
-                "broadcast",
-                lanes(batch * config.hcCount() * config.dim(), 128),
-                t ->
-                        g.task(
-                                t,
-                                Glm5NextBatchKernels::hcBroadcast,
-                                context,
-                                ws.wrapXBatch,
-                                ws.glm5nextBatch.streams,
-                                config.dim(),
-                                config.hcCount(),
-                                batch));
-        for (int l = 0; l < config.numberOfLayers(); l++) {
+        if (firstLayer == 0) {
+            task(
+                    g,
+                    "broadcast",
+                    lanes(batch * config.hcCount() * config.dim(), 128),
+                    t ->
+                            g.task(
+                                    t,
+                                    Glm5NextBatchKernels::hcBroadcast,
+                                    context,
+                                    ws.wrapXBatch,
+                                    ws.glm5nextBatch.streams,
+                                    config.dim(),
+                                    config.hcCount(),
+                                    batch));
+        }
+        for (int l = firstLayer; l < endLayer; l++) {
             appendLayer(g, l);
         }
-        g.persistOnDevice(persistent());
+        // A stage before the last also keeps the streams for the send to the next.
+        List<Object> kept = new ArrayList<>(List.of(persistent()));
+        if (endLayer < config.numberOfLayers()) {
+            kept.add(ws.glm5nextBatch.streams);
+        }
+        g.persistOnDevice(kept.toArray());
         this.graph = g.snapshot();
     }
 
@@ -149,11 +176,22 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
         };
     }
 
-    /** Every weight this graph binds, which the decode layers take from it by name. */
+    /** The layers this graph runs: {@code [firstLayer, endLayer)}. */
+    private final int firstLayer;
+
+    private final int endLayer;
+
+    /**
+     * Every weight of layers {@code [firstLayer, endLayer)} this graph binds, which the decode
+     * layers take from it by name.
+     */
     public static List<Object> weightArrays(
-            Glm5NextLayerWeights<TornadoTensor> w, Glm5NextConfiguration config) {
+            Glm5NextLayerWeights<TornadoTensor> w,
+            Glm5NextConfiguration config,
+            int firstLayer,
+            int endLayer) {
         List<Object> arrays = new ArrayList<>();
-        for (int l = 0; l < config.numberOfLayers(); l++) {
+        for (int l = firstLayer; l < endLayer; l++) {
             arrays.addAll(Glm5NextLayers.prefillArrays(w, config, l));
         }
         return arrays;
@@ -162,13 +200,19 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
     private void bind(TaskGraph g) {
         var ws = gs.workspace;
         Glm5NextBatchArrays b = ws.glm5nextBatch;
-        g.consumeFromDevice("prefillActivation", ws.wrapXBatch);
+        // The first stage receives the chunk's embeddings, a later one the streams.
+        if (firstLayer == 0) {
+            g.consumeFromDevice("prefillActivation", ws.wrapXBatch);
+            g.transferToDevice(DataTransferMode.FIRST_EXECUTION, b.streams);
+        } else {
+            g.consumeFromDevice("prefillActivation", b.streams);
+            g.transferToDevice(DataTransferMode.FIRST_EXECUTION, ws.wrapXBatch);
+        }
         g.transferToDevice(DataTransferMode.EVERY_EXECUTION, ws.batchStartPosHolder);
         g.transferToDevice(
                 DataTransferMode.FIRST_EXECUTION,
                 context,
                 ws.glm5next.noRope,
-                b.streams,
                 b.residual,
                 b.mixes,
                 b.mixPartials,
@@ -225,7 +269,9 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 b.sharedUp,
                 b.sharedOut);
         g.transferToDevice(DataTransferMode.FIRST_EXECUTION, persistent());
-        g.transferToDevice(DataTransferMode.FIRST_EXECUTION, weightArrays(w, config).toArray());
+        g.transferToDevice(
+                DataTransferMode.FIRST_EXECUTION,
+                weightArrays(w, config, firstLayer, endLayer).toArray());
         if (config.tensorCoreAttention()) {
             g.transferToDevice(
                     DataTransferMode.FIRST_EXECUTION,
@@ -236,7 +282,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                     b.scores,
                     b.probsF16,
                     b.latentF16);
-            for (int l = 0; l < config.numberOfLayers(); l++) {
+            for (int l = firstLayer; l < endLayer; l++) {
                 if (kBF16[l] != null) {
                     g.transferToDevice(DataTransferMode.FIRST_EXECUTION, kBF16[l], vBF16[l]);
                 }

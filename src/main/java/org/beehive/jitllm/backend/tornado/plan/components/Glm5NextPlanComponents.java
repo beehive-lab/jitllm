@@ -12,9 +12,11 @@ import org.beehive.jitllm.backend.tornado.plan.components.activation.BatchPrefil
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerDetectionService;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.inference.state.Glm5NextState;
+import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.Glm5NextTornadoWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.glm5next.Glm5NextConfiguration;
+import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 /**
  * The {@code glm5next} plan components (GLM-5.3-Flash), Q8_0: the embedding, the trunk's KDA and
@@ -23,7 +25,8 @@ import org.beehive.jitllm.model.glm5next.Glm5NextConfiguration;
  * chunk by chunk, and its decode layers take the caches, the recurrent state and the weights from
  * the prefill graph, which the plan builds first.
  */
-public class Glm5NextPlanComponents implements BatchPrefillDecodeForwardPlanComponents {
+public class Glm5NextPlanComponents
+        implements BatchPrefillDecodeForwardPlanComponents, StagedForwardPlanComponents {
 
     private final Glm5NextState state;
     private final Glm5NextTornadoWeights weights;
@@ -80,8 +83,7 @@ public class Glm5NextPlanComponents implements BatchPrefillDecodeForwardPlanComp
 
     @Override
     public BatchPrefillTransformerLayerTaskGraphs batchPrefillTransformerLayers(int batchSize) {
-        prefill = new Glm5NextBatchPrefillLayers(state, weights, config, batchSize);
-        return prefill;
+        return batchPrefillTransformerLayers(batchSize, 0, config.numberOfLayers());
     }
 
     @Override
@@ -91,11 +93,59 @@ public class Glm5NextPlanComponents implements BatchPrefillDecodeForwardPlanComp
 
     @Override
     public TransformerLayerTaskGraphs batchDecodeTransformerLayers() {
+        return batchDecodeTransformerLayers(0, config.numberOfLayers());
+    }
+
+    // ── Pipeline stages ───────────────────────────────────────────────────────
+
+    @Override
+    public TransformerLayerTaskGraphs singleTokenTransformerLayers(int firstLayer, int endLayer) {
+        return new Glm5NextLayers(
+                state,
+                weights,
+                config,
+                schedulerType,
+                "activationUpdate",
+                null,
+                firstLayer,
+                endLayer);
+    }
+
+    @Override
+    public BatchPrefillTransformerLayerTaskGraphs batchPrefillTransformerLayers(
+            int batchSize, int firstLayer, int endLayer) {
+        prefill =
+                new Glm5NextBatchPrefillLayers(
+                        state, weights, config, batchSize, firstLayer, endLayer);
+        return prefill;
+    }
+
+    @Override
+    public TransformerLayerTaskGraphs batchDecodeTransformerLayers(int firstLayer, int endLayer) {
         if (prefill == null) {
             throw new IllegalStateException(
                     "the glm5next batched decode layers are built after the prefill layers");
         }
         return new Glm5NextLayers(
-                state, weights, config, schedulerType, "decodeActivation", prefill);
+                state,
+                weights,
+                config,
+                schedulerType,
+                "decodeActivation",
+                prefill,
+                firstLayer,
+                endLayer);
+    }
+
+    /** Between layers glm5next carries its residual streams, not one hidden state. */
+    @Override
+    public FloatArray stageCarrier(State stageState) {
+        return ((Glm5NextState) stageState).workspace.glm5next.streams;
+    }
+
+    /** A chunk's residual streams. */
+    @Override
+    public FloatArray batchStageCarrier(State stageState) {
+        return ((Glm5NextState) stageState).workspace.glm5nextBatch.streams;
     }
 }

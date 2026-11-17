@@ -258,7 +258,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
             add(components.singleTokenActivation(), graphs, scheduler);
         } else {
             TaskGraph receive = new TaskGraph(GraphNames.ACTIVATION_UPDATE);
-            transport.addTokenReceive(receive, s, stageState.workspace.wrapX, s - 1);
+            transport.addTokenReceive(receive, s, components.stageCarrier(stageState), s - 1);
             graphs.add(receive.snapshot());
         }
         TransformerLayerTaskGraphs layers = components.singleTokenTransformerLayers(first, end);
@@ -271,6 +271,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                 layers.getLastFFNLayerTaskGraphID(),
                 stageState,
                 () -> components.singleTokenLogits(layers.getLastFFNLayerTaskGraphID()),
+                components.stageCarrier(stageState),
                 "handoff_out",
                 graphs,
                 scheduler);
@@ -316,7 +317,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
             }
         } else {
             TaskGraph receive = new TaskGraph(GraphNames.PREFILL_ACTIVATION);
-            transport.addReceive(receive, s, stageState.workspace.wrapXBatch, s - 1);
+            transport.addReceive(receive, s, staged.batchStageCarrier(stageState), s - 1);
             graphs.add(receive.snapshot());
         }
         int entry = graphs.size() - 1;
@@ -355,7 +356,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
         int send = -1;
         if (s < stages.length - 1) {
             TaskGraph handoff = new TaskGraph("prefillHandoff");
-            transport.addSend(handoff, s, lastPrefill, stageState.workspace.wrapXBatch, s + 1);
+            transport.addSend(handoff, s, lastPrefill, staged.batchStageCarrier(stageState), s + 1);
             send = graphs.size();
             graphs.add(handoff.snapshot());
         }
@@ -389,7 +390,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
             // Only the hidden state: the first decode layer takes this stage's cache straight
             // from its last prefill layer.
             TaskGraph receive = new TaskGraph(GraphNames.DECODE_ACTIVATION);
-            transport.addTokenReceive(receive, s, stageState.workspace.wrapX, s - 1);
+            transport.addTokenReceive(receive, s, staged.stageCarrier(stageState), s - 1);
             graphs.add(receive.snapshot());
         }
         TransformerLayerTaskGraphs decode = staged.batchDecodeTransformerLayers(first, end);
@@ -401,6 +402,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                 decode.getLastFFNLayerTaskGraphID(),
                 stageState,
                 () -> whole.decodeLogits(decode.getLastFFNLayerTaskGraphID()),
+                staged.stageCarrier(stageState),
                 "decodeHandoff",
                 graphs,
                 scheduler);
@@ -412,19 +414,23 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
                 narrowRefresh);
     }
 
-    /** The end of a stage's token program: a send to the next stage, or on the last the logits. */
+    /**
+     * The end of a stage's token program: a send of {@code carrier} to the next stage, or on the
+     * last the logits.
+     */
     private void handOff(
             PipelineTransport transport,
             int s,
             String lastLayer,
             State stageState,
             java.util.function.Supplier<AbstractLogitsTaskGraph> logits,
+            FloatArray carrier,
             String sendName,
             List<ImmutableTaskGraph> graphs,
             GridScheduler scheduler) {
         if (s < stages.length - 1) {
             TaskGraph send = new TaskGraph(sendName);
-            transport.addTokenSend(send, s, lastLayer, stageState.workspace.wrapX, s + 1);
+            transport.addTokenSend(send, s, lastLayer, carrier, s + 1);
             graphs.add(send.snapshot());
         } else {
             AbstractLogitsTaskGraph last = logits.get();
