@@ -46,7 +46,7 @@ public class Qwen35MmaNllScreenAccelTest extends Qwen35NllScreenAccelTest {
         // At the widths that fill whole GEMM tiles the projection runs as the dequantize-then-GEMM
         // pair; below them, as the direct tensor-core kernel. Either way it is on the tensor cores.
         if (org.beehive.jitllm.model.qwen35.Qwen35Configuration.dequantGemmWidth(batch)) {
-            PlanDispatchEvidence.assertQwen35AttentionOutputOnDequantGemm(grids, batch, dim, 6144);
+            PlanDispatchEvidence.assertQwen35AttentionOutputOnGemm(grids, batch, dim, 6144);
         } else {
             PlanDispatchEvidence.assertQwen35AttentionOutputOnTensorCores(grids, batch, dim);
         }

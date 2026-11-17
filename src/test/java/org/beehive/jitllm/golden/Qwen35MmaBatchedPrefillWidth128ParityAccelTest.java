@@ -28,7 +28,7 @@ public class Qwen35MmaBatchedPrefillWidth128ParityAccelTest extends CpuGpuParity
     public void qwen3_8_27b_q4_0_batchedPrefillParityAt128OnTensorCores() throws Exception {
         GoldenCapture.Result gpu =
                 assertParityBatched(Fixture.QWEN3_8_27B_Q4_0, Q8_0_PACKED_DECODE, 128);
-        PlanDispatchEvidence.assertQwen35AttentionOutputOnDequantGemm(
+        PlanDispatchEvidence.assertQwen35AttentionOutputOnGemm(
                 gpu.gridScheduler, 128, gpu.dim, 6144);
         PlanDispatchEvidence.assertQwen35SsmOutOnDequantGemm(gpu.gridScheduler, 128, gpu.dim, 6144);
     }

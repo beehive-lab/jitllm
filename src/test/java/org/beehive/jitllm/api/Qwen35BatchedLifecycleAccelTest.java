@@ -7,6 +7,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.Path;
+import java.util.List;
 import org.beehive.jitllm.golden.GoldenFixture;
 import org.beehive.jitllm.golden.GoldenFixture.Fixture;
 import org.junit.Test;
@@ -77,7 +78,8 @@ public class Qwen35BatchedLifecycleAccelTest {
 
                 // Same session, same request, no reset: the conversation surface resets
                 // transparently when the prefix does not extend, so this is the ordinary
-                // second turn.
+                // second turn. (Which is why the request states the conversation rather than a
+                // prompt: a prompt-form request continues the conversation instead.)
                 repeated = session.generate(request).text();
 
                 session.reset();
@@ -107,7 +109,7 @@ public class Qwen35BatchedLifecycleAccelTest {
 
     private static GenerationRequest request() {
         return GenerationRequest.builder()
-                .prompt(PROMPT)
+                .messages(List.of(ChatMessage.of(ChatRole.USER, PROMPT)))
                 .maxNewTokens(MAX_NEW)
                 .temperature(0.0f)
                 .seed(1234L)

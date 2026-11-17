@@ -41,12 +41,11 @@ public class Qwen35MmaBatchedPrefillWidth256Fp16KvParityAccelTest extends CpuGpu
                 "the batched delta-rule scan this plan compiled",
                 Set.of("deltaRuleScanWarp"),
                 gpu.batchedTaskKernels.get("ssm_delta_rule"));
-        PlanDispatchEvidence.assertQwen35AttentionOutputOnDequantGemm(
+        PlanDispatchEvidence.assertQwen35AttentionOutputOnGemm(
                 gpu.gridScheduler, 256, gpu.dim, 6144);
         PlanDispatchEvidence.assertQwen35SsmOutOnDequantGemm(gpu.gridScheduler, 256, gpu.dim, 6144);
         PlanDispatchEvidence.assertQwen35BatchDeltaRuleWarp(gpu.gridScheduler, 48, 128);
-        PlanDispatchEvidence.assertQwen35FfnDownOnDequantGemm(
-                gpu.gridScheduler, 256, gpu.dim, 17408);
+        PlanDispatchEvidence.assertQwen35FfnDownOnGemm(gpu.gridScheduler, 256, gpu.dim, 17408);
         assertEquals(
                 "the batched alpha/beta projections this plan compiled",
                 Set.of("batchedMatVecF32WarpTile"),
