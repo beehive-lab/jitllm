@@ -1108,6 +1108,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
         final int shared = config.sharedHiddenDim();
         final int assignments = batch * used;
         List<TornadoTensor> gates = f.gateExperts().get(l);
+        boolean q4 = gates.get(0).dataType() == DataType.Q4_0;
         List<TornadoTensor> ups = f.upExperts().get(l);
         List<TornadoTensor> downs = f.downExperts().get(l);
         int split = gates.size() == 1 ? experts : config.expertChunkSize();
@@ -1153,7 +1154,9 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                     t ->
                             g.task(
                                     t,
-                                    Glm5NextBatchKernels::groupedGateUpClamped,
+                                    q4
+                                            ? Glm5NextBatchKernels::groupedGateUpClampedQ4_0
+                                            : Glm5NextBatchKernels::groupedGateUpClamped,
                                     context,
                                     b.a8,
                                     b.a8Scales,
@@ -1199,7 +1202,9 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                     t ->
                             g.task(
                                     t,
-                                    Glm5NextBatchKernels::groupedDown,
+                                    q4
+                                            ? Glm5NextBatchKernels::groupedDownQ4_0
+                                            : Glm5NextBatchKernels::groupedDown,
                                     context,
                                     b.routedHidden8,
                                     b.routedHiddenScales,
@@ -1307,6 +1312,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
         final int shared = config.sharedHiddenDim();
         final int moeHidden = used * hidden + shared;
         List<TornadoTensor> gates = f.gateExperts().get(l);
+        boolean q4 = gates.get(0).dataType() == DataType.Q4_0;
         List<TornadoTensor> ups = f.upExperts().get(l);
         List<TornadoTensor> downs = f.downExperts().get(l);
         int last = gates.size() - 1;
@@ -1354,7 +1360,9 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextBatchKernels::expertsGateUpClamped,
+                                q4
+                                        ? Glm5NextBatchKernels::expertsGateUpClampedQ4_0
+                                        : Glm5NextBatchKernels::expertsGateUpClamped,
                                 context,
                                 b.quants,
                                 b.scales,
@@ -1388,7 +1396,9 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextBatchKernels::expertsDown,
+                                q4
+                                        ? Glm5NextBatchKernels::expertsDownQ4_0
+                                        : Glm5NextBatchKernels::expertsDown,
                                 context,
                                 b.moeQuants,
                                 b.moeScales,

@@ -103,14 +103,16 @@ sequential prefill/decode, and batched prefill/decode. Its requirements and limi
 
 - **Weights:** Q8_0 projections, with norms, gates, the router, the mHC parameters and the
   indexer's head weights and k-pool gate in F32 (what llama.cpp's converter and `convert.py` write
-  with `q8_0`). Q4_0 and K-quant weights are converted to Q8_0 at load, so they take Q8_0's
-  memory.
+  with `q8_0`). The routed experts may instead be Q4_0 (`convert.py --expert-type Q4_0`), which
+  brings the full model to about 169 GiB: 159 GiB of experts and 9 GiB of everything else.
 - **Expert stacks:** the routed experts must load as at most two stacks. In Q8_0 the full model's
   288 experts load as two stacks of 144.
 - **Cache:** an FP32 latent cache, so run with `--fp32-kv-cache`.
 - **Native libraries:** `--with-native-libraries` is refused; the kernels below are TornadoVM's.
   `--cuda-graphs` works in every mode.
-- **Not supported yet:** splitting the model across devices, and the MTP layer.
+- **Several GPUs:** `--devices` splits the trunk by layer, in every mode; each stage boundary
+  carries the four residual streams rather than one hidden state.
+- **Not supported yet:** the MTP layer.
 
 ### Decode
 
@@ -131,7 +133,9 @@ The whole trunk is one task graph (`Glm5NextLayers`, `Glm5NextKernels`). Per lay
    lanes, a head per lane, the heads' terms added in head order; `indexerSelect` and
    `sparseLatentAttention` follow.
 4. **MoE.** `routerTopKSigmoid` (up to 512 experts), `expertsGateUpClamped`, and `expertsDown`,
-   which reads only the stack that holds each slot's expert.
+   which reads only the stack that holds each slot's expert. With Q4_0 routed experts the `Q4_0`
+   variants of both take their dot products with DP4A on the nibbles as stored, subtracting 8
+   times the sum of the block's activations; the shared expert stays Q8_0.
 
 ### Batched prefill
 
@@ -143,6 +147,8 @@ task graph, a row per token:
   `projectF32` for the F32 indexer weights. The chunk's arrays are padded to whole 128-row tiles.
 - **Routed experts:** the chunk's (token, expert) pairs are grouped by expert (`groupByExpert`) and
   multiplied as grouped int8 GEMMs (`groupedGateUpClamped`, `groupedDown`), then combined.
+  Q4_0 experts are recentred to int8 as their tiles are staged (`groupedGateUpClampedQ4_0`,
+  `groupedDownQ4_0`), so the GEMMs are the same.
 - **mHC:** `hcMixes` is one tiled GEMM, streams × `fn`ᵀ, split into 16 chunks of the depth
   (32 rows × 32 mixes per workgroup, staged in local memory); `hcFinishMixes` adds the chunks.
 - **KDA:** the convolution walks the chunk's rows in order. `kdaDeltaRule` uses the decode

@@ -250,8 +250,8 @@ public class Glm5NextModelLoader extends AbstractModelLoader<Glm5Next, Glm5NextC
     }
 
     /**
-     * Device weights, every tensor as the file holds it. The decode plan reads Q8_0 projections;
-     * its provider refuses any other weight type before a plan is built.
+     * Device weights, every tensor as the file holds it. The plan reads Q8_0 projections and Q8_0
+     * or Q4_0 routed experts; its provider refuses any other weight type before a plan is built.
      */
     @Override
     protected Weights createTornadoVMWeights(

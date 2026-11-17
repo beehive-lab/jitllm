@@ -136,6 +136,43 @@ public class Glm5NextDecodeParityAccelTest {
         assertTrue("greedy choices agree at " + batched.agree, batched.agree >= decoded * 8 / 10);
     }
 
+    /** The tiny model with its routed experts in Q4_0 and everything else in Q8_0. */
+    @Test
+    public void theModelWithQ4_0ExpertsDecodesLikeTheHost() throws Exception {
+        Result r = run(Q4_0_EXPERTS);
+        assertTrue("first token " + r.errors[0], r.errors[0] < 0.05f);
+        assertTrue("greedy choices agree at " + r.agree, r.agree >= r.errors.length * 9 / 10);
+    }
+
+    /** The same after a batched prefill, which reads the Q4_0 experts through its own kernels. */
+    @Test
+    public void theModelWithQ4_0ExpertsDecodesLikeTheHostAfterABatchedPrefill() throws Exception {
+        Result r = run(Q4_0_EXPERTS, PREFILL, CHUNK);
+        int decoded = r.errors.length - PREFILL;
+        assertTrue("greedy choices agree at " + r.agree, r.agree >= decoded * 8 / 10);
+    }
+
+    /**
+     * The medium model with Q4_0 routed experts, whose batched prefill stages them for the int8
+     * tensor-core GEMMs: it must track the host as closely as decoding token by token does.
+     */
+    @Test
+    public void theMediumModelWithQ4_0ExpertsDecodesTheSameAfterABatchedPrefill() throws Exception {
+        float[] single = run(MEDIUM_Q4_0_EXPERTS).errors;
+        Result batched = run(MEDIUM_Q4_0_EXPERTS, PREFILL, CHUNK);
+        float singleMedian = median(single, PREFILL);
+        float batchedMedian = median(batched.errors, PREFILL);
+        assertTrue(
+                "median error " + batchedMedian + " against " + singleMedian + " token by token",
+                batchedMedian <= 1.25f * singleMedian);
+        int decoded = single.length - PREFILL;
+        assertTrue("greedy choices agree at " + batched.agree, batched.agree >= decoded * 8 / 10);
+    }
+
+    private static final String Q4_0_EXPERTS = "model-Q8_0-experts-Q4_0.gguf";
+
+    private static final String MEDIUM_Q4_0_EXPERTS = "model-medium-Q8_0-experts-Q4_0.gguf";
+
     private static float median(float[] errors, int from) {
         float[] tail = java.util.Arrays.copyOfRange(errors, from, errors.length);
         java.util.Arrays.sort(tail);

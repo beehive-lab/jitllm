@@ -46,8 +46,8 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  *       shared experts' clamped SwiGLU and their down projection.
  * </ul>
  *
- * <p>The last layer averages the streams into {@code wrapX} for the logits. Q8_0 projections only;
- * the routed experts may be stored in at most two stacks.
+ * <p>The last layer averages the streams into {@code wrapX} for the logits. Q8_0 projections, the
+ * routed experts all Q8_0 or all Q4_0, stored in at most two stacks.
  */
 // @formatter:on
 public class Glm5NextLayers
@@ -177,9 +177,21 @@ public class Glm5NextLayers
                                     + " holds "
                                     + f.gateExperts().get(l).size());
                 }
-                projections.addAll(f.gateExperts().get(l));
-                projections.addAll(f.upExperts().get(l));
-                projections.addAll(f.downExperts().get(l));
+                List<TornadoTensor> routed = new ArrayList<>(f.gateExperts().get(l));
+                routed.addAll(f.upExperts().get(l));
+                routed.addAll(f.downExperts().get(l));
+                DataType routedType = routed.get(0).dataType();
+                for (TornadoTensor t : routed) {
+                    if (t.dataType() != routedType
+                            || (routedType != DataType.Q8_0 && routedType != DataType.Q4_0)) {
+                        throw new UnsupportedOperationException(
+                                "glm5next on the accelerator reads its routed experts all in Q8_0"
+                                        + " or all in Q4_0; layer "
+                                        + l
+                                        + " holds "
+                                        + t.dataType());
+                    }
+                }
                 projections.addAll(List.of(f.sharedGate()[l], f.sharedUp()[l], f.sharedDown()[l]));
             } else {
                 projections.addAll(List.of(f.gate()[l], f.up()[l], f.down()[l]));
@@ -1008,6 +1020,7 @@ public class Glm5NextLayers
         ByteArray gate0 = gates.get(0).asByteArray(), gate1 = gates.get(last).asByteArray();
         ByteArray up0 = ups.get(0).asByteArray(), up1 = ups.get(last).asByteArray();
         ByteArray down0 = downs.get(0).asByteArray(), down1 = downs.get(last).asByteArray();
+        boolean q4 = gates.get(0).dataType() == DataType.Q4_0;
 
         task(
                 g,
@@ -1050,7 +1063,9 @@ public class Glm5NextLayers
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::expertsGateUpClamped,
+                                q4
+                                        ? Glm5NextKernels::expertsGateUpClampedQ4_0
+                                        : Glm5NextKernels::expertsGateUpClamped,
                                 context,
                                 ws.wrapXbQuants,
                                 ws.wrapXbScales,
@@ -1090,7 +1105,9 @@ public class Glm5NextLayers
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::expertsDown,
+                                q4
+                                        ? Glm5NextKernels::expertsDownQ4_0
+                                        : Glm5NextKernels::expertsDown,
                                 context,
                                 ws.wrapMoeHiddenQuants,
                                 ws.wrapMoeHiddenQScales,

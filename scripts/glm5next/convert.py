@@ -10,7 +10,9 @@ same file; a slice is written as a model of fewer blocks.
 FP8 (E4M3, 128x128 block scales), BF16 and F32 inputs are supported. Large
 matrices are written as --type (Q8_0, Q4_0, F16 or F32); norms, biases, gates and
 the mHC parameters stay F32. Each layer's routed experts are one tensor per
-projection, as llama.cpp stores them.
+projection, as llama.cpp stores them; --expert-type writes them in their own
+type, such as Q4_0 experts in a Q8_0 model, which keeps the whole model within
+four 48 GB GPUs.
 
 Examples:
     # first four layers (three KDA and one sparse-attention layer) as Q8_0
@@ -18,6 +20,9 @@ Examples:
         --layers 0-3 --type Q8_0 --out ~/models/glm53-l0-3-Q8_0.gguf
     # whole text model with the MTP layer
     python -I convert.py --model ~/glm53 --type Q4_0 --mtp --out ~/models/glm53-Q4_0.gguf
+    # Q4_0 routed experts, everything else Q8_0
+    python -I convert.py --model ~/glm53 --type Q8_0 --expert-type Q4_0 \\
+        --out ~/models/glm53-Q8_0-experts-Q4_0.gguf
 """
 
 import argparse
@@ -141,9 +146,10 @@ def download(repo, directory, files):
 class Plan:
     """The tensors to write: (gguf name, ne, type, producer of byte pieces)."""
 
-    def __init__(self, ckpt, target):
+    def __init__(self, ckpt, target, expert_target=None):
         self.ckpt = ckpt
         self.target = target
+        self.expert_target = expert_target if expert_target is not None else target
         self.items = []
 
     def type_for(self, name, ne):
@@ -191,7 +197,7 @@ class Plan:
             rows, cols = self.ckpt.shape(first)
             name = f"{gguf_prefix}{gname}.weight"
             ne = [cols, rows, n_experts]
-            t = self.type_for(name, ne)
+            t = self.expert_target if ne[0] % 32 == 0 else gguf_io.F32
 
             def produce(proj=proj):
                 for e in range(n_experts):
@@ -268,6 +274,8 @@ def main():
     ap.add_argument("--download-dir", help="where --hf-repo files go")
     ap.add_argument("--out", required=True)
     ap.add_argument("--type", default="Q8_0", choices=["Q8_0", "Q4_0", "F16", "F32"])
+    ap.add_argument("--expert-type", choices=["Q8_0", "Q4_0", "F16", "F32"],
+                    help="type of the routed experts (default --type)")
     ap.add_argument("--layers", help="decoder layers to include, e.g. 0-3 or 0,3,7 (default all)")
     ap.add_argument("--mtp", action="store_true", help="include the MTP (next-token prediction) layer")
     ap.add_argument("--context-length", type=int, help="override the context length in the metadata")
@@ -298,7 +306,7 @@ def main():
 
     ckpt = gguf_io.Checkpoint(model_dir)
     target = gguf_io.TYPE_BY_NAME[args.type]
-    plan = Plan(ckpt, target)
+    plan = Plan(ckpt, target, gguf_io.TYPE_BY_NAME[args.expert_type] if args.expert_type else None)
 
     plan.add("token_embd.weight", PREFIX + "embed_tokens.weight")
     plan.add("output_norm.weight", PREFIX + "norm.weight")

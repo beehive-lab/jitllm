@@ -722,7 +722,7 @@ public final class Qwen35MoeBatchKernels {
      * {@link #stageB} for Q4_0 weights: the same tile, each word the int8 quants of two columns at
      * one pair of k, decoded from Q4_0 blocks.
      */
-    private static void stageBQ4_0(
+    static void stageBQ4_0(
             int[] bTile,
             float[] sW,
             ByteArray w,

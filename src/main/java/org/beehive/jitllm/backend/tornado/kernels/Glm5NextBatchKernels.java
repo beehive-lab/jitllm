@@ -1139,6 +1139,29 @@ public final class Glm5NextBatchKernels {
         }
     }
 
+    private static final int Q4_BLOCK_BYTES = 18;
+
+    /** {@link #rowPartial} over a Q4_0 weight. */
+    private static float rowPartialQ4_0(
+            ByteArray w,
+            int row,
+            int blocks,
+            IntArray xQuants,
+            FloatArray xScales,
+            int xBlock,
+            int lane) {
+        float partial = 0.0f;
+        for (int b = lane; b < blocks; b += 32) {
+            int offset = (row * blocks + b) * Q4_BLOCK_BYTES;
+            partial +=
+                    w.getHalfFloat(offset).getFloat32()
+                            * xScales.get(xBlock + b)
+                            * Glm5NextKernels.blockDotQ4_0(
+                                    w, offset, xQuants, (xBlock + b) * (QK / 4));
+        }
+        return partial;
+    }
+
     private static float clampedSilu(float gate, float up, float limit) {
         float g = TornadoMath.min(gate, limit);
         float u = TornadoMath.max(-limit, TornadoMath.min(up, limit));
@@ -1666,6 +1689,396 @@ public final class Glm5NextBatchKernels {
             }
             if (j >= valid) {
                 probs.set(base + j, new HalfFloat(0.0f));
+            }
+        }
+    }
+
+    /**
+     * {@link #expertsGateUpClamped} with the routed experts in Q4_0 and the shared expert in Q8_0.
+     */
+    public static void expertsGateUpClampedQ4_0(
+            KernelContext context,
+            IntArray xQuants,
+            FloatArray xScales,
+            IntArray ids,
+            ByteArray gate0,
+            ByteArray up0,
+            ByteArray gate1,
+            ByteArray up1,
+            ByteArray sharedGate,
+            ByteArray sharedUp,
+            FloatArray hidden,
+            IntArray shape,
+            float limit) {
+        int dim = shape.get(0);
+        int hiddenDim = shape.get(1);
+        int sharedHiddenDim = shape.get(2);
+        int used = shape.get(3);
+        int split = shape.get(4);
+        int batch = shape.get(5);
+        int warp = context.globalIdx >> 5;
+        int lane = context.localIdx & 31;
+        int perRow = used * hiddenDim + sharedHiddenDim;
+        int blocks = dim / QK;
+        // Three independent branches, none nested in another's else: the CUDA backend selected the
+        // wrong weight array for a stack branch nested under the routed/shared branch, and read
+        // past the end of the shared expert at the model's size.
+        int b = warp / perRow;
+        int w = warp - b * perRow;
+        int xBlock = b * blocks;
+        int routed = used * hiddenDim;
+        int inRange = warp < batch * perRow ? 1 : 0;
+        int isRouted = inRange * (w < routed ? 1 : 0);
+        int slot = isRouted * (w / hiddenDim);
+        int r = w - slot * hiddenDim;
+        int e = ids.get(inRange * (b * used + slot));
+        if (isRouted == 1 && e < split) {
+            int row = e * hiddenDim + r;
+            float g =
+                    warpSum(
+                            context,
+                            rowPartialQ4_0(gate0, row, blocks, xQuants, xScales, xBlock, lane));
+            float u =
+                    warpSum(
+                            context,
+                            rowPartialQ4_0(up0, row, blocks, xQuants, xScales, xBlock, lane));
+            if (lane == 0) {
+                hidden.set(warp, clampedSilu(g, u, limit));
+            }
+        }
+        if (isRouted == 1 && e >= split) {
+            int row = (e - split) * hiddenDim + r;
+            float g =
+                    warpSum(
+                            context,
+                            rowPartialQ4_0(gate1, row, blocks, xQuants, xScales, xBlock, lane));
+            float u =
+                    warpSum(
+                            context,
+                            rowPartialQ4_0(up1, row, blocks, xQuants, xScales, xBlock, lane));
+            if (lane == 0) {
+                hidden.set(warp, clampedSilu(g, u, limit));
+            }
+        }
+        if (inRange == 1 && isRouted == 0) {
+            int row = w - routed;
+            float g =
+                    warpSum(
+                            context,
+                            rowPartial(sharedGate, row, blocks, xQuants, xScales, xBlock, lane));
+            float u =
+                    warpSum(
+                            context,
+                            rowPartial(sharedUp, row, blocks, xQuants, xScales, xBlock, lane));
+            if (lane == 0) {
+                hidden.set(warp, clampedSilu(g, u, limit));
+            }
+        }
+    }
+
+    /** {@link #expertsDown} with the routed experts in Q4_0 and the shared expert in Q8_0. */
+    public static void expertsDownQ4_0(
+            KernelContext context,
+            IntArray hQuants,
+            FloatArray hScales,
+            IntArray ids,
+            FloatArray weights,
+            ByteArray down0,
+            ByteArray down1,
+            ByteArray sharedDown,
+            FloatArray out,
+            int dim,
+            int hiddenDim,
+            int sharedHiddenDim,
+            int used,
+            int split,
+            int batch) {
+        int warp = context.globalIdx >> 5;
+        int lane = context.localIdx & 31;
+        if (warp < batch * dim) {
+            int b = warp / dim;
+            int row = warp - b * dim;
+            int perSlot = hiddenDim / QK;
+            int routedPairs = used * perSlot;
+            int hBlock = b * (used * hiddenDim + sharedHiddenDim) / QK;
+            float first = 0.0f;
+            float second = 0.0f;
+            for (int p = lane; p < routedPairs; p += 32) {
+                int slot = p / perSlot;
+                int block = p - slot * perSlot;
+                int e = ids.get(b * used + slot);
+                int inFirst = e < split ? 1 : 0;
+                int e0 = inFirst * e;
+                int e1 = (1 - inFirst) * (e - split);
+                int offset0 = ((e0 * dim + row) * perSlot + block) * Q4_BLOCK_BYTES;
+                int offset1 = ((e1 * dim + row) * perSlot + block) * Q4_BLOCK_BYTES;
+                float w = weights.get(b * used + slot) * hScales.get(hBlock + p);
+                first +=
+                        inFirst
+                                * w
+                                * down0.getHalfFloat(offset0).getFloat32()
+                                * Glm5NextKernels.blockDotQ4_0(
+                                        down0, offset0, hQuants, (hBlock + p) * (QK / 4));
+                second +=
+                        (1 - inFirst)
+                                * w
+                                * down1.getHalfFloat(offset1).getFloat32()
+                                * Glm5NextKernels.blockDotQ4_0(
+                                        down1, offset1, hQuants, (hBlock + p) * (QK / 4));
+            }
+            int sharedBlocks = sharedHiddenDim / QK;
+            float shared = 0.0f;
+            for (int s = lane; s < sharedBlocks; s += 32) {
+                int offset = (row * sharedBlocks + s) * BLOCK_BYTES;
+                int p = hBlock + routedPairs + s;
+                shared +=
+                        sharedDown.getHalfFloat(offset).getFloat32()
+                                * hScales.get(p)
+                                * blockDot(sharedDown, offset, hQuants, p * (QK / 4));
+            }
+            float sum = warpSum(context, first + second + shared);
+            if (lane == 0) {
+                out.set(warp, sum);
+            }
+        }
+    }
+
+    /** {@link #groupedGateUpClamped} over a stack of Q4_0 experts. */
+    public static void groupedGateUpClampedQ4_0(
+            KernelContext ctx,
+            ByteArray a8,
+            FloatArray dA,
+            IntArray sortedToken,
+            IntArray tiles,
+            ByteArray gateExperts,
+            ByteArray upExperts,
+            FloatArray hidden,
+            int dim,
+            int hiddenDim,
+            int lo,
+            int hi,
+            float limit) {
+        int tid = ctx.localIdx;
+        int tile = ctx.groupIdy;
+        int blockCol = TILE_COLS * ctx.groupIdx;
+        int expert = tiles.get(1 + 3 * tile);
+        if (tile < tiles.get(0) && blockCol < hiddenDim && expert >= lo && expert < hi) {
+            int rowStart = tiles.get(2 + 3 * tile);
+            int rows = tiles.get(3 + 3 * tile);
+            int warp = tid >> 5;
+            int lane = tid & 31;
+            int rounds = dim / (2 * QK);
+            int rowBytes = (dim / QK) * Q4_BLOCK_BYTES;
+            int firstRow = (expert - lo) * hiddenDim + blockCol;
+
+            int[] aTile = ctx.allocateIntLocalArray(2 * 2 * A_WORDS);
+            int[] gTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            int[] uTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            float[] sA = ctx.allocateFloatLocalArray(2 * 2 * TILE_ROWS);
+            float[] sG = ctx.allocateFloatLocalArray(2 * 256);
+            float[] sU = ctx.allocateFloatLocalArray(2 * 256);
+
+            float[] gate = new float[SUB_TILES * 8];
+            float[] up = new float[SUB_TILES * 8];
+            for (int i = 0; i < SUB_TILES * 8; i++) {
+                gate[i] = 0.0f;
+                up[i] = 0.0f;
+            }
+            int rowInWarp = lane >> 2;
+            int colInWarp = (lane & 3) << 1;
+            int activeSub = (rows + 15) >> 4;
+
+            Qwen35MoeBatchKernels.stageA(
+                    ctx, aTile, sA, a8, dA, sortedToken, 1, rowStart, rows, 0, 0, dim, tid);
+            Qwen35MoeBatchKernels.stageBQ4_0(gTile, sG, gateExperts, firstRow, rowBytes, 0, 0, tid);
+            Qwen35MoeBatchKernels.stageBQ4_0(uTile, sU, upExperts, firstRow, rowBytes, 0, 0, tid);
+            ctx.asyncCopyCommit();
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+
+            for (int round = 0; round < rounds; round++) {
+                int buf = round & 1;
+                int next = 1 - buf;
+                if (round + 1 < rounds) {
+                    Qwen35MoeBatchKernels.stageA(
+                            ctx,
+                            aTile,
+                            sA,
+                            a8,
+                            dA,
+                            sortedToken,
+                            1,
+                            rowStart,
+                            rows,
+                            round + 1,
+                            next,
+                            dim,
+                            tid);
+                    ctx.asyncCopyCommit();
+                    Qwen35MoeBatchKernels.stageBQ4_0(
+                            gTile, sG, gateExperts, firstRow, rowBytes, round + 1, next, tid);
+                    Qwen35MoeBatchKernels.stageBQ4_0(
+                            uTile, sU, upExperts, firstRow, rowBytes, round + 1, next, tid);
+                }
+                for (int b = 0; b < 2; b++) {
+                    for (int j = 0; j < 2; j++) {
+                        int bOff = (buf * 2 + b) * B_WORDS * 4 + (warp * 2 + j) * 256;
+                        int sCol = buf * 256 + b * 128 + warp * 16 + j * 8 + colInWarp;
+                        byte[] fg = ctx.mmaLoadBInt8(gTile, 32, bOff);
+                        byte[] fu = ctx.mmaLoadBInt8(uTile, 32, bOff);
+                        float g0 = sG[sCol];
+                        float g1 = sG[sCol + 1];
+                        float u0 = sU[sCol];
+                        float u1 = sU[sCol + 1];
+                        for (int t = 0; t < SUB_TILES; t++) {
+                            if (t < activeSub) {
+                                byte[] fa =
+                                        ctx.mmaLoadAInt8(
+                                                aTile, 32, (buf * 2 + b) * A_WORDS * 4 + t * 512);
+                                int sRow = buf * 2 * TILE_ROWS + b * TILE_ROWS + t * 16 + rowInWarp;
+                                float dA0 = sA[sRow];
+                                float dA1 = sA[sRow + 8];
+                                int[] dg =
+                                        ctx.mmaInt8(
+                                                fa, fg, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int[] du =
+                                        ctx.mmaInt8(
+                                                fa, fu, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int o = t * 8 + j * 4;
+                                gate[o] += (float) dg[0] * dA0 * g0;
+                                gate[o + 1] += (float) dg[1] * dA0 * g1;
+                                gate[o + 2] += (float) dg[2] * dA1 * g0;
+                                gate[o + 3] += (float) dg[3] * dA1 * g1;
+                                up[o] += (float) du[0] * dA0 * u0;
+                                up[o + 1] += (float) du[1] * dA0 * u1;
+                                up[o + 2] += (float) du[2] * dA1 * u0;
+                                up[o + 3] += (float) du[3] * dA1 * u1;
+                            }
+                        }
+                    }
+                }
+                if (round + 1 < rounds) {
+                    ctx.asyncCopyWaitGroup(0);
+                }
+                ctx.localBarrier();
+            }
+
+            for (int t = 0; t < SUB_TILES; t++) {
+                for (int j = 0; j < 2; j++) {
+                    int col = blockCol + warp * 16 + j * 8 + colInWarp;
+                    for (int e = 0; e < 4; e++) {
+                        int row = t * 16 + rowInWarp + 8 * (e >> 1);
+                        if (row < rows) {
+                            hidden.set(
+                                    (rowStart + row) * hiddenDim + col + (e & 1),
+                                    clampedSilu(
+                                            gate[t * 8 + j * 4 + e], up[t * 8 + j * 4 + e], limit));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** {@link #groupedDown} over a stack of Q4_0 experts. */
+    public static void groupedDownQ4_0(
+            KernelContext ctx,
+            ByteArray h8,
+            FloatArray dH,
+            IntArray tiles,
+            ByteArray downExperts,
+            FloatArray out,
+            int dim,
+            int hiddenDim,
+            int lo,
+            int hi) {
+        int tid = ctx.localIdx;
+        int tile = ctx.groupIdy;
+        int blockCol = TILE_COLS * ctx.groupIdx;
+        int expert = tiles.get(1 + 3 * tile);
+        if (tile < tiles.get(0) && blockCol < dim && expert >= lo && expert < hi) {
+            int rowStart = tiles.get(2 + 3 * tile);
+            int rows = tiles.get(3 + 3 * tile);
+            int warp = tid >> 5;
+            int lane = tid & 31;
+            int rounds = hiddenDim / (2 * QK);
+            int rowBytes = (hiddenDim / QK) * Q4_BLOCK_BYTES;
+            int firstRow = (expert - lo) * dim + blockCol;
+
+            int[] aTile = ctx.allocateIntLocalArray(2 * 2 * A_WORDS);
+            int[] bTile = ctx.allocateIntLocalArray(2 * 2 * B_WORDS);
+            float[] sA = ctx.allocateFloatLocalArray(2 * 2 * TILE_ROWS);
+            float[] sW = ctx.allocateFloatLocalArray(2 * 256);
+
+            float[] acc = new float[SUB_TILES * 8];
+            for (int i = 0; i < SUB_TILES * 8; i++) {
+                acc[i] = 0.0f;
+            }
+            int rowInWarp = lane >> 2;
+            int colInWarp = (lane & 3) << 1;
+            int activeSub = (rows + 15) >> 4;
+
+            Qwen35MoeBatchKernels.stageA(
+                    ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, 0, 0, hiddenDim, tid);
+            Qwen35MoeBatchKernels.stageBQ4_0(bTile, sW, downExperts, firstRow, rowBytes, 0, 0, tid);
+            ctx.asyncCopyCommit();
+            ctx.asyncCopyWaitGroup(0);
+            ctx.localBarrier();
+
+            for (int round = 0; round < rounds; round++) {
+                int buf = round & 1;
+                int next = 1 - buf;
+                if (round + 1 < rounds) {
+                    Qwen35MoeBatchKernels.stageA(
+                            ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, round + 1, next,
+                            hiddenDim, tid);
+                    ctx.asyncCopyCommit();
+                    Qwen35MoeBatchKernels.stageBQ4_0(
+                            bTile, sW, downExperts, firstRow, rowBytes, round + 1, next, tid);
+                }
+                for (int b = 0; b < 2; b++) {
+                    for (int j = 0; j < 2; j++) {
+                        int bOff = (buf * 2 + b) * B_WORDS * 4 + (warp * 2 + j) * 256;
+                        int sCol = buf * 256 + b * 128 + warp * 16 + j * 8 + colInWarp;
+                        byte[] fb = ctx.mmaLoadBInt8(bTile, 32, bOff);
+                        float w0 = sW[sCol];
+                        float w1 = sW[sCol + 1];
+                        for (int t = 0; t < SUB_TILES; t++) {
+                            if (t < activeSub) {
+                                byte[] fa =
+                                        ctx.mmaLoadAInt8(
+                                                aTile, 32, (buf * 2 + b) * A_WORDS * 4 + t * 512);
+                                int sRow = buf * 2 * TILE_ROWS + b * TILE_ROWS + t * 16 + rowInWarp;
+                                float dA0 = sA[sRow];
+                                float dA1 = sA[sRow + 8];
+                                int[] d =
+                                        ctx.mmaInt8(
+                                                fa, fb, ctx.mmaFragmentInt(0), MMAShape.M16N8K32);
+                                int o = t * 8 + j * 4;
+                                acc[o] += (float) d[0] * dA0 * w0;
+                                acc[o + 1] += (float) d[1] * dA0 * w1;
+                                acc[o + 2] += (float) d[2] * dA1 * w0;
+                                acc[o + 3] += (float) d[3] * dA1 * w1;
+                            }
+                        }
+                    }
+                }
+                if (round + 1 < rounds) {
+                    ctx.asyncCopyWaitGroup(0);
+                }
+                ctx.localBarrier();
+            }
+
+            for (int t = 0; t < SUB_TILES; t++) {
+                for (int j = 0; j < 2; j++) {
+                    int col = blockCol + warp * 16 + j * 8 + colInWarp;
+                    for (int e = 0; e < 4; e++) {
+                        int row = t * 16 + rowInWarp + 8 * (e >> 1);
+                        if (row < rows) {
+                            out.set((rowStart + row) * dim + col + (e & 1), acc[t * 8 + j * 4 + e]);
+                        }
+                    }
+                }
             }
         }
     }

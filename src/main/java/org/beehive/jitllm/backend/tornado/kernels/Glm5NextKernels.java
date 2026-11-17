@@ -969,6 +969,45 @@ public final class Glm5NextKernels {
         return partial;
     }
 
+    private static final int Q4_BLOCK_BYTES = 18;
+
+    /**
+     * The int dot product of the Q4_0 block at byte {@code offset} with eight words of int8
+     * activations: byte {@code j} holds weight {@code j} in its low nibble and weight {@code 16 +
+     * j} in its high nibble, both stored plus 8, so the sum of the activations times 8 comes off.
+     */
+    static int blockDotQ4_0(ByteArray w, int offset, IntArray xQuants, int quantBase) {
+        int dot = 0;
+        int sum = 0;
+        for (int g = 0; g < 4; g++) {
+            int o = offset + 2 + g * 4;
+            int packed =
+                    (w.getHalfFloat(o).getHalfFloatValue() & 0xFFFF)
+                            | ((w.getHalfFloat(o + 2).getHalfFloatValue() & 0xFFFF) << 16);
+            int lo = xQuants.get(quantBase + g);
+            int hi = xQuants.get(quantBase + 4 + g);
+            dot = QuantizationUtils.dp4a_packed(packed & 0x0F0F0F0F, lo, dot);
+            dot = QuantizationUtils.dp4a_packed((packed >>> 4) & 0x0F0F0F0F, hi, dot);
+            sum = QuantizationUtils.dp4a_packed(0x01010101, lo, sum);
+            sum = QuantizationUtils.dp4a_packed(0x01010101, hi, sum);
+        }
+        return dot - 8 * sum;
+    }
+
+    /** {@link #rowPartial} over a Q4_0 weight. */
+    private static float rowPartialQ4_0(
+            ByteArray w, int row, int blocks, IntArray xQuants, FloatArray xScales, int lane) {
+        float partial = 0.0f;
+        for (int b = lane; b < blocks; b += 32) {
+            int offset = (row * blocks + b) * Q4_BLOCK_BYTES;
+            partial +=
+                    w.getHalfFloat(offset).getFloat32()
+                            * xScales.get(b)
+                            * blockDotQ4_0(w, offset, xQuants, b * (QK / 4));
+        }
+        return partial;
+    }
+
     private static float clampedSilu(float gate, float up, float limit) {
         float g = TornadoMath.min(gate, limit);
         float u = TornadoMath.max(-limit, TornadoMath.min(up, limit));
@@ -1094,6 +1133,132 @@ public final class Glm5NextKernels {
                             w
                                     * down1.getHalfFloat(offset).getFloat32()
                                     * blockDot(down1, offset, hQuants, p * (QK / 4));
+                }
+            }
+            int sharedBlocks = sharedHiddenDim / QK;
+            float shared = 0.0f;
+            for (int b = lane; b < sharedBlocks; b += 32) {
+                int offset = (row * sharedBlocks + b) * BLOCK_BYTES;
+                int p = routedPairs + b;
+                shared +=
+                        sharedDown.getHalfFloat(offset).getFloat32()
+                                * hScales.get(p)
+                                * blockDot(sharedDown, offset, hQuants, p * (QK / 4));
+            }
+            float sum = warpSum(context, sums[tid] + shared);
+            if (lane == 0) {
+                out.set(row, sum);
+            }
+        }
+    }
+
+    /**
+     * {@link #expertsGateUpClamped} with the routed experts in Q4_0 and the shared expert in Q8_0.
+     */
+    public static void expertsGateUpClampedQ4_0(
+            KernelContext context,
+            IntArray xQuants,
+            FloatArray xScales,
+            IntArray ids,
+            ByteArray gate0,
+            ByteArray up0,
+            ByteArray gate1,
+            ByteArray up1,
+            ByteArray sharedGate,
+            ByteArray sharedUp,
+            FloatArray hidden,
+            int dim,
+            int hiddenDim,
+            int sharedHiddenDim,
+            int used,
+            int split,
+            float limit) {
+        int warp = context.globalIdx >> 5;
+        int lane = context.localIdx & 31;
+        int routedRows = used * hiddenDim;
+        int blocks = dim / QK;
+        if (warp < routedRows) {
+            int slot = warp / hiddenDim;
+            int r = warp - slot * hiddenDim;
+            int e = ids.get(slot);
+            if (e < split) {
+                int row = e * hiddenDim + r;
+                float g =
+                        warpSum(
+                                context,
+                                rowPartialQ4_0(gate0, row, blocks, xQuants, xScales, lane));
+                float u =
+                        warpSum(context, rowPartialQ4_0(up0, row, blocks, xQuants, xScales, lane));
+                if (lane == 0) {
+                    hidden.set(warp, clampedSilu(g, u, limit));
+                }
+            } else {
+                int row = (e - split) * hiddenDim + r;
+                float g =
+                        warpSum(
+                                context,
+                                rowPartialQ4_0(gate1, row, blocks, xQuants, xScales, lane));
+                float u =
+                        warpSum(context, rowPartialQ4_0(up1, row, blocks, xQuants, xScales, lane));
+                if (lane == 0) {
+                    hidden.set(warp, clampedSilu(g, u, limit));
+                }
+            }
+        }
+        if (warp >= routedRows && warp < routedRows + sharedHiddenDim) {
+            int row = warp - routedRows;
+            float g = warpSum(context, rowPartial(sharedGate, row, blocks, xQuants, xScales, lane));
+            float u = warpSum(context, rowPartial(sharedUp, row, blocks, xQuants, xScales, lane));
+            if (lane == 0) {
+                hidden.set(warp, clampedSilu(g, u, limit));
+            }
+        }
+    }
+
+    /** {@link #expertsDown} with the routed experts in Q4_0 and the shared expert in Q8_0. */
+    public static void expertsDownQ4_0(
+            KernelContext context,
+            IntArray hQuants,
+            FloatArray hScales,
+            IntArray ids,
+            FloatArray weights,
+            ByteArray down0,
+            ByteArray down1,
+            ByteArray sharedDown,
+            FloatArray out,
+            int dim,
+            int hiddenDim,
+            int sharedHiddenDim,
+            int used,
+            int split) {
+        int row = context.globalIdx >> 5;
+        int lane = context.localIdx & 31;
+        int tid = context.localIdx;
+        float[] sums = context.allocateFloatLocalArray(GROUP);
+        sums[tid] = 0.0f;
+        if (row < dim) {
+            int perSlot = hiddenDim / QK;
+            int routedPairs = used * perSlot;
+            for (int p = lane; p < routedPairs; p += 32) {
+                int slot = p / perSlot;
+                int block = p - slot * perSlot;
+                int e = ids.get(slot);
+                float w = weights.get(slot) * hScales.get(p);
+                int e0 = TornadoMath.min(e, split - 1);
+                int e1 = TornadoMath.max(0, e - split);
+                if (e < split) {
+                    int offset = ((e0 * dim + row) * perSlot + block) * Q4_BLOCK_BYTES;
+                    sums[tid] +=
+                            w
+                                    * down0.getHalfFloat(offset).getFloat32()
+                                    * blockDotQ4_0(down0, offset, hQuants, p * (QK / 4));
+                }
+                if (e >= split) {
+                    int offset = ((e1 * dim + row) * perSlot + block) * Q4_BLOCK_BYTES;
+                    sums[tid] +=
+                            w
+                                    * down1.getHalfFloat(offset).getFloat32()
+                                    * blockDotQ4_0(down1, offset, hQuants, p * (QK / 4));
                 }
             }
             int sharedBlocks = sharedHiddenDim / QK;
