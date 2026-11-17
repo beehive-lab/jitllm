@@ -47,14 +47,12 @@ public class Glm5NextPlanComponents implements BatchPrefillDecodeForwardPlanComp
 
     @Override
     public TransformerLayerTaskGraphs singleTokenTransformerLayers() {
-        return new Glm5NextLayers(
-                "glm5next", state, weights, config, schedulerType, "activationUpdate");
+        return new Glm5NextLayers(state, weights, config, schedulerType, "activationUpdate");
     }
 
     @Override
     public AbstractLogitsTaskGraph singleTokenLogits(String previousGraphId) {
-        return new PackedQ8_0LogitsLayer(
-                "logits", state, weights, config, previousGraphId, schedulerType);
+        return new PackedQ8_0LogitsLayer(state, weights, config, previousGraphId, schedulerType);
     }
 
     @Override
@@ -64,8 +62,7 @@ public class Glm5NextPlanComponents implements BatchPrefillDecodeForwardPlanComp
 
     @Override
     public TransformerLayerTaskGraphs prefillDecodeTransformerLayers() {
-        return new Glm5NextLayers(
-                "glm5next", state, weights, config, schedulerType, "decodeActivation");
+        return new Glm5NextLayers(state, weights, config, schedulerType, "decodeActivation");
     }
 
     @Override
@@ -99,6 +96,6 @@ public class Glm5NextPlanComponents implements BatchPrefillDecodeForwardPlanComp
                     "the glm5next batched decode layers are built after the prefill layers");
         }
         return new Glm5NextLayers(
-                "glm5next", state, weights, config, schedulerType, "decodeActivation", prefill);
+                state, weights, config, schedulerType, "decodeActivation", prefill);
     }
 }

@@ -33,11 +33,6 @@ public final class Glm5NextPlanProvider implements TornadoPlanProvider {
     }
 
     @Override
-    public Set<DataType> nativeTensorTypes() {
-        return Set.of(DataType.F32, DataType.Q8_0);
-    }
-
-    @Override
     public Set<ExecutionMode> supportedModes() {
         return Set.of(ExecutionMode.values());
     }
@@ -73,8 +68,9 @@ public final class Glm5NextPlanProvider implements TornadoPlanProvider {
                 : Optional.empty();
     }
 
+    /** The layers bind their weights directly, on CUDA only ({@link #deviceUnsupported}). */
     @Override
-    public Optional<String> packedWeightsUnsupported(ExecutionPolicy policy) {
-        return Optional.of("glm5next reads its projections unpacked");
+    public boolean unifiedMemoryWeights() {
+        return false;
     }
 }

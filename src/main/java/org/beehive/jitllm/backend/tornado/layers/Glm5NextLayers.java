@@ -61,13 +61,12 @@ public class Glm5NextLayers
     private final Map<String, WorkerGrid> grids = new LinkedHashMap<>();
 
     public Glm5NextLayers(
-            String taskGraphName,
             Glm5NextState state,
             Glm5NextTornadoWeights weights,
             Glm5NextConfiguration config,
             SchedulerType schedulerType,
             String activationGraphName) {
-        this(taskGraphName, state, weights, config, schedulerType, activationGraphName, null);
+        this(state, weights, config, schedulerType, activationGraphName, null);
     }
 
     /**
@@ -75,14 +74,13 @@ public class Glm5NextLayers
      * recurrent state and every weight from the prefill graph, so the plan holds one copy of each.
      */
     public Glm5NextLayers(
-            String taskGraphName,
             Glm5NextState state,
             Glm5NextTornadoWeights weights,
             Glm5NextConfiguration config,
             SchedulerType schedulerType,
             String activationGraphName,
             Glm5NextBatchPrefillLayers prefill) {
-        super(taskGraphName, state, weights, config, schedulerType);
+        super(state, weights, config, schedulerType);
         this.gs = state;
         this.w = weights.layers;
         this.activationGraphName = activationGraphName;
