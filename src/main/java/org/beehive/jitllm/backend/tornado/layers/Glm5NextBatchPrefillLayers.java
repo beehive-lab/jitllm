@@ -76,6 +76,13 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
             throw new IllegalStateException(
                     "the glm5next batched prefill needs a state built for batch " + batch);
         }
+        PrefillFamily family = PrefillFamily.of(state);
+        if (family.isNarrow()) {
+            // Every chunk-wide array is sized to the plan's padded width, and the decode graphs
+            // take the caches from this graph by name, so short chunks run at that width.
+            throw PrefillFamily.decline(
+                    "the glm5next batched prefill runs every chunk at the plan's width");
+        }
         this.gs = state;
         this.weights = weights;
         this.config = config;
@@ -102,7 +109,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 }
             }
         }
-        TaskGraph g = new TaskGraph(GRAPH);
+        TaskGraph g = family.taskGraph(GRAPH);
         bind(g);
         var ws = state.workspace;
         task(
