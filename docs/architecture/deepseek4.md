@@ -7,9 +7,9 @@ format for it, architecture `deepseek4` (`src/models/deepseek4.cpp`), and runs i
 `deepseek4` family.
 
 This page describes the model, how it maps onto jitllm, the GGUF layout and the GPU plan. Most of
-its blocks come from two families jitllm already has. Its mHC, indexer and expert loading are the
-`glm5next` family's (GLM-5.3-Flash, see [glm5next.md](glm5next.md)). Its multi-head latent
-attention is related to `deepseek2`'s.
+its blocks come from two families jitllm already has. Its mHC, indexer, expert loading, Q4_0
+routed experts and split across GPUs are the `glm5next` family's (GLM-5.3-Flash, see
+[glm5next.md](glm5next.md)). Its multi-head latent attention is related to `deepseek2`'s.
 
 ## The checkpoint
 
@@ -161,7 +161,8 @@ without the rounding, and can enable it to measure how large the gap is.
 | output | the Q8_0 matrix-vector and int8 GEMM kernels | grouped `wo_a`: 8 independent 4096 → 1024 products, as one strided batch |
 | compressor | `glm5next`'s k-pool gating (`indexerPoolKey(s)`: `softmax(gate + ape) · key` over a pool of 4) | pools of 128 and overlapping pools of 4 with two halves, per-channel gates 512/1024 wide, the pooled key's RMS norm and RoPE, the decode state buffers |
 | indexer | `glm5next`'s `indexerScores` (`Σ w_h relu(q_h·k)`) and `indexerSelect` | its own overlapping compressor instead of `LayerNorm(wk x)`; RoPE on the indexer queries; scale (128·64)^-½ |
-| MoE | `glm5next`: `routerTopKSigmoid`'s selection with bias, `expertsGateUpClamped`, `expertsDown`, `groupByExpert`, the grouped GEMMs, the expert stacks under 2³¹ bytes (`Glm5NextModelLoader`) | `sqrtsoftplus` scoring; the hash-routed path (`tid2eid` gather, no bias); clamping the shared expert |
+| MoE | `glm5next`: `routerTopKSigmoid`'s selection with bias, `expertsGateUpClamped`, `expertsDown`, `groupByExpert`, the grouped GEMMs, their `Q4_0` variants for Q4_0 routed experts, the expert stacks under 2³¹ bytes (`Glm5NextModelLoader`) | `sqrtsoftplus` scoring; the hash-routed path (`tid2eid` gather, no bias); clamping the shared expert |
+| several GPUs | `glm5next`'s stage layers and stage carrier: `--devices` splits the trunk by layer, and each boundary carries the 4 residual streams | nothing beyond the per-layer state staying on its stage |
 | MTP | `glm5next`'s `forwardNextn` hook | `e_proj`/`h_proj` (llama.cpp concatenates them into `eh_proj`), applied to 4 streams |
 | tokenizer | the byte-level BPE in `tokenizer/` | the DeepSeek-V3 split rules (digits in groups of three, CJK runs, then the main pattern); the Base model needs no chat format |
 
@@ -232,8 +233,10 @@ weight and raises `KeyError`. (This comes from reading the converter; it has not
 
 **`scripts/deepseek4/convert.py`.** It writes the same format, from only the shards a slice needs:
 
-- **Experts:** FP8 experts become Q8_0, which is close to lossless, or MXFP4 if requested. FP4
-  experts become MXFP4, repacked exactly as llama.cpp does.
+- **Experts:** `--expert-type`, as in `glm5next`'s converter. FP8 experts become Q8_0 by default,
+  which is close to lossless, or Q4_0 or MXFP4, which round them to 4 bits. FP4 experts become
+  MXFP4 by default, repacked exactly as llama.cpp does; written as Q4_0 they are rounded, because
+  FP4's values (±0.5 to ±6 in uneven steps) do not lie on Q4_0's even grid of 16 levels.
 - **Other weights:** as in the table above. With `--f32-small`, the BF16 compressor, indexer and
   router weights are also written as F32, the way `glm5next` keeps its indexer weights.
 - **Slices:** a slice of layers `[a, b)` is renumbered from 0. It gets `compress_ratios[a:b]` (plus
@@ -242,7 +245,9 @@ weight and raises `KeyError`. (This comes from reading the converter; it has not
 ### MXFP4 in jitllm
 
 `GGMLType` has no MXFP4 (ggml type 39: blocks of 32, one E8M0 byte and 16 bytes of E2M1 codes).
-It is needed to load llama.cpp's V4-Flash files, and it halves the experts' memory. Two steps:
+It is needed to load llama.cpp's V4-Flash files. Q4_0 experts, which `glm5next` already runs,
+take about the same memory (4.5 bits a value against 4.25), but only MXFP4 keeps V4-Flash's FP4
+experts exact. Two steps:
 
 1. **Load as Q8_0.** An MXFP4 block decodes to `k · 2^(e−128)` with `k` in
    {0, ±1, ±2, ±3, ±4, ±6, ±8, ±12} (ggml's doubled codes). That is a Q8_0 block with
@@ -257,19 +262,29 @@ It is needed to load llama.cpp's V4-Flash files, and it halves the experts' memo
 
 The plan follows `glm5next`: one task graph for the trunk in decode, one for batched prefill, Q8_0
 projections, F32 small tensors, an FP32 cache, and TornadoVM kernels only (no native libraries).
+The routed experts may be Q8_0, Q4_0 or (once added) MXFP4; the shared expert stays Q8_0.
 
 ### Memory
 
 | | per layer | 43 layers | embedding + head |
 |---|---|---|---|
 | Q8_0 experts | ≈ 7.0 GB (experts 6.84, attention and shared expert ≈ 0.16) | ≈ 301 GB | 1.06 GB BF16 embedding (host) + 0.56 GB Q8_0 head |
-| MXFP4 experts | ≈ 3.6 GB | ≈ 155 GB | same |
+| Q4_0 experts | ≈ 3.8 GB (experts 3.62) | ≈ 163 GB | same |
+| MXFP4 experts | ≈ 3.6 GB (experts 3.42) | ≈ 154 GB | same |
 
 - **Expert stacks:** one projection's Q8_0 stack is 256 × 2048 × 4096 values, 2.28 GB, just over
-  2³¹ bytes. It loads as two stacks of 128, as `glm5next` does. MXFP4 stacks fit in one.
-- **One A100 80GB:** about 9–10 layers with Q8_0 experts, or 18–20 with MXFP4 experts.
-- **The full model:** at least 4 such GPUs with Q8_0 experts, or 2 with MXFP4. That needs the
-  model split across devices, which comes after the single-device plan.
+  2³¹ bytes. It loads as two stacks of 128, as `glm5next` does. Q4_0 (1.21 GB) and MXFP4 stacks
+  fit in one.
+- **One A100 80GB:** about 9–10 layers with Q8_0 experts, or 18–20 with Q4_0 or MXFP4 experts.
+- **The full model:** split by layer with `--devices`, as `glm5next` is:
+  - Q8_0 experts: about 281 GiB, so at least four A100 80GB;
+  - Q4_0 experts: about 152 GiB, on two A100 80GB, leaving about 8 GiB for caches and workspaces;
+  - MXFP4 experts: about 144 GiB, on two, leaving about 16 GiB.
+- **Stage boundaries:** as in `glm5next`, a boundary carries the 4 residual streams (4 × 4096
+  values per token) instead of one hidden state. Every other piece of state is per layer and stays
+  on its stage: the window ring, the compressor states, the compressed and indexer caches. The
+  hash-routed layers 0–2 read the token ids, which the first stage already holds for the
+  embedding, so the first stage takes at least those three layers.
 - **The test slice:** layers 0–3 of Flash-Base cover every layer kind: hash routing, ratio 0,
   ratio 4 with the indexer, and ratio 128. It needs shards 1–5 and 45 (about 30 GB), and makes a
   Q8_0 file of about 30 GB.
@@ -309,7 +324,9 @@ Per layer, in one task graph:
    - a router kernel with `sqrtsoftplus`; it selects through the bias, or reads `tid2eid` in hash
      layers;
    - the shared expert, as three Q8_0 projections with the clamp;
-   - `expertsGateUpClamped` and `expertsDown` over the expert stacks;
+   - `expertsGateUpClamped` and `expertsDown` over the expert stacks, or their `Q4_0` variants,
+     which take DP4A dot products on the nibbles as stored and subtract 8 times the sum of each
+     block's activations;
    - the expert results and the shared expert added together.
 9. **mHC post.**
 
@@ -327,7 +344,9 @@ The prefill graph processes a chunk of tokens, a row per token, as `glm5next`'s 
 
 - **Projections:** int8 tensor-core GEMMs (`Int8GemmKernels.gemmInt8Q8_0`), with the grouped
   `wo_a` as 8 strided GEMMs.
-- **Routed experts:** grouped GEMMs after `groupByExpert`.
+- **Routed experts:** grouped GEMMs after `groupByExpert`. Q4_0 experts are recentred to int8 as
+  their tiles are staged (`groupedGateUpClampedQ4_0`, `groupedDownQ4_0`), so the GEMMs are the
+  same.
 - **Compressor:** pools every block the chunk completes in one pass. The state carried over from
   before the chunk serves as the "previous block" of the first one.
 - **Indexer:** scores each (row, block) pair, with causal visibility per row.
