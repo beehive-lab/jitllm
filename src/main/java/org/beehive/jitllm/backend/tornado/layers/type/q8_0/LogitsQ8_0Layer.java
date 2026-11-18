@@ -113,6 +113,11 @@ public class LogitsQ8_0Layer extends AbstractLogitsTaskGraph {
         } else {
             logits.transferToHost(DataTransferMode.EVERY_EXECUTION, state.workspace.wrapLogits);
         }
+        if (state.executionPolicy().hiddenStateToHost()) {
+            // mapContextLogits normalised wrapX in place (final RMS norm times its weight): this is
+            // the hidden state an embedding model's vector is read from.
+            logits.transferToHost(DataTransferMode.EVERY_EXECUTION, state.workspace.wrapX);
+        }
         configureAdditionalPersists(logits);
         return logits;
     }

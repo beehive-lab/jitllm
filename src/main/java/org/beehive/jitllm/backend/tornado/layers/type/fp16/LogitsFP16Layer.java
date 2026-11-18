@@ -129,6 +129,11 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
     // @formatter:off
     @Override
     protected TaskGraph setupLogitsTaskGraph(TornadoWeights weights, Configuration config) {
+        if (state.executionPolicy().hiddenStateToHost()) {
+            throw new UnsupportedOperationException(
+                    "hiddenStateToHost is implemented for Q8_0 weights; this FP16 plan normalises into"
+                            + " a half-precision scratch and does not expose the hidden state");
+        }
         var logits = new TaskGraph(GraphNames.LOGITS);
         // === Data Setup ===
         configureAdditionalConsumes(logits);

@@ -68,6 +68,7 @@ public class StableSurfaceTest {
                             "CancellationToken",
                             "ChatMessage",
                             "DecisionSession",
+                            "EmbeddingSession",
                             "FinishReason",
                             "GenerationTimings",
                             "ModelCapabilities",
