@@ -598,22 +598,20 @@ public final class Glm5NextBatchKernels {
             int heads,
             int headDim,
             int stateOffset) {
-        final int cols = Glm5NextKernels.DELTA_COLUMNS;
-        final int chunks = Glm5NextKernels.DELTA_CHUNKS;
+        final int cols = KdaKernels.DELTA_COLUMNS;
+        final int chunks = KdaKernels.DELTA_CHUNKS;
         int tid = context.localIdx;
         int column = tid % cols;
         int chunk = tid / cols;
         int tiles = (headDim + cols - 1) / cols;
         int h = context.groupIdx / tiles;
         int j = (context.groupIdx - h * tiles) * cols + column;
-        float[] slice =
-                context.allocateFloatLocalArray(MAX_KDA_HEAD * Glm5NextKernels.DELTA_COLUMNS);
+        float[] slice = context.allocateFloatLocalArray(MAX_KDA_HEAD * KdaKernels.DELTA_COLUMNS);
         float[] keys = context.allocateFloatLocalArray(MAX_KDA_HEAD);
         float[] queries = context.allocateFloatLocalArray(MAX_KDA_HEAD);
         float[] decays = context.allocateFloatLocalArray(MAX_KDA_HEAD);
         float[] sums =
-                context.allocateFloatLocalArray(
-                        Glm5NextKernels.DELTA_COLUMNS * Glm5NextKernels.DELTA_CHUNKS);
+                context.allocateFloatLocalArray(KdaKernels.DELTA_COLUMNS * KdaKernels.DELTA_CHUNKS);
         int rowsPerChunk = (headDim + chunks - 1) / chunks;
         int start = chunk * rowsPerChunk;
         int end = TornadoMath.min(headDim, start + rowsPerChunk);
@@ -1156,7 +1154,7 @@ public final class Glm5NextBatchKernels {
             partial +=
                     w.getHalfFloat(offset).getFloat32()
                             * xScales.get(xBlock + b)
-                            * Glm5NextKernels.blockDotQ4_0(
+                            * RoutedExpertKernels.blockDotQ4_0(
                                     w, offset, xQuants, (xBlock + b) * (QK / 4));
         }
         return partial;
@@ -1817,13 +1815,13 @@ public final class Glm5NextBatchKernels {
                         inFirst
                                 * w
                                 * down0.getHalfFloat(offset0).getFloat32()
-                                * Glm5NextKernels.blockDotQ4_0(
+                                * RoutedExpertKernels.blockDotQ4_0(
                                         down0, offset0, hQuants, (hBlock + p) * (QK / 4));
                 second +=
                         (1 - inFirst)
                                 * w
                                 * down1.getHalfFloat(offset1).getFloat32()
-                                * Glm5NextKernels.blockDotQ4_0(
+                                * RoutedExpertKernels.blockDotQ4_0(
                                         down1, offset1, hQuants, (hBlock + p) * (QK / 4));
             }
             int sharedBlocks = sharedHiddenDim / QK;

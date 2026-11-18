@@ -9,6 +9,7 @@ import org.beehive.jitllm.backend.tornado.kernels.DeepSeek2BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
+import org.beehive.jitllm.backend.tornado.kernels.KdaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35DeltaNetKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
@@ -523,7 +524,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::kdaL2Norm,
+                                KdaKernels::kdaL2Norm,
                                 context,
                                 b.kdaConvQ,
                                 batch * heads,
@@ -537,7 +538,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::kdaL2Norm,
+                                KdaKernels::kdaL2Norm,
                                 context,
                                 b.kdaConvK,
                                 batch * heads,
@@ -576,10 +577,8 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 g,
                 p + "kda_delta",
                 groups(
-                        heads
-                                * ((hd + Glm5NextKernels.DELTA_COLUMNS - 1)
-                                        / Glm5NextKernels.DELTA_COLUMNS),
-                        Glm5NextKernels.DELTA_COLUMNS * Glm5NextKernels.DELTA_CHUNKS),
+                        heads * ((hd + KdaKernels.DELTA_COLUMNS - 1) / KdaKernels.DELTA_COLUMNS),
+                        KdaKernels.DELTA_COLUMNS * KdaKernels.DELTA_CHUNKS),
                 t ->
                         g.task(
                                 t,
@@ -603,7 +602,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::kdaGatedNorm,
+                                KdaKernels::kdaGatedNorm,
                                 context,
                                 b.kdaOut,
                                 b.kdaGate,
