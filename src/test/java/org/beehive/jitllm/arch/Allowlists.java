@@ -37,6 +37,7 @@ public final class Allowlists {
             frozen(
                     "org.beehive.jitllm.model.Model",
                     "org.beehive.jitllm.model.deepseek2.DeepSeek2",
+                    "org.beehive.jitllm.model.deepseek4.DeepSeek4",
                     "org.beehive.jitllm.model.devstral.Devstral",
                     "org.beehive.jitllm.model.gemma4.Gemma4",
                     "org.beehive.jitllm.model.glm5next.Glm5Next",
@@ -50,6 +51,7 @@ public final class Allowlists {
                     "org.beehive.jitllm.model.qwen35.Qwen35",
                     "org.beehive.jitllm.model.loader.AbstractModelLoader",
                     "org.beehive.jitllm.model.loader.DeepSeek2ModelLoader",
+                    "org.beehive.jitllm.model.loader.DeepSeek4ModelLoader",
                     "org.beehive.jitllm.model.loader.DevstralModelLoader",
                     "org.beehive.jitllm.model.loader.Gemma4ModelLoader",
                     "org.beehive.jitllm.model.loader.GraniteLoader",

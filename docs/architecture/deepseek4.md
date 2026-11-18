@@ -162,7 +162,7 @@ without the rounding, and can enable it to measure how large the gap is.
 | compressor | `glm5next`'s k-pool gating (`indexerPoolKey(s)`: `softmax(gate + ape) · key` over a pool of 4) | pools of 128 and overlapping pools of 4 with two halves, per-channel gates 512/1024 wide, the pooled key's RMS norm and RoPE, the decode state buffers |
 | indexer | `glm5next`'s `indexerScores` (`Σ w_h relu(q_h·k)`) and `indexerSelect` | its own overlapping compressor instead of `LayerNorm(wk x)`; RoPE on the indexer queries; scale (128·64)^-½ |
 | MoE | `glm5next`: `routerTopKSigmoid`'s selection with bias, `expertsGateUpClamped`, `expertsDown`, `groupByExpert`, the grouped GEMMs, their `Q4_0` variants for Q4_0 routed experts, the expert stacks under 2³¹ bytes (`Glm5NextModelLoader`) | `sqrtsoftplus` scoring; the hash-routed path (`tid2eid` gather, no bias); clamping the shared expert |
-| several GPUs | `glm5next`'s stage layers and stage carrier: `--devices` splits the trunk by layer, and each boundary carries the 4 residual streams | nothing beyond the per-layer state staying on its stage |
+| several GPUs | `glm5next`'s stage layers and stage carrier: `--devices` splits the trunk by layer, and each boundary carries the 4 residual streams | every stage reads the hash-routed experts the host stages in the session's state |
 | MTP | `glm5next`'s `forwardNextn` hook | `e_proj`/`h_proj` (llama.cpp concatenates them into `eh_proj`), applied to 4 streams |
 | tokenizer | the byte-level BPE in `tokenizer/` | the DeepSeek-V3 split rules (digits in groups of three, CJK runs, then the main pattern); the Base model needs no chat format |
 
@@ -261,8 +261,11 @@ experts exact. Two steps:
 ## Running on the GPU
 
 The plan follows `glm5next`: one task graph for the trunk in decode, one for batched prefill, Q8_0
-projections, F32 small tensors, an FP32 cache, and TornadoVM kernels only (no native libraries).
-The routed experts may be Q8_0, Q4_0 or (once added) MXFP4; the shared expert stays Q8_0.
+projections, F32 small tensors, an FP32 window and compressed-key cache, and TornadoVM kernels only
+(no native libraries). It runs on CUDA in all three modes (single-token, sequential
+prefill/decode, batched prefill); the batched prefill needs int8 tensor cores. The routed experts
+are all Q8_0 or all Q4_0, in at most two stacks; the shared expert stays Q8_0. The MTP layer runs
+on the host.
 
 ### Memory
 
@@ -281,10 +284,11 @@ The routed experts may be Q8_0, Q4_0 or (once added) MXFP4; the shared expert st
   - Q4_0 experts: about 152 GiB, on two A100 80GB, leaving about 8 GiB for caches and workspaces;
   - MXFP4 experts: about 144 GiB, on two, leaving about 16 GiB.
 - **Stage boundaries:** as in `glm5next`, a boundary carries the 4 residual streams (4 × 4096
-  values per token) instead of one hidden state. Every other piece of state is per layer and stays
-  on its stage: the window ring, the compressor states, the compressed and indexer caches. The
-  hash-routed layers 0–2 read the token ids, which the first stage already holds for the
-  embedding, so the first stage takes at least those three layers.
+  values per token) instead of one hidden state. Every other piece of state is per layer and is
+  used only on its stage: the window ring, the compressor states, the compressed and indexer
+  caches. Each stage allocates them for the whole model, as the layers address them by absolute
+  layer. The hash-routed layers 0–2 take each token's experts from tables the host stages for
+  every stage, so they can sit on any stage.
 - **The test slice:** layers 0–3 of Flash-Base cover every layer kind: hash routing, ratio 0,
   ratio 4 with the indexer, and ratio 128. It needs shards 1–5 and 45 (about 30 GB), and makes a
   Q8_0 file of about 30 GB.
@@ -296,66 +300,80 @@ The routed experts may be Q8_0, Q4_0 or (once added) MXFP4; the shared expert st
 
 ### Decode
 
-Per layer, in one task graph:
+`DeepSeek4Layers` builds the whole trunk as one task graph. Per layer:
 
-1. **mHC pre:** `glm5next`'s `rmsNormQuantize`, `hcMixes`, `hcCoefficients` and `hcCollapse`.
-2. **Query and key/value:**
-   - `wq_a` and `wkv` as one two-projection Q8_0 kernel, then `latentNorms`;
-   - `wq_b`;
-   - a per-head norm and interleaved RoPE in one kernel;
-   - `kv` written into the window ring.
-3. **Compressor:** `wkv_c` and `wgate_c` (F32 or BF16, `projectF32`). One kernel updates the state.
-   On a block boundary it also pools, normalizes, rotates and appends the block to the layer's
-   compressed cache. It works on flat arithmetic blends, without branches that merge values.
-4. **Indexer (ratio 4):**
-   - `wq_b_I` with RoPE;
-   - its compressor as in step 3;
-   - `weights_proj`;
-   - `indexerScores` over the complete blocks, then `indexerSelect` (top 512).
-5. **Attention:** one kernel per (head group, split of keys). It runs an online softmax over the
-   window entries, then over the selected blocks (ratio 4) or every complete block (ratio 128). A
-   combine step adds the sink and rotates the output back. All 64 heads share the one key/value
-   head. Each key is loaded once per workgroup and used by several heads, as deepseek2's absorbed
-   attention does.
-6. **Output:** grouped `wo_a` (one workgroup row per group and output, reading only its group's 4096
-   inputs), then `wo_b`.
+1. **mHC pre:** `glm5next`'s `hcMixes`, `hcCoefficients` (with DeepSeek-V4's post scale of 2) and
+   `hcCollapse`, then the RMS norm and the Q8 quantization of the collapsed input.
+2. **Query and key/value:** `wq_a` and `wkv` (Q8_0, DP4A), the latent norms, `wq_b`.
+   `DeepSeek4Kernels.attentionPrep` normalizes each query head without a weight and rotates its
+   tail, and rotates the key/value's tail and stores it in the window ring at `position % window`.
+3. **Compressor:** `wkv_c` and `wgate_c` in F32 (`projectF32`). `DeepSeek4Kernels.compressor`, in
+   one workgroup, stores the position's pending entry and, when a block completes, pools it (the
+   overlapping ratio 4 over the previous block's first halves and its own second halves),
+   normalizes and rotates the pooled key and appends it to the layer's compressed keys.
+4. **Indexer (ratio 4):** its own compressor as in step 3; `wq_b_I`, rotated; the head weights;
+   `indexerScores` (a warp per complete block) and `indexerSelect`, which keeps every block while
+   there are at most `topK` and otherwise the `topK` best, a tie going to the lower block.
+5. **Attention:** `DeepSeek4Kernels.attention`, a workgroup per head, one softmax over the window
+   positions and then the selected (ratio 4) or every complete (ratio 128) block, with the sink;
+   the output's tail is rotated back.
+6. **Output:** the grouped `wo_a` (`groupedProjection`, a warp per row reading only its group's
+   slice of the heads' output), then `wo_b`.
 7. **mHC post,** then mHC pre again for the feed-forward.
-8. **MoE:**
-   - a router kernel with `sqrtsoftplus`; it selects through the bias, or reads `tid2eid` in hash
-     layers;
-   - the shared expert, as three Q8_0 projections with the clamp;
-   - `expertsGateUpClamped` and `expertsDown` over the expert stacks, or their `Q4_0` variants,
-     which take DP4A dot products on the nibbles as stored and subtract 8 times the sum of each
-     block's activations;
-   - the expert results and the shared expert added together.
+8. **MoE:** `routerSqrtSoftplus` in one workgroup: it selects through the bias, or in a hash-routed
+   layer takes the token's experts, which the host stages from `tid2eid` before every step. Then
+   `glm5next`'s `expertsGateUpClamped` and `expertsDown` over the routed and shared experts, or
+   their `Q4_0` variants.
 9. **mHC post.**
 
-After the last layer: the learned mHC head, `norm`, and the output projection.
+After the last layer, `DeepSeek4Kernels.hcHead` collapses the streams through the learned head,
+and the logits graph applies `norm` and the output projection.
 
 Kernel rules that apply throughout:
 
-- shapes travel in an `IntArray` when a kernel would take 18 or more arguments;
+- shapes travel in an `IntArray` (`SHAPE_*`, `C_*` indices) when a kernel would take 18 or more
+  arguments;
 - values chosen by a condition are arithmetic blends, not merged after an if/else;
 - indices the backend may compute speculatively (window slot, block index, expert id) are clamped.
 
 ### Batched prefill
 
-The prefill graph processes a chunk of tokens, a row per token, as `glm5next`'s does:
+`DeepSeek4BatchPrefillLayers` runs the trunk over a chunk of tokens in one task graph, a row per
+token, and pads every array to whole 128-row tiles:
 
-- **Projections:** int8 tensor-core GEMMs (`Int8GemmKernels.gemmInt8Q8_0`), with the grouped
-  `wo_a` as 8 strided GEMMs.
-- **Routed experts:** grouped GEMMs after `groupByExpert`. Q4_0 experts are recentred to int8 as
-  their tiles are staged (`groupedGateUpClampedQ4_0`, `groupedDownQ4_0`), so the GEMMs are the
-  same.
-- **Compressor:** pools every block the chunk completes in one pass. The state carried over from
-  before the chunk serves as the "previous block" of the first one.
-- **Indexer:** scores each (row, block) pair, with causal visibility per row.
-- **Attention:** each row sees the window (the 128 positions up to its own, from the cache and the
-  chunk), plus its selected or visible compressed blocks. Attention runs on FP16 tensor cores
-  when the shapes are whole tiles: 512-wide keys are whole 128-column tiles. The softmax keeps only
-  the window and the selected blocks.
-- **Hand-off to decode:** the window rings, compressor states and caches are the decode graph's own
-  arrays, handed over by name.
+- **mHC, norms, routing and experts:** `glm5next`'s batched kernels over every row at once.
+- **Projections:** int8 tensor-core GEMMs (`Int8GemmKernels.gemmInt8Q8_0`) where the shapes are
+  whole tiles, otherwise the Q8_0 DP4A kernels; the grouped `wo_a` is
+  `DeepSeek4BatchKernels.groupedProjection`.
+- **Compressor:** `DeepSeek4BatchKernels.compressor` walks the chunk's real rows in order in one
+  workgroup, since each row's pending entries follow from the rows before it, and appends every
+  block the chunk completes.
+- **Indexer:** scores and selects per row, over the blocks complete at that row's position.
+- **Attention:** each row reads the window positions before the chunk from the ring and the
+  chunk's own rotated keys directly, plus its selected or complete blocks. The chunk's last
+  `window` keys go into the ring only after attention (`storeWindow`), so a chunk wider than the
+  window does not overwrite keys still being read.
+- **Padding rows:** they compute as the last real row and write no cache.
+- **Hash routing:** the host stages each row's experts (`Model.stageBatchDeviceInputs`).
+- **Hand-off to decode:** the window, the pending entries and the compressed and indexer keys are
+  the decode graph's own arrays. The decode layers take them, and every weight, from the prefill
+  graph by name, so the plan holds one copy of each.
+
+The grouped int8 expert GEMMs `glm5next` uses for its larger models are not used here yet: the
+routed experts run as a warp per (row, output).
+
+### Several GPUs
+
+`--devices` splits the trunk by layer, single-token and batched alike
+(`StagedForwardPlanComponents`):
+
+- the first stage broadcasts the embedding into the residual streams, and each boundary carries
+  the 4 streams;
+- the last stage runs the mHC head, and the logits follow it;
+- the layers address their caches by absolute layer, so each stage keeps the whole model's layout
+  and uses its own layers' part;
+- the host stages the hash-routed experts once, in the session's state, and every stage reads
+  those arrays.
 
 ## Checking
 
@@ -371,8 +389,10 @@ The prefill graph processes a chunk of tokens, a row per token, as `glm5next`'s 
      `DeepseekV4ForCausalLM`, where the installed transformers provides it.
 2. **`DeepSeek4ForwardTest`.** Runs the converted F32 and Q8_0 files on the CPU against those
    goldens.
-3. **GPU tests.** `DeepSeek4KernelsAccelTest` checks the kernels against host evaluations, and
-   `DeepSeek4DecodeParityAccelTest` checks the whole plan, decode and batched prefill.
+3. **GPU tests.** `DeepSeek4DecodeParityAccelTest` checks the whole plan against a host that
+   rounds its activations to int8 as the device does: single-token decode, the sequential
+   prefill/decode plan, batched prefill then decode, two expert stacks, and the plans split into
+   stages on one device, which must match one stage exactly.
 4. **Real weights.** The layers 0–3 slice is checked against llama.cpp on the same file. That needs
    `llama-cli` or `llama-eval-callback`, not just `llama-bench`.
 5. **Benchmarks.** `llama-bench` on the same GGUF.

@@ -58,6 +58,12 @@ public final class TornadoWorkspace {
     /** The {@code glm5next} batched prefill's chunk-wide arrays; null without one. */
     public Glm5NextBatchArrays glm5nextBatch;
 
+    /** The {@code deepseek4} decode plan's own arrays; null for every other family. */
+    public DeepSeek4DeviceArrays deepseek4;
+
+    /** The {@code deepseek4} batched prefill's chunk-wide arrays; null without one. */
+    public DeepSeek4BatchArrays deepseek4Batch;
+
     public FloatArray
             wrapLogits; // FloatArray wrapper for the logits tensor, compatible with TornadoVM for
     // GPU execution.
