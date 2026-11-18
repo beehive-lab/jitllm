@@ -62,6 +62,14 @@ public class EmbeddingSessionAccelTest {
                                                     .build())
                                     .build())) {
                 double agreement = dot(related, batched.embed(RELATED));
+                System.out.printf(
+                        "[embedding] %s dim %d: query-related %.4f, query-unrelated %.4f,"
+                                + " single-token vs batched prefill %.6f%n",
+                        model.info().name(),
+                        q.length,
+                        dot(q, related),
+                        dot(q, unrelated),
+                        agreement);
                 assertTrue(
                         "single-token and batched prefill agree: " + agreement, agreement > 0.999);
             }
