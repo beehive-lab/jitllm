@@ -53,8 +53,8 @@ public record KimiLinearConfiguration(
     public static final int KDA = 0;
     public static final int MLA = 1;
 
-    /** The epsilon of the KDA query and key L2 norms, as llama.cpp applies them. */
-    public static final float KDA_L2_NORM_EPS = 1e-6f;
+    /** Slices one head's positions are split over in decode attention. */
+    public static final int DECODE_ATTENTION_SPLITS = 16;
 
     @Override
     public String quantization() {

@@ -444,4 +444,12 @@ public final class RoutedExpertKernels {
         }
         return partial;
     }
+
+    /** {@code x[i] += delta[i]} for the first {@code n} values: the experts into the residual. */
+    public static void addInto(KernelContext context, FloatArray x, FloatArray delta, int n) {
+        int i = context.globalIdx;
+        if (i < n) {
+            x.set(i, x.get(i) + delta.get(i));
+        }
+    }
 }
