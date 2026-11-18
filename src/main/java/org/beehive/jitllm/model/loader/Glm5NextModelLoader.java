@@ -21,6 +21,7 @@ import org.beehive.jitllm.format.GGMLTensorEntry;
 import org.beehive.jitllm.format.GGMLType;
 import org.beehive.jitllm.format.GGUF;
 import org.beehive.jitllm.inference.weights.Glm5NextLayerWeights;
+import org.beehive.jitllm.inference.weights.KdaWeights;
 import org.beehive.jitllm.inference.weights.Weights;
 import org.beehive.jitllm.inference.weights.standard.Glm5NextStandardWeights;
 import org.beehive.jitllm.inference.weights.tornado.Glm5NextTornadoWeights;
@@ -472,7 +473,7 @@ public class Glm5NextModelLoader extends AbstractModelLoader<Glm5Next, Glm5NextC
                         hcAttnFn, hcAttnBase, hcAttnScale, hcFfnFn, hcFfnBase, hcFfnScale),
                 attnNorm,
                 ffnNorm,
-                new Glm5NextLayerWeights.Kda<>(
+                new KdaWeights<>(
                         q, k, v, convQ, convK, convV, decayA, decayB, dtBias, a, beta, gateA, gateB,
                         outNorm, kdaOut),
                 new Glm5NextLayerWeights.SparseAttention<>(

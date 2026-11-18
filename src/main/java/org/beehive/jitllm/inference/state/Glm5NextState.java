@@ -35,25 +35,8 @@ public final class Glm5NextState extends State {
     /** {@code hcComb[m * n + k]}: how much input stream {@code m} feeds output stream {@code k}. */
     public final float[] hcComb;
 
-    // KDA, per layer (null on sparse-attention layers).
-    public final FloatTensor[] convWindowQ;
-    public final FloatTensor[] convWindowK;
-    public final FloatTensor[] convWindowV;
-
-    /** Per head a {@code headDim × headDim} matrix, row = key channel, column = value channel. */
-    public final FloatTensor[] deltaState;
-
-    public final FloatTensor kdaQ;
-    public final FloatTensor kdaK;
-    public final FloatTensor kdaV;
-    public final FloatTensor kdaConvQ;
-    public final FloatTensor kdaConvK;
-    public final FloatTensor kdaConvV;
-    public final FloatTensor kdaLowRank;
-    public final FloatTensor kdaDecay;
-    public final FloatTensor kdaBeta;
-    public final FloatTensor kdaGate;
-    public final FloatTensor kdaOut;
+    /** KDA's windows, matrices and per-token buffers (null slots on sparse-attention layers). */
+    public final KdaHostState kda;
 
     // Sparse attention, per layer (null on KDA layers).
     public final FloatTensor[] indexKeyCache;
@@ -112,40 +95,18 @@ public final class Glm5NextState extends State {
         this.hcPost = new float[n];
         this.hcComb = new float[n * n];
 
-        int kda = c.kdaDim();
-        int window = kda * (c.kdaConvKernel() - 1);
-        this.convWindowQ = new FloatTensor[layers];
-        this.convWindowK = new FloatTensor[layers];
-        this.convWindowV = new FloatTensor[layers];
-        this.deltaState = new FloatTensor[layers];
+        this.kda =
+                new KdaHostState(layers, c::isKda, c.kdaHeads(), c.kdaHeadDim(), c.kdaConvKernel());
         this.indexKeyCache = new FloatTensor[layers];
         this.poolGateCache = new FloatTensor[layers];
         this.poolKeyCache = new FloatTensor[layers];
         for (int l = 0; l < layers; l++) {
-            if (c.isKda(l)) {
-                convWindowQ[l] = ArrayFloatTensor.allocate(window);
-                convWindowK[l] = ArrayFloatTensor.allocate(window);
-                convWindowV[l] = ArrayFloatTensor.allocate(window);
-                deltaState[l] =
-                        ArrayFloatTensor.allocate(c.kdaHeads() * c.kdaHeadDim() * c.kdaHeadDim());
-            } else {
+            if (!c.isKda(l)) {
                 indexKeyCache[l] = ArrayFloatTensor.allocate(context * c.indexerHeadDim());
                 poolGateCache[l] = ArrayFloatTensor.allocate(context * c.indexerHeadDim());
                 poolKeyCache[l] = ArrayFloatTensor.allocate(pools * c.indexerHeadDim());
             }
         }
-        this.kdaQ = ArrayFloatTensor.allocate(kda);
-        this.kdaK = ArrayFloatTensor.allocate(kda);
-        this.kdaV = ArrayFloatTensor.allocate(kda);
-        this.kdaConvQ = ArrayFloatTensor.allocate(kda);
-        this.kdaConvK = ArrayFloatTensor.allocate(kda);
-        this.kdaConvV = ArrayFloatTensor.allocate(kda);
-        this.kdaLowRank = ArrayFloatTensor.allocate(c.kdaHeadDim());
-        this.kdaDecay = ArrayFloatTensor.allocate(kda);
-        this.kdaBeta = ArrayFloatTensor.allocate(c.kdaHeads());
-        this.kdaGate = ArrayFloatTensor.allocate(kda);
-        this.kdaOut = ArrayFloatTensor.allocate(kda);
-
         this.queryLatent = ArrayFloatTensor.allocate(c.qLoraRank());
         this.kvLatent = ArrayFloatTensor.allocate(c.kvLoraRank());
         this.absorbedQuery = ArrayFloatTensor.allocate(c.absorbedQueryDim());
@@ -362,14 +323,7 @@ public final class Glm5NextState extends State {
      */
     @Override
     public void resetSequenceState() {
-        for (int l = 0; l < deltaState.length; l++) {
-            if (deltaState[l] != null) {
-                convWindowQ[l].fillInPlace(0, convWindowQ[l].size(), 0f);
-                convWindowK[l].fillInPlace(0, convWindowK[l].size(), 0f);
-                convWindowV[l].fillInPlace(0, convWindowV[l].size(), 0f);
-                deltaState[l].fillInPlace(0, deltaState[l].size(), 0f);
-            }
-        }
+        kda.reset();
         TornadoWorkspaces.zeroRecurrentState(workspace);
     }
 }
