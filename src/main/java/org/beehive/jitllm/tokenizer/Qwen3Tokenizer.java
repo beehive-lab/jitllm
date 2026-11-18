@@ -68,12 +68,29 @@ public class Qwen3Tokenizer implements Tokenizer {
             Vocabulary vocabulary,
             boolean isDeepSeekR1DistillQwen,
             String splitPattern) {
+        this(
+                metadata,
+                vocabulary,
+                isDeepSeekR1DistillQwen ? "<｜end▁of▁sentence｜>" : "<|endoftext|>",
+                splitPattern);
+    }
+
+    /**
+     * The same tokenizer for a vocabulary whose special-token block starts elsewhere.
+     *
+     * @param firstSpecialToken the first token of the block of special tokens that ends the
+     *     vocabulary
+     * @param splitPattern the pre-tokenizer regex this model was trained with
+     */
+    protected Qwen3Tokenizer(
+            Map<String, Object> metadata,
+            Vocabulary vocabulary,
+            String firstSpecialToken,
+            String splitPattern) {
         int[] tokenTypes = (int[]) metadata.get("tokenizer.ggml.token_type");
         String[] mergeLines = (String[]) metadata.get("tokenizer.ggml.merges");
 
         int allTokens = vocabulary.size();
-        String firstSpecialToken =
-                isDeepSeekR1DistillQwen ? "<｜end▁of▁sentence｜>" : "<|endoftext|>";
         int baseTokens =
                 vocabulary
                         .getIndex(firstSpecialToken)
