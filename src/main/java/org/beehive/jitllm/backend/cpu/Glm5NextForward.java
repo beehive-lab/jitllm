@@ -6,6 +6,7 @@ import org.beehive.jitllm.inference.op.CpuOperations;
 import org.beehive.jitllm.inference.state.Glm5NextState;
 import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.Glm5NextLayerWeights;
+import org.beehive.jitllm.inference.weights.KdaWeights;
 import org.beehive.jitllm.inference.weights.standard.Glm5NextStandardWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.model.glm5next.Glm5NextConfiguration;
@@ -275,145 +276,24 @@ public final class Glm5NextForward {
 
     // ── KDA ───────────────────────────────────────────────────────────────────
 
-    // @formatter:off
-    /**
-     * Kimi delta attention for one token, leaving {@code attn_output}'s result in {@code xb2}.
-     *
-     * <ol>
-     *   <li>query, key and value projections, each through its own causal depthwise convolution and
-     *       a SiLU; query and key L2-normalized per head, the query scaled by {@code
-     *       1/sqrt(headDim)};
-     *   <li>a per-channel log decay {@code g = lowerBound * sigmoid(-a[h] * (f_b(f_a(x)) +
-     *       dt_bias))}, {@code a = -exp(A_log)} as the file stores it, so the decay {@code exp(g)}
-     *       stays within {@code (exp(lowerBound), 1)};
-     *   <li>per head {@code S = diag(exp(g)) S}, {@code d = (v - Sᵀk) * beta}, {@code S += k ⊗ d},
-     *       {@code o = Sᵀq};
-     *   <li>{@code o} RMS-normalized per head and gated by {@code sigmoid(g_b(g_a(x)))}.
-     * </ol>
-     */
-    // @formatter:on
+    /** Kimi delta attention for one token, leaving {@code attn_output}'s result in {@code xb2}. */
     static void kda(
-            Glm5NextConfiguration config,
-            Glm5NextLayerWeights.Kda<FloatTensor> w,
-            Glm5NextState state,
-            int l) {
-        final int dim = config.dim();
-        final int heads = config.kdaHeads();
-        final int hd = config.kdaHeadDim();
-        final int width = config.kdaDim();
-        final int kernel = config.kdaConvKernel();
-        FloatTensor x = state.xb;
-
-        CpuOperations.matVec(w.q()[l], x, state.kdaQ, width, dim);
-        CpuOperations.matVec(w.k()[l], x, state.kdaK, width, dim);
-        CpuOperations.matVec(w.v()[l], x, state.kdaV, width, dim);
-        CpuOperations.causalConv1d(
-                state.kdaQ, w.convQ()[l], state.convWindowQ[l], state.kdaConvQ, width, kernel);
-        CpuOperations.causalConv1d(
-                state.kdaK, w.convK()[l], state.convWindowK[l], state.kdaConvK, width, kernel);
-        CpuOperations.causalConv1d(
-                state.kdaV, w.convV()[l], state.convWindowV[l], state.kdaConvV, width, kernel);
-        FloatTensor q = state.kdaConvQ;
-        FloatTensor k = state.kdaConvK;
-        FloatTensor v = state.kdaConvV;
-        q.mapInPlace(Glm5NextForward::silu);
-        k.mapInPlace(Glm5NextForward::silu);
-        v.mapInPlace(Glm5NextForward::silu);
-        final float qScale = (float) (1.0 / Math.sqrt(hd));
-        for (int h = 0; h < heads; h++) {
-            l2Norm(q, h * hd, hd, qScale);
-            l2Norm(k, h * hd, hd, 1f);
-        }
-
-        CpuOperations.matVec(w.decayA()[l], x, state.kdaLowRank, hd, dim);
-        CpuOperations.matVec(w.decayB()[l], state.kdaLowRank, state.kdaDecay, width, hd);
-        FloatTensor dtBias = w.dtBias()[l];
-        FloatTensor a = w.a()[l];
-        final float lower = config.kdaGateLowerBound();
-        for (int c = 0; c < width; c++) {
-            float rate = -a.getFloat(c / hd);
-            float g = lower * sigmoid(rate * (state.kdaDecay.getFloat(c) + dtBias.getFloat(c)));
-            state.kdaDecay.setFloat(c, (float) Math.exp(g));
-        }
-        CpuOperations.matVec(w.beta()[l], x, state.kdaBeta, heads, dim);
-        for (int h = 0; h < heads; h++) {
-            state.kdaBeta.setFloat(h, sigmoid(state.kdaBeta.getFloat(h)));
-        }
-
-        FloatTensor s = state.deltaState[l];
-        FloatTensor decay = state.kdaDecay;
-        FloatTensor out = state.kdaOut;
-        Parallel.parallelFor(
-                0,
-                heads,
-                h -> deltaRuleHead(q, k, v, decay, state.kdaBeta.getFloat(h), s, out, h, hd));
-
-        CpuOperations.matVec(w.gateA()[l], x, state.kdaLowRank, hd, dim);
-        CpuOperations.matVec(w.gateB()[l], state.kdaLowRank, state.kdaGate, width, hd);
-        FloatTensor outNorm = w.outNorm()[l];
-        final float eps = config.rmsNormEps();
-        for (int h = 0; h < heads; h++) {
-            int base = h * hd;
-            float ss = out.reduce(base, hd, 0f, (acc, e) -> acc + e * e);
-            float inv = (float) (1.0 / Math.sqrt(ss / hd + eps));
-            for (int i = 0; i < hd; i++) {
-                float g = sigmoid(state.kdaGate.getFloat(base + i));
-                out.setFloat(base + i, outNorm.getFloat(i) * inv * out.getFloat(base + i) * g);
-            }
-        }
-        CpuOperations.matVec(w.output()[l], out, state.xb2, dim, width);
-    }
-
-    /** One head's delta-rule step with a decay per key channel; state row = key channel. */
-    private static void deltaRuleHead(
-            FloatTensor q,
-            FloatTensor k,
-            FloatTensor v,
-            FloatTensor decay,
-            float beta,
-            FloatTensor state,
-            FloatTensor out,
-            int h,
-            int hd) {
-        final int stateBase = h * hd * hd;
-        final int base = h * hd;
-        final float[] correction = new float[hd];
-        for (int i = 0; i < hd; i++) {
-            final float g = decay.getFloat(base + i);
-            final float ki = k.getFloat(base + i);
-            final int row = stateBase + i * hd;
-            for (int j = 0; j < hd; j++) {
-                float decayed = state.getFloat(row + j) * g;
-                state.setFloat(row + j, decayed);
-                correction[j] += decayed * ki;
-            }
-        }
-        for (int j = 0; j < hd; j++) {
-            correction[j] = (v.getFloat(base + j) - correction[j]) * beta;
-        }
-        final float[] o = new float[hd];
-        for (int i = 0; i < hd; i++) {
-            final float ki = k.getFloat(base + i);
-            final float qi = q.getFloat(base + i);
-            final int row = stateBase + i * hd;
-            for (int j = 0; j < hd; j++) {
-                float updated = state.getFloat(row + j) + ki * correction[j];
-                state.setFloat(row + j, updated);
-                o[j] += updated * qi;
-            }
-        }
-        for (int j = 0; j < hd; j++) {
-            out.setFloat(base + j, o[j]);
-        }
-    }
-
-    /** {@code x / sqrt(sum(x²) + eps) * scale}: the norm FLA uses, with eps under the root. */
-    private static void l2Norm(FloatTensor values, int offset, int size, float scale) {
-        float ss = values.reduce(offset, size, 0f, (acc, e) -> acc + e * e);
-        final float inv = (float) (scale / Math.sqrt(ss + Glm5NextConfiguration.KDA_L2_NORM_EPS));
-        for (int i = 0; i < size; i++) {
-            values.setFloat(offset + i, values.getFloat(offset + i) * inv);
-        }
+            Glm5NextConfiguration config, KdaWeights<FloatTensor> w, Glm5NextState state, int l) {
+        KdaForward.forward(
+                new KdaForward.Shape(
+                        config.dim(),
+                        config.kdaHeads(),
+                        config.kdaHeadDim(),
+                        config.kdaConvKernel(),
+                        KdaForward.Decay.BOUNDED_SIGMOID,
+                        config.kdaGateLowerBound(),
+                        Glm5NextConfiguration.KDA_L2_NORM_EPS,
+                        config.rmsNormEps()),
+                w,
+                state.kda,
+                state.xb,
+                state.xb2,
+                l);
     }
 
     // ── Sparse attention ──────────────────────────────────────────────────────

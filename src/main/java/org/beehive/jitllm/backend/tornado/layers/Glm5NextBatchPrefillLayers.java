@@ -9,8 +9,11 @@ import org.beehive.jitllm.backend.tornado.kernels.DeepSeek2BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
+import org.beehive.jitllm.backend.tornado.kernels.KdaBatchKernels;
+import org.beehive.jitllm.backend.tornado.kernels.KdaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35DeltaNetKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
+import org.beehive.jitllm.backend.tornado.kernels.RoutedExpertBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.Glm5NextBatchArrays;
@@ -493,7 +496,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                     t ->
                             g.task(
                                     t,
-                                    Glm5NextBatchKernels::causalConv1d,
+                                    KdaBatchKernels::causalConv1d,
                                     context,
                                     in,
                                     taps,
@@ -523,7 +526,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::kdaL2Norm,
+                                KdaKernels::kdaL2Norm,
                                 context,
                                 b.kdaConvQ,
                                 batch * heads,
@@ -537,7 +540,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::kdaL2Norm,
+                                KdaKernels::kdaL2Norm,
                                 context,
                                 b.kdaConvK,
                                 batch * heads,
@@ -555,7 +558,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextBatchKernels::kdaDecayAndBeta,
+                                KdaBatchKernels::kdaDecayAndBeta,
                                 context,
                                 b.kdaDecay,
                                 k.dtBias()[l].asFloatArray(),
@@ -566,24 +569,22 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                                 heads,
                                 config.kdaGateLowerBound(),
                                 batch));
-        if (hd > Glm5NextBatchKernels.MAX_KDA_HEAD) {
+        if (hd > KdaBatchKernels.MAX_KDA_HEAD) {
             throw new UnsupportedOperationException(
                     "the glm5next batched delta rule holds KDA heads of at most "
-                            + Glm5NextBatchKernels.MAX_KDA_HEAD);
+                            + KdaBatchKernels.MAX_KDA_HEAD);
         }
         int stateOffset = index * heads * hd * hd;
         task(
                 g,
                 p + "kda_delta",
                 groups(
-                        heads
-                                * ((hd + Glm5NextKernels.DELTA_COLUMNS - 1)
-                                        / Glm5NextKernels.DELTA_COLUMNS),
-                        Glm5NextKernels.DELTA_COLUMNS * Glm5NextKernels.DELTA_CHUNKS),
+                        heads * ((hd + KdaKernels.DELTA_COLUMNS - 1) / KdaKernels.DELTA_COLUMNS),
+                        KdaKernels.DELTA_COLUMNS * KdaKernels.DELTA_CHUNKS),
                 t ->
                         g.task(
                                 t,
-                                Glm5NextBatchKernels::kdaDeltaRule,
+                                KdaBatchKernels::kdaDeltaRule,
                                 context,
                                 b.kdaConvQ,
                                 b.kdaConvK,
@@ -603,7 +604,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::kdaGatedNorm,
+                                KdaKernels::kdaGatedNorm,
                                 context,
                                 b.kdaOut,
                                 b.kdaGate,
@@ -1155,8 +1156,8 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                             g.task(
                                     t,
                                     q4
-                                            ? Glm5NextBatchKernels::groupedGateUpClampedQ4_0
-                                            : Glm5NextBatchKernels::groupedGateUpClamped,
+                                            ? RoutedExpertBatchKernels::groupedGateUpClampedQ4_0
+                                            : RoutedExpertBatchKernels::groupedGateUpClamped,
                                     context,
                                     b.a8,
                                     b.a8Scales,
@@ -1203,8 +1204,8 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                             g.task(
                                     t,
                                     q4
-                                            ? Glm5NextBatchKernels::groupedDownQ4_0
-                                            : Glm5NextBatchKernels::groupedDown,
+                                            ? RoutedExpertBatchKernels::groupedDownQ4_0
+                                            : RoutedExpertBatchKernels::groupedDown,
                                     context,
                                     b.routedHidden8,
                                     b.routedHiddenScales,
@@ -1242,7 +1243,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextBatchKernels::combineExperts,
+                                RoutedExpertBatchKernels::combineExperts,
                                 context,
                                 b.routedOut,
                                 b.position,
