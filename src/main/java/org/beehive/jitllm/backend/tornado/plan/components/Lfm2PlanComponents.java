@@ -100,13 +100,14 @@ public class Lfm2PlanComponents implements BatchPrefillDecodeForwardPlanComponen
     // ── Batched prefill/decode ────────────────────────────────────────────────
 
     /**
-     * The chunk's activation: a Q8_0 embedding decoded on the device from the rows the host copies,
-     * any other (the 8B's Q6_K) decoded by the host into the FP32 carrier and passed through.
+     * The chunk's activation: a Q8_0 or Q6_K embedding (the 24B's, the 8B's) decoded on the device
+     * from the rows the host copies, any other decoded by the host into the FP32 carrier and passed
+     * through.
      */
     @Override
     public ActivationTaskGraph batchPrefillActivation(int batchSize) {
         DataType embedding = weights.getTokenEmbeddingTable().dataType();
-        if (embedding == DataType.Q8_0) {
+        if (embedding == DataType.Q8_0 || embedding == DataType.Q6_K) {
             return new BatchPrefillQ8DeviceActivation(state, config, batchSize, embedding);
         }
         return new BatchPrefillActivation(state, config, batchSize, true);
