@@ -8,6 +8,7 @@ import org.beehive.jitllm.backend.tornado.layers.PackedActivationTasks;
 import org.beehive.jitllm.backend.tornado.plan.UnifiedMemoryWeights;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
+import org.beehive.jitllm.backend.tornado.tensor.MXFP4TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.inference.state.GptOssState;
 import org.beehive.jitllm.inference.weights.GptOssLayerWeights;
@@ -102,12 +103,12 @@ public class GptOssLayers
     public GridScheduler updateGridScheduler(GridScheduler scheduler) {
         int dim = config.dim();
         WorkerGrid norm = elements(dim, GptOssKernels.GROUP);
+        WorkerGrid combineHeads =
+                elements(config.numberOfHeads() * GptOssKernels.HEAD, GptOssKernels.GROUP);
         WorkerGrid qkv =
                 PackedActivationTasks.projectionWorker(
                         config.queryDim() + 2 * config.kvDim(), PROJECTION_LOCAL);
         WorkerGrid wo = PackedActivationTasks.projectionWorker(dim, PROJECTION_LOCAL);
-        WorkerGrid quantDim = PackedActivationTasks.quantizeWorker(dim);
-        WorkerGrid quantQ = PackedActivationTasks.quantizeWorker(config.queryDim());
         WorkerGrid normDim = elements(dim, ELEMENT_LOCAL);
         WorkerGrid rope = elements(config.numberOfHeads() * config.headSize() / 2, 64);
         WorkerGrid attention =
@@ -120,7 +121,6 @@ public class GptOssLayers
                         : WorkerGridFactory.genericWorker(
                                 config.numberOfHeads() * GptOssKernels.SPLITS * GptOssKernels.HEAD,
                                 GptOssKernels.HEAD);
-        WorkerGrid combine = elements(config.numberOfHeads() * GptOssKernels.HEAD, 128);
         WorkerGrid router =
                 WorkerGridFactory.genericWorker(
                         config.numberOfExperts() * GptOssKernels.GROUP, GptOssKernels.GROUP);
@@ -131,14 +131,11 @@ public class GptOssLayers
         for (int l = firstLayer; l < endLayer(config.numberOfLayers()); l++) {
             String p = GraphNames.layer(l) + ".";
             scheduler.addWorkerGrid(p + "attn_norm", norm);
-            scheduler.addWorkerGrid(p + "attn_q8", quantDim);
             scheduler.addWorkerGrid(p + "qkv", qkv);
             scheduler.addWorkerGrid(p + "rope_kv", rope);
             scheduler.addWorkerGrid(p + "attention", attention);
-            scheduler.addWorkerGrid(p + "attention_combine", combine);
-            scheduler.addWorkerGrid(p + "attn_out_q8", quantQ);
+            scheduler.addWorkerGrid(p + "attention_combine", combineHeads);
             scheduler.addWorkerGrid(p + "attn_output", wo);
-            scheduler.addWorkerGrid(p + "attn_output_bias", normDim);
             scheduler.addWorkerGrid(p + "ffn_norm", norm);
             scheduler.addWorkerGrid(p + "router", router);
             scheduler.addWorkerGrid(p + "topk", single);
@@ -189,11 +186,11 @@ public class GptOssLayers
                 weights.rms_ffn_weightLayered[l].asFloatArray(),
                 w.router()[l].asFloatArray(),
                 w.routerBias()[l].asFloatArray(),
-                w.gateExperts()[l].deviceArray(),
+                experts(w.gateExperts()[l]),
                 w.gateExpertsBias()[l].asFloatArray(),
-                w.upExperts()[l].deviceArray(),
+                experts(w.upExperts()[l]),
                 w.upExpertsBias()[l].asFloatArray(),
-                w.downExperts()[l].deviceArray(),
+                experts(w.downExperts()[l]),
                 w.downExpertsBias()[l].asFloatArray());
         if (l == firstLayer) {
             UnifiedMemoryWeights.upload(
@@ -250,14 +247,14 @@ public class GptOssLayers
         int dim = config.dim();
         layer.task(
                 "attn_norm",
-                GptOssKernels::normFused,
+                GptOssKernels::normQuantize,
                 context,
-                ws.wrapXb,
                 ws.wrapX,
                 weights.rms_att_weightLayered[l].asFloatArray(),
+                ws.wrapXbQuants,
+                ws.wrapXbScales,
                 dim,
                 config.rmsNormEps());
-        PackedActivationTasks.quantize(layer, "attn_q8", context, state.workspace, ws.wrapXb);
         layer.task(
                 "qkv",
                 TransformerComputeKernelsQ8_0DP4A::fusedQKVMatmulQ8_0DP4A,
@@ -379,13 +376,13 @@ public class GptOssLayers
         }
         layer.task(
                 "attention_combine",
-                GptOssKernels::combineSplits,
+                GptOssKernels::combineSplitsQuantize,
                 context,
                 ws.wrapAttSplit,
                 w.sinks()[l].asFloatArray(),
-                ws.wrapXb,
+                ws.wrapXbQuants,
+                ws.wrapXbScales,
                 config.numberOfHeads());
-        PackedActivationTasks.quantize(layer, "attn_out_q8", context, state.workspace, ws.wrapXb);
         layer.task(
                 "attn_output",
                 TransformerComputeKernelsQ8_0DP4A::matrixVectorGenericWithResidualQ8_0DP4A,
@@ -397,13 +394,6 @@ public class GptOssLayers
                 config.queryDim(),
                 dim,
                 PROJECTION_LOCAL);
-        layer.task(
-                "attn_output_bias",
-                GptOssKernels::addBias,
-                context,
-                ws.wrapX,
-                w.outputBias()[l].asFloatArray(),
-                dim);
     }
 
     private void experts(TaskGraph layer, int l) {
@@ -412,10 +402,11 @@ public class GptOssLayers
         int dim = config.dim();
         layer.task(
                 "ffn_norm",
-                GptOssKernels::normFused,
+                GptOssKernels::normFusedBias,
                 context,
                 ws.wrapXb2,
                 ws.wrapX,
+                w.outputBias()[l].asFloatArray(),
                 weights.rms_ffn_weightLayered[l].asFloatArray(),
                 dim,
                 config.rmsNormEps());
@@ -440,12 +431,12 @@ public class GptOssLayers
                 config.numberOfExpertsUsed());
         layer.task(
                 "experts_gate_up",
-                GptOssKernels::expertsGateUpLanes,
+                GptOssKernels::expertsGateUpPacked,
                 context,
                 ws.wrapXb2,
                 ws.wrapSelectedExperts,
-                w.gateExperts()[l].asByteArray(),
-                w.upExperts()[l].asByteArray(),
+                experts(w.gateExperts()[l]),
+                experts(w.upExperts()[l]),
                 w.gateExpertsBias()[l].asFloatArray(),
                 w.upExpertsBias()[l].asFloatArray(),
                 ws.wrapExpertGate,
@@ -454,11 +445,11 @@ public class GptOssLayers
                 config.numberOfExpertsUsed());
         layer.task(
                 "experts_down",
-                GptOssKernels::expertsDownLanes,
+                GptOssKernels::expertsDownPacked,
                 context,
                 ws.wrapExpertGate,
                 ws.wrapSelectedExperts,
-                w.downExperts()[l].asByteArray(),
+                experts(w.downExperts()[l]),
                 w.downExpertsBias()[l].asFloatArray(),
                 ws.wrapExpertDown,
                 dim,
@@ -466,10 +457,11 @@ public class GptOssLayers
                 config.numberOfExpertsUsed());
         layer.task(
                 "experts_combine",
-                GptOssKernels::expertsCombine,
+                GptOssKernels::expertsCombineBias,
                 context,
                 ws.wrapExpertDown,
                 ws.wrapRoutingWeights,
+                w.outputBias()[l].asFloatArray(),
                 ws.wrapX,
                 dim,
                 config.numberOfExpertsUsed());
@@ -495,5 +487,10 @@ public class GptOssLayers
      */
     protected boolean groupedAttention() {
         return state.usesFp16KeyValueCache() && config.kvMul() == GptOssKernels.GROUP_HEADS;
+    }
+
+    /** A stacked MXFP4 expert tensor as the ints the kernels read. */
+    static uk.ac.manchester.tornado.api.types.arrays.IntArray experts(TornadoTensor experts) {
+        return ((MXFP4TornadoTensor) experts).asIntArray();
     }
 }

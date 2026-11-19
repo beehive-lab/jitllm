@@ -5,6 +5,7 @@ import static org.beehive.jitllm.model.loader.ModelLoader.*;
 import java.nio.channels.FileChannel;
 import java.util.Map;
 import org.beehive.jitllm.auxiliary.Pair;
+import org.beehive.jitllm.backend.tornado.tensor.MXFP4TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensorLoader;
 import org.beehive.jitllm.format.DataTypeMapping;
@@ -251,11 +252,11 @@ public class GptOssModelLoader extends AbstractModelLoader<GptOss, GptOssConfigu
                         gpu(nl, tensorEntries, "attn_sinks.weight"),
                         gpu(nl, tensorEntries, "ffn_gate_inp.weight"),
                         gpu(nl, tensorEntries, "ffn_gate_inp.bias"),
-                        gpu(nl, tensorEntries, "ffn_gate_exps.weight"),
+                        mxfp4(gpu(nl, tensorEntries, "ffn_gate_exps.weight")),
                         gpu(nl, tensorEntries, "ffn_gate_exps.bias"),
-                        gpu(nl, tensorEntries, "ffn_up_exps.weight"),
+                        mxfp4(gpu(nl, tensorEntries, "ffn_up_exps.weight")),
                         gpu(nl, tensorEntries, "ffn_up_exps.bias"),
-                        gpu(nl, tensorEntries, "ffn_down_exps.weight"),
+                        mxfp4(gpu(nl, tensorEntries, "ffn_down_exps.weight")),
                         gpu(nl, tensorEntries, "ffn_down_exps.bias"));
         return new GptOssTornadoWeights(
                 loadTornadoTensorNative(tokenEmbeddings),
@@ -281,6 +282,20 @@ public class GptOssModelLoader extends AbstractModelLoader<GptOss, GptOssConfigu
     private static TornadoTensor[] gpu(
             int layers, Map<String, GGMLTensorEntry> tensorEntries, String role) {
         return loadArrayOfTornadoTensorsNative(layers, i -> required(tensorEntries, i, role));
+    }
+
+    /** The experts, checked to be MXFP4: the device layers read no other representation. */
+    private static TornadoTensor[] mxfp4(TornadoTensor[] experts) {
+        for (TornadoTensor expert : experts) {
+            if (!(expert instanceof MXFP4TornadoTensor)) {
+                throw new ModelLoadException(
+                        DiagnosticCode.MODEL_MALFORMED.prefix()
+                                + "gpt-oss experts are "
+                                + expert.dataType()
+                                + "; the device layers read MXFP4 experts only");
+            }
+        }
+        return experts;
     }
 
     private static GGMLTensorEntry required(

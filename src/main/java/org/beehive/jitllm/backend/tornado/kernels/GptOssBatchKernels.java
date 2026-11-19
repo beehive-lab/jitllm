@@ -31,7 +31,6 @@ public final class GptOssBatchKernels {
     public static final int TILE_COLS = 128;
     public static final int GEMM_THREADS = 256;
     private static final int QK = 32;
-    private static final int MX_BYTES = 17;
     private static final int A_WORDS = 512;
     private static final int B_WORDS = 1024;
     static final int HEAD = GptOssKernels.HEAD;
@@ -421,9 +420,10 @@ public final class GptOssBatchKernels {
     /**
      * Stages one round's MXFP4 weight tile, 128 columns from weight row {@code firstRow} and two
      * blocks, with the blocks' scales, in the word layout of {@link
-     * Qwen35MoeBatchKernels#groupedGateUpQ8_0}'s tile (a word: two k of two adjacent columns).
-     * Thread {@code t} decodes bytes {@code 8h .. 8h + 7} ({@code h = t >> 7}) of block {@code (t
-     * >> 6) & 1} of column pair {@code t & 63}: the low nibbles are k {@code 8h .. 8h + 7}, the
+     * Qwen35MoeBatchKernels#groupedGateUpQ8_0}'s tile (a word: two k of two adjacent columns), the
+     * experts read as ints ({@code w}, the file's 17-byte blocks). Thread {@code t} decodes quant
+     * bytes {@code 8h .. 8h + 7} ({@code h = t >> 7}, funnelled out of three ints) of block {@code
+     * (t >> 6) & 1} of column pair {@code t & 63}: the low nibbles are k {@code 8h .. 8h + 7}, the
      * high ones {@code 16 + 8h ..}, through the shared int8 table {@code lut}. Columns at or past
      * {@code colLimit} read column {@code colLimit - 1} and are never written.
      */
@@ -431,10 +431,10 @@ public final class GptOssBatchKernels {
             int[] bTile,
             float[] sW,
             int[] lut,
-            ByteArray w,
+            IntArray w,
             int firstRow,
             int colLimit,
-            int rowBytes,
+            int blocksPerRow,
             int round,
             int buf,
             int tid) {
@@ -444,8 +444,25 @@ public final class GptOssBatchKernels {
         int blk = round * 2 + bl;
         int c0 = Math.min(2 * cp, colLimit - 1);
         int c1 = Math.min(2 * cp + 1, colLimit - 1);
-        int off0 = (firstRow + c0) * rowBytes + blk * MX_BYTES;
-        int off1 = (firstRow + c1) * rowBytes + blk * MX_BYTES;
+        int last = w.getSize() - 1;
+        int start0 = ((firstRow + c0) * blocksPerRow + blk) * 17;
+        int start1 = ((firstRow + c1) * blocksPerRow + blk) * 17;
+        int q0 = start0 + 1 + 8 * h;
+        int q1 = start1 + 1 + 8 * h;
+        int i0 = q0 >> 2;
+        int i1 = q1 >> 2;
+        int s0 = (q0 & 3) << 3;
+        int s1 = (q1 & 3) << 3;
+        int u0 = w.get(i0);
+        int u1 = w.get(i0 + 1);
+        int u2 = w.get(Math.min(i0 + 2, last));
+        int v0 = w.get(i1);
+        int v1 = w.get(i1 + 1);
+        int v2 = w.get(Math.min(i1 + 2, last));
+        int a0 = GptOssKernels.funnel(u0, u1, s0);
+        int a1 = GptOssKernels.funnel(u1, u2, s0);
+        int b0 = GptOssKernels.funnel(v0, v1, s1);
+        int b1 = GptOssKernels.funnel(v1, v2, s1);
         int colPair = cp & 15;
         int group = cp >> 4;
         int base =
@@ -455,29 +472,33 @@ public final class GptOssBatchKernels {
                         + ((colPair >> 2) << 6)
                         + (colPair & 3);
         for (int p = 0; p < 4; p++) {
+            // Bytes 2p and 2p + 1 of the eight: the first word holds bytes 0..3, the second 4..7.
+            int wa = p < 2 ? a0 : a1;
+            int wb = p < 2 ? b0 : b1;
+            int sh = (p & 1) << 4;
+            int x0 = (wa >>> sh) & 0xFF;
+            int x1 = (wa >>> (sh + 8)) & 0xFF;
+            int y0 = (wb >>> sh) & 0xFF;
+            int y1 = (wb >>> (sh + 8)) & 0xFF;
             int j = 8 * h + 2 * p;
-            int a0 = w.get(off0 + 1 + j) & 0xFF;
-            int a1 = w.get(off0 + 2 + j) & 0xFF;
-            int b0 = w.get(off1 + 1 + j) & 0xFF;
-            int b1 = w.get(off1 + 2 + j) & 0xFF;
-            // k = j, j + 1 from the low nibbles: kRow = j / 2.
             int lowWord =
-                    (lut[a0 & 15] & 0xFF)
-                            | ((lut[a1 & 15] & 0xFF) << 8)
-                            | ((lut[b0 & 15] & 0xFF) << 16)
-                            | ((lut[b1 & 15] & 0xFF) << 24);
-            // k = 16 + j, 17 + j from the high nibbles: kRow = 8 + j / 2.
+                    (lut[x0 & 15] & 0xFF)
+                            | ((lut[x1 & 15] & 0xFF) << 8)
+                            | ((lut[y0 & 15] & 0xFF) << 16)
+                            | ((lut[y1 & 15] & 0xFF) << 24);
             int highWord =
-                    (lut[a0 >> 4] & 0xFF)
-                            | ((lut[a1 >> 4] & 0xFF) << 8)
-                            | ((lut[b0 >> 4] & 0xFF) << 16)
-                            | ((lut[b1 >> 4] & 0xFF) << 24);
+                    (lut[x0 >> 4] & 0xFF)
+                            | ((lut[x1 >> 4] & 0xFF) << 8)
+                            | ((lut[y0 >> 4] & 0xFF) << 16)
+                            | ((lut[y1 >> 4] & 0xFF) << 24);
             bTile[base + ((j >> 1) << 2)] = lowWord;
             bTile[base + ((8 + (j >> 1)) << 2)] = highWord;
         }
         if (h == 0) {
-            sW[buf * 256 + bl * 128 + 2 * cp] = GptOssKernels.e8m0Half(w.get(off0) & 0xFF);
-            sW[buf * 256 + bl * 128 + 2 * cp + 1] = GptOssKernels.e8m0Half(w.get(off1) & 0xFF);
+            int e0 = (w.get(start0 >> 2) >>> ((start0 & 3) << 3)) & 0xFF;
+            int e1 = (w.get(start1 >> 2) >>> ((start1 & 3) << 3)) & 0xFF;
+            sW[buf * 256 + bl * 128 + 2 * cp] = GptOssKernels.e8m0Half(e0);
+            sW[buf * 256 + bl * 128 + 2 * cp + 1] = GptOssKernels.e8m0Half(e1);
         }
     }
 
@@ -500,8 +521,8 @@ public final class GptOssBatchKernels {
             FloatArray dA,
             IntArray sortedToken,
             IntArray tiles,
-            ByteArray gateExperts,
-            ByteArray upExperts,
+            IntArray gateExperts,
+            IntArray upExperts,
             FloatArray gateBias,
             FloatArray upBias,
             FloatArray hidden,
@@ -517,7 +538,7 @@ public final class GptOssBatchKernels {
             int warp = tid >> 5;
             int lane = tid & 31;
             int rounds = dim / (2 * QK);
-            int rowBytes = (dim / QK) * MX_BYTES;
+            int blocksPerRow = dim / QK;
             int firstRow = expert * hiddenDim + blockCol;
             int colLimit = Math.min(TILE_COLS, hiddenDim - blockCol);
 
@@ -541,8 +562,8 @@ public final class GptOssBatchKernels {
             int activeSub = (rows + 15) >> 4;
 
             stageA(ctx, aTile, sA, a8, dA, sortedToken, 1, rowStart, rows, 0, 0, dim, tid);
-            stageBMXFP4(gTile, sG, lut, gateExperts, firstRow, colLimit, rowBytes, 0, 0, tid);
-            stageBMXFP4(uTile, sU, lut, upExperts, firstRow, colLimit, rowBytes, 0, 0, tid);
+            stageBMXFP4(gTile, sG, lut, gateExperts, firstRow, colLimit, blocksPerRow, 0, 0, tid);
+            stageBMXFP4(uTile, sU, lut, upExperts, firstRow, colLimit, blocksPerRow, 0, 0, tid);
             ctx.asyncCopyCommit();
             ctx.asyncCopyWaitGroup(0);
             ctx.localBarrier();
@@ -573,13 +594,21 @@ public final class GptOssBatchKernels {
                             gateExperts,
                             firstRow,
                             colLimit,
-                            rowBytes,
+                            blocksPerRow,
                             round + 1,
                             next,
                             tid);
                     stageBMXFP4(
-                            uTile, sU, lut, upExperts, firstRow, colLimit, rowBytes, round + 1,
-                            next, tid);
+                            uTile,
+                            sU,
+                            lut,
+                            upExperts,
+                            firstRow,
+                            colLimit,
+                            blocksPerRow,
+                            round + 1,
+                            next,
+                            tid);
                 }
                 for (int b = 0; b < 2; b++) {
                     for (int j = 0; j < 2; j++) {
@@ -654,7 +683,7 @@ public final class GptOssBatchKernels {
             ByteArray h8,
             FloatArray dH,
             IntArray tiles,
-            ByteArray downExperts,
+            IntArray downExperts,
             FloatArray downBias,
             FloatArray out,
             int dim,
@@ -669,7 +698,7 @@ public final class GptOssBatchKernels {
             int warp = tid >> 5;
             int lane = tid & 31;
             int rounds = hiddenDim / (2 * QK);
-            int rowBytes = (hiddenDim / QK) * MX_BYTES;
+            int blocksPerRow = hiddenDim / QK;
             int firstRow = expert * dim + blockCol;
             int colLimit = Math.min(TILE_COLS, dim - blockCol);
 
@@ -689,7 +718,7 @@ public final class GptOssBatchKernels {
             int activeSub = (rows + 15) >> 4;
 
             stageA(ctx, aTile, sA, h8, dH, tiles, 0, rowStart, rows, 0, 0, hiddenDim, tid);
-            stageBMXFP4(bTile, sW, lut, downExperts, firstRow, colLimit, rowBytes, 0, 0, tid);
+            stageBMXFP4(bTile, sW, lut, downExperts, firstRow, colLimit, blocksPerRow, 0, 0, tid);
             ctx.asyncCopyCommit();
             ctx.asyncCopyWaitGroup(0);
             ctx.localBarrier();
@@ -709,7 +738,7 @@ public final class GptOssBatchKernels {
                             downExperts,
                             firstRow,
                             colLimit,
-                            rowBytes,
+                            blocksPerRow,
                             round + 1,
                             next,
                             tid);
