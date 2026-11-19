@@ -18,7 +18,7 @@ Llama-3.3-70B Q4_0 (40 GB) runs this way on two 24 GB NVIDIA A10s at about 10 to
 | Flag | Meaning |
 | --- | --- |
 | `--devices 0:0,0:1` | TornadoVM `backend:device` indices, one pipeline stage per device, in order. `tornado --devices` lists them. |
-| `--tensor-split 41,39` | Each device's share of the layers, in proportion (default: equal). Give the last device a little less: it also holds the output projection. |
+| `--tensor-split 41,39` | Each device's share of the layers, in proportion. Without it, the layers are split so that the device holding the most weight bytes holds as few as possible, counting the embedding table on the first device and the output projection on the last. Layers of different sizes, such as GLM-5.3-Flash's three dense layers in front of its expert layers, then get different counts per device. |
 | `--split-transport nccl` | Send the hidden state GPU to GPU with NCCL (the default). |
 | `--split-transport host` | Copy the hidden state through host memory instead; needs no NCCL. |
 | `--gpu-memory 21GB` | Applies to **each** device. |

@@ -752,7 +752,8 @@ def create_parser(command=None) -> argparse.ArgumentParser:
                           help="Split the model's layers across these TornadoVM devices, one "
                                "pipeline stage each, e.g. 0:0,0:1 (--gpu-memory applies per device)")
     hw_group.add_argument("--tensor-split", default=None, metavar="LIST",
-                          help="Share of layers per device for --devices, e.g. 41,39 (default: equal)")
+                          help="Share of layers per device for --devices, e.g. 41,39 (default: balanced by "
+                               "weight bytes)")
     hw_group.add_argument("--split-transport", default=None, choices=["nccl", "host"],
                           help="How the hidden state moves between --devices: NCCL (default) or "
                                "through host memory")

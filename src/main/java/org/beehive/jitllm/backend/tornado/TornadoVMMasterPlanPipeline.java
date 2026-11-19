@@ -20,6 +20,7 @@ import org.beehive.jitllm.backend.tornado.plan.components.BatchPrefillDecodeForw
 import org.beehive.jitllm.backend.tornado.plan.components.StagedForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.prepacking.WeightPrepackingTaskGraphs;
 import org.beehive.jitllm.inference.state.State;
+import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.DeviceSplit;
 import org.beehive.jitllm.runtime.backend.ExecutionInfo;
@@ -162,6 +163,23 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
      */
     private final boolean wholePlanTokens;
 
+    /**
+     * Where each stage's layers start: as {@code --tensor-split} shares them, or else so that the
+     * device holding the most weight bytes holds as few as it can (see {@link
+     * DeviceSplit#layerBounds(long[], int, long, long)}).
+     */
+    static int[] stageBounds(Model model, DeviceSplit split, int layers) {
+        int alignment = ForwardPlanFactory.stageLayerAlignment(model);
+        if (!split.shares().isEmpty() || !(model.weights() instanceof TornadoWeights weights)) {
+            return split.layerBounds(layers, alignment);
+        }
+        return split.layerBounds(
+                LayerWeightBytes.of(weights, layers),
+                alignment,
+                LayerWeightBytes.bytes(weights.getTokenEmbeddingTable()),
+                LayerWeightBytes.bytes(weights.wclsByteArray));
+    }
+
     public TornadoVMMasterPlanPipeline(
             State state, Model model, DeviceSplit split, MetricsSink sink) {
         this.state = state;
@@ -204,7 +222,7 @@ public final class TornadoVMMasterPlanPipeline implements BatchPrefillDecodePlan
         // prepacking.
         var prepacking = new Runnable[stageCount];
 
-        int[] bounds = split.layerBounds(layers, ForwardPlanFactory.stageLayerAlignment(model));
+        int[] bounds = stageBounds(model, split, layers);
         this.transport = PipelineTransport.create(split.transport(), devices);
         this.ownership = new StageOwnership(transport);
         try {

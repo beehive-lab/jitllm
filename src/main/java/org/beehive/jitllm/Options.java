@@ -133,7 +133,7 @@ public record Options(
         out.println(
                 "  --devices <list>              split the model's layers across these TornadoVM devices, one pipeline stage each, e.g. 0:0,0:1");
         out.println(
-                "  --tensor-split <list>         share of layers per --devices entry, e.g. 41,39, default equal");
+                "  --tensor-split <list>         share of layers per --devices entry, e.g. 41,39, default by weight bytes");
         out.println(
                 "  --split-transport <name>      nccl (default, needs a -Pnccl build) or host: how the hidden state moves between devices");
         out.println(
