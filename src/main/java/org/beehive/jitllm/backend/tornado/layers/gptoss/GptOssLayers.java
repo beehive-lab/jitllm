@@ -378,11 +378,13 @@ public class GptOssLayers
                 "attention_combine",
                 GptOssKernels::combineSplitsQuantize,
                 context,
+                ws.positionHolder,
                 ws.wrapAttSplit,
                 w.sinks()[l].asFloatArray(),
                 ws.wrapXbQuants,
                 ws.wrapXbScales,
-                config.numberOfHeads());
+                config.numberOfHeads(),
+                window);
         layer.task(
                 "attn_output",
                 TransformerComputeKernelsQ8_0DP4A::matrixVectorGenericWithResidualQ8_0DP4A,

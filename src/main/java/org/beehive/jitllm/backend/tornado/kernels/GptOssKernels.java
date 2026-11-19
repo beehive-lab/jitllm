@@ -229,8 +229,24 @@ public final class GptOssKernels {
         }
     }
 
-    /** Position splits of the split-KV decode attention. */
-    public static final int SPLITS = 8;
+    /**
+     * The most position splits of the split-KV decode attention: the work-groups launched per head
+     * (or per key/value head). How many hold positions depends on the position: {@link
+     * #activeSplits}.
+     */
+    public static final int SPLITS = 32;
+
+    /** The fewest positions a split takes before another split is used. */
+    public static final int SPLIT_SPAN = 128;
+
+    /**
+     * The splits that hold positions for an attended span of {@code length} positions: one per
+     * {@link #SPLIT_SPAN} positions, at most {@link #SPLITS}. A short context runs few splits, so
+     * the merge reads few partials; a long one spreads over every work-group.
+     */
+    static int activeSplits(int length) {
+        return Math.min(SPLITS, Math.max(1, (length + SPLIT_SPAN - 1) / SPLIT_SPAN));
+    }
 
     /** Floats one split writes: its {@link #HEAD} accumulators, its maximum and its sum. */
     public static final int PARTIAL = HEAD + 2;
@@ -271,7 +287,8 @@ public final class GptOssKernels {
             int slot = positionHolder.get(1);
             int start = Math.max(0, pos - window + 1) * Math.min(window, 1);
             int length = pos - start + 1;
-            int per = (length + SPLITS - 1) / SPLITS;
+            int active = activeSplits(length);
+            int per = (length + active - 1) / active;
             int first = start + split * per;
             int last = Math.min(first + per, pos + 1) - 1;
             int layerOff = KvBlockAddress.layerOffset(layer, kvDim, blockCfg);
@@ -379,7 +396,8 @@ public final class GptOssKernels {
             int slot = positionHolder.get(1);
             int start = Math.max(0, pos - window + 1) * Math.min(window, 1);
             int length = pos - start + 1;
-            int per = (length + SPLITS - 1) / SPLITS;
+            int active = activeSplits(length);
+            int per = (length + active - 1) / active;
             int first = start + split * per;
             int last = Math.min(first + per, pos + 1) - 1;
             int layerOff = KvBlockAddress.layerOffset(layer, kvDim, blockCfg);
@@ -567,7 +585,8 @@ public final class GptOssKernels {
             int slot = positionHolder.get(1);
             int start = Math.max(0, pos - window + 1) * Math.min(window, 1);
             int length = pos - start + 1;
-            int per = (length + SPLITS - 1) / SPLITS;
+            int active = activeSplits(length);
+            int per = (length + active - 1) / active;
             int first = start + split * per;
             int last = Math.min(first + per, pos + 1) - 1;
             int layerOff = KvBlockAddress.layerOffset(layer, kvDim, blockCfg);
@@ -867,27 +886,33 @@ public final class GptOssKernels {
      * Merges the {@link #SPLITS} partials of each head with its sink ({@code out = sum_s acc_s
      * e^(m_s - M) / (sum_s l_s e^(m_s - M) + e^(sink - M))}, {@code M} the largest of the splits'
      * maxima and the sink) and quantizes the attention output straight to Q8 blocks for the output
-     * projection. A head's 64 outputs are two whole blocks.
+     * projection. A head's 64 outputs are two whole blocks. Reads only the splits that held
+     * positions ({@link #activeSplits} of the span the attention covered).
      */
     public static void combineSplitsQuantize(
             KernelContext ctx,
+            IntArray positionHolder,
             FloatArray partials,
             FloatArray sinks,
             IntArray quants,
             FloatArray scales,
-            int heads) {
+            int heads,
+            int window) {
         int id = ctx.globalIdx;
         if (id < heads * HEAD) {
+            int pos = positionHolder.get(0);
+            int start = Math.max(0, pos - window + 1) * Math.min(window, 1);
+            int active = activeSplits(pos - start + 1);
             int h = id / HEAD;
             int t = id - h * HEAD;
             float sink = sinks.get(h);
             float max = sink;
-            for (int s = 0; s < SPLITS; s++) {
+            for (int s = 0; s < active; s++) {
                 max = Math.max(max, partials.get((h * SPLITS + s) * PARTIAL + HEAD));
             }
             float sum = TornadoMath.exp(sink - max);
             float acc = 0.0f;
-            for (int s = 0; s < SPLITS; s++) {
+            for (int s = 0; s < active; s++) {
                 int base = (h * SPLITS + s) * PARTIAL;
                 float w = TornadoMath.exp(partials.get(base + HEAD) - max);
                 sum += partials.get(base + HEAD + 1) * w;
