@@ -40,6 +40,7 @@ public final class DataTypeMapping {
             case Q5_K -> DataType.Q5_K;
             case Q6_K -> DataType.Q6_K;
             case IQ4_XS -> DataType.IQ4_XS;
+            case MXFP4 -> DataType.MXFP4;
             default ->
                     throw new UnsupportedOperationException(
                             "No runtime representation for GGUF type "
@@ -114,6 +115,7 @@ public final class DataTypeMapping {
             case Q5_K -> GGMLType.Q5_K;
             case Q6_K -> GGMLType.Q6_K;
             case IQ4_XS -> GGMLType.IQ4_XS;
+            case MXFP4 -> GGMLType.MXFP4;
         };
     }
 }

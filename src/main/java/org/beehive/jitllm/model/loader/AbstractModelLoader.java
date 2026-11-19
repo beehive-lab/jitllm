@@ -78,6 +78,7 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
             case 16, 17 -> "Q8_0"; // Q5_K_S, Q5_K_M
             case 18 -> "Q8_0"; // Q6_K
             case 30 -> "Q8_0"; // IQ4_XS
+            case 38 -> "Q8_0"; // MXFP4_MOE: MXFP4 experts, Q8_0 elsewhere
             default ->
                     throw new UnsupportedOperationException(
                             "Unsupported quantization format: "
@@ -101,6 +102,7 @@ public abstract class AbstractModelLoader<M extends Model, C extends Configurati
             case 17 -> "Q5_K_M";
             case 18 -> "Q6_K";
             case 30 -> "IQ4_XS";
+            case 38 -> "MXFP4_MOE";
             default -> "type_" + fileType;
         };
     }

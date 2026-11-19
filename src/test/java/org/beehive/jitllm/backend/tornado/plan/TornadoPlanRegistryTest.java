@@ -95,7 +95,8 @@ public class TornadoPlanRegistryTest {
                     "granite",
                     "qwen35",
                     "qwen35moe",
-                    "deepseek2"
+                    "deepseek2",
+                    "gpt-oss"
                 }) {
             assertTrue(
                     architecture
@@ -103,7 +104,7 @@ public class TornadoPlanRegistryTest {
                             + " switches are gone",
                     registered.contains(ArchitectureId.of(architecture)));
         }
-        assertEquals("the matrix has thirteen architectures", 13, registered.size());
+        assertEquals("the matrix has fourteen architectures", 14, registered.size());
     }
 
     /**
