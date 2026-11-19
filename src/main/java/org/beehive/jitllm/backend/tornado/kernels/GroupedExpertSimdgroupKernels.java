@@ -1517,8 +1517,10 @@ public final class GroupedExpertSimdgroupKernels {
             sb[bBase + 518] = y14;
             sb[bBase + 519] = y15;
             context.localBarrier();
-            // A SIMD group whose rows all lie past the tile's multiplies nothing it stores.
-            if (((sg >> 1) << 5) < batch) {
+            // A SIMD group multiplies only its 8-row groups that start inside the tile: a tile
+            // of 40 rows runs all four groups of its first SIMD-group row and one of its second.
+            int sgRows = batch - ((sg >> 1) << 5);
+            if (sgRows >= 32) {
                 for (int ik = 0; ik < 4; ik++) {
                     int pa = ca + (ik << 9);
                     int pb = cb + (ik << 9);
@@ -1546,6 +1548,41 @@ public final class GroupedExpertSimdgroupKernels {
                     c13 = context.simdgroupMatrixMultiplyAccumulate(n3, m1, c13);
                     c14 = context.simdgroupMatrixMultiplyAccumulate(n3, m2, c14);
                     c15 = context.simdgroupMatrixMultiplyAccumulate(n3, m3, c15);
+                }
+            } else if (sgRows > 0) {
+                for (int ik = 0; ik < 4; ik++) {
+                    int pa = ca + (ik << 9);
+                    int pb = cb + (ik << 9);
+                    Matrix8x8Half m0 = context.simdgroupMatrixLoad(sa, pa + 0, 8);
+                    Matrix8x8Half m1 = context.simdgroupMatrixLoad(sa, pa + 64, 8);
+                    Matrix8x8Half m2 = context.simdgroupMatrixLoad(sa, pa + 128, 8);
+                    Matrix8x8Half m3 = context.simdgroupMatrixLoad(sa, pa + 192, 8);
+                    Matrix8x8Float n0 = context.simdgroupMatrixLoad(sb, pb + 0, 8);
+                    c0 = context.simdgroupMatrixMultiplyAccumulate(n0, m0, c0);
+                    c1 = context.simdgroupMatrixMultiplyAccumulate(n0, m1, c1);
+                    c2 = context.simdgroupMatrixMultiplyAccumulate(n0, m2, c2);
+                    c3 = context.simdgroupMatrixMultiplyAccumulate(n0, m3, c3);
+                    if (sgRows > 8) {
+                        Matrix8x8Float n1 = context.simdgroupMatrixLoad(sb, pb + 64, 8);
+                        c4 = context.simdgroupMatrixMultiplyAccumulate(n1, m0, c4);
+                        c5 = context.simdgroupMatrixMultiplyAccumulate(n1, m1, c5);
+                        c6 = context.simdgroupMatrixMultiplyAccumulate(n1, m2, c6);
+                        c7 = context.simdgroupMatrixMultiplyAccumulate(n1, m3, c7);
+                    }
+                    if (sgRows > 16) {
+                        Matrix8x8Float n2 = context.simdgroupMatrixLoad(sb, pb + 128, 8);
+                        c8 = context.simdgroupMatrixMultiplyAccumulate(n2, m0, c8);
+                        c9 = context.simdgroupMatrixMultiplyAccumulate(n2, m1, c9);
+                        c10 = context.simdgroupMatrixMultiplyAccumulate(n2, m2, c10);
+                        c11 = context.simdgroupMatrixMultiplyAccumulate(n2, m3, c11);
+                    }
+                    if (sgRows > 24) {
+                        Matrix8x8Float n3 = context.simdgroupMatrixLoad(sb, pb + 192, 8);
+                        c12 = context.simdgroupMatrixMultiplyAccumulate(n3, m0, c12);
+                        c13 = context.simdgroupMatrixMultiplyAccumulate(n3, m1, c13);
+                        c14 = context.simdgroupMatrixMultiplyAccumulate(n3, m2, c14);
+                        c15 = context.simdgroupMatrixMultiplyAccumulate(n3, m3, c15);
+                    }
                 }
             }
             xi += 32;
@@ -1967,8 +2004,10 @@ public final class GroupedExpertSimdgroupKernels {
             sb[bBase + 518] = y14;
             sb[bBase + 519] = y15;
             context.localBarrier();
-            // A SIMD group whose rows all lie past the tile's multiplies nothing it stores.
-            if (((sg >> 1) << 5) < batch) {
+            // A SIMD group multiplies only its 8-row groups that start inside the tile: a tile
+            // of 40 rows runs all four groups of its first SIMD-group row and one of its second.
+            int sgRows = batch - ((sg >> 1) << 5);
+            if (sgRows >= 32) {
                 for (int ik = 0; ik < 4; ik++) {
                     int pa = ca + (ik << 9);
                     int pb = cb + (ik << 9);
@@ -1996,6 +2035,41 @@ public final class GroupedExpertSimdgroupKernels {
                     c13 = context.simdgroupMatrixMultiplyAccumulate(n3, m1, c13);
                     c14 = context.simdgroupMatrixMultiplyAccumulate(n3, m2, c14);
                     c15 = context.simdgroupMatrixMultiplyAccumulate(n3, m3, c15);
+                }
+            } else if (sgRows > 0) {
+                for (int ik = 0; ik < 4; ik++) {
+                    int pa = ca + (ik << 9);
+                    int pb = cb + (ik << 9);
+                    Matrix8x8Half m0 = context.simdgroupMatrixLoad(sa, pa + 0, 8);
+                    Matrix8x8Half m1 = context.simdgroupMatrixLoad(sa, pa + 64, 8);
+                    Matrix8x8Half m2 = context.simdgroupMatrixLoad(sa, pa + 128, 8);
+                    Matrix8x8Half m3 = context.simdgroupMatrixLoad(sa, pa + 192, 8);
+                    Matrix8x8Float n0 = context.simdgroupMatrixLoad(sb, pb + 0, 8);
+                    c0 = context.simdgroupMatrixMultiplyAccumulate(n0, m0, c0);
+                    c1 = context.simdgroupMatrixMultiplyAccumulate(n0, m1, c1);
+                    c2 = context.simdgroupMatrixMultiplyAccumulate(n0, m2, c2);
+                    c3 = context.simdgroupMatrixMultiplyAccumulate(n0, m3, c3);
+                    if (sgRows > 8) {
+                        Matrix8x8Float n1 = context.simdgroupMatrixLoad(sb, pb + 64, 8);
+                        c4 = context.simdgroupMatrixMultiplyAccumulate(n1, m0, c4);
+                        c5 = context.simdgroupMatrixMultiplyAccumulate(n1, m1, c5);
+                        c6 = context.simdgroupMatrixMultiplyAccumulate(n1, m2, c6);
+                        c7 = context.simdgroupMatrixMultiplyAccumulate(n1, m3, c7);
+                    }
+                    if (sgRows > 16) {
+                        Matrix8x8Float n2 = context.simdgroupMatrixLoad(sb, pb + 128, 8);
+                        c8 = context.simdgroupMatrixMultiplyAccumulate(n2, m0, c8);
+                        c9 = context.simdgroupMatrixMultiplyAccumulate(n2, m1, c9);
+                        c10 = context.simdgroupMatrixMultiplyAccumulate(n2, m2, c10);
+                        c11 = context.simdgroupMatrixMultiplyAccumulate(n2, m3, c11);
+                    }
+                    if (sgRows > 24) {
+                        Matrix8x8Float n3 = context.simdgroupMatrixLoad(sb, pb + 192, 8);
+                        c12 = context.simdgroupMatrixMultiplyAccumulate(n3, m0, c12);
+                        c13 = context.simdgroupMatrixMultiplyAccumulate(n3, m1, c13);
+                        c14 = context.simdgroupMatrixMultiplyAccumulate(n3, m2, c14);
+                        c15 = context.simdgroupMatrixMultiplyAccumulate(n3, m3, c15);
+                    }
                 }
             }
             xi += 32;
@@ -2417,8 +2491,10 @@ public final class GroupedExpertSimdgroupKernels {
             sb[bBase + 518] = y14;
             sb[bBase + 519] = y15;
             context.localBarrier();
-            // A SIMD group whose rows all lie past the tile's multiplies nothing it stores.
-            if (((sg >> 1) << 5) < batch) {
+            // A SIMD group multiplies only its 8-row groups that start inside the tile: a tile
+            // of 40 rows runs all four groups of its first SIMD-group row and one of its second.
+            int sgRows = batch - ((sg >> 1) << 5);
+            if (sgRows >= 32) {
                 for (int ik = 0; ik < 4; ik++) {
                     int pa = ca + (ik << 9);
                     int pb = cb + (ik << 9);
@@ -2446,6 +2522,41 @@ public final class GroupedExpertSimdgroupKernels {
                     c13 = context.simdgroupMatrixMultiplyAccumulate(n3, m1, c13);
                     c14 = context.simdgroupMatrixMultiplyAccumulate(n3, m2, c14);
                     c15 = context.simdgroupMatrixMultiplyAccumulate(n3, m3, c15);
+                }
+            } else if (sgRows > 0) {
+                for (int ik = 0; ik < 4; ik++) {
+                    int pa = ca + (ik << 9);
+                    int pb = cb + (ik << 9);
+                    Matrix8x8Half m0 = context.simdgroupMatrixLoad(sa, pa + 0, 8);
+                    Matrix8x8Half m1 = context.simdgroupMatrixLoad(sa, pa + 64, 8);
+                    Matrix8x8Half m2 = context.simdgroupMatrixLoad(sa, pa + 128, 8);
+                    Matrix8x8Half m3 = context.simdgroupMatrixLoad(sa, pa + 192, 8);
+                    Matrix8x8Float n0 = context.simdgroupMatrixLoad(sb, pb + 0, 8);
+                    c0 = context.simdgroupMatrixMultiplyAccumulate(n0, m0, c0);
+                    c1 = context.simdgroupMatrixMultiplyAccumulate(n0, m1, c1);
+                    c2 = context.simdgroupMatrixMultiplyAccumulate(n0, m2, c2);
+                    c3 = context.simdgroupMatrixMultiplyAccumulate(n0, m3, c3);
+                    if (sgRows > 8) {
+                        Matrix8x8Float n1 = context.simdgroupMatrixLoad(sb, pb + 64, 8);
+                        c4 = context.simdgroupMatrixMultiplyAccumulate(n1, m0, c4);
+                        c5 = context.simdgroupMatrixMultiplyAccumulate(n1, m1, c5);
+                        c6 = context.simdgroupMatrixMultiplyAccumulate(n1, m2, c6);
+                        c7 = context.simdgroupMatrixMultiplyAccumulate(n1, m3, c7);
+                    }
+                    if (sgRows > 16) {
+                        Matrix8x8Float n2 = context.simdgroupMatrixLoad(sb, pb + 128, 8);
+                        c8 = context.simdgroupMatrixMultiplyAccumulate(n2, m0, c8);
+                        c9 = context.simdgroupMatrixMultiplyAccumulate(n2, m1, c9);
+                        c10 = context.simdgroupMatrixMultiplyAccumulate(n2, m2, c10);
+                        c11 = context.simdgroupMatrixMultiplyAccumulate(n2, m3, c11);
+                    }
+                    if (sgRows > 24) {
+                        Matrix8x8Float n3 = context.simdgroupMatrixLoad(sb, pb + 192, 8);
+                        c12 = context.simdgroupMatrixMultiplyAccumulate(n3, m0, c12);
+                        c13 = context.simdgroupMatrixMultiplyAccumulate(n3, m1, c13);
+                        c14 = context.simdgroupMatrixMultiplyAccumulate(n3, m2, c14);
+                        c15 = context.simdgroupMatrixMultiplyAccumulate(n3, m3, c15);
+                    }
                 }
             }
             xi += 32;
