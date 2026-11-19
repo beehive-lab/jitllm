@@ -36,6 +36,15 @@ public final class KimiLinearState extends State {
     public final FloatTensor expertHiddenUp;
     public final FloatTensor expertOut;
 
+    /** {@code attn_kv_a_mqa}'s output padded to whole 128-column GEMM tiles. */
+    public static final int KV_A_PADDED = 640;
+
+    /** The chunk width rounded up to whole 128-row GEMM tiles; 0 without a batched prefill. */
+    public int paddedBatch;
+
+    /** The context rounded up to whole 128-column GEMM tiles: the score GEMM's width. */
+    public int paddedPositions;
+
     public KimiLinearState(Configuration config, int batchsize) {
         this(config, batchsize, null);
     }

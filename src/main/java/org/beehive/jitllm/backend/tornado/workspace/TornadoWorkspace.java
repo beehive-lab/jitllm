@@ -61,6 +61,9 @@ public final class TornadoWorkspace {
     /** The KDA decode arrays of a family that keeps them apart from its own; null otherwise. */
     public KdaDeviceArrays kda;
 
+    /** The chunk-wide KDA arrays of such a family's batched prefill; null without one. */
+    public KdaBatchArrays kdaBatch;
+
     public FloatArray
             wrapLogits; // FloatArray wrapper for the logits tensor, compatible with TornadoVM for
     // GPU execution.

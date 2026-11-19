@@ -9,6 +9,7 @@ import org.beehive.jitllm.backend.tornado.kernels.DeepSeek2BatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
+import org.beehive.jitllm.backend.tornado.kernels.KdaBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.KdaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35DeltaNetKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
@@ -494,7 +495,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                     t ->
                             g.task(
                                     t,
-                                    Glm5NextBatchKernels::causalConv1d,
+                                    KdaBatchKernels::causalConv1d,
                                     context,
                                     in,
                                     taps,
@@ -556,7 +557,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextBatchKernels::kdaDecayAndBeta,
+                                KdaBatchKernels::kdaDecayAndBeta,
                                 context,
                                 b.kdaDecay,
                                 k.dtBias()[l].asFloatArray(),
@@ -567,10 +568,10 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                                 heads,
                                 config.kdaGateLowerBound(),
                                 batch));
-        if (hd > Glm5NextBatchKernels.MAX_KDA_HEAD) {
+        if (hd > KdaBatchKernels.MAX_KDA_HEAD) {
             throw new UnsupportedOperationException(
                     "the glm5next batched delta rule holds KDA heads of at most "
-                            + Glm5NextBatchKernels.MAX_KDA_HEAD);
+                            + KdaBatchKernels.MAX_KDA_HEAD);
         }
         int stateOffset = index * heads * hd * hd;
         task(
@@ -582,7 +583,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextBatchKernels::kdaDeltaRule,
+                                KdaBatchKernels::kdaDeltaRule,
                                 context,
                                 b.kdaConvQ,
                                 b.kdaConvK,

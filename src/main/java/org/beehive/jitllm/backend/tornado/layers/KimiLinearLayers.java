@@ -57,6 +57,9 @@ public class KimiLinearLayers
     private final String activationGraphName;
     private final boolean fp16Cache;
 
+    /** In the batched plan, the prefill layers whose arrays these share; otherwise null. */
+    private final KimiLinearBatchPrefillLayers prefill;
+
     /** Every task's worker grid, by qualified name, recorded as the graph is built. */
     private final Map<String, WorkerGrid> grids = new LinkedHashMap<>();
 
@@ -88,7 +91,33 @@ public class KimiLinearLayers
             String activationGraphName,
             int firstLayer,
             int endLayer) {
+        this(
+                state,
+                weights,
+                config,
+                schedulerType,
+                activationGraphName,
+                firstLayer,
+                endLayer,
+                null);
+    }
+
+    /**
+     * The decode layers of a plan that also prefills in batches: they take the latent cache, the
+     * KDA state and every weight the prefill graph binds from that graph, so the plan holds one
+     * copy of each.
+     */
+    public KimiLinearLayers(
+            KimiLinearState state,
+            KimiLinearTornadoWeights weights,
+            KimiLinearConfiguration config,
+            SchedulerType schedulerType,
+            String activationGraphName,
+            int firstLayer,
+            int endLayer,
+            KimiLinearBatchPrefillLayers prefill) {
         super(state, weights, config, schedulerType);
+        this.prefill = prefill;
         this.ks = state;
         this.w = weights.layers;
         this.activationGraphName = activationGraphName;
@@ -232,11 +261,24 @@ public class KimiLinearLayers
                 d.branch,
                 weights.freq_cis_realFlat.asFloatArray(),
                 weights.freq_cis_imagFlat.asFloatArray());
-        graph.transferToDevice(
-                DataTransferMode.FIRST_EXECUTION, cache(), ws.wrapConvState, ws.wrapDeltaState);
+        Object[] persistent = {cache(), ws.wrapConvState, ws.wrapDeltaState};
+        if (prefill != null) {
+            graph.consumeFromDevice(KimiLinearBatchPrefillLayers.GRAPH, persistent);
+        } else {
+            graph.transferToDevice(DataTransferMode.FIRST_EXECUTION, persistent);
+        }
     }
 
     private void bindWeights(TaskGraph graph, int l) {
+        if (prefill != null) {
+            graph.consumeFromDevice(
+                    KimiLinearBatchPrefillLayers.GRAPH,
+                    KimiLinearBatchPrefillLayers.sharedWeights(w, config, l).toArray());
+            graph.transferToDevice(
+                    DataTransferMode.FIRST_EXECUTION,
+                    KimiLinearBatchPrefillLayers.notShared(w, config, l).toArray());
+            return;
+        }
         graph.transferToDevice(
                 DataTransferMode.FIRST_EXECUTION, layerArrays(w, config, l).toArray());
     }

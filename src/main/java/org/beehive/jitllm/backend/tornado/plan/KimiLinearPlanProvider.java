@@ -34,13 +34,23 @@ public final class KimiLinearPlanProvider implements TornadoPlanProvider {
 
     @Override
     public Set<ExecutionMode> supportedModes() {
-        return Set.of(ExecutionMode.STANDARD, ExecutionMode.PREFILL_DECODE);
+        return Set.of(ExecutionMode.values());
     }
 
     @Override
     public SingleTokenForwardPlanComponents components(DataType weights, State state, Model model) {
         KimiLinearState typed = PlanStates.expect(KimiLinearState.class, state, ID);
         return new KimiLinearPlanComponents(typed, model);
+    }
+
+    /** The batched prefill runs its projections and attention on CUDA tensor cores. */
+    @Override
+    public Optional<String> batchPrefillUnsupported(Combination c) {
+        return BackendId.CUDA.equals(c.backend()) && c.tensorCores()
+                ? Optional.empty()
+                : Optional.of(
+                        "the kimi-linear batched prefill runs its projections and attention on"
+                                + " CUDA tensor cores, which this device does not have");
     }
 
     /** The reductions use warp shuffles, which are CUDA's here. */
