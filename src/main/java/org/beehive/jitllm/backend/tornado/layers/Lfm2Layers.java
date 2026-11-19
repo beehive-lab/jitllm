@@ -761,7 +761,9 @@ public class Lfm2Layers
                     tp + "moe_gate_up",
                     gate.dataType() == DataType.Q4_K
                             ? TransformerComputeKernelsQ4_K::expertGateUpSiLUQ4_KSimdgroup
-                            : TransformerComputeKernelsQ5_K::expertGateUpSiLUQ5_KSimd32,
+                            : warpExperts()
+                                    ? TransformerComputeKernelsQ5_K::expertGateUpSiLUQ5_KSimdgroup
+                                    : TransformerComputeKernelsQ5_K::expertGateUpSiLUQ5_KSimd32,
                     context,
                     ws.wrapXb,
                     ws.wrapHb,
@@ -782,7 +784,12 @@ public class Lfm2Layers
                                 TransformerComputeKernelsQ4_K::expertDownResidualQ4_KWarpPerSlot;
                         case Q5_K ->
                                 TransformerComputeKernelsQ5_K::expertDownResidualQ5_KWarpPerSlot;
-                        default -> TransformerComputeKernelsQ6_K::expertDownResidualQ6_KSimd32;
+                        default ->
+                                warpExperts()
+                                        ? TransformerComputeKernelsQ6_K
+                                                ::expertDownResidualQ6_KWarpPerSlot
+                                        : TransformerComputeKernelsQ6_K
+                                                ::expertDownResidualQ6_KSimd32;
                     },
                     context,
                     ws.wrapHb,
@@ -836,6 +843,14 @@ public class Lfm2Layers
                 && shouldUseFinalNormalization()
                 && config.dim() % lfm2State.localSize == 0
                 && config.dim() <= Lfm2Kernels.ROUTER_NORM_MAX_DIM;
+    }
+
+    /**
+     * Whether Q5_K gate/up and Q6_K down take {@code expertGateUpSiLUQ5_KSimdgroup} and {@code
+     * expertDownResidualQ6_KWarpPerSlot}: on CUDA. Metal keeps the {@code Simd32} kernels.
+     */
+    public static boolean warpExperts() {
+        return TornadoDevices.current().backend().equals(BackendId.CUDA);
     }
 
     public static boolean shuffle32() {
@@ -1266,11 +1281,22 @@ public class Lfm2Layers
         if (!simdgroupExperts(type, gateUp)) {
             return matVecWorker(rows);
         }
-        if (!gateUp && (type == DataType.Q5_K || type == DataType.Q4_K)) {
+        if (!gateUp
+                && (type == DataType.Q5_K
+                        || type == DataType.Q4_K
+                        || (type == DataType.Q6_K && warpExperts()))) {
             int groups =
                     (rows + TransformerComputeKernelsQ5_K.SLOT_ROWS - 1)
                             / TransformerComputeKernelsQ5_K.SLOT_ROWS;
             return WorkerGridFactory.genericWorker(groups * 32 * used, 32 * used);
+        }
+        if (gateUp && type == DataType.Q5_K && warpExperts()) {
+            int groupRows =
+                    TransformerComputeKernelsQ5_K.SLOT_ROWS
+                            * TransformerComputeKernelsQ5_K.SIMDGROUPS;
+            int threads = 32 * TransformerComputeKernelsQ5_K.SIMDGROUPS;
+            return WorkerGridFactory.genericWorker(
+                    ((rows + groupRows - 1) / groupRows) * threads, threads);
         }
         if (type == DataType.Q4_K) {
             int groupRows = TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS;

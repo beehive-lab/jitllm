@@ -1213,4 +1213,174 @@ public final class TransformerComputeKernelsQ6_K {
             out.set(r, out.get(r) + sum);
         }
     }
+
+    /** Expert slots a workgroup of {@link #expertDownResidualQ6_KWarpPerSlot} can hold. */
+    public static final int MAX_SLOTS = 8;
+
+    /** Output rows of a {@link #expertDownResidualQ6_KWarpPerSlot} workgroup. */
+    public static final int SLOT_ROWS = 4;
+
+    /**
+     * {@code out[r] += Σ_s weights[s] · (down_e[r] · x[s·H ..])}, {@code e = selected[s]}: a
+     * workgroup of {@code used} warps for {@link #SLOT_ROWS} rows, warp {@code s} taking slot
+     * {@code s}. In a warp, eight lanes cover a super-block, four at a time, each taking one of its
+     * 32-weight units as {@link #matrixVectorQ6_KWarp} decodes it; the four rows share the
+     * activations a lane loads. The weighted slots are added in selection order. Example:
+     * LFM2.5-24B-A2B's layers 7 and 8, 512 workgroups of 4 warps, 2048 rows over {@code H = 1536}.
+     * Launch {@code d / SLOT_ROWS} workgroups of {@code 32 * used} threads, {@code used <=
+     * MAX_SLOTS}.
+     */
+    public static void expertDownResidualQ6_KWarpPerSlot(
+            KernelContext context,
+            FloatArray x,
+            FloatArray out,
+            ByteArray down,
+            IntArray selected,
+            FloatArray weights,
+            int d,
+            int expertHidden,
+            int used) {
+        float[] partial = context.allocateFloatLocalArray(MAX_SLOTS * SLOT_ROWS);
+        int lane = context.localIdx & 31;
+        int s = context.localIdx >> 5;
+        int row0 = context.groupIdx * SLOT_ROWS;
+        int blocks = expertHidden / QK_K;
+        int rowBytes = blocks * BLOCK_BYTES;
+        int ix = lane >> 3;
+        int half = (lane & 7) >> 2;
+        int pos = (lane & 3) * 8;
+        int wrow0 = selected.get(s) * d + row0;
+        int xo = s * expertHidden;
+        float p0 = 0.0f;
+        float p1 = 0.0f;
+        float p2 = 0.0f;
+        float p3 = 0.0f;
+        for (int ib = ix; ib < blocks; ib += 4) {
+            int xb = xo + ib * QK_K + half * 128 + pos;
+            Float4 xa0 = x.getFloat4(xb);
+            Float4 xa1 = x.getFloat4(xb + 4);
+            Float4 xb0 = x.getFloat4(xb + 32);
+            Float4 xb1 = x.getFloat4(xb + 36);
+            Float4 xc0 = x.getFloat4(xb + 64);
+            Float4 xc1 = x.getFloat4(xb + 68);
+            Float4 xd0 = x.getFloat4(xb + 96);
+            Float4 xd1 = x.getFloat4(xb + 100);
+            int at = wrow0 * rowBytes + ib * BLOCK_BYTES;
+            p0 += blockDot6(down, at, half, pos, xa0, xa1, xb0, xb1, xc0, xc1, xd0, xd1);
+            p1 += blockDot6(down, at + rowBytes, half, pos, xa0, xa1, xb0, xb1, xc0, xc1, xd0, xd1);
+            p2 +=
+                    blockDot6(
+                            down,
+                            at + 2 * rowBytes,
+                            half,
+                            pos,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1);
+            p3 +=
+                    blockDot6(
+                            down,
+                            at + 3 * rowBytes,
+                            half,
+                            pos,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1);
+        }
+        p0 = simdSum(context, p0);
+        p1 = simdSum(context, p1);
+        p2 = simdSum(context, p2);
+        p3 = simdSum(context, p3);
+        if (lane == 0) {
+            float weight = weights.get(s);
+            partial[s * SLOT_ROWS] = weight * p0;
+            partial[s * SLOT_ROWS + 1] = weight * p1;
+            partial[s * SLOT_ROWS + 2] = weight * p2;
+            partial[s * SLOT_ROWS + 3] = weight * p3;
+        }
+        context.localBarrier();
+        int t = context.localIdx;
+        if (t < SLOT_ROWS && row0 + t < d) {
+            float sum = 0.0f;
+            for (int i = 0; i < used; i++) {
+                sum += partial[i * SLOT_ROWS + t];
+            }
+            out.set(row0 + t, out.get(row0 + t) + sum);
+        }
+    }
+
+    /**
+     * One lane's 32-weight unit of a super-block at {@code base}: positions {@code pos} to {@code
+     * pos + 7} of half {@code half}'s four groups, against activations {@code xa..xd}, two loads of
+     * four per group.
+     */
+    private static float blockDot6(
+            ByteArray w,
+            int base,
+            int half,
+            int pos,
+            Float4 xa0,
+            Float4 xa1,
+            Float4 xb0,
+            Float4 xb1,
+            Float4 xc0,
+            Float4 xc1,
+            Float4 xd0,
+            Float4 xd1) {
+        float dd = w.getHalfFloat(base + D_OFFSET).getFloat32();
+        int scaleAt = base + SCALES_OFFSET + half * 8 + pos / 16;
+        int qlAt = base + half * 64 + pos;
+        int qhAt = base + QH_OFFSET + half * 32 + pos;
+        int l0 = word(w, qlAt);
+        int l1 = word(w, qlAt + 4);
+        int m0 = word(w, qlAt + 32);
+        int m1 = word(w, qlAt + 36);
+        int h0 = word(w, qhAt);
+        int h1 = word(w, qhAt + 4);
+        float sum0 =
+                bytesDot6((l0 & 0x0F0F0F0F) | ((h0 & 0x03030303) << 4), xa0)
+                        + bytesDot6((l1 & 0x0F0F0F0F) | ((h1 & 0x03030303) << 4), xa1);
+        float sum1 =
+                bytesDot6((m0 & 0x0F0F0F0F) | (((h0 >>> 2) & 0x03030303) << 4), xb0)
+                        + bytesDot6((m1 & 0x0F0F0F0F) | (((h1 >>> 2) & 0x03030303) << 4), xb1);
+        float sum2 =
+                bytesDot6(((l0 >>> 4) & 0x0F0F0F0F) | (((h0 >>> 4) & 0x03030303) << 4), xc0)
+                        + bytesDot6(
+                                ((l1 >>> 4) & 0x0F0F0F0F) | (((h1 >>> 4) & 0x03030303) << 4), xc1);
+        float sum3 =
+                bytesDot6(((m0 >>> 4) & 0x0F0F0F0F) | (((h0 >>> 6) & 0x03030303) << 4), xd0)
+                        + bytesDot6(
+                                ((m1 >>> 4) & 0x0F0F0F0F) | (((h1 >>> 6) & 0x03030303) << 4), xd1);
+        return dd * signedByte(w, scaleAt) * sum0
+                + dd * signedByte(w, scaleAt + 2) * sum1
+                + dd * signedByte(w, scaleAt + 4) * sum2
+                + dd * signedByte(w, scaleAt + 6) * sum3;
+    }
+
+    /**
+     * Four bytes at {@code at} as a word, from two two-byte loads: Q6_K's 210-byte blocks leave
+     * every other block two bytes off a word boundary.
+     */
+    private static int word(ByteArray w, int at) {
+        return (w.getHalfFloat(at).getHalfFloatValue() & 0xFFFF)
+                | ((w.getHalfFloat(at + 2).getHalfFloatValue() & 0xFFFF) << 16);
+    }
+
+    /** The four six-bit weights in {@code q}'s bytes, each less 32, against {@code x}. */
+    private static float bytesDot6(int q, Float4 x) {
+        return ((q & 0xFF) - 32) * x.getX()
+                + (((q >>> 8) & 0xFF) - 32) * x.getY()
+                + (((q >>> 16) & 0xFF) - 32) * x.getZ()
+                + ((q >>> 24) - 32) * x.getW();
+    }
 }

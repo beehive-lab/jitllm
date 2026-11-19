@@ -1343,6 +1343,225 @@ public final class TransformerComputeKernelsQ5_K {
         }
     }
 
+    /** SIMD groups per workgroup of {@link #expertGateUpSiLUQ5_KSimdgroup}. */
+    public static final int SIMDGROUPS = 2;
+
+    /**
+     * {@code hb[s·H + r] = silu(gate_e[r]·x) · (up_e[r]·x)}, {@code e = selected[s]}, in {@link
+     * #expertDownResidualQ5_KWarpPerSlot}'s scheme: a SIMD group takes {@link #SLOT_ROWS} rows of
+     * one slot ({@code H} is a multiple of four), eight lanes a super-block, and the activations a
+     * lane loads serve the four gate and four up rows. Example: LFM2.5-24B-A2B's layers 7 and 8, 4
+     * slots × 1536 rows over {@code n = 2048}. Launch {@code used·H / (SLOT_ROWS · SIMDGROUPS)}
+     * workgroups of {@code 32 * SIMDGROUPS} threads.
+     */
+    public static void expertGateUpSiLUQ5_KSimdgroup(
+            KernelContext context,
+            FloatArray x,
+            FloatArray hb,
+            ByteArray gate,
+            ByteArray up,
+            IntArray selected,
+            int n,
+            int expertHidden,
+            int used) {
+        int lane = context.localIdx & 31;
+        int row0 = (context.groupIdx * SIMDGROUPS + (context.localIdx >> 5)) * SLOT_ROWS;
+        int rows = used * expertHidden;
+        if (row0 >= rows) {
+            return;
+        }
+        int slot = row0 / expertHidden;
+        int wrow0 = selected.get(slot) * expertHidden + (row0 - slot * expertHidden);
+        int blocks = n / QK_K;
+        int rowBytes = blocks * BLOCK_BYTES;
+        int ix = lane >> 3;
+        int iq = (lane & 7) >> 2;
+        int ir = lane & 3;
+        float g0 = 0.0f;
+        float g1 = 0.0f;
+        float g2 = 0.0f;
+        float g3 = 0.0f;
+        float u0 = 0.0f;
+        float u1 = 0.0f;
+        float u2 = 0.0f;
+        float u3 = 0.0f;
+        for (int ib = ix; ib < blocks; ib += 4) {
+            int xb = ib * QK_K + 64 * iq + 8 * ir;
+            Float4 xa0 = x.getFloat4(xb + 0);
+            Float4 xa1 = x.getFloat4(xb + 4);
+            Float4 xb0 = x.getFloat4(xb + 32);
+            Float4 xb1 = x.getFloat4(xb + 36);
+            Float4 xc0 = x.getFloat4(xb + 128);
+            Float4 xc1 = x.getFloat4(xb + 132);
+            Float4 xd0 = x.getFloat4(xb + 160);
+            Float4 xd1 = x.getFloat4(xb + 164);
+            float sa =
+                    xa0.getX()
+                            + xa0.getY()
+                            + xa0.getZ()
+                            + xa0.getW()
+                            + xa1.getX()
+                            + xa1.getY()
+                            + xa1.getZ()
+                            + xa1.getW();
+            float sb =
+                    xb0.getX()
+                            + xb0.getY()
+                            + xb0.getZ()
+                            + xb0.getW()
+                            + xb1.getX()
+                            + xb1.getY()
+                            + xb1.getZ()
+                            + xb1.getW();
+            float sc =
+                    xc0.getX()
+                            + xc0.getY()
+                            + xc0.getZ()
+                            + xc0.getW()
+                            + xc1.getX()
+                            + xc1.getY()
+                            + xc1.getZ()
+                            + xc1.getW();
+            float sd =
+                    xd0.getX()
+                            + xd0.getY()
+                            + xd0.getZ()
+                            + xd0.getW()
+                            + xd1.getX()
+                            + xd1.getY()
+                            + xd1.getZ()
+                            + xd1.getW();
+            int at = wrow0 * rowBytes + ib * BLOCK_BYTES;
+            g0 +=
+                    blockDot5(
+                            gate, at, iq, ir, xa0, xa1, xb0, xb1, xc0, xc1, xd0, xd1, sa, sb, sc,
+                            sd);
+            u0 += blockDot5(up, at, iq, ir, xa0, xa1, xb0, xb1, xc0, xc1, xd0, xd1, sa, sb, sc, sd);
+            g1 +=
+                    blockDot5(
+                            gate,
+                            at + rowBytes,
+                            iq,
+                            ir,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1,
+                            sa,
+                            sb,
+                            sc,
+                            sd);
+            u1 +=
+                    blockDot5(
+                            up,
+                            at + rowBytes,
+                            iq,
+                            ir,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1,
+                            sa,
+                            sb,
+                            sc,
+                            sd);
+            g2 +=
+                    blockDot5(
+                            gate,
+                            at + 2 * rowBytes,
+                            iq,
+                            ir,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1,
+                            sa,
+                            sb,
+                            sc,
+                            sd);
+            u2 +=
+                    blockDot5(
+                            up,
+                            at + 2 * rowBytes,
+                            iq,
+                            ir,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1,
+                            sa,
+                            sb,
+                            sc,
+                            sd);
+            g3 +=
+                    blockDot5(
+                            gate,
+                            at + 3 * rowBytes,
+                            iq,
+                            ir,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1,
+                            sa,
+                            sb,
+                            sc,
+                            sd);
+            u3 +=
+                    blockDot5(
+                            up,
+                            at + 3 * rowBytes,
+                            iq,
+                            ir,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1,
+                            sa,
+                            sb,
+                            sc,
+                            sd);
+        }
+        g0 = simdSum(context, g0);
+        g1 = simdSum(context, g1);
+        g2 = simdSum(context, g2);
+        g3 = simdSum(context, g3);
+        u0 = simdSum(context, u0);
+        u1 = simdSum(context, u1);
+        u2 = simdSum(context, u2);
+        u3 = simdSum(context, u3);
+        if (lane == 0) {
+            hb.set(row0, g0 / (1.0f + TornadoMath.exp(-g0)) * u0);
+            hb.set(row0 + 1, g1 / (1.0f + TornadoMath.exp(-g1)) * u1);
+            hb.set(row0 + 2, g2 / (1.0f + TornadoMath.exp(-g2)) * u2);
+            hb.set(row0 + 3, g3 / (1.0f + TornadoMath.exp(-g3)) * u3);
+        }
+    }
+
     /** Expert slots a workgroup of {@link #expertDownResidualQ5_KWarpPerSlot} can hold. */
     public static final int MAX_SLOTS = 8;
 

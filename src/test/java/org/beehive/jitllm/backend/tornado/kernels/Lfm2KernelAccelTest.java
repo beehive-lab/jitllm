@@ -139,7 +139,9 @@ public class Lfm2KernelAccelTest {
 
     /** The grid of the down kernel for {@code type}, as {@code Lfm2Layers} sets it. */
     private static WorkerGrid simdDownGrid(DataType type, int rows) {
-        if (type == DataType.Q5_K || type == DataType.Q4_K) {
+        if (type == DataType.Q5_K
+                || type == DataType.Q4_K
+                || (type == DataType.Q6_K && Lfm2Layers.warpExperts())) {
             int groups =
                     (rows + TransformerComputeKernelsQ5_K.SLOT_ROWS - 1)
                             / TransformerComputeKernelsQ5_K.SLOT_ROWS;
@@ -176,11 +178,14 @@ public class Lfm2KernelAccelTest {
             scheduler.addWorkerGrid("moe.gateUp", grid(USED * EXPERT_HIDDEN * LOCAL, LOCAL));
             return;
         }
+        boolean warp = type == DataType.Q5_K && Lfm2Layers.warpExperts();
         graph.task(
                 "gateUp",
                 type == DataType.Q4_K
                         ? TransformerComputeKernelsQ4_K::expertGateUpSiLUQ4_KSimdgroup
-                        : TransformerComputeKernelsQ5_K::expertGateUpSiLUQ5_KSimd32,
+                        : warp
+                                ? TransformerComputeKernelsQ5_K::expertGateUpSiLUQ5_KSimdgroup
+                                : TransformerComputeKernelsQ5_K::expertGateUpSiLUQ5_KSimd32,
                 context,
                 dx,
                 hb,
@@ -190,6 +195,16 @@ public class Lfm2KernelAccelTest {
                 DIM,
                 EXPERT_HIDDEN,
                 USED);
+        if (warp) {
+            int groupRows =
+                    TransformerComputeKernelsQ5_K.SLOT_ROWS
+                            * TransformerComputeKernelsQ5_K.SIMDGROUPS;
+            int threads = 32 * TransformerComputeKernelsQ5_K.SIMDGROUPS;
+            int rows = USED * EXPERT_HIDDEN;
+            scheduler.addWorkerGrid(
+                    "moe.gateUp", grid(((rows + groupRows - 1) / groupRows) * threads, threads));
+            return;
+        }
         scheduler.addWorkerGrid("moe.gateUp", simdGrid(type, USED * EXPERT_HIDDEN));
     }
 
@@ -297,7 +312,12 @@ public class Lfm2KernelAccelTest {
                                 TransformerComputeKernelsQ4_K::expertDownResidualQ4_KWarpPerSlot;
                         case Q5_K ->
                                 TransformerComputeKernelsQ5_K::expertDownResidualQ5_KWarpPerSlot;
-                        default -> TransformerComputeKernelsQ6_K::expertDownResidualQ6_KSimd32;
+                        default ->
+                                Lfm2Layers.warpExperts()
+                                        ? TransformerComputeKernelsQ6_K
+                                                ::expertDownResidualQ6_KWarpPerSlot
+                                        : TransformerComputeKernelsQ6_K
+                                                ::expertDownResidualQ6_KSimd32;
                     },
                     context,
                     hb,
