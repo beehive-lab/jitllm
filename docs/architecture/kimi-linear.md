@@ -89,15 +89,58 @@ Compared with glm5next's blocks:
 
 ## Running on the GPU
 
-The CUDA plan (`KimiLinearPlanProvider`, `KimiLinearLayers`) runs one token at a time and as a
-sequential prefill followed by decode, on one device or split by layer across several. Every stage
-keeps the whole model's cache layout.
+The CUDA plan (`KimiLinearPlanProvider`) runs one token at a time, as a sequential prefill followed
+by decode, and with batched prefill, on one device or split by layer across several (single-token
+or batched). Every stage keeps the whole model's cache layout.
 
 - **Weights:** Q8_0 projections; the routed experts all Q8_0 or all Q4_0 (dot products on the
   nibbles as stored, with DP4A). Norms, the router, its bias, the convolutions, `ssm_a` and
   `dt_bias` are F32, as llama.cpp's converter writes them.
 - **Cache:** FP16 by default, FP32 with `--fp32-kv-cache`.
-- **Not supported yet:** the batched prefill.
+- **Decode** (`KimiLinearLayers`): a stage's layers in one task graph; KDA through `KdaKernels`,
+  MLA through deepseek2's absorbed kernels, the experts through `RoutedExpertKernels`.
+- **Batched prefill** (`KimiLinearBatchPrefillLayers`): int8 tensor-core GEMMs for the projections
+  (`attn_kv_a_mqa` and `ssm_beta` padded to whole 128-column tiles), the KDA convolution and delta
+  rule walking the chunk's rows in order (`KdaBatchKernels`), deepseek2's FP16 tensor-core latent
+  attention, and grouped int8 GEMMs for the experts (`RoutedExpertBatchKernels`, Q4_0 recentred as
+  its tiles are staged).
+- **The seed token:** a new conversation is seeded with the prompt's own first token, since Kimi's
+  prompts open with a role token rather than `[BOS]`; the prefill/decode loops would otherwise feed
+  an extra `[BOS]` at position zero.
+
+### Agreement with the host
+
+On the CPU, Q8_0 greedy text is identical to llama.cpp's CPU output for 96 tokens. On the GPU, with
+every run forced to the CPU's tokens, the worst relative logit error is about 5% for both
+single-token decode and batched prefill, with FP16 or FP32 cache; the five most likely tokens agree
+at every step and the top token differs only at near-ties.
+
+## Performance
+
+Tokens per second, against llama.cpp `11fe021` (`-fa 1 -ngl 99`) on the same file. Both sides on
+the same 427-token prompt and a decode of 128 tokens at depth 427; jitllm medians with their range,
+llama.cpp mean ± deviation.
+
+NVIDIA A100 80GB, Q8_0 (48.65 GiB), five repetitions:
+
+| | jitllm | llama.cpp |
+|---|---|---|
+| prefill, chunk / ubatch 256 | 2125 (2119–2130) | 1681 ± 88 |
+| prefill, chunk / ubatch 512 | 2672 (2665–2685) | 2653 ± 106 |
+| decode at depth 427 | 135–137 | 134 ± 0.7 |
+| single-token plan, prompt and decode | 154 | — |
+
+CUDA graphs change neither number.
+
+2× NVIDIA A10, Q8_0 projections with Q4_0 routed experts (26.72 GiB), split by layer with the
+default byte-balanced split (`--split-transport host`; llama.cpp `-sm layer`), three repetitions:
+
+| | jitllm | llama.cpp |
+|---|---|---|
+| prefill, chunk / ubatch 256 | 1587 (1582–1590) | 1407 ± 13 |
+| prefill, chunk / ubatch 512 | 2059 (2038–2074) | 1933 ± 52 |
+| decode at depth 427 | 117 (106–118) | 112 ± 0.5 |
+| single-token plan, prompt and decode | 127 | — |
 
 ## GGUF layout
 
