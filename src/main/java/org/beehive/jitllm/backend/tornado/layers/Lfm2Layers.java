@@ -8,6 +8,7 @@ import org.beehive.jitllm.backend.tornado.device.TornadoDevices;
 import org.beehive.jitllm.backend.tornado.kernels.Lfm2Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35AttentionKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen3Kernels;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsLayered;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
@@ -276,13 +277,26 @@ public class Lfm2Layers
         }
         transferLayerWeights(layer, layerIndex);
 
-        normalize(
-                layer,
-                tp + "attn_rms_reduce",
-                tp + "attn_rms_finalize",
-                tp + "attn_rms_apply",
-                lfm2State.workspace.temp,
-                require(weights.rms_att_weightLayered, layerIndex, "attn_norm"));
+        if (normProjections(layerIndex)) {
+            layer.task(
+                    tp + "attn_rms_reduce",
+                    TransformerComputeKernels::reductionOneBlockWithLayerWeighted,
+                    context,
+                    lfm2State.workspace.temp,
+                    lfm2State.workspace.wrapX,
+                    require(weights.rms_att_weightLayered, layerIndex, "attn_norm").asFloatArray(),
+                    lfm2State.workspace.wrapXb,
+                    config.dim(),
+                    lfm2State.localSize);
+        } else {
+            normalize(
+                    layer,
+                    tp + "attn_rms_reduce",
+                    tp + "attn_rms_finalize",
+                    tp + "attn_rms_apply",
+                    lfm2State.workspace.temp,
+                    require(weights.rms_att_weightLayered, layerIndex, "attn_norm"));
+        }
 
         if (config.isAttentionLayer(layerIndex)) {
             attentionBranch(layer, layerIndex);
@@ -368,6 +382,70 @@ public class Lfm2Layers
                 scratch);
     }
 
+    /**
+     * {@code out = w · xb} for a projection of the attention norm's output: with the norm's
+     * finalize and scale inside it where {@link #normProjections} holds, else from {@code wrapXb}.
+     */
+    private void normMatVec(
+            TaskGraph layer,
+            int layerIndex,
+            String task,
+            String role,
+            TornadoTensor w,
+            FloatArray out,
+            int d) {
+        if (!normProjections(layerIndex)) {
+            matVec(
+                    layer,
+                    layerIndex,
+                    task,
+                    role,
+                    w,
+                    lfm2State.workspace.wrapXb,
+                    out,
+                    config.dim(),
+                    d,
+                    false);
+            return;
+        }
+        requireWholeBlocks(layerIndex, role, w.dataType(), config.dim());
+        projections.rmsScaleMatvec(
+                layer,
+                task,
+                lfm2State.workspace.wrapXb,
+                lfm2State.workspace.temp,
+                out,
+                w,
+                config.dim(),
+                d,
+                config.rmsNormEps());
+    }
+
+    /**
+     * Whether layer {@code layerIndex}'s attention norm finalizes and scales inside the projections
+     * that read it ({@code conv_in_proj}, or {@code attn_q/k/v_proj}), two dispatches fewer: on
+     * Metal, when each is a SIMD-group Q4_K projection.
+     */
+    private boolean normProjections(int layerIndex) {
+        if (!TornadoDevices.current().backend().equals(BackendId.METAL)
+                || !shouldUseFinalNormalization()) {
+            return false;
+        }
+        if (config.isAttentionLayer(layerIndex)) {
+            return simdgroupRmsScale(weights.wqLayered, layerIndex)
+                    && simdgroupRmsScale(weights.wkLayered, layerIndex)
+                    && simdgroupRmsScale(weights.wvLayered, layerIndex);
+        }
+        return simdgroupRmsScale(weights.convInProj, layerIndex);
+    }
+
+    private boolean simdgroupRmsScale(TornadoTensor[] tensors, int layer) {
+        return tensors != null
+                && layer < tensors.length
+                && tensors[layer] != null
+                && projections.simdgroupRmsScale(tensors[layer]);
+    }
+
     /** Whether this state's key/value store is half precision. */
     private boolean fp16Kv() {
         return state.usesFp16KeyValueCache();
@@ -390,39 +468,30 @@ public class Lfm2Layers
         final int kvDim = config.kvDim();
         var ws = lfm2State.workspace;
 
-        matVec(
+        normMatVec(
                 layer,
                 layerIndex,
                 tp + "attn_q_proj",
                 "attn_q",
                 require(weights.wqLayered, layerIndex, "attn_q"),
-                ws.wrapXb,
                 ws.wrapQ,
-                config.dim(),
-                config.dim(),
-                false);
-        matVec(
+                config.dim());
+        normMatVec(
                 layer,
                 layerIndex,
                 tp + "attn_k_proj",
                 "attn_k",
                 require(weights.wkLayered, layerIndex, "attn_k"),
-                ws.wrapXb,
                 ws.wrapK,
-                config.dim(),
-                kvDim,
-                false);
-        matVec(
+                kvDim);
+        normMatVec(
                 layer,
                 layerIndex,
                 tp + "attn_v_proj",
                 "attn_v",
                 require(weights.wvLayered, layerIndex, "attn_v"),
-                ws.wrapXb,
                 ws.wrapV,
-                config.dim(),
-                kvDim,
-                false);
+                kvDim);
 
         layer.task(
                 tp + "attn_qk_norm",
@@ -574,17 +643,14 @@ public class Lfm2Layers
      */
     private void shortConvBranch(TaskGraph layer, int layerIndex) {
         var ws = lfm2State.workspace;
-        matVec(
+        normMatVec(
                 layer,
                 layerIndex,
                 tp + "conv_in_proj",
                 "shortconv.in_proj",
                 require(weights.convInProj, layerIndex, "shortconv.in_proj"),
-                ws.wrapXb,
                 ws.wrapSsmQkv,
-                config.dim(),
-                config.shortConvProjectionDim(),
-                false);
+                config.shortConvProjectionDim());
         layer.task(
                 tp + "conv",
                 Lfm2Kernels::shortConv,
@@ -1115,12 +1181,16 @@ public class Lfm2Layers
             scheduler.addWorkerGrid(prefix + "attn_rms_reduce", rmsReduce);
             scheduler.addWorkerGrid(prefix + "ffn_rms_reduce", rmsReduce);
             if (shouldUseFinalNormalization()) {
-                scheduler.addWorkerGrid(prefix + "attn_rms_finalize", rmsFinalize);
+                if (!normProjections(layer)) {
+                    scheduler.addWorkerGrid(prefix + "attn_rms_finalize", rmsFinalize);
+                }
                 if (!normRouter(layer)) {
                     scheduler.addWorkerGrid(prefix + "ffn_rms_finalize", rmsFinalize);
                 }
             }
-            scheduler.addWorkerGrid(prefix + "attn_rms_apply", rmsApply);
+            if (!normProjections(layer)) {
+                scheduler.addWorkerGrid(prefix + "attn_rms_apply", rmsApply);
+            }
             if (!normRouter(layer)) {
                 scheduler.addWorkerGrid(prefix + "ffn_rms_apply", rmsApply);
             }

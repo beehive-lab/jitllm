@@ -1779,6 +1779,188 @@ public final class TransformerComputeKernelsQ4_K {
         }
     }
 
+    /**
+     * {@link #matrixVectorQ4_KSimdgroup} of an RMS norm's output with the norm's finalize and scale
+     * folded into the store: {@code x} holds {@code weight ⊙ x} without the scale, and lane 0 adds
+     * the norm's partial sums of squares ({@code partials} from index 1) as the finalize kernel
+     * does and multiplies each row's sum by the scale. Example: LFM2-8B-A1B {@code
+     * shortconv.in_proj}, 6144 rows over the 2048-wide residual stream.
+     */
+    public static void matrixVectorQ4_KSimdgroupRmsScale(
+            KernelContext context,
+            FloatArray x,
+            FloatArray partials,
+            FloatArray out,
+            ByteArray w,
+            int n,
+            int d,
+            float eps) {
+        int lane = context.localIdx & 31;
+        int row0 = (context.groupIdx * SIMDGROUPS + (context.localIdx >> 5)) * SIMDGROUP_ROWS;
+        int blocks = n / QK_K;
+        int rowBytes = blocks * BLOCK_BYTES;
+        int ix = lane >> 3;
+        int iq = (lane & 7) >> 2;
+        int ir = lane & 3;
+        int shift = 16 * iq;
+        float sum0 = 0.0f;
+        float sum1 = 0.0f;
+        float sum2 = 0.0f;
+        float sum3 = 0.0f;
+        for (int ib = ix; ib < blocks; ib += 4) {
+            int xb = ib * QK_K + 64 * iq + 8 * ir;
+            Float4 xa0 = x.getFloat4(xb + 0);
+            Float4 xa1 = x.getFloat4(xb + 4);
+            Float4 xb0 = x.getFloat4(xb + 32);
+            Float4 xb1 = x.getFloat4(xb + 36);
+            Float4 xc0 = x.getFloat4(xb + 128);
+            Float4 xc1 = x.getFloat4(xb + 132);
+            Float4 xd0 = x.getFloat4(xb + 160);
+            Float4 xd1 = x.getFloat4(xb + 164);
+            float sa =
+                    xa0.getX()
+                            + xa0.getY()
+                            + xa0.getZ()
+                            + xa0.getW()
+                            + xa1.getX()
+                            + xa1.getY()
+                            + xa1.getZ()
+                            + xa1.getW();
+            float sb =
+                    xb0.getX()
+                            + xb0.getY()
+                            + xb0.getZ()
+                            + xb0.getW()
+                            + xb1.getX()
+                            + xb1.getY()
+                            + xb1.getZ()
+                            + xb1.getW();
+            float sc =
+                    xc0.getX()
+                            + xc0.getY()
+                            + xc0.getZ()
+                            + xc0.getW()
+                            + xc1.getX()
+                            + xc1.getY()
+                            + xc1.getZ()
+                            + xc1.getW();
+            float sd =
+                    xd0.getX()
+                            + xd0.getY()
+                            + xd0.getZ()
+                            + xd0.getW()
+                            + xd1.getX()
+                            + xd1.getY()
+                            + xd1.getZ()
+                            + xd1.getW();
+            float ya0 = xa0.getX();
+            float ya1 = xa0.getY() * S1;
+            float ya2 = xa0.getZ() * S2;
+            float ya3 = xa0.getW() * S3;
+            float ya4 = xa1.getX();
+            float ya5 = xa1.getY() * S1;
+            float ya6 = xa1.getZ() * S2;
+            float ya7 = xa1.getW() * S3;
+            float yb0 = xb0.getX();
+            float yb1 = xb0.getY() * S1;
+            float yb2 = xb0.getZ() * S2;
+            float yb3 = xb0.getW() * S3;
+            float yb4 = xb1.getX();
+            float yb5 = xb1.getY() * S1;
+            float yb6 = xb1.getZ() * S2;
+            float yb7 = xb1.getW() * S3;
+            float yc0 = xc0.getX();
+            float yc1 = xc0.getY() * S1;
+            float yc2 = xc0.getZ() * S2;
+            float yc3 = xc0.getW() * S3;
+            float yc4 = xc1.getX();
+            float yc5 = xc1.getY() * S1;
+            float yc6 = xc1.getZ() * S2;
+            float yc7 = xc1.getW() * S3;
+            float yd0 = xd0.getX();
+            float yd1 = xd0.getY() * S1;
+            float yd2 = xd0.getZ() * S2;
+            float yd3 = xd0.getW() * S3;
+            float yd4 = xd1.getX();
+            float yd5 = xd1.getY() * S1;
+            float yd6 = xd1.getZ() * S2;
+            float yd7 = xd1.getW() * S3;
+            for (int r = 0; r < SIMDGROUP_ROWS; r++) {
+                int row = row0 + r;
+                if (row < d) {
+                    float part =
+                            blockDot(
+                                    w,
+                                    row * rowBytes + ib * BLOCK_BYTES,
+                                    shift,
+                                    32 * iq + 8 * ir,
+                                    ya0,
+                                    ya1,
+                                    ya2,
+                                    ya3,
+                                    ya4,
+                                    ya5,
+                                    ya6,
+                                    ya7,
+                                    yb0,
+                                    yb1,
+                                    yb2,
+                                    yb3,
+                                    yb4,
+                                    yb5,
+                                    yb6,
+                                    yb7,
+                                    yc0,
+                                    yc1,
+                                    yc2,
+                                    yc3,
+                                    yc4,
+                                    yc5,
+                                    yc6,
+                                    yc7,
+                                    yd0,
+                                    yd1,
+                                    yd2,
+                                    yd3,
+                                    yd4,
+                                    yd5,
+                                    yd6,
+                                    yd7,
+                                    sa,
+                                    sb,
+                                    sc,
+                                    sd);
+                    if (r == 0) {
+                        sum0 += part;
+                    } else if (r == 1) {
+                        sum1 += part;
+                    } else if (r == 2) {
+                        sum2 += part;
+                    } else {
+                        sum3 += part;
+                    }
+                }
+            }
+        }
+        sum0 = simdSum(context, sum0);
+        sum1 = simdSum(context, sum1);
+        sum2 = simdSum(context, sum2);
+        sum3 = simdSum(context, sum3);
+        if (lane == 0) {
+            float ss = 0.0f;
+            for (int i = 1; i < partials.getSize(); i++) {
+                ss += partials.get(i);
+            }
+            ss /= n;
+            ss += eps;
+            ss = 1.0f / TornadoMath.sqrt(ss);
+            store(out, row0, d, ss * sum0, false);
+            store(out, row0 + 1, d, ss * sum1, false);
+            store(out, row0 + 2, d, ss * sum2, false);
+            store(out, row0 + 3, d, ss * sum3, false);
+        }
+    }
+
     /** {@code hb[row] += w[row]·x}; see {@link #matrixVectorQ4_KSimdgroup}. */
     public static void matrixVectorWithResidualQ4_KSimdgroup(
             KernelContext context, FloatArray x, FloatArray hb, ByteArray w, int n, int d) {

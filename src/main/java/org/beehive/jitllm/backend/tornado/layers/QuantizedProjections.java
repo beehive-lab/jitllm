@@ -165,6 +165,44 @@ public final class QuantizedProjections {
         return !packed() && w.dataType() == DataType.Q4_K && shuffle32;
     }
 
+    /**
+     * Whether {@link #rmsScaleMatvec} takes {@code w}: a weight {@link #floatMatvec} would run on
+     * the SIMD-group Q4_K kernel.
+     */
+    public boolean simdgroupRmsScale(TornadoTensor w) {
+        return simdgroup(w) && !warpQ4_K;
+    }
+
+    /**
+     * {@code out = scale · (w·x)} for an {@code x} that holds an RMS norm's {@code weight ⊙ x}
+     * without its scale, the scale finalized from {@code partials} (the norm's per-workgroup sums
+     * of squares from index 1) inside the projection; for a {@code w} {@link #simdgroupRmsScale}
+     * takes.
+     */
+    public void rmsScaleMatvec(
+            TaskGraph graph,
+            String name,
+            FloatArray x,
+            FloatArray partials,
+            FloatArray out,
+            TornadoTensor w,
+            int n,
+            int d,
+            float eps) {
+        graph.task(
+                name,
+                TransformerComputeKernelsQ4_K::matrixVectorQ4_KSimdgroupRmsScale,
+                context,
+                x,
+                partials,
+                out,
+                bytes(w),
+                n,
+                d,
+                eps);
+        simdgroupGrid(graph, name, d);
+    }
+
     /** Whether the plan prepacked {@code w}, a Q8_0 projection. */
     private boolean prepacked(TornadoTensor w) {
         return ws.prepacking != null && ws.prepacking.prepackedQ8(w);
