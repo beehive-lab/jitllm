@@ -290,13 +290,25 @@ public class Lfm2Layers
             shortConvBranch(layer, layerIndex);
         }
 
-        normalize(
-                layer,
-                tp + "ffn_rms_reduce",
-                tp + "ffn_rms_finalize",
-                tp + "ffn_rms_apply",
-                lfm2State.workspace.tempFFN,
-                require(weights.rms_ffn_weightLayered, layerIndex, "ffn_norm"));
+        if (normRouter(layerIndex)) {
+            layer.task(
+                    tp + "ffn_rms_reduce",
+                    rmsReduceKernel(),
+                    context,
+                    lfm2State.workspace.tempFFN,
+                    lfm2State.workspace.wrapX,
+                    config.dim(),
+                    config.rmsNormEps(),
+                    lfm2State.localSize);
+        } else {
+            normalize(
+                    layer,
+                    tp + "ffn_rms_reduce",
+                    tp + "ffn_rms_finalize",
+                    tp + "ffn_rms_apply",
+                    lfm2State.workspace.tempFFN,
+                    require(weights.rms_ffn_weightLayered, layerIndex, "ffn_norm"));
+        }
 
         if (config.isMoeLayer(layerIndex)) {
             mixtureOfExperts(layer, layerIndex);
@@ -627,17 +639,33 @@ public class Lfm2Layers
         final int expertHidden = config.expertHiddenDim();
         final int used = config.expertUsedCount();
 
-        matVec(
-                layer,
-                layerIndex,
-                tp + "moe_router",
-                "ffn_gate_inp",
-                require(weights.ffnGateInp, layerIndex, "ffn_gate_inp"),
-                ws.wrapXb,
-                ws.wrapRouterLogits,
-                dim,
-                config.expertCount(),
-                false);
+        if (normRouter(layerIndex)) {
+            layer.task(
+                    tp + "moe_router",
+                    Lfm2Kernels::routerLogitsRmsApply,
+                    context,
+                    ws.wrapX,
+                    ws.wrapXb,
+                    require(weights.rms_ffn_weightLayered, layerIndex, "ffn_norm").asFloatArray(),
+                    ws.tempFFN,
+                    ws.wrapRouterLogits,
+                    weights.ffnGateInp[layerIndex].asFloatArray(),
+                    dim,
+                    config.expertCount(),
+                    config.rmsNormEps());
+        } else {
+            matVec(
+                    layer,
+                    layerIndex,
+                    tp + "moe_router",
+                    "ffn_gate_inp",
+                    require(weights.ffnGateInp, layerIndex, "ffn_gate_inp"),
+                    ws.wrapXb,
+                    ws.wrapRouterLogits,
+                    dim,
+                    config.expertCount(),
+                    false);
+        }
         layer.task(
                 tp + "moe_select",
                 simdgroupSelect()
@@ -728,6 +756,20 @@ public class Lfm2Layers
      */
     private boolean warpRouter() {
         return TornadoDevices.current().backend().equals(BackendId.CUDA) && config.dim() % 128 == 0;
+    }
+
+    /**
+     * Whether layer {@code layerIndex}'s FFN norm finalizes and applies inside its router ({@code
+     * Lfm2Kernels.routerLogitsRmsApply}), two dispatches fewer: on Metal, for an F32 router.
+     */
+    private boolean normRouter(int layerIndex) {
+        return TornadoDevices.current().backend().equals(BackendId.METAL)
+                && config.isMoeLayer(layerIndex)
+                && weights.ffnGateInp[layerIndex] != null
+                && weights.ffnGateInp[layerIndex].dataType() == DataType.F32
+                && shouldUseFinalNormalization()
+                && config.dim() % lfm2State.localSize == 0
+                && config.dim() <= Lfm2Kernels.ROUTER_NORM_MAX_DIM;
     }
 
     public static boolean shuffle32() {
@@ -1074,10 +1116,14 @@ public class Lfm2Layers
             scheduler.addWorkerGrid(prefix + "ffn_rms_reduce", rmsReduce);
             if (shouldUseFinalNormalization()) {
                 scheduler.addWorkerGrid(prefix + "attn_rms_finalize", rmsFinalize);
-                scheduler.addWorkerGrid(prefix + "ffn_rms_finalize", rmsFinalize);
+                if (!normRouter(layer)) {
+                    scheduler.addWorkerGrid(prefix + "ffn_rms_finalize", rmsFinalize);
+                }
             }
             scheduler.addWorkerGrid(prefix + "attn_rms_apply", rmsApply);
-            scheduler.addWorkerGrid(prefix + "ffn_rms_apply", rmsApply);
+            if (!normRouter(layer)) {
+                scheduler.addWorkerGrid(prefix + "ffn_rms_apply", rmsApply);
+            }
 
             if (config.isAttentionLayer(layer)) {
                 scheduler.addWorkerGrid(prefix + "attn_q_proj", matVecWorker(config.dim()));

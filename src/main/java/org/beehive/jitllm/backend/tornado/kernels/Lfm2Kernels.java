@@ -166,6 +166,68 @@ public final class Lfm2Kernels {
         }
     }
 
+    /** Largest {@code n} {@link #routerLogitsRmsApply} holds in threadgroup memory. */
+    public static final int ROUTER_NORM_MAX_DIM = 4096;
+
+    /**
+     * The FFN norm's finalize and apply inside the F32 router, two dispatches fewer: every
+     * workgroup adds the norm's partial sums of squares ({@code partials} from index 1) into the
+     * scale as the finalize kernel does, then {@code logits[e] = w[e] · (weight ⊙ scale·x)}.
+     * Workgroup 0 also writes the normalized vector to {@code xb} for the expert kernels, after its
+     * dot product: a device store inside the loop keeps the loads from overlapping. Example:
+     * LFM2-8B-A1B, 32 experts over 2048, 32 workgroups of 128. Launch {@code rows} workgroups of
+     * 128.
+     */
+    public static void routerLogitsRmsApply(
+            KernelContext context,
+            FloatArray x,
+            FloatArray xb,
+            FloatArray normWeight,
+            FloatArray partials,
+            FloatArray logits,
+            FloatArray w,
+            int n,
+            int rows,
+            float eps) {
+        float[] localSum = context.allocateFloatLocalArray(128);
+        float[] normedLocal = context.allocateFloatLocalArray(ROUTER_NORM_MAX_DIM);
+        int row = context.groupIdx;
+        int t = context.localIdx;
+        float ss = 0.0f;
+        for (int i = 1; i < partials.getSize(); i++) {
+            ss += partials.get(i);
+        }
+        ss /= n;
+        ss += eps;
+        ss = 1.0f / TornadoMath.sqrt(ss);
+
+        float partialSum = 0.0f;
+        if (row < rows) {
+            int rowOffset = row * n;
+            for (int j = t; j < n; j += 128) {
+                float normed = normWeight.get(j) * (ss * x.get(j));
+                normedLocal[j] = normed;
+                partialSum += w.get(rowOffset + j) * normed;
+            }
+        }
+        if (row == 0) {
+            for (int j = t; j < n; j += 128) {
+                xb.set(j, normedLocal[j]);
+            }
+        }
+        localSum[t] = partialSum;
+        context.localBarrier();
+        for (int stride = 64; stride > 0; stride >>= 1) {
+            if (t < stride) {
+                localSum[t] += localSum[t + stride];
+            }
+            context.localBarrier();
+        }
+        if (t == 0 && row < rows) {
+            logits.set(row, localSum[0]);
+        }
+    }
+
     /**
      * {@link #selectExpertsSigmoid} on one SIMD group: each round takes the largest score across
      * the lanes, then the lowest index among the lanes that hold it, so the same tie rule. Example:
