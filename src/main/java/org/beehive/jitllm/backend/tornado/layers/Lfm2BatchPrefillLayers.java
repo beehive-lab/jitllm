@@ -1244,10 +1244,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
     private WorkerGrid groupedWorker(DataType type, int d, int maxTiles) {
         if (mmaExperts) {
             int threads = GroupedExpertMmaKernels.THREADS;
-            int workgroups =
-                    type == DataType.Q4_K || type == DataType.Q5_K || type == DataType.Q6_K
-                            ? GroupedExpertMmaKernels.splitWorkgroups(maxTiles, d)
-                            : maxTiles * (d / 128);
+            int workgroups = GroupedExpertMmaKernels.splitWorkgroups(maxTiles, d);
             return WorkerGridFactory.genericWorker(workgroups * threads, threads);
         }
         if (simdgroup) {
