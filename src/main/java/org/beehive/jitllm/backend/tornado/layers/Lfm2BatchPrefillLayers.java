@@ -87,7 +87,8 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
 
     /**
      * Whether the grouped expert GEMMs run on tensor cores ({@link GroupedExpertMmaKernels}): a
-     * CUDA device with them, and expert widths that fill whole 128-output blocks.
+     * CUDA device with them, and expert and model widths of whole 256-wide blocks (each width is
+     * both a depth and an output count of the kernels; 2048 and 1536 fit, 1664 does not).
      */
     private final boolean mmaExperts;
 
@@ -139,8 +140,8 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
         this.mmaExperts =
                 !simdgroup
                         && TensorCoreSupport.isTensorCoreCapableBackend()
-                        && config.expertHiddenDim() % 128 == 0
-                        && config.dim() % 128 == 0;
+                        && config.expertHiddenDim() % 256 == 0
+                        && config.dim() % 256 == 0;
         // The cuBLAS weight scratch first, so the FP16 rows below can share it.
         if (cublas) {
             int widest = Math.toIntExact(nativeScratchBytes(config) / 2);
