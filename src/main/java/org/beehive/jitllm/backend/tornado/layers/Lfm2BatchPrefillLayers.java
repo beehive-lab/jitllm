@@ -92,6 +92,9 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
      */
     private final boolean mmaExperts;
 
+    /** Whether the router runs in tiles on CUDA ({@link Lfm2BatchKernels#routerBatchTiled}). */
+    private final boolean tiledRouter;
+
     /** Whether the dense projections run on cuBLAS ({@link Target#cublas}). */
     private final boolean cublas;
 
@@ -142,6 +145,12 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                         && TensorCoreSupport.isTensorCoreCapableBackend()
                         && config.expertHiddenDim() % 256 == 0
                         && config.dim() % 256 == 0;
+        this.tiledRouter =
+                !simdgroup
+                        && TensorCoreSupport.isTensorCoreCapableBackend()
+                        && batchSize % Lfm2BatchKernels.ROUTER_TILE_ROWS == 0
+                        && config.expertCount() % Lfm2BatchKernels.ROUTER_TILE_EXPERTS == 0
+                        && config.dim() % (32 * Lfm2BatchKernels.ROUTER_TILE_STEPS) == 0;
         // The cuBLAS weight scratch first, so the FP16 rows below can share it.
         if (cublas) {
             int widest = Math.toIntExact(nativeScratchBytes(config) / 2);
@@ -940,7 +949,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                 dim);
         layer.task(
                 "moe_router",
-                Lfm2BatchKernels::routerBatch,
+                tiledRouter ? Lfm2BatchKernels::routerBatchTiled : Lfm2BatchKernels::routerBatch,
                 context,
                 ws.batchStartPosHolder,
                 ws.wrapNormedBatch,
@@ -1312,7 +1321,12 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
         int used = config.expertUsedCount();
         int assignments = batchSize * used;
         int maxTiles = Qwen35MoeBatchKernels.maxTiles(assignments, config.expertCount());
-        int routerJobs = batchSize * config.expertCount();
+        int routerJobs =
+                tiledRouter
+                        ? batchSize
+                                / Lfm2BatchKernels.ROUTER_TILE_ROWS
+                                * (config.expertCount() / Lfm2BatchKernels.ROUTER_TILE_EXPERTS)
+                        : batchSize * config.expertCount();
         WorkerGrid router =
                 WorkerGridFactory.genericWorker(
                         ((routerJobs + Lfm2BatchKernels.ROUTER_SIMDGROUPS - 1)

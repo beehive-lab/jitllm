@@ -138,6 +138,80 @@ public final class Lfm2BatchKernels {
         }
     }
 
+    /** Rows of a SIMD group's tile in {@link #routerBatchTiled}. */
+    public static final int ROUTER_TILE_ROWS = 8;
+
+    /** Experts of a SIMD group's tile in {@link #routerBatchTiled}. */
+    public static final int ROUTER_TILE_EXPERTS = 8;
+
+    /** Lane steps of 32 inputs that {@link #routerBatchTiled} loads before it multiplies. */
+    public static final int ROUTER_TILE_STEPS = 4;
+
+    /**
+     * {@link #routerBatch} with one SIMD group per tile of 8 rows by 8 experts, so each load feeds
+     * eight products instead of one. Every logit is summed in {@link #routerBatch}'s order, so the
+     * logits are the same bits. Needs padded rows and {@code experts} in multiples of 8 and {@code
+     * dim} of 128. Example: 512 rows by 64 experts, 512 SIMD groups.
+     */
+    public static void routerBatchTiled(
+            KernelContext context,
+            IntArray batchInfo,
+            FloatArray x,
+            FloatArray router,
+            FloatArray logits,
+            int dim,
+            int experts) {
+        int lane = context.localIdx & 31;
+        int job = context.groupIdx * ROUTER_SIMDGROUPS + (context.localIdx >> 5);
+        int expertTiles = experts / ROUTER_TILE_EXPERTS;
+        int rowTile = job / expertTiles;
+        int row0 = rowTile * ROUTER_TILE_ROWS;
+        int rows = batchInfo.get(1);
+        if (row0 >= rows) {
+            return;
+        }
+        int e0 = (job - rowTile * expertTiles) * ROUTER_TILE_EXPERTS;
+        float[] acc = new float[ROUTER_TILE_ROWS * ROUTER_TILE_EXPERTS];
+        float[] xs = new float[ROUTER_TILE_STEPS * ROUTER_TILE_ROWS];
+        float[] ws = new float[ROUTER_TILE_STEPS * ROUTER_TILE_EXPERTS];
+        for (int o = 0; o < ROUTER_TILE_ROWS * ROUTER_TILE_EXPERTS; o++) {
+            acc[o] = 0.0f;
+        }
+        for (int i = lane; i < dim; i += 32 * ROUTER_TILE_STEPS) {
+            for (int s = 0; s < ROUTER_TILE_STEPS; s++) {
+                for (int r = 0; r < ROUTER_TILE_ROWS; r++) {
+                    // Padding rows read the last real row; their sums are never stored.
+                    int row = row0 + r < rows ? row0 + r : rows - 1;
+                    xs[s * ROUTER_TILE_ROWS + r] = x.get(row * dim + i + 32 * s);
+                }
+                for (int e = 0; e < ROUTER_TILE_EXPERTS; e++) {
+                    ws[s * ROUTER_TILE_EXPERTS + e] = router.get((e0 + e) * dim + i + 32 * s);
+                }
+            }
+            for (int s = 0; s < ROUTER_TILE_STEPS; s++) {
+                for (int r = 0; r < ROUTER_TILE_ROWS; r++) {
+                    for (int e = 0; e < ROUTER_TILE_EXPERTS; e++) {
+                        acc[r * ROUTER_TILE_EXPERTS + e] +=
+                                ws[s * ROUTER_TILE_EXPERTS + e] * xs[s * ROUTER_TILE_ROWS + r];
+                    }
+                }
+            }
+        }
+        for (int r = 0; r < ROUTER_TILE_ROWS; r++) {
+            for (int e = 0; e < ROUTER_TILE_EXPERTS; e++) {
+                float sum = acc[r * ROUTER_TILE_EXPERTS + e];
+                sum += context.simdShuffleDown(sum, 16);
+                sum += context.simdShuffleDown(sum, 8);
+                sum += context.simdShuffleDown(sum, 4);
+                sum += context.simdShuffleDown(sum, 2);
+                sum += context.simdShuffleDown(sum, 1);
+                if (lane == 0 && row0 + r < rows) {
+                    logits.set((row0 + r) * experts + e0 + e, sum);
+                }
+            }
+        }
+    }
+
     /** Tokens per workgroup of {@link #selectExpertsSigmoidBatch}: one SIMD group each. */
     public static final int SELECT_SIMDGROUPS = 4;
 
