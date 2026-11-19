@@ -101,14 +101,17 @@ public final class GroupedExpertMmaKernels {
      * i]} when {@code gather} is 1, {@code first + i} otherwise, copied to local memory 4 bytes at
      * a time in the k order the weights take; the next step's copy and weight loads are in flight
      * while this step multiplies. The weights never reach local memory: lane {@code L} loads the
-     * code words of its own column {@code L / 4} (bytes {@code 4 (L % 4)} and {@code 16 + 4 (L %
-     * 4)} of a sub-block pair), turns each code into its exact half in registers and passes them to
-     * the MMA with {@code mmaFragmentB}. Each scale group's sums are scaled in FP32 by its scale,
-     * and the group's minimum subtracted through {@code blockSums}, the FP16 rows' sums per 32
-     * inputs: the sums of one workgroup per 64-row tile, in the same order. A half with no rows of
-     * its tile returns before its first barrier. Example: LFM2.5-24B-A2B's gate, 1536 outputs over
-     * {@code n = 2048}: six workgroups per half and 32 steps. Requires {@code n % 256 == 0} and
-     * {@code d % 256 == 0}. Grid: {@link #splitWorkgroups} workgroups of {@link #THREADS} threads.
+     * code bytes {@code 8 (L % 4)} to {@code 8 (L % 4) + 7} of its own column {@code L / 4}, one
+     * 8-byte load per sub-block pair, and takes the words it multiplies, bytes {@code 4 (L % 4)}
+     * and {@code 16 + 4 (L % 4)}, from its column's four lanes with {@code simdShuffle}: each MMA
+     * sums the same 16 inputs as with 4-byte loads, so the result is bit-identical. It turns each
+     * code into its exact half in registers and passes them to the MMA with {@code mmaFragmentB}.
+     * Each scale group's sums are scaled in FP32 by its scale, and the group's minimum subtracted
+     * through {@code blockSums}, the FP16 rows' sums per 32 inputs: the sums of one workgroup per
+     * 64-row tile, in the same order. A half with no rows of its tile returns before its first
+     * barrier. Example: LFM2.5-24B-A2B's gate, 1536 outputs over {@code n = 2048}: six workgroups
+     * per half and 32 steps. Requires {@code n % 256 == 0} and {@code d % 256 == 0}. Grid: {@link
+     * #splitWorkgroups} workgroups of {@link #THREADS} threads.
      */
     // @formatter:on
     public static void groupedExpertMmaQ4_K(
@@ -197,7 +200,14 @@ public final class GroupedExpertMmaKernels {
         int aDst = aChunk * 256 + aRow * 8 + aHalf * 4;
         // B: four column pairs per thread, word i of each column's 32 code bytes for the step.
         int bCol = warp * 32 + (lane >> 2);
-        int bByte = 4 * (lane & 3);
+        int bByte = 8 * (lane & 3);
+        // Lane t of a column's four holds code words 2t and 2t + 1 of its 8-byte load and needs
+        // words t and 4 + t: two shuffles, each source offering its low or high word by which half
+        // of the four it is in.
+        int bLow = (lane & 3) < 2 ? 1 : 0;
+        int bOdd = lane & 1;
+        int bSrcA = (lane & ~3) + ((lane & 3) >> 1) + 2 * bOdd;
+        int bSrcB = (lane & ~3) + ((lane & 3) >> 1) + 2 * (1 - bOdd);
         int blocksPerRow = n >> 8;
         int rowStride = blocksPerRow * 144;
         int wRow = expert * d + blockCol;
@@ -241,22 +251,28 @@ public final class GroupedExpertMmaKernels {
             rPair = pairIndex;
             int qOff = kBlock * 144 + 16 + pairIndex * 32 + bByte;
             int c0 = (wRow + bCol) * rowStride + qOff;
-            q0a = w.getInt(c0);
-            q0b = w.getInt(c0 + 16);
+            long q0aw = w.getLong(c0);
+            q0a = (int) q0aw;
+            q0b = (int) (q0aw >>> 32);
             int c1 = c0 + 8 * rowStride;
-            q1a = w.getInt(c1);
-            q1b = w.getInt(c1 + 16);
+            long q1aw = w.getLong(c1);
+            q1a = (int) q1aw;
+            q1b = (int) (q1aw >>> 32);
             int c2 = c0 + 16 * rowStride;
-            q2a = w.getInt(c2);
-            q2b = w.getInt(c2 + 16);
+            long q2aw = w.getLong(c2);
+            q2a = (int) q2aw;
+            q2b = (int) (q2aw >>> 32);
             int c3 = c0 + 24 * rowStride;
-            q3a = w.getInt(c3);
-            q3b = w.getInt(c3 + 16);
+            long q3aw = w.getLong(c3);
+            q3a = (int) q3aw;
+            q3b = (int) (q3aw >>> 32);
             int sBase = (sRow + kBlock) * 144;
-            rHead = w.getInt(sBase);
-            rS0 = w.getInt(sBase + 4);
-            rS1 = w.getInt(sBase + 8);
-            rS2 = w.getInt(sBase + 12);
+            long rHeadw = w.getLong(sBase);
+            rHead = (int) rHeadw;
+            rS0 = (int) (rHeadw >>> 32);
+            long rS1w = w.getLong(sBase + 8);
+            rS1 = (int) rS1w;
+            rS2 = (int) (rS1w >>> 32);
         }
 
         int kSteps = n >> 6;
@@ -264,14 +280,22 @@ public final class GroupedExpertMmaKernels {
             int kBase = step << 6;
             int buf = step & 1;
             // This step's code words; the registers are reloaded for the next step below.
-            int u0a = q0a;
-            int u0b = q0b;
-            int u1a = q1a;
-            int u1b = q1b;
-            int u2a = q2a;
-            int u2b = q2b;
-            int u3a = q3a;
-            int u3b = q3b;
+            int u0x = ctx.simdShuffle(bLow == 1 ? q0a : q0b, bSrcA);
+            int u0y = ctx.simdShuffle(bLow == 1 ? q0b : q0a, bSrcB);
+            int u0a = bOdd == 0 ? u0x : u0y;
+            int u0b = bOdd == 0 ? u0y : u0x;
+            int u1x = ctx.simdShuffle(bLow == 1 ? q1a : q1b, bSrcA);
+            int u1y = ctx.simdShuffle(bLow == 1 ? q1b : q1a, bSrcB);
+            int u1a = bOdd == 0 ? u1x : u1y;
+            int u1b = bOdd == 0 ? u1y : u1x;
+            int u2x = ctx.simdShuffle(bLow == 1 ? q2a : q2b, bSrcA);
+            int u2y = ctx.simdShuffle(bLow == 1 ? q2b : q2a, bSrcB);
+            int u2a = bOdd == 0 ? u2x : u2y;
+            int u2b = bOdd == 0 ? u2y : u2x;
+            int u3x = ctx.simdShuffle(bLow == 1 ? q3a : q3b, bSrcA);
+            int u3y = ctx.simdShuffle(bLow == 1 ? q3b : q3a, bSrcB);
+            int u3a = bOdd == 0 ? u3x : u3y;
+            int u3b = bOdd == 0 ? u3y : u3x;
             {
                 // The step's scale words, loaded raw a step ahead, decoded after the multiplies
                 // they overlapped.
@@ -301,22 +325,28 @@ public final class GroupedExpertMmaKernels {
                     rPair = pairIndex;
                     int qOff = kBlock * 144 + 16 + pairIndex * 32 + bByte;
                     int c0 = (wRow + bCol) * rowStride + qOff;
-                    q0a = w.getInt(c0);
-                    q0b = w.getInt(c0 + 16);
+                    long q0aw = w.getLong(c0);
+                    q0a = (int) q0aw;
+                    q0b = (int) (q0aw >>> 32);
                     int c1 = c0 + 8 * rowStride;
-                    q1a = w.getInt(c1);
-                    q1b = w.getInt(c1 + 16);
+                    long q1aw = w.getLong(c1);
+                    q1a = (int) q1aw;
+                    q1b = (int) (q1aw >>> 32);
                     int c2 = c0 + 16 * rowStride;
-                    q2a = w.getInt(c2);
-                    q2b = w.getInt(c2 + 16);
+                    long q2aw = w.getLong(c2);
+                    q2a = (int) q2aw;
+                    q2b = (int) (q2aw >>> 32);
                     int c3 = c0 + 24 * rowStride;
-                    q3a = w.getInt(c3);
-                    q3b = w.getInt(c3 + 16);
+                    long q3aw = w.getLong(c3);
+                    q3a = (int) q3aw;
+                    q3b = (int) (q3aw >>> 32);
                     int sBase = (sRow + kBlock) * 144;
-                    rHead = w.getInt(sBase);
-                    rS0 = w.getInt(sBase + 4);
-                    rS1 = w.getInt(sBase + 8);
-                    rS2 = w.getInt(sBase + 12);
+                    long rHeadw = w.getLong(sBase);
+                    rHead = (int) rHeadw;
+                    rS0 = (int) (rHeadw >>> 32);
+                    long rS1w = w.getLong(sBase + 8);
+                    rS1 = (int) rS1w;
+                    rS2 = (int) (rS1w >>> 32);
                 }
             }
             int aByte = buf * SPLIT_INPUT_INTS * 4;
@@ -614,7 +644,14 @@ public final class GroupedExpertMmaKernels {
         int aDst = aChunk * 256 + aRow * 8 + aHalf * 4;
         // B: four column pairs per thread, word i of each column's 32 code bytes for the step.
         int bCol = warp * 32 + (lane >> 2);
-        int bByte = 4 * (lane & 3);
+        int bByte = 8 * (lane & 3);
+        // Lane t of a column's four holds code words 2t and 2t + 1 of its 8-byte load and needs
+        // words t and 4 + t: two shuffles, each source offering its low or high word by which half
+        // of the four it is in.
+        int bLow = (lane & 3) < 2 ? 1 : 0;
+        int bOdd = lane & 1;
+        int bSrcA = (lane & ~3) + ((lane & 3) >> 1) + 2 * bOdd;
+        int bSrcB = (lane & ~3) + ((lane & 3) >> 1) + 2 * (1 - bOdd);
         int blocksPerRow = n >> 8;
         int rowStride = blocksPerRow * 176;
         int wRow = expert * d + blockCol;
@@ -667,30 +704,40 @@ public final class GroupedExpertMmaKernels {
             int qOff = kBlock * 176 + 48 + pairIndex * 32 + bByte;
             int hOff = kBlock * 176 + 16 + bByte;
             int c0 = (wRow + bCol + 0) * rowStride;
-            q0a = w.getInt(c0 + qOff);
-            q0b = w.getInt(c0 + qOff + 16);
-            h0a = w.getInt(c0 + hOff);
-            h0b = w.getInt(c0 + hOff + 16);
+            long q0aw = w.getLong(c0 + qOff);
+            q0a = (int) q0aw;
+            q0b = (int) (q0aw >>> 32);
+            long h0aw = w.getLong(c0 + hOff);
+            h0a = (int) h0aw;
+            h0b = (int) (h0aw >>> 32);
             int c1 = (wRow + bCol + 8) * rowStride;
-            q1a = w.getInt(c1 + qOff);
-            q1b = w.getInt(c1 + qOff + 16);
-            h1a = w.getInt(c1 + hOff);
-            h1b = w.getInt(c1 + hOff + 16);
+            long q1aw = w.getLong(c1 + qOff);
+            q1a = (int) q1aw;
+            q1b = (int) (q1aw >>> 32);
+            long h1aw = w.getLong(c1 + hOff);
+            h1a = (int) h1aw;
+            h1b = (int) (h1aw >>> 32);
             int c2 = (wRow + bCol + 16) * rowStride;
-            q2a = w.getInt(c2 + qOff);
-            q2b = w.getInt(c2 + qOff + 16);
-            h2a = w.getInt(c2 + hOff);
-            h2b = w.getInt(c2 + hOff + 16);
+            long q2aw = w.getLong(c2 + qOff);
+            q2a = (int) q2aw;
+            q2b = (int) (q2aw >>> 32);
+            long h2aw = w.getLong(c2 + hOff);
+            h2a = (int) h2aw;
+            h2b = (int) (h2aw >>> 32);
             int c3 = (wRow + bCol + 24) * rowStride;
-            q3a = w.getInt(c3 + qOff);
-            q3b = w.getInt(c3 + qOff + 16);
-            h3a = w.getInt(c3 + hOff);
-            h3b = w.getInt(c3 + hOff + 16);
+            long q3aw = w.getLong(c3 + qOff);
+            q3a = (int) q3aw;
+            q3b = (int) (q3aw >>> 32);
+            long h3aw = w.getLong(c3 + hOff);
+            h3a = (int) h3aw;
+            h3b = (int) (h3aw >>> 32);
             int sBase = (sRow + kBlock) * 176;
-            rHead = w.getInt(sBase);
-            rS0 = w.getInt(sBase + 4);
-            rS1 = w.getInt(sBase + 8);
-            rS2 = w.getInt(sBase + 12);
+            long rHeadw = w.getLong(sBase);
+            rHead = (int) rHeadw;
+            rS0 = (int) (rHeadw >>> 32);
+            long rS1w = w.getLong(sBase + 8);
+            rS1 = (int) rS1w;
+            rS2 = (int) (rS1w >>> 32);
         }
 
         int kSteps = n >> 6;
@@ -699,22 +746,38 @@ public final class GroupedExpertMmaKernels {
             int buf = step & 1;
             int hShift = 2 * rPair;
             // This step's code and fifth-bit words; reloaded for the next step below.
-            int uq0a = q0a;
-            int uq0b = q0b;
-            int uh0a = h0a;
-            int uh0b = h0b;
-            int uq1a = q1a;
-            int uq1b = q1b;
-            int uh1a = h1a;
-            int uh1b = h1b;
-            int uq2a = q2a;
-            int uq2b = q2b;
-            int uh2a = h2a;
-            int uh2b = h2b;
-            int uq3a = q3a;
-            int uq3b = q3b;
-            int uh3a = h3a;
-            int uh3b = h3b;
+            int uq0x = ctx.simdShuffle(bLow == 1 ? q0a : q0b, bSrcA);
+            int uq0y = ctx.simdShuffle(bLow == 1 ? q0b : q0a, bSrcB);
+            int uq0a = bOdd == 0 ? uq0x : uq0y;
+            int uq0b = bOdd == 0 ? uq0y : uq0x;
+            int uh0x = ctx.simdShuffle(bLow == 1 ? h0a : h0b, bSrcA);
+            int uh0y = ctx.simdShuffle(bLow == 1 ? h0b : h0a, bSrcB);
+            int uh0a = bOdd == 0 ? uh0x : uh0y;
+            int uh0b = bOdd == 0 ? uh0y : uh0x;
+            int uq1x = ctx.simdShuffle(bLow == 1 ? q1a : q1b, bSrcA);
+            int uq1y = ctx.simdShuffle(bLow == 1 ? q1b : q1a, bSrcB);
+            int uq1a = bOdd == 0 ? uq1x : uq1y;
+            int uq1b = bOdd == 0 ? uq1y : uq1x;
+            int uh1x = ctx.simdShuffle(bLow == 1 ? h1a : h1b, bSrcA);
+            int uh1y = ctx.simdShuffle(bLow == 1 ? h1b : h1a, bSrcB);
+            int uh1a = bOdd == 0 ? uh1x : uh1y;
+            int uh1b = bOdd == 0 ? uh1y : uh1x;
+            int uq2x = ctx.simdShuffle(bLow == 1 ? q2a : q2b, bSrcA);
+            int uq2y = ctx.simdShuffle(bLow == 1 ? q2b : q2a, bSrcB);
+            int uq2a = bOdd == 0 ? uq2x : uq2y;
+            int uq2b = bOdd == 0 ? uq2y : uq2x;
+            int uh2x = ctx.simdShuffle(bLow == 1 ? h2a : h2b, bSrcA);
+            int uh2y = ctx.simdShuffle(bLow == 1 ? h2b : h2a, bSrcB);
+            int uh2a = bOdd == 0 ? uh2x : uh2y;
+            int uh2b = bOdd == 0 ? uh2y : uh2x;
+            int uq3x = ctx.simdShuffle(bLow == 1 ? q3a : q3b, bSrcA);
+            int uq3y = ctx.simdShuffle(bLow == 1 ? q3b : q3a, bSrcB);
+            int uq3a = bOdd == 0 ? uq3x : uq3y;
+            int uq3b = bOdd == 0 ? uq3y : uq3x;
+            int uh3x = ctx.simdShuffle(bLow == 1 ? h3a : h3b, bSrcA);
+            int uh3y = ctx.simdShuffle(bLow == 1 ? h3b : h3a, bSrcB);
+            int uh3a = bOdd == 0 ? uh3x : uh3y;
+            int uh3b = bOdd == 0 ? uh3y : uh3x;
             {
                 // The step's scale words, loaded raw a step ahead, decoded after the multiplies
                 // they overlapped.
@@ -745,30 +808,40 @@ public final class GroupedExpertMmaKernels {
                     int qOff = kBlock * 176 + 48 + pairIndex * 32 + bByte;
                     int hOff = kBlock * 176 + 16 + bByte;
                     int c0 = (wRow + bCol + 0) * rowStride;
-                    q0a = w.getInt(c0 + qOff);
-                    q0b = w.getInt(c0 + qOff + 16);
-                    h0a = w.getInt(c0 + hOff);
-                    h0b = w.getInt(c0 + hOff + 16);
+                    long q0aw = w.getLong(c0 + qOff);
+                    q0a = (int) q0aw;
+                    q0b = (int) (q0aw >>> 32);
+                    long h0aw = w.getLong(c0 + hOff);
+                    h0a = (int) h0aw;
+                    h0b = (int) (h0aw >>> 32);
                     int c1 = (wRow + bCol + 8) * rowStride;
-                    q1a = w.getInt(c1 + qOff);
-                    q1b = w.getInt(c1 + qOff + 16);
-                    h1a = w.getInt(c1 + hOff);
-                    h1b = w.getInt(c1 + hOff + 16);
+                    long q1aw = w.getLong(c1 + qOff);
+                    q1a = (int) q1aw;
+                    q1b = (int) (q1aw >>> 32);
+                    long h1aw = w.getLong(c1 + hOff);
+                    h1a = (int) h1aw;
+                    h1b = (int) (h1aw >>> 32);
                     int c2 = (wRow + bCol + 16) * rowStride;
-                    q2a = w.getInt(c2 + qOff);
-                    q2b = w.getInt(c2 + qOff + 16);
-                    h2a = w.getInt(c2 + hOff);
-                    h2b = w.getInt(c2 + hOff + 16);
+                    long q2aw = w.getLong(c2 + qOff);
+                    q2a = (int) q2aw;
+                    q2b = (int) (q2aw >>> 32);
+                    long h2aw = w.getLong(c2 + hOff);
+                    h2a = (int) h2aw;
+                    h2b = (int) (h2aw >>> 32);
                     int c3 = (wRow + bCol + 24) * rowStride;
-                    q3a = w.getInt(c3 + qOff);
-                    q3b = w.getInt(c3 + qOff + 16);
-                    h3a = w.getInt(c3 + hOff);
-                    h3b = w.getInt(c3 + hOff + 16);
+                    long q3aw = w.getLong(c3 + qOff);
+                    q3a = (int) q3aw;
+                    q3b = (int) (q3aw >>> 32);
+                    long h3aw = w.getLong(c3 + hOff);
+                    h3a = (int) h3aw;
+                    h3b = (int) (h3aw >>> 32);
                     int sBase = (sRow + kBlock) * 176;
-                    rHead = w.getInt(sBase);
-                    rS0 = w.getInt(sBase + 4);
-                    rS1 = w.getInt(sBase + 8);
-                    rS2 = w.getInt(sBase + 12);
+                    long rHeadw = w.getLong(sBase);
+                    rHead = (int) rHeadw;
+                    rS0 = (int) (rHeadw >>> 32);
+                    long rS1w = w.getLong(sBase + 8);
+                    rS1 = (int) rS1w;
+                    rS2 = (int) (rS1w >>> 32);
                 }
             }
             int aByte = buf * SPLIT_INPUT_INTS * 4;
