@@ -9,6 +9,7 @@ import org.beehive.jitllm.backend.tornado.kernels.DeepSeek4Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.DeepSeek4BatchArrays;
@@ -63,6 +64,9 @@ public class DeepSeek4BatchPrefillLayers implements BatchPrefillTransformerLayer
     private final IntArray[] compressorShapes;
     private final IntArray[] indexerShapes;
 
+    /** The grouped output GEMM's fixed tiles ({@link #outputTiles()}). */
+    private final IntArray outputTiles;
+
     /** The layers this graph runs: {@code [firstLayer, endLayer)}. */
     private final int firstLayer;
 
@@ -110,6 +114,7 @@ public class DeepSeek4BatchPrefillLayers implements BatchPrefillTransformerLayer
         this.compressorShapes = new IntArray[layers];
         this.indexerShapes = new IntArray[layers];
         buildShapes();
+        this.outputTiles = outputTiles();
         DeepSeek4BatchArrays b = state.workspace.deepseek4Batch;
         int[] expertShape = {
             config.dim(),
@@ -266,7 +271,22 @@ public class DeepSeek4BatchPrefillLayers implements BatchPrefillTransformerLayer
                 b.moeQuants,
                 b.moeScales,
                 b.moeSums,
-                b.expertShape);
+                b.expertShape,
+                b.sortedToken,
+                b.position,
+                b.tiles,
+                b.routedHidden,
+                b.routedHidden8,
+                b.routedHiddenScales,
+                b.routedOut,
+                b.sharedGate,
+                b.sharedUp,
+                b.sharedOut,
+                b.groupMajor,
+                b.groupMajor8,
+                b.groupMajorScales,
+                b.groupMajorOut,
+                outputTiles);
         List<Object> shapes = new ArrayList<>();
         for (int l = firstLayer; l < endLayer; l++) {
             shapes.add(attentionShapes[l]);
@@ -557,26 +577,134 @@ public class DeepSeek4BatchPrefillLayers implements BatchPrefillTransformerLayer
                                 config.slidingWindow(),
                                 ds.windowOffset(config, l),
                                 batch));
-        quantize(g, p + "attn_out_q8", b.attnOut, config.queryDim());
         final int rows = config.groupedOutputDim();
+        if (groupedOutputGemm(l)) {
+            groupedOutput(g, p, l);
+        } else {
+            quantize(g, p + "attn_out_q8", b.attnOut, config.queryDim());
+            task(
+                    p + "output_a",
+                    lanes(batch * rows * 32, 128),
+                    t ->
+                            g.task(
+                                    t,
+                                    DeepSeek4BatchKernels::groupedProjection,
+                                    context,
+                                    b.quants,
+                                    b.scales,
+                                    a.outputA()[l].asByteArray(),
+                                    b.grouped,
+                                    rows,
+                                    config.outputLoraRank(),
+                                    config.groupInputDim(),
+                                    batch));
+        }
+        quantize(g, p + "grouped_q8", b.grouped, rows);
+        project(g, p + "output_b", a.outputB()[l], b.branch, rows, dim);
+    }
+
+    /**
+     * Whether layer {@code l}'s grouped output projection runs on the grouped int8 GEMM: Q8_0
+     * weights, whole 128-column tiles of output per group and whole 64-value rounds of input.
+     */
+    private boolean groupedOutputGemm(int l) {
+        return w.attention().outputA()[l].dataType() == DataType.Q8_0
+                && config.outputLoraRank() % Qwen35MoeBatchKernels.TILE_COLS == 0
+                && config.groupInputDim() % Int8GemmKernels.I8_BK == 0;
+    }
+
+    // @formatter:off
+    /**
+     * The grouped output projection {@code wo_a} as the grouped expert GEMM: each group is an
+     * "expert" of {@code outputLoraRank} rows, and its rows are the chunk's rows of that group's
+     * input. The attention output is laid out group after group and quantized, the GEMM runs over
+     * fixed tiles ({@link #outputTiles}), and its output is laid back out row after row.
+     */
+    // @formatter:on
+    private void groupedOutput(TaskGraph g, String p, int l) {
+        DeepSeek4BatchArrays b = ds.workspace.deepseek4Batch;
+        final int groups = config.outputGroups();
+        final int in = config.groupInputDim();
+        final int rank = config.outputLoraRank();
+        final int padded = paddedBatch();
         task(
-                p + "output_a",
-                lanes(batch * rows * 32, 128),
+                p + "attn_out_groups",
+                lanes(padded * groups * in, 256),
                 t ->
                         g.task(
                                 t,
-                                DeepSeek4BatchKernels::groupedProjection,
+                                DeepSeek4BatchKernels::toGroupMajor,
                                 context,
-                                b.quants,
-                                b.scales,
-                                a.outputA()[l].asByteArray(),
+                                b.attnOut,
+                                b.groupMajor,
+                                groups,
+                                in,
+                                padded));
+        task(
+                p + "attn_out_groups_q8",
+                lanes(groups * padded * in, 128),
+                t ->
+                        g.task(
+                                t,
+                                Int8GemmKernels::quantizeActivationsQ8Warp,
+                                context,
+                                b.groupMajor,
+                                b.groupMajor8,
+                                b.groupMajorScales,
+                                in));
+        task(
+                p + "output_a",
+                tileGrid(rank, outputTiles.get(0)),
+                t ->
+                        g.task(
+                                t,
+                                Glm5NextBatchKernels::groupedDown,
+                                context,
+                                b.groupMajor8,
+                                b.groupMajorScales,
+                                outputTiles,
+                                w.attention().outputA()[l].asByteArray(),
+                                b.groupMajorOut,
+                                rank,
+                                in,
+                                0,
+                                groups));
+        task(
+                p + "output_a_rows",
+                lanes(padded * groups * rank, 256),
+                t ->
+                        g.task(
+                                t,
+                                DeepSeek4BatchKernels::fromGroupMajor,
+                                context,
+                                b.groupMajorOut,
                                 b.grouped,
-                                rows,
-                                config.outputLoraRank(),
-                                config.groupInputDim(),
-                                batch));
-        quantize(g, p + "grouped_q8", b.grouped, rows);
-        project(g, p + "output_b", a.outputB()[l], b.branch, rows, dim);
+                                groups,
+                                rank,
+                                padded));
+    }
+
+    /**
+     * The grouped output GEMM's tiles: every group's padded rows in 64-row tiles, as {@code (group,
+     * first row, rows)} after the count, the layout {@link Qwen35MoeBatchKernels#groupByExpert}
+     * writes.
+     */
+    private IntArray outputTiles() {
+        int groups = config.outputGroups();
+        int padded = paddedBatch();
+        int perGroup = padded / Qwen35MoeBatchKernels.TILE_ROWS;
+        IntArray tiles = new IntArray(1 + 3 * groups * perGroup);
+        int n = 0;
+        for (int grp = 0; grp < groups; grp++) {
+            for (int j = 0; j < perGroup; j++) {
+                tiles.set(1 + 3 * n, grp);
+                tiles.set(2 + 3 * n, grp * padded + j * Qwen35MoeBatchKernels.TILE_ROWS);
+                tiles.set(3 + 3 * n, Qwen35MoeBatchKernels.TILE_ROWS);
+                n++;
+            }
+        }
+        tiles.set(0, n);
+        return tiles;
     }
 
     /** A compressor's two F32 projections of {@code normed}, then its rows in order. */
@@ -684,9 +812,11 @@ public class DeepSeek4BatchPrefillLayers implements BatchPrefillTransformerLayer
     // ── mixture of experts ────────────────────────────────────────────────────
 
     private void mixtureOfExperts(TaskGraph g, String p, int l) {
-        var ws = ds.workspace;
-        DeepSeek4BatchArrays b = ws.deepseek4Batch;
-        DeepSeek4DeviceArrays d = ws.deepseek4;
+        if (groupedExperts(l)) {
+            groupedMixtureOfExperts(g, p, l);
+            return;
+        }
+        DeepSeek4BatchArrays b = ds.workspace.deepseek4Batch;
         var f = w.ffn();
         final int dim = config.dim();
         final int experts = config.expertCount();
@@ -694,7 +824,6 @@ public class DeepSeek4BatchPrefillLayers implements BatchPrefillTransformerLayer
         final int hidden = config.expertHiddenDim();
         final int shared = config.sharedHiddenDim();
         final int moeHidden = used * hidden + shared;
-        final boolean hashed = config.isHashRouted(l);
         List<TornadoTensor> gates = f.gateExperts().get(l);
         List<TornadoTensor> ups = f.upExperts().get(l);
         List<TornadoTensor> downs = f.downExperts().get(l);
@@ -704,42 +833,8 @@ public class DeepSeek4BatchPrefillLayers implements BatchPrefillTransformerLayer
         ByteArray up0 = ups.get(0).asByteArray(), up1 = ups.get(last).asByteArray();
         ByteArray down0 = downs.get(0).asByteArray(), down1 = downs.get(last).asByteArray();
         boolean q4 = gates.get(0).dataType() == DataType.Q4_0;
-        FloatArray bias = hashed ? d.empty : f.routerBias()[l].asFloatArray();
 
-        task(
-                p + "router",
-                lanes(batch * experts * 32, 128),
-                t ->
-                        g.task(
-                                t,
-                                Glm5NextBatchKernels::routerLogits,
-                                context,
-                                b.normed,
-                                f.router()[l].asFloatArray(),
-                                b.routerLogits,
-                                dim,
-                                experts,
-                                batch));
-        task(
-                p + "router_topk",
-                groups(batch, DeepSeek4BatchKernels.GROUP),
-                t ->
-                        g.task(
-                                t,
-                                DeepSeek4BatchKernels::routerSqrtSoftplus,
-                                context,
-                                b.routerLogits,
-                                bias,
-                                b.hashExperts,
-                                b.expertIds,
-                                b.expertWeights,
-                                experts,
-                                used,
-                                hashed ? 1 : 0,
-                                ds.hashOffset(l),
-                                b.hashStride,
-                                config.expertWeightsNorm() ? 1 : 0,
-                                config.expertWeightsScale()));
+        route(g, p, l);
         task(
                 p + "experts_gate_up",
                 lanes(batch * moeHidden * 32, 128),
@@ -798,6 +893,233 @@ public class DeepSeek4BatchPrefillLayers implements BatchPrefillTransformerLayer
                                 used,
                                 split,
                                 batch));
+    }
+
+    /**
+     * The router logits and the {@code sqrtsoftplus} top-k (or, on a hash-routed layer, the staged
+     * experts with their scores), into {@code expertIds} and {@code expertWeights}.
+     */
+    private void route(TaskGraph g, String p, int l) {
+        var ws = ds.workspace;
+        DeepSeek4BatchArrays b = ws.deepseek4Batch;
+        DeepSeek4DeviceArrays d = ws.deepseek4;
+        var f = w.ffn();
+        final int dim = config.dim();
+        final int experts = config.expertCount();
+        final int used = config.expertsUsed();
+        final boolean hashed = config.isHashRouted(l);
+        FloatArray bias = hashed ? d.empty : f.routerBias()[l].asFloatArray();
+        task(
+                p + "router",
+                lanes(batch * experts * 32, 128),
+                t ->
+                        g.task(
+                                t,
+                                Glm5NextBatchKernels::routerLogits,
+                                context,
+                                b.normed,
+                                f.router()[l].asFloatArray(),
+                                b.routerLogits,
+                                dim,
+                                experts,
+                                batch));
+        task(
+                p + "router_topk",
+                groups(batch, DeepSeek4BatchKernels.GROUP),
+                t ->
+                        g.task(
+                                t,
+                                DeepSeek4BatchKernels::routerSqrtSoftplus,
+                                context,
+                                b.routerLogits,
+                                bias,
+                                b.hashExperts,
+                                b.expertIds,
+                                b.expertWeights,
+                                experts,
+                                used,
+                                hashed ? 1 : 0,
+                                ds.hashOffset(l),
+                                b.hashStride,
+                                config.expertWeightsNorm() ? 1 : 0,
+                                config.expertWeightsScale()));
+    }
+
+    /**
+     * Whether layer {@code l}'s experts run on the grouped int8 GEMMs: Q8_0 or Q4_0 routed experts,
+     * a Q8_0 shared expert, and widths of whole 128-column tiles.
+     */
+    private boolean groupedExperts(int l) {
+        var f = w.ffn();
+        DataType experts = f.gateExperts().get(l).get(0).dataType();
+        return (experts == DataType.Q8_0 || experts == DataType.Q4_0)
+                && f.sharedGate()[l].dataType() == DataType.Q8_0
+                && config.dim() % Qwen35MoeBatchKernels.TILE_COLS == 0
+                && config.expertHiddenDim() % Qwen35MoeBatchKernels.TILE_COLS == 0
+                && Glm5NextBatchPrefillLayers.gemmShape(config.dim(), config.sharedHiddenDim())
+                && Glm5NextBatchPrefillLayers.gemmShape(config.sharedHiddenDim(), config.dim());
+    }
+
+    // @formatter:off
+    /**
+     * The mixture of experts on int8 tensor cores, as {@code glm5next} runs it:
+     *
+     * <ol>
+     *   <li>the routing; the assignments sorted by expert and cut into 64-row tiles;
+     *   <li>per stack of experts, the grouped clamped gate/up over the tiles of its experts, then
+     *       the grouped down projection, the hidden activations quantized between;
+     *   <li>the shared expert over every row as GEMMs, the clamp between;
+     *   <li>each row's routed outputs weighted and added to the shared one, into {@code branch}.
+     * </ol>
+     */
+    // @formatter:on
+    private void groupedMixtureOfExperts(TaskGraph g, String p, int l) {
+        var ws = ds.workspace;
+        DeepSeek4BatchArrays b = ws.deepseek4Batch;
+        var f = w.ffn();
+        final int dim = config.dim();
+        final int experts = config.expertCount();
+        final int used = config.expertsUsed();
+        final int hidden = config.expertHiddenDim();
+        final int shared = config.sharedHiddenDim();
+        final int assignments = batch * used;
+        List<TornadoTensor> gates = f.gateExperts().get(l);
+        boolean q4 = gates.get(0).dataType() == DataType.Q4_0;
+        List<TornadoTensor> ups = f.upExperts().get(l);
+        List<TornadoTensor> downs = f.downExperts().get(l);
+        int split = gates.size() == 1 ? experts : config.expertChunkSize();
+        int[][] ranges =
+                gates.size() == 1
+                        ? new int[][] {{0, experts}}
+                        : new int[][] {{0, split}, {split, experts}};
+
+        route(g, p, l);
+        task(
+                p + "group",
+                groups(1, Qwen35MoeBatchKernels.GROUP_THREADS),
+                t ->
+                        g.task(
+                                t,
+                                Qwen35MoeBatchKernels::groupByExpert,
+                                context,
+                                b.expertIds,
+                                ws.batchStartPosHolder,
+                                b.sortedToken,
+                                b.position,
+                                b.tiles,
+                                experts,
+                                used,
+                                batch));
+        for (int s = 0; s < ranges.length; s++) {
+            int lo = ranges[s][0];
+            int hi = ranges[s][1];
+            ByteArray gate = gates.get(s).asByteArray();
+            ByteArray up = ups.get(s).asByteArray();
+            task(
+                    p + "experts_gate_up" + s,
+                    tileGrid(hidden, b.maxTiles),
+                    t ->
+                            g.task(
+                                    t,
+                                    q4
+                                            ? Glm5NextBatchKernels::groupedGateUpClampedQ4_0
+                                            : Glm5NextBatchKernels::groupedGateUpClamped,
+                                    context,
+                                    b.a8,
+                                    b.a8Scales,
+                                    b.sortedToken,
+                                    b.tiles,
+                                    gate,
+                                    up,
+                                    b.routedHidden,
+                                    dim,
+                                    hidden,
+                                    lo,
+                                    hi,
+                                    config.swigluLimit()));
+        }
+        task(
+                p + "experts_hidden_q8",
+                lanes(assignments * hidden, 128),
+                t ->
+                        g.task(
+                                t,
+                                Int8GemmKernels::quantizeActivationsQ8Warp,
+                                context,
+                                b.routedHidden,
+                                b.routedHidden8,
+                                b.routedHiddenScales,
+                                hidden));
+        for (int s = 0; s < ranges.length; s++) {
+            int lo = ranges[s][0];
+            int hi = ranges[s][1];
+            ByteArray down = downs.get(s).asByteArray();
+            task(
+                    p + "experts_down" + s,
+                    tileGrid(dim, b.maxTiles),
+                    t ->
+                            g.task(
+                                    t,
+                                    q4
+                                            ? Glm5NextBatchKernels::groupedDownQ4_0
+                                            : Glm5NextBatchKernels::groupedDown,
+                                    context,
+                                    b.routedHidden8,
+                                    b.routedHiddenScales,
+                                    b.tiles,
+                                    down,
+                                    b.routedOut,
+                                    dim,
+                                    hidden,
+                                    lo,
+                                    hi));
+        }
+        // The shared expert reads the same quantized input as the routed ones, so it runs after
+        // their gate/up and before its own hidden activation replaces that input.
+        project(g, p + "shared_gate", f.sharedGate()[l], b.sharedGate, dim, shared);
+        project(g, p + "shared_up", f.sharedUp()[l], b.sharedUp, dim, shared);
+        task(
+                p + "shared_swiglu",
+                lanes(batch * shared, 128),
+                t ->
+                        g.task(
+                                t,
+                                Glm5NextKernels::clampedSwiGLU,
+                                context,
+                                b.sharedGate,
+                                b.sharedUp,
+                                batch * shared,
+                                config.swigluLimit()));
+        quantize(g, p + "shared_hidden_q8", b.sharedGate, shared);
+        project(g, p + "shared_down", f.sharedDown()[l], b.sharedOut, shared, dim);
+        task(
+                p + "experts_combine",
+                lanes(batch * dim, 256),
+                t ->
+                        g.task(
+                                t,
+                                Glm5NextBatchKernels::combineExperts,
+                                context,
+                                b.routedOut,
+                                b.position,
+                                b.expertWeights,
+                                b.sharedOut,
+                                b.branch,
+                                ws.batchStartPosHolder,
+                                dim,
+                                used));
+    }
+
+    /** The grouped GEMMs' grid: a block per 128 output columns and tile of sorted rows. */
+    private static WorkerGrid tileGrid(int columns, int maxTiles) {
+        WorkerGrid2D grid =
+                new WorkerGrid2D(
+                        columns
+                                / Qwen35MoeBatchKernels.TILE_COLS
+                                * Qwen35MoeBatchKernels.GEMM_THREADS,
+                        maxTiles);
+        grid.setLocalWork(Qwen35MoeBatchKernels.GEMM_THREADS, 1, 1);
+        return grid;
     }
 
     // ── building blocks ───────────────────────────────────────────────────────

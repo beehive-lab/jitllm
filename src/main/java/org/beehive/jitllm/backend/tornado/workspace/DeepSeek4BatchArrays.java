@@ -1,6 +1,7 @@
 package org.beehive.jitllm.backend.tornado.workspace;
 
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextKernels;
+import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
 import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
@@ -40,6 +41,16 @@ public final class DeepSeek4BatchArrays {
     public final FloatArray attnOut;
     public final FloatArray grouped;
 
+    /**
+     * The attention output group after group ({@code [group][row][groupIn]}), quantized for the
+     * grouped GEMM, and that GEMM's output in the same order.
+     */
+    public final FloatArray groupMajor;
+
+    public final ByteArray groupMajor8;
+    public final FloatArray groupMajorScales;
+    public final FloatArray groupMajorOut;
+
     /** Every (row, head)'s attention scores, {@code maxAttended} apart. */
     public final FloatArray scores;
 
@@ -62,6 +73,26 @@ public final class DeepSeek4BatchArrays {
 
     /** {@code dim, hiddenDim, sharedHiddenDim, used, split, batch} for the expert kernels. */
     public final IntArray expertShape;
+
+    /** The grouped experts: each assignment's sorted row, and the per-expert tiles of rows. */
+    public final IntArray sortedToken;
+
+    public final IntArray position;
+    public final IntArray tiles;
+    public final int maxTiles;
+
+    /** The routed experts' hidden activations and outputs, one row per sorted assignment. */
+    public final FloatArray routedHidden;
+
+    public final ByteArray routedHidden8;
+    public final FloatArray routedHiddenScales;
+    public final FloatArray routedOut;
+
+    /** The shared expert's gate, up and output, over every row. */
+    public final FloatArray sharedGate;
+
+    public final FloatArray sharedUp;
+    public final FloatArray sharedOut;
 
     /**
      * The hash-routed layers' experts for every row, {@code hashStride} per row. A stage of a model
@@ -98,6 +129,8 @@ public final class DeepSeek4BatchArrays {
             int experts,
             int used,
             int moeHidden,
+            int expertHidden,
+            int sharedHidden,
             int hashStride) {}
 
     private DeepSeek4BatchArrays(Sizes s) {
@@ -119,6 +152,10 @@ public final class DeepSeek4BatchArrays {
         query = TornadoWorkspaces.floats(b * s.queryDim);
         attnOut = TornadoWorkspaces.floats(b * s.queryDim);
         grouped = TornadoWorkspaces.floats(b * s.groupedDim);
+        groupMajor = TornadoWorkspaces.floats(b * s.queryDim);
+        groupMajor8 = TornadoWorkspaces.bytes(b * s.queryDim);
+        groupMajorScales = TornadoWorkspaces.floats(b * s.queryDim / 32);
+        groupMajorOut = TornadoWorkspaces.floats(b * s.groupedDim);
         scores = TornadoWorkspaces.floats(b * s.heads * s.maxAttended);
         compressorKv = TornadoWorkspaces.floats(b * s.compressorRow);
         compressorGate = TornadoWorkspaces.floats(b * s.compressorRow);
@@ -135,6 +172,20 @@ public final class DeepSeek4BatchArrays {
         moeScales = TornadoWorkspaces.floats(b * s.moeHidden / 32);
         moeSums = TornadoWorkspaces.ints(b * s.moeHidden / 32);
         expertShape = TornadoWorkspaces.ints(6);
+        int assignments = b * Math.max(1, s.used);
+        sortedToken = TornadoWorkspaces.ints(assignments);
+        position = TornadoWorkspaces.ints(assignments);
+        maxTiles = Qwen35MoeBatchKernels.maxTiles(assignments, Math.max(1, s.experts));
+        tiles = TornadoWorkspaces.ints(1 + 3 * maxTiles);
+        int hidden = Math.max(32, s.expertHidden);
+        routedHidden = TornadoWorkspaces.floats(assignments * hidden);
+        routedHidden8 = TornadoWorkspaces.bytes(assignments * hidden);
+        routedHiddenScales = TornadoWorkspaces.floats(assignments * hidden / 32);
+        routedOut = TornadoWorkspaces.floats(assignments * s.dim);
+        int shared = Math.max(32, s.sharedHidden);
+        sharedGate = TornadoWorkspaces.floats(b * shared);
+        sharedUp = TornadoWorkspaces.floats(b * shared);
+        sharedOut = TornadoWorkspaces.floats(b * s.dim);
         hashStride = Math.max(1, s.hashStride);
         hashExperts = TornadoWorkspaces.ints(b * hashStride);
     }

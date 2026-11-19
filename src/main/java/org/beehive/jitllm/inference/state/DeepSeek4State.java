@@ -337,6 +337,8 @@ public final class DeepSeek4State extends State {
                                     c.expertCount(),
                                     c.expertsUsed(),
                                     moeHidden,
+                                    c.expertHiddenDim(),
+                                    c.sharedHiddenDim(),
                                     c.hashLayerCount() * c.expertsUsed()));
         }
 

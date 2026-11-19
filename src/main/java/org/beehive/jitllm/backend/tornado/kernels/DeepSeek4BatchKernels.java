@@ -325,6 +325,51 @@ public final class DeepSeek4BatchKernels {
         }
     }
 
+    /**
+     * {@code out[(g * paddedRows + r) * width + i] = in[r][g * width + i]}: every row's groups laid
+     * out group after group, so each group's rows are contiguous. Worker: {@code paddedRows *
+     * groups * width} lanes.
+     */
+    public static void toGroupMajor(
+            KernelContext context,
+            FloatArray in,
+            FloatArray out,
+            int groups,
+            int width,
+            int paddedRows) {
+        int i = context.globalIdx;
+        int rowWidth = groups * width;
+        if (i < paddedRows * rowWidth) {
+            int row = i / rowWidth;
+            int rest = i - row * rowWidth;
+            int group = rest / width;
+            int c = rest - group * width;
+            out.set((group * paddedRows + row) * width + c, in.get(i));
+        }
+    }
+
+    /**
+     * {@code out[r][g * width + i] = in[(g * paddedRows + r) * width + i]}: {@link #toGroupMajor}
+     * undone. Worker: {@code paddedRows * groups * width} lanes.
+     */
+    public static void fromGroupMajor(
+            KernelContext context,
+            FloatArray in,
+            FloatArray out,
+            int groups,
+            int width,
+            int paddedRows) {
+        int i = context.globalIdx;
+        int rowWidth = groups * width;
+        if (i < paddedRows * rowWidth) {
+            int row = i / rowWidth;
+            int rest = i - row * rowWidth;
+            int group = rest / width;
+            int c = rest - group * width;
+            out.set(i, in.get((group * paddedRows + row) * width + c));
+        }
+    }
+
     // @formatter:off
     /**
      * {@code out_b[r] = W[r] . x_b[(r / rank) * groupIn ...]}: {@link

@@ -87,6 +87,13 @@ TINY_CONFIG = {
     "torch_dtype": "bfloat16",
 }
 
+# Widths the int8 GEMMs and the grouped expert GEMMs take: whole 128-column tiles.
+MEDIUM_OVERRIDES = {
+    "hidden_size": 256,
+    "moe_intermediate_size": 128,
+    "o_lora_rank": 128,
+}
+
 
 def model_args(cfg, max_seq_len):
     """The official ModelArgs for a Hugging Face config.json."""
@@ -431,6 +438,8 @@ def main():
     ap.add_argument("--prefill", type=int, default=67, help="prefill length of the mixed run")
     ap.add_argument("--expert-dtype", choices=["fp8", "fp4"], default="fp8")
     ap.add_argument("--qat", action="store_true", help="apply the reference's quantization-aware rounding")
+    ap.add_argument("--config", choices=["tiny", "medium"], default="tiny",
+                    help="tiny: the smallest model of every layer kind; medium: widths the grouped expert GEMMs take")
     ap.add_argument("--real", help="a real checkpoint directory: write goldens for a slice of it instead")
     ap.add_argument("--layers", default="0-3", help="with --real, the decoder layers (a-b)")
     ap.add_argument("--text", help="with --real, the prompt text")
@@ -447,6 +456,8 @@ def main():
         return
 
     cfg = dict(TINY_CONFIG, expert_dtype=args.expert_dtype)
+    if args.config == "medium":
+        cfg.update(MEDIUM_OVERRIDES)
     ckpt_dir = os.path.join(args.out, "checkpoint")
     write_checkpoint(ckpt_dir, cfg, random_checkpoint(mod, cfg, args.seed))
     state = read_checkpoint(ckpt_dir)

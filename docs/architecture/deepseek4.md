@@ -341,10 +341,17 @@ Kernel rules that apply throughout:
 `DeepSeek4BatchPrefillLayers` runs the trunk over a chunk of tokens in one task graph, a row per
 token, and pads every array to whole 128-row tiles:
 
-- **mHC, norms, routing and experts:** `glm5next`'s batched kernels over every row at once.
+- **mHC, norms and routing:** `glm5next`'s batched kernels over every row at once.
+- **Experts:** with Q8_0 or Q4_0 routed experts, a Q8_0 shared expert and widths of whole
+  128-column tiles, the assignments are sorted by expert (`groupByExpert`) and the routed experts
+  run on `glm5next`'s grouped int8 GEMMs, one launch per expert stack; the shared expert runs on the
+  int8 GEMMs and `combineExperts` adds the two. Otherwise a warp per (row, output).
 - **Projections:** int8 tensor-core GEMMs (`Int8GemmKernels.gemmInt8Q8_0`) where the shapes are
-  whole tiles, otherwise the Q8_0 DP4A kernels; the grouped `wo_a` is
-  `DeepSeek4BatchKernels.groupedProjection`.
+  whole tiles, otherwise the Q8_0 DP4A kernels.
+- **Grouped output `wo_a`:** each group is an "expert" of the grouped down GEMM. The attention
+  output is laid out group after group (`toGroupMajor`) and quantized, the GEMM runs over fixed
+  64-row tiles of every group, and `fromGroupMajor` lays the result back out row after row. Shapes
+  that are not whole tiles use `DeepSeek4BatchKernels.groupedProjection`, a warp per (row, output).
 - **Compressor:** `DeepSeek4BatchKernels.compressor` walks the chunk's real rows in order in one
   workgroup, since each row's pending entries follow from the rows before it, and appends every
   block the chunk completes.
@@ -358,9 +365,6 @@ token, and pads every array to whole 128-row tiles:
 - **Hand-off to decode:** the window, the pending entries and the compressed and indexer keys are
   the decode graph's own arrays. The decode layers take them, and every weight, from the prefill
   graph by name, so the plan holds one copy of each.
-
-The grouped int8 expert GEMMs `glm5next` uses for its larger models are not used here yet: the
-routed experts run as a warp per (row, output).
 
 ### Several GPUs
 
@@ -392,7 +396,11 @@ routed experts run as a warp per (row, output).
 3. **GPU tests.** `DeepSeek4DecodeParityAccelTest` checks the whole plan against a host that
    rounds its activations to int8 as the device does: single-token decode, the sequential
    prefill/decode plan, batched prefill then decode, two expert stacks, and the plans split into
-   stages on one device, which must match one stage exactly.
+   stages, which must match one stage exactly. The stages run on one device unless
+   `deepseek4.test.devices3`, `deepseek4.test.devices2` and `deepseek4.test.transport` name others.
+   The medium model (`reference.py --config medium`), whose widths are whole GEMM tiles, covers the
+   grouped expert and output GEMMs: after a batched prefill it must track the host as closely as
+   decoding token by token does, with Q8_0 and Q4_0 experts and with two expert stacks.
 4. **Real weights.** The layers 0–3 slice is checked against llama.cpp on the same file. That needs
    `llama-cli` or `llama-eval-callback`, not just `llama-bench`.
 5. **Benchmarks.** `llama-bench` on the same GGUF.

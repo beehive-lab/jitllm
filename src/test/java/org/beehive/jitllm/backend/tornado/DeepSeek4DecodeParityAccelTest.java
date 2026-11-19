@@ -59,6 +59,19 @@ public class DeepSeek4DecodeParityAccelTest {
 
     private static final int CHUNK = 32;
 
+    /**
+     * The devices of the three-stage and the two-stage split, and the transport between them: one
+     * device and host memory unless set, so that a machine with several GPUs can run the split
+     * across them.
+     */
+    private static final String THREE_STAGES =
+            System.getProperty("deepseek4.test.devices3", "0:0,0:0,0:0");
+
+    private static final String TWO_STAGES =
+            System.getProperty("deepseek4.test.devices2", "0:0,0:0");
+
+    private static final String TRANSPORT = System.getProperty("deepseek4.test.transport", "host");
+
     /** Exact at the first token, close after it, and the same greedy choices. */
     @Test
     public void theWholeModelDecodesLikeTheHost() throws Exception {
@@ -100,6 +113,48 @@ public class DeepSeek4DecodeParityAccelTest {
         assertTrue("greedy choices agree at " + r.agree, r.agree >= decoded * 8 / 10);
     }
 
+    /**
+     * The medium model, whose widths are whole GEMM tiles, so its batched prefill runs the routed
+     * experts on the grouped int8 GEMMs and the shared expert on the int8 GEMMs: decoded after the
+     * prefill, it must track the host as closely as decoding every token one at a time does.
+     */
+    @Test
+    public void theMediumModelDecodesTheSameAfterABatchedPrefill() throws Exception {
+        assertTracksTokenByToken(MEDIUM, 0);
+    }
+
+    /** The medium model's grouped experts loaded as two stacks: each stack runs its own tiles. */
+    @Test
+    public void theMediumModelWithTwoExpertStacksDecodesTheSameAfterABatchedPrefill()
+            throws Exception {
+        assertTracksTokenByToken(MEDIUM, MEDIUM_STACK_BYTES);
+    }
+
+    /** The medium model with Q4_0 routed experts, which the grouped GEMMs read as Q4_0. */
+    @Test
+    public void theMediumModelWithQ4_0ExpertsDecodesTheSameAfterABatchedPrefill() throws Exception {
+        assertTracksTokenByToken(MEDIUM_Q4_0_EXPERTS, 0);
+    }
+
+    private static final String MEDIUM = "model-medium-Q8_0.gguf";
+
+    private static final String MEDIUM_Q4_0_EXPERTS = "model-medium-Q8_0-experts-Q4_0.gguf";
+
+    /** Four of the medium model's eight experts per stack. */
+    private static final long MEDIUM_STACK_BYTES = 150_000;
+
+    private static void assertTracksTokenByToken(String model, long stackBytes) throws Exception {
+        float[] single = run(model, stackBytes).errors;
+        Result batched = run(model, stackBytes, PREFILL, CHUNK, true);
+        float singleMedian = median(single, PREFILL);
+        float batchedMedian = median(batched.errors, PREFILL);
+        assertTrue(
+                "median error " + batchedMedian + " against " + singleMedian + " token by token",
+                batchedMedian <= 1.25f * singleMedian);
+        int decoded = TOKENS - PREFILL;
+        assertTrue("greedy choices agree at " + batched.agree, batched.agree >= decoded * 8 / 10);
+    }
+
     /** The sequential prefill/decode plan runs the same trunk graph token by token. */
     @Test
     public void theWholeModelDecodesLikeTheHostInPrefillDecodeMode() throws Exception {
@@ -115,7 +170,7 @@ public class DeepSeek4DecodeParityAccelTest {
     @Test
     public void theWholeModelDecodesTheSameSplitIntoStages() throws Exception {
         Result one = run("model-Q8_0.gguf");
-        Result three = run("model-Q8_0.gguf", 0, 0, 1, false, "0:0,0:0,0:0");
+        Result three = run("model-Q8_0.gguf", 0, 0, 1, false, THREE_STAGES);
         assertArrayEquals("errors against the host", one.errors, three.errors, 0f);
         assertEquals("greedy agreement", one.agree, three.agree);
     }
@@ -128,7 +183,7 @@ public class DeepSeek4DecodeParityAccelTest {
     @Test
     public void theBatchedPlanPrefillsAndDecodesTheSameSplitIntoStages() throws Exception {
         Result one = run("model-Q8_0.gguf", 0, PREFILL, CHUNK, true);
-        Result two = run("model-Q8_0.gguf", 0, PREFILL, CHUNK, true, "0:0,0:0");
+        Result two = run("model-Q8_0.gguf", 0, PREFILL, CHUNK, true, TWO_STAGES);
         assertArrayEquals("errors against the host", one.errors, two.errors, 0f);
         assertEquals("greedy agreement", one.agree, two.agree);
     }
@@ -214,7 +269,7 @@ public class DeepSeek4DecodeParityAccelTest {
         }
         if (devices != null) {
             System.setProperty(DeviceSplit.DEVICES_PROPERTY, devices);
-            System.setProperty(DeviceSplit.TRANSPORT_PROPERTY, "host");
+            System.setProperty(DeviceSplit.TRANSPORT_PROPERTY, TRANSPORT);
         }
         TornadoVMMasterPlan plan;
         try {
