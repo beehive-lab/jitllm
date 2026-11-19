@@ -6,12 +6,12 @@ import java.util.List;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.BatchMmaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.DeepSeek2BatchKernels;
-import org.beehive.jitllm.backend.tornado.kernels.Glm5NextBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Int8GemmKernels;
 import org.beehive.jitllm.backend.tornado.kernels.KdaBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.KdaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35DeltaNetKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
+import org.beehive.jitllm.backend.tornado.kernels.RoutedExpertBatchKernels;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.KdaBatchArrays;
 import org.beehive.jitllm.inference.state.KimiLinearState;
@@ -836,7 +836,7 @@ public class KimiLinearBatchPrefillLayers implements BatchPrefillTransformerLaye
         if (q4) {
             g.task(
                     p + "gate_up",
-                    Glm5NextBatchKernels::groupedGateUpClampedQ4_0,
+                    RoutedExpertBatchKernels::groupedGateUpClampedQ4_0,
                     context,
                     ws.wrapQ8ActBatch,
                     ws.wrapQ8ActScales,
@@ -885,7 +885,7 @@ public class KimiLinearBatchPrefillLayers implements BatchPrefillTransformerLaye
         if (q4) {
             g.task(
                     p + "down",
-                    Glm5NextBatchKernels::groupedDownQ4_0,
+                    RoutedExpertBatchKernels::groupedDownQ4_0,
                     context,
                     ws.wrapMoeHiddenQ8,
                     ws.wrapMoeHiddenScales,

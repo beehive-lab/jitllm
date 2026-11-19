@@ -13,6 +13,7 @@ import org.beehive.jitllm.backend.tornado.kernels.KdaBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.KdaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35DeltaNetKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35MoeBatchKernels;
+import org.beehive.jitllm.backend.tornado.kernels.RoutedExpertBatchKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.Glm5NextBatchArrays;
@@ -1155,8 +1156,8 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                             g.task(
                                     t,
                                     q4
-                                            ? Glm5NextBatchKernels::groupedGateUpClampedQ4_0
-                                            : Glm5NextBatchKernels::groupedGateUpClamped,
+                                            ? RoutedExpertBatchKernels::groupedGateUpClampedQ4_0
+                                            : RoutedExpertBatchKernels::groupedGateUpClamped,
                                     context,
                                     b.a8,
                                     b.a8Scales,
@@ -1203,8 +1204,8 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                             g.task(
                                     t,
                                     q4
-                                            ? Glm5NextBatchKernels::groupedDownQ4_0
-                                            : Glm5NextBatchKernels::groupedDown,
+                                            ? RoutedExpertBatchKernels::groupedDownQ4_0
+                                            : RoutedExpertBatchKernels::groupedDown,
                                     context,
                                     b.routedHidden8,
                                     b.routedHiddenScales,
@@ -1242,7 +1243,7 @@ public class Glm5NextBatchPrefillLayers implements BatchPrefillTransformerLayerT
                 t ->
                         g.task(
                                 t,
-                                Glm5NextBatchKernels::combineExperts,
+                                RoutedExpertBatchKernels::combineExperts,
                                 context,
                                 b.routedOut,
                                 b.position,
