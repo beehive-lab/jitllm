@@ -447,7 +447,7 @@ public class Lfm2BatchKernelAccelTest {
     private static WorkerGrid groupedGrid(DataType type, int d, int maxTiles, Grouped kind) {
         if (kind == Grouped.MMA) {
             int workgroups =
-                    type == DataType.Q4_K || type == DataType.Q5_K
+                    type == DataType.Q4_K || type == DataType.Q5_K || type == DataType.Q6_K
                             ? GroupedExpertMmaKernels.splitWorkgroups(maxTiles, d)
                             : maxTiles * (d / 128);
             return grid(
