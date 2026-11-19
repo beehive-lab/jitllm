@@ -126,6 +126,7 @@ public final class Allowlists {
                     "org.beehive.jitllm.tensor.standard.Q5_KFloatTensor",
                     "org.beehive.jitllm.tensor.standard.Q6_KFloatTensor",
                     "org.beehive.jitllm.tensor.standard.IQ4_XSFloatTensor",
+                    "org.beehive.jitllm.tensor.standard.MXFP4FloatTensor",
                     "org.beehive.jitllm.tensor.standard.Q8_0FloatTensor",
                     "org.beehive.jitllm.backend.tornado.tensor.TornadoTensor",
                     "org.beehive.jitllm.backend.tornado.tensor.FP16TornadoTensor",
@@ -137,7 +138,8 @@ public final class Allowlists {
                     "org.beehive.jitllm.backend.tornado.tensor.Q4_KTornadoTensor",
                     "org.beehive.jitllm.backend.tornado.tensor.Q5_KTornadoTensor",
                     "org.beehive.jitllm.backend.tornado.tensor.Q6_KTornadoTensor",
-                    "org.beehive.jitllm.backend.tornado.tensor.IQ4_XSTornadoTensor");
+                    "org.beehive.jitllm.backend.tornado.tensor.IQ4_XSTornadoTensor",
+                    "org.beehive.jitllm.backend.tornado.tensor.MXFP4TornadoTensor");
 
     // Rule 7 and Rule 11 have no allowlist: they pass on today's code (policy item 4).
 

@@ -51,7 +51,12 @@ public enum GGMLType {
     Q4_0_4_8(GGMLType.FLOAT16_BYTES + 16 * Byte.BYTES, 32),
     Q4_0_8_8(GGMLType.FLOAT16_BYTES + 16 * Byte.BYTES, 32),
     TQ1_0(Integer.MAX_VALUE),
-    TQ2_0(Integer.MAX_VALUE);
+    TQ2_0(Integer.MAX_VALUE),
+    UNSUPPORTED_IQ4_NL_4_4(Integer.MAX_VALUE), // support has been removed
+    UNSUPPORTED_IQ4_NL_4_8(Integer.MAX_VALUE), // support has been removed
+    UNSUPPORTED_IQ4_NL_8_8(Integer.MAX_VALUE), // support has been removed
+    // One E8M0 shared exponent, then 32 E2M1 values as nibbles (low nibbles first).
+    MXFP4(Byte.BYTES + 16 * Byte.BYTES, 32);
 
     public static final int BFLOAT16_BYTES = 2;
     public static final int FLOAT16_BYTES = 2;

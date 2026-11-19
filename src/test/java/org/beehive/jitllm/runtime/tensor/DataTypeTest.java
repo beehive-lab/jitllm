@@ -30,7 +30,8 @@ public class DataTypeTest {
                         DataType.Q4_K,
                         DataType.Q5_K,
                         DataType.Q6_K,
-                        DataType.IQ4_XS),
+                        DataType.IQ4_XS,
+                        DataType.MXFP4),
                 EnumSet.allOf(DataType.class));
     }
 
