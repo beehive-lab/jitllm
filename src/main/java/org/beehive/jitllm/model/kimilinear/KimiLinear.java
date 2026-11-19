@@ -99,6 +99,7 @@ public class KimiLinear extends AbstractModel {
             boolean echo,
             IntConsumer onTokenGenerated,
             TornadoVMMasterPlan tornadoVMPlan) {
+        seedWithPromptHead(state, startPosition, promptTokens);
         if (state.executionPolicy().phaseStrategy()
                 == ExecutionPolicy.PhaseStrategy.PREFILL_DECODE) {
             return TokenGenerationLoop.generateTokensGPUPrefillDecode(
@@ -124,6 +125,20 @@ public class KimiLinear extends AbstractModel {
                 echo,
                 onTokenGenerated,
                 tornadoVMPlan);
+    }
+
+    /**
+     * Seeds a new conversation with the prompt's own first token. Kimi's prompts open with a role
+     * token, not with {@code [BOS]}, the state's seed; a loop that feeds a seed the prompt does not
+     * open with (the prefill/decode loops) would otherwise put an extra {@code [BOS]} at position
+     * zero, which the single-token loops never feed. With the prompt's head as the seed, every loop
+     * feeds the same sequence: the prompt alone.
+     */
+    private static void seedWithPromptHead(
+            State state, int startPosition, List<Integer> promptTokens) {
+        if (startPosition == 0 && !promptTokens.isEmpty()) {
+            state.latestToken = promptTokens.get(0);
+        }
     }
 
     @Override
