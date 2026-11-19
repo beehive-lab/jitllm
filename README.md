@@ -399,8 +399,8 @@ models (`qwen35moe`, e.g. Qwen3.6-35B-A3B), Gemma 4 31B and GLM-4.7-Flash (`deep
 
 - `--devices` lists TornadoVM `backend:device` indices, one pipeline stage per device.
   `--gpu-memory` applies to each device.
-- `--tensor-split` gives each device's share of the layers (default: equal). Give the last
-  device a little less: it also holds the output projection.
+- `--tensor-split` gives each device's share of the layers. Without it, jitllm balances the
+  devices by the bytes of each layer's weights, counting the output projection on the last.
 - `--split-transport nccl` (default) sends the hidden state GPU to GPU with NCCL. It needs a
   TornadoVM SDK with `tornado-nccl`, libnccl on `LD_LIBRARY_PATH`, and jitllm built with
   `-Pnccl`. `--split-transport host` copies through host memory and needs neither.

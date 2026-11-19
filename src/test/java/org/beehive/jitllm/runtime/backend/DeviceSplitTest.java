@@ -40,6 +40,57 @@ public class DeviceSplitTest {
         assertArrayEquals(new int[] {0, 4, 8}, split(2, 1.0, 100.0).layerBounds(8, 4));
     }
 
+    private static long[] bytes(int layers, long each) {
+        long[] bytes = new long[layers];
+        java.util.Arrays.fill(bytes, each);
+        return bytes;
+    }
+
+    @Test
+    public void layersOfOneSizeSplitEvenly() {
+        assertArrayEquals(new int[] {0, 40, 80}, split(2).layerBounds(bytes(80, 7), 1, 0, 0));
+        assertArrayEquals(
+                new int[] {0, 20, 40, 60, 80}, split(4).layerBounds(bytes(80, 7), 1, 0, 0));
+    }
+
+    /**
+     * GLM-5.3-Flash with Q4_0 experts, in hundredths of a GiB: three dense layers of 0.29, then 42
+     * expert layers of 3.96, the embedding table and the output projection 0.63 each. An equal
+     * split puts twelve expert layers (47.5) on the second device; balanced, no device holds more
+     * than eleven.
+     */
+    @Test
+    public void unequalLayersSplitByTheirBytes() {
+        long[] glm = bytes(45, 396);
+        glm[0] = glm[1] = glm[2] = 29;
+        assertArrayEquals(new int[] {0, 11, 23, 34, 45}, split(4).layerBounds(45, 1));
+        assertArrayEquals(new int[] {0, 13, 24, 35, 45}, split(4).layerBounds(glm, 1, 63, 63));
+    }
+
+    @Test
+    public void theLastStageCarriesTheOutputProjection() {
+        assertArrayEquals(new int[] {0, 2, 4}, split(2).layerBounds(bytes(4, 1), 1, 0, 0));
+        assertArrayEquals(new int[] {0, 3, 4}, split(2).layerBounds(bytes(4, 1), 1, 0, 3));
+        assertArrayEquals(new int[] {0, 1, 4}, split(2).layerBounds(bytes(4, 1), 1, 3, 0));
+    }
+
+    @Test
+    public void aTensorSplitOverridesTheBytes() {
+        assertArrayEquals(
+                new int[] {0, 41, 80}, split(2, 41.0, 39.0).layerBounds(bytes(80, 7), 1, 0, 0));
+    }
+
+    @Test
+    public void bytesBalancedBoundariesStayOnTheAlignment() {
+        assertArrayEquals(
+                new int[] {0, 2, 6}, split(2).layerBounds(new long[] {5, 5, 1, 1, 1, 1}, 2, 0, 0));
+        assertArrayEquals(
+                new int[] {0, 4, 8},
+                split(2).layerBounds(new long[] {1, 1, 1, 1, 1, 1, 1, 10}, 4, 0, 0));
+        assertThrows(
+                IllegalArgumentException.class, () -> split(3).layerBounds(bytes(8, 1), 4, 0, 0));
+    }
+
     @Test
     public void invalidSplitsAreRefused() {
         assertThrows(IllegalArgumentException.class, () -> split(2, 1.0, 1.0, 1.0));

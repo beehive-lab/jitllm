@@ -11,3 +11,4 @@ org.beehive.jitllm.backend.tornado.plan.Qwen2MoePlanProvider
 org.beehive.jitllm.backend.tornado.plan.Qwen35PlanProvider
 org.beehive.jitllm.backend.tornado.plan.Qwen35MoePlanProvider
 org.beehive.jitllm.backend.tornado.plan.DeepSeek2PlanProvider
+org.beehive.jitllm.backend.tornado.plan.Glm5NextPlanProvider
