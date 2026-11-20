@@ -1,5 +1,6 @@
 package org.beehive.jitllm.backend.tornado.kernels;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Random;
@@ -280,5 +281,122 @@ public class Q8_0PackedDecodeAccelTest {
         }
         double fused = worst(ref, got);
         assertTrue("worst " + fused, fused < 1e-4);
+    }
+
+    /**
+     * The batched FP32 product against the single-token one row by row, bit for bit: each chunk
+     * row's sums and reduction are the single-token kernel's. Seven rows, so the last workgroup
+     * holds three of its four; both the store and the residual form. LFM2.5's attn_q shape.
+     */
+    @Test
+    public void theBatchedFp32ProductIsTheSingleTokenOneRowByRow() throws Exception {
+        int d = 2048, n = 2048, rows = 7;
+        ByteArray w = ByteArray.fromArray(randomWeights(d, n, 41));
+        ByteArray packed = Int8GemmKernels.packQ8_0Tiles(w, d, n);
+        Random rng = new Random(42);
+        FloatArray xBatch = new FloatArray(rows * n);
+        for (int i = 0; i < rows * n; i++) {
+            xBatch.set(i, (float) rng.nextGaussian());
+        }
+        FloatArray stored = new FloatArray(rows * d);
+        FloatArray added = new FloatArray(rows * d);
+        for (int i = 0; i < rows * d; i++) {
+            added.set(i, 0.25f * (i % d));
+        }
+        FloatArray[] x = new FloatArray[rows];
+        FloatArray[] ref = new FloatArray[rows];
+        FloatArray[] refAdded = new FloatArray[rows];
+        TaskGraph g = new TaskGraph("pb");
+        g.transferToDevice(DataTransferMode.EVERY_EXECUTION, packed, xBatch, stored, added);
+        for (int t = 0; t < rows; t++) {
+            x[t] = new FloatArray(n);
+            for (int i = 0; i < n; i++) {
+                x[t].set(i, xBatch.get(t * n + i));
+            }
+            ref[t] = new FloatArray(d);
+            refAdded[t] = new FloatArray(d);
+            for (int i = 0; i < d; i++) {
+                refAdded[t].set(i, 0.25f * i);
+            }
+            g.transferToDevice(DataTransferMode.EVERY_EXECUTION, x[t], ref[t], refAdded[t]);
+            g.task(
+                    "r" + t,
+                    TransformerComputeKernelsQ8_0Packed::matrixVectorQ8_0PackedF32,
+                    new KernelContext(),
+                    x[t],
+                    ref[t],
+                    packed,
+                    n,
+                    d,
+                    0);
+            g.task(
+                    "a" + t,
+                    TransformerComputeKernelsQ8_0Packed::matrixVectorQ8_0PackedF32,
+                    new KernelContext(),
+                    x[t],
+                    refAdded[t],
+                    packed,
+                    n,
+                    d,
+                    1);
+        }
+        g.task(
+                "b",
+                TransformerComputeKernelsQ8_0Packed::batchedMatrixVectorQ8_0PackedF32,
+                new KernelContext(),
+                xBatch,
+                stored,
+                packed,
+                n,
+                d,
+                rows,
+                0);
+        g.task(
+                "ba",
+                TransformerComputeKernelsQ8_0Packed::batchedMatrixVectorQ8_0PackedF32,
+                new KernelContext(),
+                xBatch,
+                added,
+                packed,
+                n,
+                d,
+                rows,
+                1);
+        g.transferToHost(DataTransferMode.EVERY_EXECUTION, stored, added);
+        for (int t = 0; t < rows; t++) {
+            g.transferToHost(DataTransferMode.EVERY_EXECUTION, ref[t], refAdded[t]);
+        }
+        GridScheduler s = new GridScheduler();
+        WorkerGrid single =
+                grid(
+                        d / 8 * TransformerComputeKernelsQ8_0Packed.LOCAL,
+                        TransformerComputeKernelsQ8_0Packed.LOCAL);
+        for (int t = 0; t < rows; t++) {
+            s.addWorkerGrid("pb.r" + t, single);
+            s.addWorkerGrid("pb.a" + t, single);
+        }
+        int tokenGroups =
+                (rows + TransformerComputeKernelsQ8_0Packed.BATCH_TOKENS - 1)
+                        / TransformerComputeKernelsQ8_0Packed.BATCH_TOKENS;
+        WorkerGrid batched =
+                grid(
+                        d / 8 * tokenGroups * TransformerComputeKernelsQ8_0Packed.LOCAL,
+                        TransformerComputeKernelsQ8_0Packed.LOCAL);
+        s.addWorkerGrid("pb.b", batched);
+        s.addWorkerGrid("pb.ba", batched);
+        try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
+            plan.withGridScheduler(s).execute();
+        }
+        for (int t = 0; t < rows; t++) {
+            for (int i = 0; i < d; i++) {
+                assertEquals(
+                        "row " + t + " output " + i, ref[t].get(i), stored.get(t * d + i), 0.0f);
+                assertEquals(
+                        "row " + t + " residual output " + i,
+                        refAdded[t].get(i),
+                        added.get(t * d + i),
+                        0.0f);
+            }
+        }
     }
 }

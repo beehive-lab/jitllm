@@ -8,6 +8,7 @@ import org.beehive.jitllm.inference.state.State;
 import org.beehive.jitllm.inference.weights.tornado.TornadoWeights;
 import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_1FloatTensor;
 import org.beehive.jitllm.tensor.standard.Q4_KFloatTensor;
@@ -24,6 +25,9 @@ public final class TornadoBatchPrefillPass {
 
     private static final int Q4_0_BLOCK_SIZE = 32;
     private static final int Q4_0_BLOCK_BYTES = 18;
+
+    private static final int Q6_K_BLOCK_SIZE = 256;
+    private static final int Q6_K_BLOCK_BYTES = 210;
 
     // @formatter:off
     /**
@@ -286,6 +290,17 @@ public final class TornadoBatchPrefillPass {
                 // theirs.
                 var embTable = weights.getTokenEmbeddingTable();
                 MemorySegment rows = embTable.asByteArray().getSegment();
+                if (embTable.dataType() == DataType.Q6_K
+                        && state.workspace.embeddingQ8Batch != null) {
+                    // The activation decodes on the device: copy each token's raw Q6_K row.
+                    long rowBytes = (long) (config.dim() / Q6_K_BLOCK_SIZE) * Q6_K_BLOCK_BYTES;
+                    MemorySegment batchRows = state.workspace.embeddingQ8Batch.getSegment();
+                    for (int b = 0; b < chunkSize; b++) {
+                        MemorySegment.copy(
+                                rows, tokens[b] * rowBytes, batchRows, b * rowBytes, rowBytes);
+                    }
+                    break;
+                }
                 FloatTensor table =
                         switch (embTable.dataType()) {
                             case Q4_1 ->

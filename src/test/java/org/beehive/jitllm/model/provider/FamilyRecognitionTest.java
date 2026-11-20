@@ -117,6 +117,24 @@ public class FamilyRecognitionTest {
     }
 
     /**
+     * Dense LFM2 ({@code lfm2}, e.g. LFM2-1.2B) shares the short-convolution layers with {@code
+     * lfm2moe} but has no MoE, and no provider here claims it yet. It must not be loaded as the MoE
+     * family; it is refused with the architecture it declared.
+     */
+    @Test
+    public void denseLfm2IsNotTheMoeFamily() {
+        assertEquals("lfm2", GgufRecognition.architectureOf(source("lfm2", "LFM2 1.2B")).name());
+        assertEquals("lfm2moe", architectureOf(source("lfm2moe", "LFM2 8B A1B")));
+        IllegalStateException failure =
+                assertThrows(
+                        IllegalStateException.class,
+                        () -> ModelProviders.select(source("lfm2", "LFM2 1.2B"), families()));
+        assertTrue(failure.getMessage(), failure.getMessage().contains("[GPUL-MOD-002]"));
+        assertTrue(
+                failure.getMessage(), failure.getMessage().contains("general.architecture=lfm2"));
+    }
+
+    /**
      * A DeepSeek distill whose name is hyphenated ({@code Deepseek-R1-Distill-Qwen-1.5B}, a Q4_K_M
      * build) is still the distill, by its name or by its {@code deepseek-r1-qwen} pre-tokenizer.
      */

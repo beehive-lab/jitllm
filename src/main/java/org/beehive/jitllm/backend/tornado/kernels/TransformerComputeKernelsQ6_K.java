@@ -7,6 +7,7 @@ import uk.ac.manchester.tornado.api.types.arrays.ByteArray;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
+import uk.ac.manchester.tornado.api.types.vectors.Float4;
 import uk.ac.manchester.tornado.api.utils.QuantizationUtils;
 
 /**
@@ -563,6 +564,109 @@ public final class TransformerComputeKernelsQ6_K {
         }
     }
 
+    /**
+     * Rows of a {@link #matrixVectorQ6_KWarp} workgroup, one warp each: as many as {@code
+     * Gemma4Kernels.matrixVectorQ8_0Warp}'s, so one vocabulary grid serves both.
+     */
+    public static final int WARP_ROWS_PER_GROUP = Gemma4Kernels.WARP_ROWS_PER_GROUP;
+
+    // @formatter:off
+    /**
+     * {@code output[row] = w[row]·x}, one warp per row and {@value #WARP_ROWS_PER_GROUP} rows per
+     * workgroup. Lane {@code l} takes the 32-weight units {@code l, l + 32, ...} of its row, each
+     * decoded as {@link #rowDotShared} decodes it, and a shuffle tree sums the lanes. The generic
+     * kernel gives every row a workgroup and a shared-memory tree, with half its lanes idle when
+     * the row has fewer units than lanes. Same products; the sum is reassociated across lanes.
+     * Example: LFM2-8B-A1B's 65536-row output, {@code n = 2048}: two units a lane. Worker: {@code
+     * ceil(d / 8) * 256} lanes, local 256.
+     */
+    // @formatter:on
+    public static void matrixVectorQ6_KWarp(
+            KernelContext context, FloatArray x, FloatArray output, ByteArray w, int n, int d) {
+        int warp = context.localIdx >> 5;
+        int lane = context.localIdx & 31;
+        int rowId = context.groupIdx * WARP_ROWS_PER_GROUP + warp;
+        if (rowId >= d) {
+            return;
+        }
+        int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
+        float sum = 0.0f;
+        for (int unit = lane; unit < n / 32; unit += 32) {
+            int half = unit / 4;
+            int posInGroup = (unit - half * 4) * 8;
+            int blockIdx = half / 2;
+            int halfIndex = half - blockIdx * 2;
+            int blockByteOffset = rowByteOffset + blockIdx * BLOCK_BYTES;
+            float scale = w.getHalfFloat(blockByteOffset + D_OFFSET).getFloat32();
+
+            int scaleAt = blockByteOffset + SCALES_OFFSET + halfIndex * 8 + posInGroup / 16;
+            float dScale0 = scale * signedByte(w, scaleAt);
+            float dScale1 = scale * signedByte(w, scaleAt + 2);
+            float dScale2 = scale * signedByte(w, scaleAt + 4);
+            float dScale3 = scale * signedByte(w, scaleAt + 6);
+
+            int qlAt = blockByteOffset + halfIndex * 64 + posInGroup;
+            int qhAt = blockByteOffset + QH_OFFSET + halfIndex * 32 + posInGroup;
+            int xAt = blockIdx * QK_K + halfIndex * 128 + posInGroup;
+            float sum0 = 0.0f;
+            float sum1 = 0.0f;
+            float sum2 = 0.0f;
+            float sum3 = 0.0f;
+            for (int k = 0; k < 8; k += 4) {
+                int ql1Word =
+                        (w.getHalfFloat(qlAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int ql2Word =
+                        (w.getHalfFloat(qlAt + 32 + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + 34 + k).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int qhWord =
+                        (w.getHalfFloat(qhAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qhAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int raw0 = (ql1Word & 0x0F0F0F0F) | ((qhWord & 0x03030303) << 4);
+                int raw1 = (ql2Word & 0x0F0F0F0F) | (((qhWord >>> 2) & 0x03030303) << 4);
+                int raw2 = ((ql1Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 4) & 0x03030303) << 4);
+                int raw3 = ((ql2Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 6) & 0x03030303) << 4);
+                // Four activations per load: xAt is a multiple of 8.
+                Float4 x0 = x.getFloat4(xAt + k);
+                Float4 x1 = x.getFloat4(xAt + 32 + k);
+                Float4 x2 = x.getFloat4(xAt + 64 + k);
+                Float4 x3 = x.getFloat4(xAt + 96 + k);
+                sum0 +=
+                        ((raw0 & 0xFF) - 32) * x0.getX()
+                                + (((raw0 >>> 8) & 0xFF) - 32) * x0.getY()
+                                + (((raw0 >>> 16) & 0xFF) - 32) * x0.getZ()
+                                + ((raw0 >>> 24) - 32) * x0.getW();
+                sum1 +=
+                        ((raw1 & 0xFF) - 32) * x1.getX()
+                                + (((raw1 >>> 8) & 0xFF) - 32) * x1.getY()
+                                + (((raw1 >>> 16) & 0xFF) - 32) * x1.getZ()
+                                + ((raw1 >>> 24) - 32) * x1.getW();
+                sum2 +=
+                        ((raw2 & 0xFF) - 32) * x2.getX()
+                                + (((raw2 >>> 8) & 0xFF) - 32) * x2.getY()
+                                + (((raw2 >>> 16) & 0xFF) - 32) * x2.getZ()
+                                + ((raw2 >>> 24) - 32) * x2.getW();
+                sum3 +=
+                        ((raw3 & 0xFF) - 32) * x3.getX()
+                                + (((raw3 >>> 8) & 0xFF) - 32) * x3.getY()
+                                + (((raw3 >>> 16) & 0xFF) - 32) * x3.getZ()
+                                + ((raw3 >>> 24) - 32) * x3.getW();
+            }
+            sum += dScale0 * sum0 + dScale1 * sum1 + dScale2 * sum2 + dScale3 * sum3;
+        }
+        sum += context.simdShuffleDown(sum, 16);
+        sum += context.simdShuffleDown(sum, 8);
+        sum += context.simdShuffleDown(sum, 4);
+        sum += context.simdShuffleDown(sum, 2);
+        sum += context.simdShuffleDown(sum, 1);
+        if (lane == 0) {
+            output.set(rowId, sum);
+        }
+    }
+
     /** {@code hb[row] += w[row]·x}. */
     public static void matrixVectorGenericWithResidualQ6_K(
             KernelContext context,
@@ -735,6 +839,151 @@ public final class TransformerComputeKernelsQ6_K {
     }
 
     /**
+     * Sub-tiles of {@link #ROW_TILE} rows in one expert tile of {@link
+     * #groupedExpertTiledBatchQ6_K}.
+     */
+    public static final int GROUPED_SUB_TILES = 64 / ROW_TILE;
+
+    // @formatter:off
+    /**
+     * {@link #matrixVectorTiledBatchQ6_K} over one tile of expert rows, for a batched
+     * mixture-of-experts prefill off Metal: {@code tiles} as {@code
+     * Qwen35MoeBatchKernels.groupByExpert} writes it, {@code (expert, first sorted row, rows)},
+     * each cut into {@link #GROUPED_SUB_TILES} sub-tiles of {@link #ROW_TILE} rows. The expert's
+     * {@code d} weight rows are read in place from the stacked tensor; row {@code i} reads input
+     * row {@code sortedToken[first + i]} when {@code gather} is 1, {@code first + i} otherwise, and
+     * writes output row {@code first + i}. Grid: {@code maxTiles * GROUPED_SUB_TILES * ceil(d /
+     * COL_TILE)} workgroups of {@code localWorkGroupSize} lanes.
+     */
+    // @formatter:on
+    public static void groupedExpertTiledBatchQ6_K(
+            KernelContext context,
+            FloatArray xBatch,
+            FloatArray outBatch,
+            ByteArray w,
+            IntArray tiles,
+            IntArray sortedToken,
+            int gather,
+            int n,
+            int d,
+            int localWorkGroupSize) {
+        int colGroups = (d + COL_TILE - 1) / COL_TILE;
+        int groupId = context.groupIdx;
+        int job = groupId / colGroups;
+        int tile = job / GROUPED_SUB_TILES;
+        if (tile >= tiles.get(0)) {
+            return;
+        }
+        int expert = tiles.get(1 + 3 * tile);
+        int sub = job - tile * GROUPED_SUB_TILES;
+        int first = tiles.get(2 + 3 * tile) + sub * ROW_TILE;
+        int activeRows = tiles.get(3 + 3 * tile) - sub * ROW_TILE;
+        int colGroup = groupId - job * colGroups;
+        int firstRow = 0;
+        int firstCol = colGroup * COL_TILE;
+        if (firstRow >= activeRows) {
+            return;
+        }
+        int localId = context.localIdx;
+
+        float[] localSums =
+                context.allocateFloatLocalArray(localWorkGroupSize * ROW_TILE * COL_TILE);
+        int blocksPerRow = (n + QK_K - 1) / QK_K;
+        int subBlocks = n / 32;
+
+        // Zeroed explicitly: a private array in generated device code is uninitialized stack.
+        float[] acc = new float[ROW_TILE * COL_TILE];
+        for (int t = 0; t < ROW_TILE * COL_TILE; t++) {
+            acc[t] = 0.0f;
+        }
+        float[] xs = new float[ROW_TILE];
+
+        int lane = localId & 31;
+        int warp = localId >> 5;
+        int warps = localWorkGroupSize >> 5;
+
+        for (int sb = warp; sb < subBlocks; sb += warps) {
+            int block = sb / 8;
+            int subInBlock = sb - block * 8;
+            int halfIndex = subInBlock >> 2;
+            int groupInHalf = subInBlock & 3;
+            int lowShift = (groupInHalf >> 1) * 4;
+            int highShift = groupInHalf * 2;
+            int j = sb * 32 + lane;
+
+            for (int r = 0; r < ROW_TILE; r++) {
+                int row = firstRow + r;
+                float value = 0.0f;
+                if (row < activeRows) {
+                    value =
+                            xBatch.get(
+                                    (gather != 0 ? sortedToken.get(first + row) : first + row) * n
+                                            + j);
+                }
+                xs[r] = value;
+            }
+
+            for (int c = 0; c < COL_TILE; c++) {
+                int outRow = firstCol + c;
+                if (outRow < d) {
+                    int blockByteOffset =
+                            ((expert * d + outRow) * blocksPerRow + block) * BLOCK_BYTES;
+                    float dScale = halfFromBytes(w, blockByteOffset + D_OFFSET);
+                    int ql =
+                            w.get(blockByteOffset + halfIndex * 64 + (groupInHalf & 1) * 32 + lane)
+                                    & 0xFF;
+                    int qh = w.get(blockByteOffset + QH_OFFSET + halfIndex * 32 + lane) & 0xFF;
+                    int q = (((ql >> lowShift) & 0xF) | (((qh >> highShift) & 3) << 4)) - 32;
+                    int scale =
+                            w.get(
+                                            blockByteOffset
+                                                    + SCALES_OFFSET
+                                                    + halfIndex * 8
+                                                    + (lane >> 4)
+                                                    + groupInHalf * 2)
+                                    & 0xFF;
+                    if (scale > 127) {
+                        scale = scale - 256;
+                    }
+                    float weight = dScale * scale * q;
+                    for (int r = 0; r < ROW_TILE; r++) {
+                        acc[c * ROW_TILE + r] += weight * xs[r];
+                    }
+                }
+            }
+        }
+
+        for (int t = 0; t < ROW_TILE * COL_TILE; t++) {
+            localSums[t * localWorkGroupSize + localId] = acc[t];
+        }
+        context.localBarrier();
+
+        for (int stride = localWorkGroupSize / 2; stride > 0; stride >>= 1) {
+            if (localId < stride) {
+                for (int t = 0; t < ROW_TILE * COL_TILE; t++) {
+                    localSums[t * localWorkGroupSize + localId] +=
+                            localSums[t * localWorkGroupSize + localId + stride];
+                }
+            }
+            context.localBarrier();
+        }
+
+        if (localId == 0) {
+            for (int c = 0; c < COL_TILE; c++) {
+                int outRow = firstCol + c;
+                for (int r = 0; r < ROW_TILE; r++) {
+                    int row = firstRow + r;
+                    int slot = c * ROW_TILE + r;
+                    if (outRow < d && row < activeRows) {
+                        outBatch.set(
+                                (first + row) * d + outRow, localSums[slot * localWorkGroupSize]);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * {@code out[b][row] += w[row]·x[b]} for a tile of rows. See {@link
      * #matrixVectorTiledBatchQ6_K}.
      */
@@ -850,5 +1099,288 @@ public final class TransformerComputeKernelsQ6_K {
                 }
             }
         }
+    }
+
+    /** Expert rows per workgroup of the {@code expert...Simd32} kernels: one SIMD group each. */
+    public static final int EXPERT_SIMD_ROWS = 4;
+
+    /**
+     * One lane's share of row {@code rowId}'s dot product with {@code x} from {@code xOffset}:
+     * every 32nd unit of {@link #rowDotShared}, for a SIMD group to reduce.
+     */
+    private static float rowPartialSimd(
+            int lane, FloatArray x, int xOffset, ByteArray w, int n, int rowId) {
+        int rowByteOffset = rowId * (n / QK_K) * BLOCK_BYTES;
+
+        float partialSum = 0.0f;
+        for (int unit = lane; unit < n / 32; unit += 32) {
+            int half = unit / 4;
+            int posInGroup = (unit - half * 4) * 8;
+            int blockIdx = half / 2;
+            int halfIndex = half - blockIdx * 2;
+            int blockByteOffset = rowByteOffset + blockIdx * BLOCK_BYTES;
+            float d = w.getHalfFloat(blockByteOffset + D_OFFSET).getFloat32();
+
+            int scaleAt = blockByteOffset + SCALES_OFFSET + halfIndex * 8 + posInGroup / 16;
+            float dScale0 = d * signedByte(w, scaleAt);
+            float dScale1 = d * signedByte(w, scaleAt + 2);
+            float dScale2 = d * signedByte(w, scaleAt + 4);
+            float dScale3 = d * signedByte(w, scaleAt + 6);
+
+            int qlAt = blockByteOffset + halfIndex * 64 + posInGroup;
+            int qhAt = blockByteOffset + QH_OFFSET + halfIndex * 32 + posInGroup;
+            int xAt = xOffset + blockIdx * QK_K + halfIndex * 128 + posInGroup;
+            float sum0 = 0.0f;
+            float sum1 = 0.0f;
+            float sum2 = 0.0f;
+            float sum3 = 0.0f;
+            for (int k = 0; k < 8; k += 4) {
+                int ql1Word =
+                        (w.getHalfFloat(qlAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int ql2Word =
+                        (w.getHalfFloat(qlAt + 32 + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qlAt + 34 + k).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int qhWord =
+                        (w.getHalfFloat(qhAt + k).getHalfFloatValue() & 0xFFFF)
+                                | ((w.getHalfFloat(qhAt + k + 2).getHalfFloatValue() & 0xFFFF)
+                                        << 16);
+                int raw0 = (ql1Word & 0x0F0F0F0F) | ((qhWord & 0x03030303) << 4);
+                int raw1 = (ql2Word & 0x0F0F0F0F) | (((qhWord >>> 2) & 0x03030303) << 4);
+                int raw2 = ((ql1Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 4) & 0x03030303) << 4);
+                int raw3 = ((ql2Word >>> 4) & 0x0F0F0F0F) | (((qhWord >>> 6) & 0x03030303) << 4);
+                for (int b = 0; b < 4; b++) {
+                    int shift = 8 * b;
+                    sum0 += (((raw0 >>> shift) & 0xFF) - 32) * x.get(xAt + k + b);
+                    sum1 += (((raw1 >>> shift) & 0xFF) - 32) * x.get(xAt + 32 + k + b);
+                    sum2 += (((raw2 >>> shift) & 0xFF) - 32) * x.get(xAt + 64 + k + b);
+                    sum3 += (((raw3 >>> shift) & 0xFF) - 32) * x.get(xAt + 96 + k + b);
+                }
+            }
+            partialSum += dScale0 * sum0 + dScale1 * sum1 + dScale2 * sum2 + dScale3 * sum3;
+        }
+
+        return partialSum;
+    }
+
+    /** The sum over a SIMD group's 32 lanes, in lane 0. */
+    private static float simdSum(KernelContext context, float v) {
+        v += context.simdShuffleDown(v, 16);
+        v += context.simdShuffleDown(v, 8);
+        v += context.simdShuffleDown(v, 4);
+        v += context.simdShuffleDown(v, 2);
+        v += context.simdShuffleDown(v, 1);
+        return v;
+    }
+
+    /**
+     * {@code out[r] += Σ_s weights[s] · (down_e[r] · x[s·H ..])}, {@code e = selected[s]}, over a
+     * stacked {@code [experts·d, H]} down tensor: one SIMD group per output row, the slots summed
+     * in selection order before it reduces; {@link #EXPERT_SIMD_ROWS} rows per workgroup of {@code
+     * 32 * EXPERT_SIMD_ROWS} threads. Example: LFM2.5-24B-A2B, 2048 rows over {@code H = 1536}.
+     */
+    public static void expertDownResidualQ6_KSimd32(
+            KernelContext context,
+            FloatArray x,
+            FloatArray out,
+            ByteArray down,
+            IntArray selected,
+            FloatArray weights,
+            int d,
+            int expertHidden,
+            int used) {
+        int lane = context.localIdx & 31;
+        int r = context.groupIdx * EXPERT_SIMD_ROWS + (context.localIdx >> 5);
+        if (r >= d) {
+            return;
+        }
+        float sum = 0.0f;
+        for (int s = 0; s < used; s++) {
+            sum +=
+                    weights.get(s)
+                            * rowPartialSimd(
+                                    lane,
+                                    x,
+                                    s * expertHidden,
+                                    down,
+                                    expertHidden,
+                                    selected.get(s) * d + r);
+        }
+        sum = simdSum(context, sum);
+        if (lane == 0) {
+            out.set(r, out.get(r) + sum);
+        }
+    }
+
+    /** Expert slots a workgroup of {@link #expertDownResidualQ6_KWarpPerSlot} can hold. */
+    public static final int MAX_SLOTS = 8;
+
+    /** Output rows of a {@link #expertDownResidualQ6_KWarpPerSlot} workgroup. */
+    public static final int SLOT_ROWS = 4;
+
+    /**
+     * {@code out[r] += Σ_s weights[s] · (down_e[r] · x[s·H ..])}, {@code e = selected[s]}: a
+     * workgroup of {@code used} warps for {@link #SLOT_ROWS} rows, warp {@code s} taking slot
+     * {@code s}. In a warp, eight lanes cover a super-block, four at a time, each taking one of its
+     * 32-weight units as {@link #matrixVectorQ6_KWarp} decodes it; the four rows share the
+     * activations a lane loads. The weighted slots are added in selection order. Example:
+     * LFM2.5-24B-A2B's layers 7 and 8, 512 workgroups of 4 warps, 2048 rows over {@code H = 1536}.
+     * Launch {@code d / SLOT_ROWS} workgroups of {@code 32 * used} threads, {@code used <=
+     * MAX_SLOTS}.
+     */
+    public static void expertDownResidualQ6_KWarpPerSlot(
+            KernelContext context,
+            FloatArray x,
+            FloatArray out,
+            ByteArray down,
+            IntArray selected,
+            FloatArray weights,
+            int d,
+            int expertHidden,
+            int used) {
+        float[] partial = context.allocateFloatLocalArray(MAX_SLOTS * SLOT_ROWS);
+        int lane = context.localIdx & 31;
+        int s = context.localIdx >> 5;
+        int row0 = context.groupIdx * SLOT_ROWS;
+        int blocks = expertHidden / QK_K;
+        int rowBytes = blocks * BLOCK_BYTES;
+        int ix = lane >> 3;
+        int half = (lane & 7) >> 2;
+        int pos = (lane & 3) * 8;
+        int wrow0 = selected.get(s) * d + row0;
+        int xo = s * expertHidden;
+        float p0 = 0.0f;
+        float p1 = 0.0f;
+        float p2 = 0.0f;
+        float p3 = 0.0f;
+        for (int ib = ix; ib < blocks; ib += 4) {
+            int xb = xo + ib * QK_K + half * 128 + pos;
+            Float4 xa0 = x.getFloat4(xb);
+            Float4 xa1 = x.getFloat4(xb + 4);
+            Float4 xb0 = x.getFloat4(xb + 32);
+            Float4 xb1 = x.getFloat4(xb + 36);
+            Float4 xc0 = x.getFloat4(xb + 64);
+            Float4 xc1 = x.getFloat4(xb + 68);
+            Float4 xd0 = x.getFloat4(xb + 96);
+            Float4 xd1 = x.getFloat4(xb + 100);
+            int at = wrow0 * rowBytes + ib * BLOCK_BYTES;
+            p0 += blockDot6(down, at, half, pos, xa0, xa1, xb0, xb1, xc0, xc1, xd0, xd1);
+            p1 += blockDot6(down, at + rowBytes, half, pos, xa0, xa1, xb0, xb1, xc0, xc1, xd0, xd1);
+            p2 +=
+                    blockDot6(
+                            down,
+                            at + 2 * rowBytes,
+                            half,
+                            pos,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1);
+            p3 +=
+                    blockDot6(
+                            down,
+                            at + 3 * rowBytes,
+                            half,
+                            pos,
+                            xa0,
+                            xa1,
+                            xb0,
+                            xb1,
+                            xc0,
+                            xc1,
+                            xd0,
+                            xd1);
+        }
+        p0 = simdSum(context, p0);
+        p1 = simdSum(context, p1);
+        p2 = simdSum(context, p2);
+        p3 = simdSum(context, p3);
+        if (lane == 0) {
+            float weight = weights.get(s);
+            partial[s * SLOT_ROWS] = weight * p0;
+            partial[s * SLOT_ROWS + 1] = weight * p1;
+            partial[s * SLOT_ROWS + 2] = weight * p2;
+            partial[s * SLOT_ROWS + 3] = weight * p3;
+        }
+        context.localBarrier();
+        int t = context.localIdx;
+        if (t < SLOT_ROWS && row0 + t < d) {
+            float sum = 0.0f;
+            for (int i = 0; i < used; i++) {
+                sum += partial[i * SLOT_ROWS + t];
+            }
+            out.set(row0 + t, out.get(row0 + t) + sum);
+        }
+    }
+
+    /**
+     * One lane's 32-weight unit of a super-block at {@code base}: positions {@code pos} to {@code
+     * pos + 7} of half {@code half}'s four groups, against activations {@code xa..xd}, two loads of
+     * four per group.
+     */
+    private static float blockDot6(
+            ByteArray w,
+            int base,
+            int half,
+            int pos,
+            Float4 xa0,
+            Float4 xa1,
+            Float4 xb0,
+            Float4 xb1,
+            Float4 xc0,
+            Float4 xc1,
+            Float4 xd0,
+            Float4 xd1) {
+        float dd = w.getHalfFloat(base + D_OFFSET).getFloat32();
+        int scaleAt = base + SCALES_OFFSET + half * 8 + pos / 16;
+        int qlAt = base + half * 64 + pos;
+        int qhAt = base + QH_OFFSET + half * 32 + pos;
+        int l0 = word(w, qlAt);
+        int l1 = word(w, qlAt + 4);
+        int m0 = word(w, qlAt + 32);
+        int m1 = word(w, qlAt + 36);
+        int h0 = word(w, qhAt);
+        int h1 = word(w, qhAt + 4);
+        float sum0 =
+                bytesDot6((l0 & 0x0F0F0F0F) | ((h0 & 0x03030303) << 4), xa0)
+                        + bytesDot6((l1 & 0x0F0F0F0F) | ((h1 & 0x03030303) << 4), xa1);
+        float sum1 =
+                bytesDot6((m0 & 0x0F0F0F0F) | (((h0 >>> 2) & 0x03030303) << 4), xb0)
+                        + bytesDot6((m1 & 0x0F0F0F0F) | (((h1 >>> 2) & 0x03030303) << 4), xb1);
+        float sum2 =
+                bytesDot6(((l0 >>> 4) & 0x0F0F0F0F) | (((h0 >>> 4) & 0x03030303) << 4), xc0)
+                        + bytesDot6(
+                                ((l1 >>> 4) & 0x0F0F0F0F) | (((h1 >>> 4) & 0x03030303) << 4), xc1);
+        float sum3 =
+                bytesDot6(((m0 >>> 4) & 0x0F0F0F0F) | (((h0 >>> 6) & 0x03030303) << 4), xd0)
+                        + bytesDot6(
+                                ((m1 >>> 4) & 0x0F0F0F0F) | (((h1 >>> 6) & 0x03030303) << 4), xd1);
+        return dd * signedByte(w, scaleAt) * sum0
+                + dd * signedByte(w, scaleAt + 2) * sum1
+                + dd * signedByte(w, scaleAt + 4) * sum2
+                + dd * signedByte(w, scaleAt + 6) * sum3;
+    }
+
+    /**
+     * Four bytes at {@code at} as a word, from two two-byte loads: Q6_K's 210-byte blocks leave
+     * every other block two bytes off a word boundary.
+     */
+    private static int word(ByteArray w, int at) {
+        return (w.getHalfFloat(at).getHalfFloatValue() & 0xFFFF)
+                | ((w.getHalfFloat(at + 2).getHalfFloatValue() & 0xFFFF) << 16);
+    }
+
+    /** The four six-bit weights in {@code q}'s bytes, each less 32, against {@code x}. */
+    private static float bytesDot6(int q, Float4 x) {
+        return ((q & 0xFF) - 32) * x.getX()
+                + (((q >>> 8) & 0xFF) - 32) * x.getY()
+                + (((q >>> 16) & 0xFF) - 32) * x.getZ()
+                + ((q >>> 24) - 32) * x.getW();
     }
 }

@@ -1,0 +1,10 @@
+<|startoftext|><|im_start|>system
+List of tools: [{"type": "function", "function": {"name": "getWeather", "description": "Returns the current weather for a city.", "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "The city name"}}, "required": ["city"]}}}]<|im_end|>
+<|im_start|>user
+What is the weather in Paris?<|im_end|>
+<|im_start|>assistant
+<|tool_call_start|>[getWeather(city='Paris')]<|tool_call_end|><|im_end|>
+<|im_start|>tool
+{"temperature":18,"condition":"sunny"}<|im_end|>
+<|im_start|>assistant
+<think>

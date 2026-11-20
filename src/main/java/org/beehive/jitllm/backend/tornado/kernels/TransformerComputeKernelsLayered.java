@@ -9,6 +9,7 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.Int8Array;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
+import uk.ac.manchester.tornado.api.types.vectors.Float4;
 import uk.ac.manchester.tornado.api.types.vectors.Half2;
 
 public class TransformerComputeKernelsLayered {
@@ -3204,5 +3205,208 @@ public class TransformerComputeKernelsLayered {
             float silu = gateResult / (1.0f + TornadoMath.exp(-gateResult));
             output.set(rowId, silu * upResult);
         }
+    }
+
+    /**
+     * {@code out[row] = w[row]·x} over Q8_0 rows, one SIMD group per four rows (32-lane shuffle):
+     * four lanes per 32-weight block, each reading eight weights, so a SIMD group walks eight
+     * blocks at a time and each activation it loads serves all four rows. Example: LFM2.5's
+     * 128000-row vocabulary, 16000 workgroups of 64 threads. Launch {@code
+     * TransformerComputeKernelsQ4_K.SIMDGROUP_GROUP_ROWS} rows per workgroup of {@code 32 *
+     * TransformerComputeKernelsQ4_K.SIMDGROUPS} threads, as the Q4_K kernel.
+     */
+    public static void matrixVectorQ8_0Simdgroup(
+            KernelContext context, FloatArray x, FloatArray out, ByteArray w, int n, int d) {
+        int lane = context.localIdx & 31;
+        int row0 =
+                (context.groupIdx * TransformerComputeKernelsQ4_K.SIMDGROUPS
+                                + (context.localIdx >> 5))
+                        * TransformerComputeKernelsQ4_K.SIMDGROUP_ROWS;
+        int blocks = n >> 5;
+        int rowBytes = blocks * 34;
+        int ix = lane >> 2;
+        int il = (lane & 3) << 3;
+        int base0 = Math.min(row0, d - 1) * rowBytes;
+        int base1 = Math.min(row0 + 1, d - 1) * rowBytes;
+        int base2 = Math.min(row0 + 2, d - 1) * rowBytes;
+        int base3 = Math.min(row0 + 3, d - 1) * rowBytes;
+        float sum0 = 0.0f;
+        float sum1 = 0.0f;
+        float sum2 = 0.0f;
+        float sum3 = 0.0f;
+        for (int ib = ix; ib < blocks; ib += 8) {
+            int xb = (ib << 5) + il;
+            Float4 x0 = x.getFloat4(xb);
+            Float4 x1 = x.getFloat4(xb + 4);
+            float d0 = w.getHalfFloat(base0 + ib * 34).getFloat32();
+            int q0 = base0 + ib * 34 + 2 + il;
+            sum0 +=
+                    d0
+                            * (w.get(q0) * x0.getX()
+                                    + w.get(q0 + 1) * x0.getY()
+                                    + w.get(q0 + 2) * x0.getZ()
+                                    + w.get(q0 + 3) * x0.getW()
+                                    + w.get(q0 + 4) * x1.getX()
+                                    + w.get(q0 + 5) * x1.getY()
+                                    + w.get(q0 + 6) * x1.getZ()
+                                    + w.get(q0 + 7) * x1.getW());
+            float d1 = w.getHalfFloat(base1 + ib * 34).getFloat32();
+            int q1 = base1 + ib * 34 + 2 + il;
+            sum1 +=
+                    d1
+                            * (w.get(q1) * x0.getX()
+                                    + w.get(q1 + 1) * x0.getY()
+                                    + w.get(q1 + 2) * x0.getZ()
+                                    + w.get(q1 + 3) * x0.getW()
+                                    + w.get(q1 + 4) * x1.getX()
+                                    + w.get(q1 + 5) * x1.getY()
+                                    + w.get(q1 + 6) * x1.getZ()
+                                    + w.get(q1 + 7) * x1.getW());
+            float d2 = w.getHalfFloat(base2 + ib * 34).getFloat32();
+            int q2 = base2 + ib * 34 + 2 + il;
+            sum2 +=
+                    d2
+                            * (w.get(q2) * x0.getX()
+                                    + w.get(q2 + 1) * x0.getY()
+                                    + w.get(q2 + 2) * x0.getZ()
+                                    + w.get(q2 + 3) * x0.getW()
+                                    + w.get(q2 + 4) * x1.getX()
+                                    + w.get(q2 + 5) * x1.getY()
+                                    + w.get(q2 + 6) * x1.getZ()
+                                    + w.get(q2 + 7) * x1.getW());
+            float d3 = w.getHalfFloat(base3 + ib * 34).getFloat32();
+            int q3 = base3 + ib * 34 + 2 + il;
+            sum3 +=
+                    d3
+                            * (w.get(q3) * x0.getX()
+                                    + w.get(q3 + 1) * x0.getY()
+                                    + w.get(q3 + 2) * x0.getZ()
+                                    + w.get(q3 + 3) * x0.getW()
+                                    + w.get(q3 + 4) * x1.getX()
+                                    + w.get(q3 + 5) * x1.getY()
+                                    + w.get(q3 + 6) * x1.getZ()
+                                    + w.get(q3 + 7) * x1.getW());
+        }
+        sum0 = simdSum32(context, sum0);
+        sum1 = simdSum32(context, sum1);
+        sum2 = simdSum32(context, sum2);
+        sum3 = simdSum32(context, sum3);
+        if (lane == 0) {
+            if (row0 + 0 < d) {
+                out.set(row0 + 0, sum0);
+            }
+            if (row0 + 1 < d) {
+                out.set(row0 + 1, sum1);
+            }
+            if (row0 + 2 < d) {
+                out.set(row0 + 2, sum2);
+            }
+            if (row0 + 3 < d) {
+                out.set(row0 + 3, sum3);
+            }
+        }
+    }
+
+    /** {@code hb[row] += w[row]·x}; see {@link #matrixVectorQ8_0Simdgroup}. */
+    public static void matrixVectorWithResidualQ8_0Simdgroup(
+            KernelContext context, FloatArray x, FloatArray hb, ByteArray w, int n, int d) {
+        int lane = context.localIdx & 31;
+        int row0 =
+                (context.groupIdx * TransformerComputeKernelsQ4_K.SIMDGROUPS
+                                + (context.localIdx >> 5))
+                        * TransformerComputeKernelsQ4_K.SIMDGROUP_ROWS;
+        int blocks = n >> 5;
+        int rowBytes = blocks * 34;
+        int ix = lane >> 2;
+        int il = (lane & 3) << 3;
+        int base0 = Math.min(row0, d - 1) * rowBytes;
+        int base1 = Math.min(row0 + 1, d - 1) * rowBytes;
+        int base2 = Math.min(row0 + 2, d - 1) * rowBytes;
+        int base3 = Math.min(row0 + 3, d - 1) * rowBytes;
+        float sum0 = 0.0f;
+        float sum1 = 0.0f;
+        float sum2 = 0.0f;
+        float sum3 = 0.0f;
+        for (int ib = ix; ib < blocks; ib += 8) {
+            int xb = (ib << 5) + il;
+            Float4 x0 = x.getFloat4(xb);
+            Float4 x1 = x.getFloat4(xb + 4);
+            float d0 = w.getHalfFloat(base0 + ib * 34).getFloat32();
+            int q0 = base0 + ib * 34 + 2 + il;
+            sum0 +=
+                    d0
+                            * (w.get(q0) * x0.getX()
+                                    + w.get(q0 + 1) * x0.getY()
+                                    + w.get(q0 + 2) * x0.getZ()
+                                    + w.get(q0 + 3) * x0.getW()
+                                    + w.get(q0 + 4) * x1.getX()
+                                    + w.get(q0 + 5) * x1.getY()
+                                    + w.get(q0 + 6) * x1.getZ()
+                                    + w.get(q0 + 7) * x1.getW());
+            float d1 = w.getHalfFloat(base1 + ib * 34).getFloat32();
+            int q1 = base1 + ib * 34 + 2 + il;
+            sum1 +=
+                    d1
+                            * (w.get(q1) * x0.getX()
+                                    + w.get(q1 + 1) * x0.getY()
+                                    + w.get(q1 + 2) * x0.getZ()
+                                    + w.get(q1 + 3) * x0.getW()
+                                    + w.get(q1 + 4) * x1.getX()
+                                    + w.get(q1 + 5) * x1.getY()
+                                    + w.get(q1 + 6) * x1.getZ()
+                                    + w.get(q1 + 7) * x1.getW());
+            float d2 = w.getHalfFloat(base2 + ib * 34).getFloat32();
+            int q2 = base2 + ib * 34 + 2 + il;
+            sum2 +=
+                    d2
+                            * (w.get(q2) * x0.getX()
+                                    + w.get(q2 + 1) * x0.getY()
+                                    + w.get(q2 + 2) * x0.getZ()
+                                    + w.get(q2 + 3) * x0.getW()
+                                    + w.get(q2 + 4) * x1.getX()
+                                    + w.get(q2 + 5) * x1.getY()
+                                    + w.get(q2 + 6) * x1.getZ()
+                                    + w.get(q2 + 7) * x1.getW());
+            float d3 = w.getHalfFloat(base3 + ib * 34).getFloat32();
+            int q3 = base3 + ib * 34 + 2 + il;
+            sum3 +=
+                    d3
+                            * (w.get(q3) * x0.getX()
+                                    + w.get(q3 + 1) * x0.getY()
+                                    + w.get(q3 + 2) * x0.getZ()
+                                    + w.get(q3 + 3) * x0.getW()
+                                    + w.get(q3 + 4) * x1.getX()
+                                    + w.get(q3 + 5) * x1.getY()
+                                    + w.get(q3 + 6) * x1.getZ()
+                                    + w.get(q3 + 7) * x1.getW());
+        }
+        sum0 = simdSum32(context, sum0);
+        sum1 = simdSum32(context, sum1);
+        sum2 = simdSum32(context, sum2);
+        sum3 = simdSum32(context, sum3);
+        if (lane == 0) {
+            if (row0 + 0 < d) {
+                hb.set(row0 + 0, hb.get(row0 + 0) + sum0);
+            }
+            if (row0 + 1 < d) {
+                hb.set(row0 + 1, hb.get(row0 + 1) + sum1);
+            }
+            if (row0 + 2 < d) {
+                hb.set(row0 + 2, hb.get(row0 + 2) + sum2);
+            }
+            if (row0 + 3 < d) {
+                hb.set(row0 + 3, hb.get(row0 + 3) + sum3);
+            }
+        }
+    }
+
+    /** {@code v} summed over the 32 lanes of its SIMD group, the total in lane 0. */
+    private static float simdSum32(KernelContext context, float v) {
+        v += context.simdShuffleDown(v, 16);
+        v += context.simdShuffleDown(v, 8);
+        v += context.simdShuffleDown(v, 4);
+        v += context.simdShuffleDown(v, 2);
+        v += context.simdShuffleDown(v, 1);
+        return v;
     }
 }

@@ -44,6 +44,12 @@ public final class TransformerComputeKernelsQ8_0Packed {
     /** Threads of a fused gate/up workgroup. */
     public static final int FUSED_LOCAL = FUSED_WARPS * 32;
 
+    /**
+     * Chunk rows of a {@link #batchedMatrixVectorQ8_0PackedF32} workgroup, which each weight load
+     * serves.
+     */
+    public static final int BATCH_TOKENS = 4;
+
     private static final int TILE_BYTES = Int8GemmKernels.PACKED_TILE_BYTES;
 
     private static final int QUANT_BYTES = Int8GemmKernels.PACKED_QUANT_BYTES;
@@ -137,6 +143,56 @@ public final class TransformerComputeKernelsQ8_0Packed {
                 acc[3] +=
                         w.getHalfFloat(scales + 6).getFloat32()
                                 * (signedByte(w1, 2) * x0 + signedByte(w1, 3) * x1);
+            }
+        }
+    }
+
+    /**
+     * {@link #accumulateF32} for chunk rows {@code firstToken} to {@code firstToken + tokens - 1}
+     * of {@code x}, row {@code t}'s four sums in {@code acc[4t..4t + 3]}: each weight word is
+     * loaded once for all of them, and each row's arithmetic is {@link #accumulateF32}'s.
+     */
+    private static void accumulateF32Batch(
+            ByteArray w,
+            FloatArray x,
+            int n,
+            int rowBase,
+            int lane,
+            int firstRound,
+            int firstToken,
+            int tokens,
+            float[] acc) {
+        int rounds = n >> 6;
+        int colTile = rowBase >> 7;
+        int half = (rowBase >> 6) & 1;
+        int group = (rowBase >> 3) & 7;
+        int wordInBlock = (half << 9) + (group << 6) + (lane << 1);
+        int scaleColumn = (rowBase & 127) + ((lane & 1) << 2);
+        int kInBlock = (lane >> 1) << 1;
+        int tileBase = colTile * rounds * TILE_BYTES;
+        for (int round = firstRound; round < rounds; round += WARPS) {
+            int tile = tileBase + round * TILE_BYTES;
+            for (int b = 0; b < 2; b++) {
+                int block = round * 2 + b;
+                long pair = w.getLong(tile + (((b << 10) + wordInBlock) << 2));
+                int w0 = (int) pair;
+                int w1 = (int) (pair >>> 32);
+                int k = (block << 5) + kInBlock;
+                int scales = tile + QUANT_BYTES + (((b << 7) + scaleColumn) << 1);
+                float s0 = w.getHalfFloat(scales).getFloat32();
+                float s1 = w.getHalfFloat(scales + 2).getFloat32();
+                float s2 = w.getHalfFloat(scales + 4).getFloat32();
+                float s3 = w.getHalfFloat(scales + 6).getFloat32();
+                for (int t = 0; t < tokens; t++) {
+                    int at = (firstToken + t) * n + k;
+                    float x0 = x.get(at);
+                    float x1 = x.get(at + 1);
+                    int o = t << 2;
+                    acc[o] += s0 * (signedByte(w0, 0) * x0 + signedByte(w0, 1) * x1);
+                    acc[o + 1] += s1 * (signedByte(w0, 2) * x0 + signedByte(w0, 3) * x1);
+                    acc[o + 2] += s2 * (signedByte(w1, 0) * x0 + signedByte(w1, 1) * x1);
+                    acc[o + 3] += s3 * (signedByte(w1, 2) * x0 + signedByte(w1, 3) * x1);
+                }
             }
         }
     }
@@ -280,6 +336,71 @@ public final class TransformerComputeKernelsQ8_0Packed {
                     output.set(rowBase + row, output.get(rowBase + row) + total);
                 } else {
                     output.set(rowBase + row, total);
+                }
+            }
+        }
+    }
+
+    /**
+     * {@code output[t][row] = w[row]·x[t]} (or {@code +=} with {@code residual} 1) for the {@code
+     * batchSize} rows of a chunk, {@code x} in FP32: {@link #matrixVectorQ8_0PackedF32} with each
+     * workgroup on eight output rows of {@link #BATCH_TOKENS} chunk rows. A row's sums and their
+     * reduction are that kernel's, so each matches it bit for bit. Example: a prepacked 2048 x 2048
+     * attn_q over a 512-row chunk runs 256 x 128 workgroups.
+     *
+     * <p>Worker: {@code d / 8 * ceil(batchSize / BATCH_TOKENS) * LOCAL} lanes, local {@link
+     * #LOCAL}.
+     */
+    public static void batchedMatrixVectorQ8_0PackedF32(
+            KernelContext context,
+            FloatArray x,
+            FloatArray output,
+            ByteArray w,
+            int n,
+            int d,
+            int batchSize,
+            int residual) {
+        int rowGroups = d >> 3;
+        int rowBase = (context.groupIdx % rowGroups) << 3;
+        int firstToken = (context.groupIdx / rowGroups) * BATCH_TOKENS;
+        int tokens = Math.min(BATCH_TOKENS, batchSize - firstToken);
+        int lane = context.localIdx & 31;
+        int warp = context.localIdx >> 5;
+        float[] sums = context.allocateFloatLocalArray(WARPS * 8 * BATCH_TOKENS);
+        float[] acc = new float[4 * BATCH_TOKENS];
+        for (int i = 0; i < 4 * BATCH_TOKENS; i++) {
+            acc[i] = 0.0f;
+        }
+        accumulateF32Batch(w, x, n, rowBase, lane, warp, firstToken, tokens, acc);
+        for (int t = 0; t < BATCH_TOKENS; t++) {
+            int o = t << 2;
+            float r0 = reduceParity(context, acc[o]);
+            float r1 = reduceParity(context, acc[o + 1]);
+            float r2 = reduceParity(context, acc[o + 2]);
+            float r3 = reduceParity(context, acc[o + 3]);
+            if (lane < 2) {
+                int slot = t * WARPS * 8 + (warp << 3) + (lane << 2);
+                sums[slot] = r0;
+                sums[slot + 1] = r1;
+                sums[slot + 2] = r2;
+                sums[slot + 3] = r3;
+            }
+        }
+        context.localBarrier();
+        int i = context.localIdx;
+        if (i < 8 * BATCH_TOKENS) {
+            int t = i >> 3;
+            int row = i & 7;
+            if (t < tokens) {
+                float total = 0.0f;
+                for (int wi = 0; wi < WARPS; wi++) {
+                    total += sums[t * WARPS * 8 + (wi << 3) + row];
+                }
+                int at = (firstToken + t) * d + rowBase + row;
+                if (residual != 0) {
+                    output.set(at, output.get(at) + total);
+                } else {
+                    output.set(at, total);
                 }
             }
         }

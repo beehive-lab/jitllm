@@ -422,7 +422,8 @@ FP16 through the tensor cores. The gap and the options for it are in
 
 **Batched prefill on Metal** is verified on an Apple M4 Pro for every family it is enabled for:
 greedy text identical to single-token prefill for Qwen3, Llama (F16, Q8_0, Q4_0), Qwen2.5,
-DeepSeek-R1-Distill-Qwen, Mistral, Phi-3, Granite 3.2 / 4.0, Qwen3.5 Q4_0 and Gemma 4 Q8_0;
+DeepSeek-R1-Distill-Qwen, Mistral, Phi-3, Granite 3.2 / 4.0, Qwen3.5 Q4_0, Gemma 4 Q8_0 and LFM2
+MoE (`Lfm2BatchedPrefillParityAccelTest`, widths 7, 64 and 512);
 `LlamaBatchedPrefillParityAccelTest`, `Qwen3BatchedPrefillParityAccelTest` and
 `Gemma4Q8_0BatchedPrefillParityAccelTest` pass. The SIMD-group kernels are checked against host
 references: `TransformerBatchPrefillSimdgroupKernelsAccelTest` (projections, exact or within
@@ -438,6 +439,33 @@ runs on the CUDA tensor cores only and is refused by name elsewhere, and `PREFIL
 unsupported, with its own diagnostic. The rest of its acceptance — teacher-forced CPU/GPU
 logit parity, reset and multi-turn behaviour, memory-preflight accuracy — is **unrun**, and
 Devstral is not claimed as verified. It blocks nothing.
+
+**LFM2 MoE (`lfm2moe`).** LFM2-8B-A1B and LFM2.5-24B-A2B run on Metal and CUDA in all three
+modes and on OpenCL in the two single-token ones, with the FP16 key/value cache, their weights read
+in place on Metal; the batched prefill groups each chunk's
+expert assignments and runs a GEMM per tile of one expert's rows, and stays within the FP16 bounds
+at widths 7 to 512 (rel L2 ≤ 7.6e-4). Against
+the CPU reference with an FP32 cache on both sides, both files meet the Q8_0 bounds in both modes
+(rel L2 ≤ 4.7e-5 on the 8B, ≤ 3.4e-6 on the 24B, argmax 63/63); with the FP16 cache on both sides,
+see [`kv-cache-support.md`](kv-cache-support.md#matrix). On CUDA (RTX 5090 Laptop) the same
+classes pass: FP32-cache parity rel L2 ≤ 5.7e-5; the batched prefill, its experts on tensor cores
+over FP16 inputs, ≤ 2.0e-4 against the 2e-3 bound, the 8B's identical at every width. Q8_0 experts
+batch too, verified against the host only (no Q8_0 file here). On OpenCL over the same device the
+parity numbers match CUDA's; the batched prefill is refused there, since OpenCL miscompiles the
+32-lane shuffles its router and selection reduce with. With native libraries (the CUDA default)
+the attention and convolution projections run on cuBLAS in FP16, so every prefill GEMM has FP16
+operands, and the class is held to the FP16 cache's near-tie envelope
+(`Lfm2NativeBatchedPrefillParityAccelTest`): 24B ≤ 3.4e-4, 8B up to 5.8e-2, argmax 63/63.
+With the FP16 cache as well, the batched attention runs on tensor cores (the flash head-64
+kernel), held to the same envelope (`Lfm2Fp16KvParityAccelTest`, native cases: 24B ≤ 4.9e-4, 8B
+6.5e-2); greedy text over an 890-token prompt is unchanged at chunk widths 64 and 512.
+LFM2.5-24B-A2B on the RTX 5090 Laptop: pp512 4049 tok/s, tg128 220. Without them
+the Q8_0 projections are prepacked (decode +1.6%). Splitting across devices and continuous
+batching are refused by name. Tool calling
+(`ToolCallingFamiliesAccelTest`, greedy): LFM2.5-24B-A2B passes all four exchanges on CUDA;
+LFM2-8B-A1B passes the call, the answer and the two calls on Metal, and writes the no-argument call
+as `getCurrent Time()`, which is not a tool name and stays text. The family has no
+`InferenceProgram`, as `qwen35`.
 
 **Memory preflight on Metal** is capped at `CONSERVATIVE`; the bisection that would justify
 `EXACT` there has not been run.

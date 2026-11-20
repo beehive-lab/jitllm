@@ -221,8 +221,9 @@ final class ConversationEncoder {
      * Encodes the resolved reasoning mode, if one was asked for.
      *
      * <p>After the assistant header, because the control primes the turn the model is about to
-     * write. {@link ThinkingMode#DEFAULT} appends nothing, so a family with no reasoning phase and
-     * a caller who said nothing are the same case — which is what makes DEFAULT the value that
+     * write. {@link ThinkingMode#DEFAULT} appends only what the file's own template writes there
+     * ({@code ChatFormat.defaultGenerationPrimer}), so a family with no reasoning phase and a
+     * caller who said nothing are the same case — which is what makes DEFAULT the value that
      * changes nothing.
      *
      * <p>The translation from a mode to tokens is the family's, and it stays here rather than
@@ -232,6 +233,8 @@ final class ConversationEncoder {
         if (thinkingMode.isExplicit()) {
             tokens.addAll(
                     model.chatFormat().encodeThinkingControl(thinkingMode == ThinkingMode.ENABLED));
+        } else {
+            tokens.addAll(model.chatFormat().defaultGenerationPrimer());
         }
     }
 

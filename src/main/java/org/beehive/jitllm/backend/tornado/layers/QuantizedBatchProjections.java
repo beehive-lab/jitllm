@@ -9,6 +9,7 @@ import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ5_K;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ6_K;
+import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0Packed;
 import org.beehive.jitllm.backend.tornado.scheduling.WorkerGridFactory;
 import org.beehive.jitllm.backend.tornado.tensor.TornadoTensor;
 import org.beehive.jitllm.backend.tornado.workspace.TornadoWorkspace;
@@ -31,7 +32,8 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  *
  * <p>A Q8_0 weight in such a layer runs the family's own Q8_0 kernels: SIMD-group, the scalar tiled
  * GEMMs where the family has them ({@code tiledQ8}), or per-row matvecs. Only the residual form
- * exists for Q8_0 outside the fused QKV and gate/up tasks.
+ * exists for Q8_0 outside the fused QKV and gate/up tasks. A Q8_0 weight the plan prepacked runs
+ * {@code batchedMatrixVectorQ8_0PackedF32} in either form, unfused.
  *
  * <p>Gate and up run fused where both share a type with a fused kernel on the path that runs (every
  * type on SIMD-group matrices; Q8_0, Q4_0 and Q4_K tiled), and otherwise as the norm, gate into
@@ -72,6 +74,11 @@ public final class QuantizedBatchProjections {
         this.matVecLocal = matVecLocal;
     }
 
+    /** Whether the plan prepacked {@code w}, a Q8_0 projection. */
+    public boolean prepacked(TornadoTensor w) {
+        return ws.prepacking != null && ws.prepacking.prepackedQ8(w);
+    }
+
     /** {@code out = w·x} over the batch, or {@code out += w·x} with {@code residual}. */
     public void projection(
             TaskGraph layer,
@@ -83,6 +90,20 @@ public final class QuantizedBatchProjections {
             int d,
             boolean residual) {
         DataType type = w.dataType();
+        if (prepacked(w)) {
+            layer.task(
+                    name,
+                    TransformerComputeKernelsQ8_0Packed::batchedMatrixVectorQ8_0PackedF32,
+                    context,
+                    x,
+                    out,
+                    w.asByteArray(),
+                    n,
+                    d,
+                    batchSize,
+                    residual ? 1 : 0);
+            return;
+        }
         if (type == DataType.Q8_0) {
             if (!residual && simdgroup && d % 64 == 0) {
                 // The q|k|v GEMM with one matrix and no key/value rows is the plain GEMM, as
@@ -314,7 +335,7 @@ public final class QuantizedBatchProjections {
      */
     public boolean fusedGateUp(TornadoTensor w1, TornadoTensor w3) {
         DataType type = w1.dataType();
-        if (type != w3.dataType()) {
+        if (type != w3.dataType() || prepacked(w1) || prepacked(w3)) {
             return false;
         }
         return simdgroup || type == DataType.Q8_0 || type == DataType.Q4_0 || type == DataType.Q4_K;
@@ -473,6 +494,14 @@ public final class QuantizedBatchProjections {
     public WorkerGrid worker(TornadoTensor w, int rows) {
         int batchTiles = (batchSize + 63) / 64;
         DataType type = w.dataType();
+        if (prepacked(w)) {
+            int tokenGroups =
+                    (batchSize + TransformerComputeKernelsQ8_0Packed.BATCH_TOKENS - 1)
+                            / TransformerComputeKernelsQ8_0Packed.BATCH_TOKENS;
+            return WorkerGridFactory.genericWorker(
+                    rows / 8 * tokenGroups * TransformerComputeKernelsQ8_0Packed.LOCAL,
+                    TransformerComputeKernelsQ8_0Packed.LOCAL);
+        }
         if (type == DataType.Q8_0) {
             int gemmLocal =
                     simdgroup

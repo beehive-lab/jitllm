@@ -24,11 +24,19 @@ public class DeviceResidentSamplingAccelTest {
 
     @Test
     public void deviceResidentArgmaxMatchesHostResidentArgmax() throws Exception {
-        Path model = GoldenFixture.locate(Fixture.LLAMA_3_2_1B_F16);
+        assertDeviceMatchesHost(Fixture.LLAMA_3_2_1B_F16);
+    }
+
+    /** LFM2's logits: a tied Q6_K vocabulary projection over 65536 tokens. */
+    @Test
+    public void lfm2DeviceResidentArgmaxMatchesHostResidentArgmax() throws Exception {
+        assertDeviceMatchesHost(Fixture.LFM2_8B_A1B_Q4_K_XL);
+    }
+
+    private static void assertDeviceMatchesHost(Fixture fixture) throws Exception {
+        Path model = GoldenFixture.locate(fixture);
         if (model == null) {
-            assumeTrue(
-                    "environment absent: " + GoldenFixture.absentMessage(Fixture.LLAMA_3_2_1B_F16),
-                    false);
+            assumeTrue("environment absent: " + GoldenFixture.absentMessage(fixture), false);
         }
         String previousGpu = System.getProperty("use.tornadovm");
         String previousDeviceSample = System.getProperty("jitllm.deviceSample");

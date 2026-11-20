@@ -41,7 +41,7 @@ Serve it behind an **OpenAI-compatible API**, embed it in **LangChain4j** or **Q
 - 🌍 **Write once, run on any GPU.** NVIDIA (CUDA), Intel & AMD (OpenCL), Apple Silicon (Metal). Backend is auto-detected from your TornadoVM SDK — switch with a flag, not a rebuild.
 - 🔌 **Drop-in for the Java AI stack.** Official [LangChain4j](https://docs.langchain4j.dev/integrations/language-models/gpullama3-java) provider (since v1.7.1) and [Quarkus](https://docs.quarkiverse.io/quarkus-langchain4j/dev/gpullama3-chat-model.html) inference engine.
 - ⚡ **Built to serve.** OpenAI-compatible HTTP server, llama-bench-style benchmarking, and tensor-core (MMA) batch prefill (see [Serving](#-serving-openai-compatible-preview)).
-- 📦 **Many models, one runtime.** Llama 3, Mistral, Devstral, Qwen 2.5 / Qwen 3 / Qwen 3.5–3.8 (dense and MoE), Qwen2-MoE, Gemma 4, Phi-3, IBM Granite 3.3 / 4.0, GLM-4.7-Flash, DeepSeek-R1-Distill — all in GGUF.
+- 📦 **Many models, one runtime.** Llama 3, Mistral, Devstral, Qwen 2.5 / Qwen 3 / Qwen 3.5–3.8 (dense and MoE), Qwen2-MoE, Gemma 4, Phi-3, IBM Granite 3.3 / 4.0, GLM-4.7-Flash, LFM2 / LFM2.5 MoE, DeepSeek-R1-Distill — all in GGUF.
 
 -----------
 
@@ -67,7 +67,7 @@ jitLLM is growing into a **serving engine** — the vLLM-style path for the JVM:
 
 - 🌐 **OpenAI-compatible server** — `jitllm serve` exposes `/v1/chat/completions` and `/v1/completions` with streaming and zero external dependencies. `/v1/models` reports the served context length, so clients size their prompts instead of guessing. Point any OpenAI client at `localhost`.
 - 🎯 **Tensor-core batch prefill on CUDA for every model family**, on each family's supported weight types (F16, Q8_0, Q4_0, Q4_K) — on by default with `--gpu`, cuBLAS projections included where cuBLAS is installed. Llama-3.2-1B Q8_0 prompt processing 4.9k → 29k tok/s on an A100, past llama.cpp; Qwen3-0.6B F16 54k tok/s with cuDNN attention. See [Fast prompt processing on CUDA](#fast-prompt-processing-on-cuda).
-- 🍎 **SIMD-group matrix batch prefill on Apple Metal**, on by default for Llama, Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Qwen3.5, Phi-3, Granite and Gemma 4 in F16 and Q8_0 (and Q4_0 for Llama and Qwen3.5) — e.g. Llama-3.2-1B F16 prompt processing 40 → 2372 tok/s, Qwen3-0.6B F16 4171 tok/s on an M4 Pro.
+- 🍎 **SIMD-group matrix batch prefill on Apple Metal**, on by default for Llama, Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Qwen3.5, Phi-3, Granite and Gemma 4 in F16 and Q8_0 (and Q4_0 for Llama and Qwen3.5), and for LFM2 MoE with its experts as grouped GEMMs — e.g. Llama-3.2-1B F16 prompt processing 40 → 2372 tok/s, Qwen3-0.6B F16 4171 tok/s on an M4 Pro.
 - 📈 **llama-bench-style benchmarking** — `jitllm --bench` reports a pp/tg matrix with avg±stddev in md/csv/json/jsonl/sql. See [Running the CLI](#-running-the-cli) for the flag.
 - 🧮 **On-device greedy sampling** — with `-Djitllm.deviceSample=true` and temperature 0, argmax runs on the GPU and keeps logits device-side, cutting device→host traffic by ~500× per token. ([PR #134](https://github.com/beehive-lab/jitllm/pull/134))
 - 📚 **Batched decode** — B independent sequences per step for up to **41× aggregate throughput** (Llama & Qwen3 FP16, CUDA), served through the experimental `jitllm serve --continuous-batching`. See [BATCHED_DECODE.md](BATCHED_DECODE.md). ([PR #129](https://github.com/beehive-lab/jitllm/pull/129))
@@ -304,7 +304,8 @@ single-token path, so their logits differ slightly from single-token prefill; us
 (`--devices`) keeps single-token prefill unless you ask for batches.
 
 Every model family has a batched prefill on CUDA: Llama, Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen,
-Qwen3, Qwen3.5 / 3.6 / 3.8, Phi-3, Granite, Gemma 4, Devstral, Qwen2-MoE and GLM-4.7-Flash.
+Qwen3, Qwen3.5 / 3.6 / 3.8, Phi-3, Granite, Gemma 4, Devstral, Qwen2-MoE, GLM-4.7-Flash and LFM2
+(`lfm2moe`), whose experts run grouped GEMMs on the tensor cores.
 Attention runs as tensor-core GEMMs over the FP16 key/value cache; Q8_0, Q4_0 and Q4_K weights are
 decoded to FP16 for the projection GEMMs (kept decoded when the model's FP16 weights fit in 6 GB
 and, under a configured `--gpu-memory` budget, one copy per session fits beside everything else;

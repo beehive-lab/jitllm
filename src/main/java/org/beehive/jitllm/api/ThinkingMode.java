@@ -19,8 +19,9 @@ public enum ThinkingMode {
     /**
      * Whatever the family does on its own.
      *
-     * <p>Nothing is encoded, so a family with no reasoning phase is unaffected and one that has a
-     * default keeps it. This is the value that changes nothing, and it is the default.
+     * <p>Nothing is encoded beyond what the file's own template writes, so a family with no
+     * reasoning phase is unaffected and one that has a default keeps it. This is the value that
+     * changes nothing, and it is the default.
      */
     DEFAULT,
 

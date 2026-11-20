@@ -11,9 +11,11 @@ import java.util.List;
 import java.util.Map;
 import org.beehive.jitllm.model.format.ChatFormat;
 import org.beehive.jitllm.model.format.GraniteChatFormat;
+import org.beehive.jitllm.model.format.Lfm2ChatFormat;
 import org.beehive.jitllm.model.format.LlamaChatFormat;
 import org.beehive.jitllm.model.format.Qwen3ChatFormat;
 import org.beehive.jitllm.server.Json;
+import org.beehive.jitllm.tokenizer.Lfm2Tokenizer;
 import org.beehive.jitllm.tokenizer.LlamaTokenizer;
 import org.beehive.jitllm.tokenizer.Qwen3Tokenizer;
 import org.beehive.jitllm.tokenizer.TestVocabularies;
@@ -124,6 +126,60 @@ public class ToolTemplateConformanceTest {
     }
 
     /**
+     * LFM2-8B-A1B: the tools between the list markers, each result between the response markers, an
+     * earlier call replayed as content in the model's output syntax.
+     */
+    @Test
+    public void lfm2MatchesItsTemplate() throws IOException {
+        Lfm2Tokenizer tokenizer = TestVocabularies.lfm2(TestVocabularies.LFM2_MARKERS);
+        Lfm2ChatFormat format = new Lfm2ChatFormat(tokenizer, LFM2_CHAT_TOKENS, template("lfm2"));
+        assertEquals(Lfm2ChatFormat.ToolDialect.LFM2, format.toolDialect());
+        assertConforms("lfm2", tokenizer, format, 0);
+    }
+
+    /**
+     * LFM2.5-24B-A2B: the bare tool list, calls rendered from {@code tool_calls} as Python keyword
+     * calls, bare results, and the generation prompt's {@code <think>}.
+     */
+    @Test
+    public void lfm25MatchesItsTemplate() throws IOException {
+        Lfm2Tokenizer tokenizer = TestVocabularies.lfm2(TestVocabularies.LFM2_5_MARKERS);
+        Lfm2ChatFormat format = new Lfm2ChatFormat(tokenizer, LFM2_CHAT_TOKENS, template("lfm2.5"));
+        assertEquals(Lfm2ChatFormat.ToolDialect.LFM2_5, format.toolDialect());
+        assertConforms("lfm2.5", tokenizer, format, 0);
+    }
+
+    /**
+     * The call markers are control tokens in the LFM2 files, and reach the response text all the
+     * same, since the call is read from it; the turn tokens do not.
+     */
+    @Test
+    public void lfm2ShowsItsCallMarkers() {
+        Lfm2Tokenizer tokenizer = TestVocabularies.lfm2(TestVocabularies.LFM2_MARKERS);
+        Map<String, Integer> special = tokenizer.getSpecialTokens();
+        assertTrue(tokenizer.shouldDisplayToken(special.get("<|tool_call_start|>")));
+        assertTrue(tokenizer.shouldDisplayToken(special.get("<|tool_call_end|>")));
+        assertTrue(!tokenizer.shouldDisplayToken(special.get("<|im_end|>")));
+        assertTrue(!tokenizer.shouldDisplayToken(special.get("<|tool_list_start|>")));
+    }
+
+    /** No tool calling without a template that writes tools, or without its markers. */
+    @Test
+    public void lfm2WithoutItsTemplateOrMarkersHasNoTools() throws IOException {
+        Lfm2Tokenizer tokenizer = TestVocabularies.lfm2(TestVocabularies.LFM2_MARKERS);
+        assertTrue(!new Lfm2ChatFormat(tokenizer, LFM2_CHAT_TOKENS, null).supportsToolCalling());
+        Lfm2Tokenizer bare = TestVocabularies.lfm2(List.of());
+        assertTrue(
+                !new Lfm2ChatFormat(bare, LFM2_CHAT_TOKENS, template("lfm2.5"))
+                        .supportsToolCalling());
+        // the 8B template over the 24B's vocabulary, which has no response markers
+        Lfm2Tokenizer noResponse = TestVocabularies.lfm2(TestVocabularies.LFM2_5_MARKERS);
+        assertTrue(
+                !new Lfm2ChatFormat(noResponse, LFM2_CHAT_TOKENS, template("lfm2"))
+                        .supportsToolCalling());
+    }
+
+    /**
      * Llama 3.2 (and 3.1, whose official template has the same custom-tool branch): the environment
      * lines in the system turn, the tools as {@code tojson(indent=4)} in the first user message, a
      * call as {@code {"name", "parameters"}}, a result in the {@code ipython} role through {@code
@@ -194,6 +250,10 @@ public class ToolTemplateConformanceTest {
     }
 
     // ---- harness --------------------------------------------------------------------------------
+
+    /** As {@code Lfm2ModelLoader} builds them. */
+    private static final ChatFormat.ChatTokens LFM2_CHAT_TOKENS =
+            new ChatFormat.ChatTokens("<|im_start|>", "<|im_end|>", "", "<|endoftext|>", "");
 
     private static final ChatFormat.ChatTokens QWEN_CHAT_TOKENS =
             new ChatFormat.ChatTokens("<|im_start|>", "<|im_end|>", "", "<|endoftext|>", "");

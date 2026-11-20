@@ -650,6 +650,66 @@ public final class CpuOperations {
     }
 
     /**
+     * {@code MoeRouter} with sigmoid gating and a selection bias — the DeepSeek-V3 router, which
+     * LFM2's mixture of experts uses.
+     *
+     * <p>Differs from {@link #moeRouter} in three places, each following llama.cpp's {@code
+     * build_moe_ffn} for {@code LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID}:
+     *
+     * <ul>
+     *   <li>each expert's score is the logistic of its logit, independently, not a softmax over all
+     *       of them;
+     *   <li>experts are <b>selected</b> on score plus {@code selectionBias}, but <b>weighted</b> by
+     *       the unbiased score — the bias steers load balancing and never reaches the output;
+     *   <li>the selected weights are renormalized to sum to one, the sum floored at the smallest
+     *       FP16 normal as llama.cpp floors it.
+     * </ul>
+     *
+     * <p>Selection order is the same contract as {@link #moeRouter}'s: an ascending scan with a
+     * strict {@code >}, so a tie selects the lowest index, and results come out in descending order
+     * of biased score.
+     */
+    public static void moeRouterSigmoid(
+            FloatTensor input,
+            FloatTensor routerWeight,
+            FloatTensor selectionBias,
+            FloatTensor scores,
+            int[] selectedIds,
+            float[] selectedWeights,
+            int numberOfExperts,
+            int topK,
+            int dim) {
+        routerWeight.matmul(input, scores, numberOfExperts, dim);
+        for (int e = 0; e < numberOfExperts; e++) {
+            scores.setFloat(e, logistic(scores.getFloat(e)));
+        }
+        boolean[] taken = new boolean[numberOfExperts];
+        float sum = 0f;
+        for (int i = 0; i < topK; i++) {
+            float best = Float.NEGATIVE_INFINITY;
+            int index = -1;
+            for (int e = 0; e < numberOfExperts; e++) {
+                if (taken[e]) {
+                    continue;
+                }
+                float biased = scores.getFloat(e) + selectionBias.getFloat(e);
+                if (biased > best) {
+                    best = biased;
+                    index = e;
+                }
+            }
+            taken[index] = true;
+            selectedIds[i] = index;
+            selectedWeights[i] = scores.getFloat(index);
+            sum += selectedWeights[i];
+        }
+        float norm = Math.max(sum, 6.103515625e-5f);
+        for (int i = 0; i < topK; i++) {
+            selectedWeights[i] /= norm;
+        }
+    }
+
+    /**
      * {@code ExpertFeedForward} — one expert's gated feed-forward, indexed into stacked tensors.
      *
      * <p>The three weight tensors hold every expert; the index arithmetic is here rather than in a

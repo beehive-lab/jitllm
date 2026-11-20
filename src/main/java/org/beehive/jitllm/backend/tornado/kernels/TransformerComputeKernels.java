@@ -428,6 +428,49 @@ public class TransformerComputeKernels {
     }
 
     /**
+     * {@link #reductionOneBlockWithLayer}'s per-workgroup partial sums of squares, plus {@code xb =
+     * weights ⊙ x} without the scale, for a consumer that finalizes the scale itself and multiplies
+     * its result by it. Example: LFM2's attention norm before {@code
+     * TransformerComputeKernelsQ4_K.matrixVectorQ4_KSimdgroupRmsScale}, 8 workgroups of 256 over
+     * 2048.
+     */
+    public static void reductionOneBlockWithLayerWeighted(
+            KernelContext context,
+            FloatArray output,
+            FloatArray x,
+            FloatArray weights,
+            FloatArray xb,
+            int size,
+            int localMemSize) {
+        int gid = context.globalIdx;
+        int lid = context.localIdx;
+        int groupId = context.groupIdx;
+        int groupSize = context.localGroupSizeX;
+
+        float[] localX = context.allocateFloatLocalArray(localMemSize);
+
+        if (gid < size) {
+            float v = x.get(gid);
+            xb.set(gid, weights.get(gid) * v);
+            localX[lid] = v;
+            localX[lid] = localX[lid] * localX[lid];
+        } else {
+            localX[lid] = 0.0f;
+        }
+
+        for (int stride = (groupSize / 2); stride > 0; stride /= 2) {
+            context.localBarrier();
+            if (lid < stride) {
+                localX[lid] += localX[lid + stride];
+            }
+        }
+
+        if (lid == 0) {
+            output.set(groupId + 1, localX[0]);
+        }
+    }
+
+    /**
      * Applies the computed normalization factor to scale weights. This is the second phase of RMS
      * normalization.
      *
