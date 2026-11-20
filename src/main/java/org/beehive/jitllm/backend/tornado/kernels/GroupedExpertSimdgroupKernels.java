@@ -1451,22 +1451,24 @@ public final class GroupedExpertSimdgroupKernels {
             float mn = w.getHalfFloat(qb + 2).getFloat32() * (sm & 0xFF);
             int qn = qb + 16 + (sub >> 1) * 32 + kh;
             int sh = (sub & 1) << 2;
-            a0 = (float) (((w.get(qn + 0) & 0xFF) >> sh) & 15) * sc - mn;
-            a1 = (float) (((w.get(qn + 1) & 0xFF) >> sh) & 15) * sc - mn;
-            a2 = (float) (((w.get(qn + 2) & 0xFF) >> sh) & 15) * sc - mn;
-            a3 = (float) (((w.get(qn + 3) & 0xFF) >> sh) & 15) * sc - mn;
-            a4 = (float) (((w.get(qn + 4) & 0xFF) >> sh) & 15) * sc - mn;
-            a5 = (float) (((w.get(qn + 5) & 0xFF) >> sh) & 15) * sc - mn;
-            a6 = (float) (((w.get(qn + 6) & 0xFF) >> sh) & 15) * sc - mn;
-            a7 = (float) (((w.get(qn + 7) & 0xFF) >> sh) & 15) * sc - mn;
-            a8 = (float) (((w.get(qn + 8) & 0xFF) >> sh) & 15) * sc - mn;
-            a9 = (float) (((w.get(qn + 9) & 0xFF) >> sh) & 15) * sc - mn;
-            a10 = (float) (((w.get(qn + 10) & 0xFF) >> sh) & 15) * sc - mn;
-            a11 = (float) (((w.get(qn + 11) & 0xFF) >> sh) & 15) * sc - mn;
-            a12 = (float) (((w.get(qn + 12) & 0xFF) >> sh) & 15) * sc - mn;
-            a13 = (float) (((w.get(qn + 13) & 0xFF) >> sh) & 15) * sc - mn;
-            a14 = (float) (((w.get(qn + 14) & 0xFF) >> sh) & 15) * sc - mn;
-            a15 = (float) (((w.get(qn + 15) & 0xFF) >> sh) & 15) * sc - mn;
+            long wl = w.getLong(qn) >>> sh;
+            long wh = w.getLong(qn + 8) >>> sh;
+            a0 = (float) ((int) wl & 15) * sc - mn;
+            a1 = (float) ((int) (wl >>> 8) & 15) * sc - mn;
+            a2 = (float) ((int) (wl >>> 16) & 15) * sc - mn;
+            a3 = (float) ((int) (wl >>> 24) & 15) * sc - mn;
+            a4 = (float) ((int) (wl >>> 32) & 15) * sc - mn;
+            a5 = (float) ((int) (wl >>> 40) & 15) * sc - mn;
+            a6 = (float) ((int) (wl >>> 48) & 15) * sc - mn;
+            a7 = (float) ((int) (wl >>> 56) & 15) * sc - mn;
+            a8 = (float) ((int) wh & 15) * sc - mn;
+            a9 = (float) ((int) (wh >>> 8) & 15) * sc - mn;
+            a10 = (float) ((int) (wh >>> 16) & 15) * sc - mn;
+            a11 = (float) ((int) (wh >>> 24) & 15) * sc - mn;
+            a12 = (float) ((int) (wh >>> 32) & 15) * sc - mn;
+            a13 = (float) ((int) (wh >>> 40) & 15) * sc - mn;
+            a14 = (float) ((int) (wh >>> 48) & 15) * sc - mn;
+            a15 = (float) ((int) (wh >>> 56) & 15) * sc - mn;
             float y0 = inputBatch.get(xi + 0);
             float y1 = inputBatch.get(xi + 1);
             float y2 = inputBatch.get(xi + 2);
@@ -1858,102 +1860,26 @@ public final class GroupedExpertSimdgroupKernels {
             int qn = qb + 48 + (sub >> 1) * 32 + kh;
             int qh = qb + 16 + kh;
             int sh = (sub & 1) << 2;
-            a0 =
-                    (float)
-                                            ((((w.get(qn + 0) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 0) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a1 =
-                    (float)
-                                            ((((w.get(qn + 1) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 1) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a2 =
-                    (float)
-                                            ((((w.get(qn + 2) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 2) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a3 =
-                    (float)
-                                            ((((w.get(qn + 3) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 3) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a4 =
-                    (float)
-                                            ((((w.get(qn + 4) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 4) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a5 =
-                    (float)
-                                            ((((w.get(qn + 5) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 5) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a6 =
-                    (float)
-                                            ((((w.get(qn + 6) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 6) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a7 =
-                    (float)
-                                            ((((w.get(qn + 7) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 7) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a8 =
-                    (float)
-                                            ((((w.get(qn + 8) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 8) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a9 =
-                    (float)
-                                            ((((w.get(qn + 9) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 9) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a10 =
-                    (float)
-                                            ((((w.get(qn + 10) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 10) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a11 =
-                    (float)
-                                            ((((w.get(qn + 11) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 11) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a12 =
-                    (float)
-                                            ((((w.get(qn + 12) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 12) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a13 =
-                    (float)
-                                            ((((w.get(qn + 13) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 13) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a14 =
-                    (float)
-                                            ((((w.get(qn + 14) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 14) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
-            a15 =
-                    (float)
-                                            ((((w.get(qn + 15) & 0xFF) >> sh) & 15)
-                                                    | ((((w.get(qh + 15) & 0xFF) >> sub) & 1) << 4))
-                                    * sc
-                            - mn;
+            long wl = w.getLong(qn) >>> sh;
+            long wh = w.getLong(qn + 8) >>> sh;
+            long hl = w.getLong(qh) >>> sub;
+            long hh = w.getLong(qh + 8) >>> sub;
+            a0 = (float) (((int) wl & 15) | (((int) hl & 1) << 4)) * sc - mn;
+            a1 = (float) (((int) (wl >>> 8) & 15) | (((int) (hl >>> 8) & 1) << 4)) * sc - mn;
+            a2 = (float) (((int) (wl >>> 16) & 15) | (((int) (hl >>> 16) & 1) << 4)) * sc - mn;
+            a3 = (float) (((int) (wl >>> 24) & 15) | (((int) (hl >>> 24) & 1) << 4)) * sc - mn;
+            a4 = (float) (((int) (wl >>> 32) & 15) | (((int) (hl >>> 32) & 1) << 4)) * sc - mn;
+            a5 = (float) (((int) (wl >>> 40) & 15) | (((int) (hl >>> 40) & 1) << 4)) * sc - mn;
+            a6 = (float) (((int) (wl >>> 48) & 15) | (((int) (hl >>> 48) & 1) << 4)) * sc - mn;
+            a7 = (float) (((int) (wl >>> 56) & 15) | (((int) (hl >>> 56) & 1) << 4)) * sc - mn;
+            a8 = (float) (((int) wh & 15) | (((int) hh & 1) << 4)) * sc - mn;
+            a9 = (float) (((int) (wh >>> 8) & 15) | (((int) (hh >>> 8) & 1) << 4)) * sc - mn;
+            a10 = (float) (((int) (wh >>> 16) & 15) | (((int) (hh >>> 16) & 1) << 4)) * sc - mn;
+            a11 = (float) (((int) (wh >>> 24) & 15) | (((int) (hh >>> 24) & 1) << 4)) * sc - mn;
+            a12 = (float) (((int) (wh >>> 32) & 15) | (((int) (hh >>> 32) & 1) << 4)) * sc - mn;
+            a13 = (float) (((int) (wh >>> 40) & 15) | (((int) (hh >>> 40) & 1) << 4)) * sc - mn;
+            a14 = (float) (((int) (wh >>> 48) & 15) | (((int) (hh >>> 48) & 1) << 4)) * sc - mn;
+            a15 = (float) (((int) (wh >>> 56) & 15) | (((int) (hh >>> 56) & 1) << 4)) * sc - mn;
             float y0 = inputBatch.get(xi + 0);
             float y1 = inputBatch.get(xi + 1);
             float y2 = inputBatch.get(xi + 2);
