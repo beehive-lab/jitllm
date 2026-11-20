@@ -92,7 +92,9 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
      */
     private final boolean mmaExperts;
 
-    /** Whether the router runs in tiles on CUDA ({@link Lfm2BatchKernels#routerBatchTiled}). */
+    /**
+     * Whether the router runs in tiles ({@link Lfm2BatchKernels#routerBatchTiled}): CUDA and Metal.
+     */
     private final boolean tiledRouter;
 
     /** Whether the dense projections run on cuBLAS ({@link Target#cublas}). */
@@ -146,8 +148,7 @@ public class Lfm2BatchPrefillLayers implements BatchPrefillTransformerLayerTaskG
                         && config.expertHiddenDim() % 256 == 0
                         && config.dim() % 256 == 0;
         this.tiledRouter =
-                !simdgroup
-                        && TensorCoreSupport.isTensorCoreCapableBackend()
+                Lfm2Layers.shuffle32()
                         && batchSize % Lfm2BatchKernels.ROUTER_TILE_ROWS == 0
                         && config.expertCount() % Lfm2BatchKernels.ROUTER_TILE_EXPERTS == 0
                         && config.dim() % (32 * Lfm2BatchKernels.ROUTER_TILE_STEPS) == 0;
