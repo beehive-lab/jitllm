@@ -228,6 +228,93 @@ public final class Lfm2Kernels {
         }
     }
 
+    /** Experts {@link #selectExpertSimdgroup} holds in registers, two per lane. */
+    public static final int REGISTER_EXPERTS = 64;
+
+    /**
+     * {@link #selectExpertsSigmoidSimdgroup} with the scores in registers, for a consumer's SIMD
+     * group: runs the rounds up to {@code slot} and returns its expert; with {@code write} it runs
+     * all {@code used} rounds and stores {@code selected} and the renormalized {@code weights}.
+     * Example: LFM2.5-24B-A2B, 64 experts, lane {@code k} holds experts {@code k} and {@code k+32}.
+     */
+    public static int selectExpertSimdgroup(
+            KernelContext context,
+            FloatArray logits,
+            FloatArray bias,
+            IntArray selected,
+            FloatArray weights,
+            int experts,
+            int used,
+            int slot,
+            boolean write) {
+        int lane = context.localIdx & 31;
+        float p0 = 0.0f;
+        float p1 = 0.0f;
+        float s0 = Float.NEGATIVE_INFINITY;
+        float s1 = Float.NEGATIVE_INFINITY;
+        if (lane < experts) {
+            p0 = 1.0f / (1.0f + TornadoMath.exp(-logits.get(lane)));
+            s0 = p0 + bias.get(lane);
+        }
+        if (lane + 32 < experts) {
+            p1 = 1.0f / (1.0f + TornadoMath.exp(-logits.get(lane + 32)));
+            s1 = p1 + bias.get(lane + 32);
+        }
+        int rounds = write ? used : slot + 1;
+        int mine = 0;
+        float total = 0.0f;
+        for (int k = 0; k < rounds; k++) {
+            float best = Float.NEGATIVE_INFINITY;
+            float bestIndex = 1.0e9f;
+            if (lane < experts && s0 > best) {
+                best = s0;
+                bestIndex = lane;
+            }
+            if (lane + 32 < experts && s1 > best) {
+                best = s1;
+                bestIndex = lane + 32;
+            }
+            float max = best;
+            max = TornadoMath.max(max, context.simdShuffleDown(max, 16));
+            max = TornadoMath.max(max, context.simdShuffleDown(max, 8));
+            max = TornadoMath.max(max, context.simdShuffleDown(max, 4));
+            max = TornadoMath.max(max, context.simdShuffleDown(max, 2));
+            max = TornadoMath.max(max, context.simdShuffleDown(max, 1));
+            max = context.simdBroadcastFirst(max);
+            float index = best == max ? bestIndex : 1.0e9f;
+            index = TornadoMath.min(index, context.simdShuffleDown(index, 16));
+            index = TornadoMath.min(index, context.simdShuffleDown(index, 8));
+            index = TornadoMath.min(index, context.simdShuffleDown(index, 4));
+            index = TornadoMath.min(index, context.simdShuffleDown(index, 2));
+            index = TornadoMath.min(index, context.simdShuffleDown(index, 1));
+            int chosen = (int) context.simdBroadcastFirst(index);
+            float w = context.simdShuffle(chosen < 32 ? p0 : p1, chosen & 31);
+            total += w;
+            if (k == slot) {
+                mine = chosen;
+            }
+            if (write && lane == 0) {
+                selected.set(k, chosen);
+                weights.set(k, w);
+            }
+            if (lane == chosen) {
+                s0 = Float.NEGATIVE_INFINITY;
+            }
+            if (lane + 32 == chosen) {
+                s1 = Float.NEGATIVE_INFINITY;
+            }
+        }
+        if (write && lane == 0) {
+            if (total < 6.103515625e-5f) {
+                total = 6.103515625e-5f;
+            }
+            for (int j = 0; j < used; j++) {
+                weights.set(j, weights.get(j) / total);
+            }
+        }
+        return mine;
+    }
+
     /**
      * {@link #selectExpertsSigmoid} on one SIMD group: each round takes the largest score across
      * the lanes, then the lowest index among the lanes that hold it, so the same tie rule. Example:

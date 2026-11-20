@@ -732,18 +732,20 @@ public class Lfm2Layers
                     config.expertCount(),
                     false);
         }
-        layer.task(
-                tp + "moe_select",
-                simdgroupSelect()
-                        ? Lfm2Kernels::selectExpertsSigmoidSimdgroup
-                        : Lfm2Kernels::selectExpertsSigmoid,
-                context,
-                ws.wrapRouterLogits,
-                require(weights.expProbsBias, layerIndex, "exp_probs_b").asFloatArray(),
-                ws.wrapSelectedExperts,
-                ws.wrapSelectedExpertWeights,
-                config.expertCount(),
-                used);
+        if (!selectGateUp(layerIndex)) {
+            layer.task(
+                    tp + "moe_select",
+                    simdgroupSelect()
+                            ? Lfm2Kernels::selectExpertsSigmoidSimdgroup
+                            : Lfm2Kernels::selectExpertsSigmoid,
+                    context,
+                    ws.wrapRouterLogits,
+                    require(weights.expProbsBias, layerIndex, "exp_probs_b").asFloatArray(),
+                    ws.wrapSelectedExperts,
+                    ws.wrapSelectedExpertWeights,
+                    config.expertCount(),
+                    used);
+        }
 
         TornadoTensor gate = require(weights.ffnGateExps, layerIndex, "ffn_gate_exps");
         TornadoTensor up = require(weights.ffnUpExps, layerIndex, "ffn_up_exps");
@@ -756,7 +758,26 @@ public class Lfm2Layers
         requireWholeBlocks(layerIndex, "ffn_gate_exps", gate.dataType(), dim);
         requireWholeBlocks(layerIndex, "ffn_down_exps", down.dataType(), expertHidden);
 
-        if (simdgroupExperts(gate.dataType(), true)) {
+        if (selectGateUp(layerIndex)) {
+            layer.task(
+                    tp + "moe_gate_up",
+                    gate.dataType() == DataType.Q4_K
+                            ? TransformerComputeKernelsQ4_K::expertGateUpSiLUQ4_KSimdgroupSelect
+                            : TransformerComputeKernelsQ5_K::expertGateUpSiLUQ5_KSimdgroupSelect,
+                    context,
+                    ws.wrapXb,
+                    ws.wrapHb,
+                    gate.asByteArray(),
+                    up.asByteArray(),
+                    ws.wrapRouterLogits,
+                    require(weights.expProbsBias, layerIndex, "exp_probs_b").asFloatArray(),
+                    ws.wrapSelectedExperts,
+                    ws.wrapSelectedExpertWeights,
+                    config.expertCount(),
+                    dim,
+                    expertHidden,
+                    used);
+        } else if (simdgroupExperts(gate.dataType(), true)) {
             layer.task(
                     tp + "moe_gate_up",
                     gate.dataType() == DataType.Q4_K
@@ -851,6 +872,23 @@ public class Lfm2Layers
      */
     public static boolean warpExperts() {
         return TornadoDevices.current().backend().equals(BackendId.CUDA);
+    }
+
+    /**
+     * Whether layer {@code layerIndex}'s expert gate/up also selects the experts ({@code
+     * expertGateUpSiLUQ4_KSimdgroupSelect}, {@code expertGateUpSiLUQ5_KSimdgroupSelect}), one
+     * dispatch fewer: on CUDA, for warp Q4_K and Q5_K gate/up and at most {@code
+     * Lfm2Kernels.REGISTER_EXPERTS} experts.
+     */
+    private boolean selectGateUp(int layerIndex) {
+        if (!warpExperts()
+                || !config.isMoeLayer(layerIndex)
+                || weights.ffnGateExps[layerIndex] == null
+                || config.expertCount() > Lfm2Kernels.REGISTER_EXPERTS) {
+            return false;
+        }
+        DataType type = weights.ffnGateExps[layerIndex].dataType();
+        return (type == DataType.Q4_K || type == DataType.Q5_K) && simdgroupExperts(type, true);
     }
 
     public static boolean shuffle32() {
@@ -1237,7 +1275,9 @@ public class Lfm2Layers
                                                 * 256,
                                         256)
                                 : matVecWorker(config.expertCount()));
-                scheduler.addWorkerGrid(prefix + "moe_select", single);
+                if (!selectGateUp(layer)) {
+                    scheduler.addWorkerGrid(prefix + "moe_select", single);
+                }
                 int expertRows = config.expertUsedCount() * config.expertHiddenDim();
                 scheduler.addWorkerGrid(
                         prefix + "moe_gate_up",
