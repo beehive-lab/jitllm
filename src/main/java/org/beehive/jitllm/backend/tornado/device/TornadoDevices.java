@@ -272,6 +272,45 @@ public final class TornadoDevices {
     }
 
     /**
+     * The target device's Apple silicon generation (1 for M1, 4 for M4, ...), or -1 when the target
+     * is not a Metal device or its name does not say.
+     */
+    public static int targetAppleSiliconGeneration() {
+        return AppleSiliconGeneration.VALUE;
+    }
+
+    private static final class AppleSiliconGeneration {
+        private static final int VALUE = read();
+
+        private static int read() {
+            try {
+                var backend = TornadoRuntimeProvider.getTornadoRuntime().getBackend(0);
+                if (backend.getBackendType() != TornadoVMBackendType.METAL) {
+                    return -1;
+                }
+                return appleSiliconGeneration(
+                        backend.getDefaultDevice().getPhysicalDevice().getDeviceName());
+            } catch (RuntimeException | LinkageError e) {
+                return -1;
+            }
+        }
+    }
+
+    /**
+     * The Apple silicon generation read from the device's name — TornadoVM's Metal device reports
+     * the chip, for example "Apple M3 Pro" — or -1 when the name names no M-series chip.
+     * Package-private for the unit test.
+     */
+    static int appleSiliconGeneration(String deviceName) {
+        if (deviceName == null) {
+            return -1;
+        }
+        java.util.regex.Matcher m =
+                java.util.regex.Pattern.compile("\\bApple M(\\d+)\\b").matcher(deviceName);
+        return m.find() ? Integer.parseInt(m.group(1)) : -1;
+    }
+
+    /**
      * The device's threads-per-block limit: the smallest of what it reports as its maximum
      * workgroup size (one dimension) and its maximum threads per block, or 0 when it reports
      * neither.

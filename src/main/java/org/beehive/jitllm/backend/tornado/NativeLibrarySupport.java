@@ -56,6 +56,13 @@ public final class NativeLibrarySupport {
             return policy;
         }
         boolean metal = BackendId.METAL.equals(combination.backend());
+        if (metal) {
+            Optional<String> tooOld = MlxPrefill.deviceTooOld();
+            if (tooOld.isPresent()) {
+                notice(tooOld.get() + "; falling back to the JIT kernels");
+                return policy;
+            }
+        }
         boolean available =
                 metal
                         ? LibraryProbe.loads(MlxPrefill::available)
@@ -167,6 +174,8 @@ public final class NativeLibrarySupport {
             if (BackendId.METAL.equals(combination.backend())) {
                 if (!MlxPrefill.available()) {
                     reason = Optional.of("MLX's mlx.metallib could not be loaded in this process");
+                } else {
+                    reason = MlxPrefill.deviceTooOld();
                 }
             } else if (!NativePrefillSupport.cublasLtResolvable()) {
                 reason =

@@ -70,6 +70,19 @@ public class TornadoDevicesTest {
         assertEquals(-1, TornadoDevices.cudaComputeCapability(null));
     }
 
+    /** The Apple silicon generation comes from the Metal device's name; anything else reads -1. */
+    @Test
+    public void theAppleSiliconGenerationComesFromTheDeviceName() {
+        assertEquals(3, TornadoDevices.appleSiliconGeneration("Apple M3 Pro"));
+        assertEquals(4, TornadoDevices.appleSiliconGeneration("Apple M4 Max"));
+        assertEquals(1, TornadoDevices.appleSiliconGeneration("Apple M1"));
+        assertEquals(12, TornadoDevices.appleSiliconGeneration("Apple M12 Ultra"));
+        assertEquals(-1, TornadoDevices.appleSiliconGeneration("NVIDIA GeForce RTX 5090"));
+        assertEquals(-1, TornadoDevices.appleSiliconGeneration("Apple A17 Pro"));
+        assertEquals(-1, TornadoDevices.appleSiliconGeneration(""));
+        assertEquals(-1, TornadoDevices.appleSiliconGeneration(null));
+    }
+
     /**
      * Each kernel family is granted by what the device executes, not by the backend's name: the
      * tensor-core families (FP16 and int8) need compute capability 8.0, the packed-integer path

@@ -97,7 +97,8 @@ public record MlxPrefill(DataType weights, Projections projections) {
                 || ExecutionMode.of(policy) != ExecutionMode.BATCH_PREFILL_DECODE
                 || !BackendId.METAL.equals(TornadoDevices.target().backend())
                 || (weights != DataType.F16 && weights != DataType.Q8_0 && weights != DataType.Q4_0)
-                || !available()) {
+                || !available()
+                || deviceTooOld().isPresent()) {
             return Optional.empty();
         }
         Projections projections;
@@ -136,6 +137,33 @@ public record MlxPrefill(DataType weights, Projections projections) {
     /** Whether MLX's kernel library can be reached from this process at all. */
     public static boolean available() {
         return Probe.MLX;
+    }
+
+    /**
+     * The oldest Apple silicon generation whose GPU runs TornadoVM's MLX library tasks: older GPUs
+     * load the library but are refused at the first dispatch ({@code
+     * TornadoLibraryTaskNotSupported}).
+     */
+    public static final int MIN_APPLE_SILICON_GENERATION = 4;
+
+    /**
+     * Why the target device's GPU cannot run MLX's library tasks, or empty when it can or when its
+     * generation cannot be read (then the dispatch decides, as before).
+     */
+    public static Optional<String> deviceTooOld() {
+        return deviceTooOld(TornadoDevices.targetAppleSiliconGeneration());
+    }
+
+    /** {@link #deviceTooOld()} for a given generation. Package-private for the unit test. */
+    static Optional<String> deviceTooOld(int appleSiliconGeneration) {
+        if (appleSiliconGeneration < 0 || appleSiliconGeneration >= MIN_APPLE_SILICON_GENERATION) {
+            return Optional.empty();
+        }
+        return Optional.of(
+                "MLX needs an M"
+                        + MIN_APPLE_SILICON_GENERATION
+                        + " or newer GPU and this device is an M"
+                        + appleSiliconGeneration);
     }
 
     // @formatter:off
