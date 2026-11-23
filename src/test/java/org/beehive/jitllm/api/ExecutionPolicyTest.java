@@ -193,4 +193,36 @@ public class ExecutionPolicyTest {
                 SessionOptions.builder().executionPolicy(overrides).build().executionPolicy());
         assertTrue(SessionOptions.defaults().executionPolicy().isEmpty());
     }
+
+    /**
+     * The hidden-state copy is part of a policy's identity, and adding it keeps every other
+     * override.
+     */
+    @Test
+    public void hiddenStateToHostIsAFieldAndWithKeepsTheRest() {
+        ExecutionPolicy base = ExecutionPolicy.builder().build();
+        assertNotEquals(
+                "hidden state to host",
+                base,
+                ExecutionPolicy.builder().hiddenStateToHost(true).build());
+        assertTrue(
+                ExecutionPolicy.from(ExecutionPolicy.builder().hiddenStateToHost(true).build())
+                        .build()
+                        .hiddenStateToHost());
+
+        Overrides overrides =
+                Overrides.builder()
+                        .phaseStrategy(PhaseStrategy.PREFILL_DECODE)
+                        .prefillBatchSize(4)
+                        .splitKvPartitions(2)
+                        .build();
+        ExecutionPolicy applied = overrides.withHiddenStateToHost(true).applyTo(base);
+        assertTrue(applied.hiddenStateToHost());
+        assertEquals(
+                "every other field as the original override sets it",
+                ExecutionPolicy.from(overrides.applyTo(base)).hiddenStateToHost(true).build(),
+                applied);
+        assertTrue(!Overrides.none().withHiddenStateToHost(true).isEmpty());
+        assertTrue(!Overrides.none().applyTo(base).hiddenStateToHost());
+    }
 }

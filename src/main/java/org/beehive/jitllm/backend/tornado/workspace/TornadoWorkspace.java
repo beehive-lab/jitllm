@@ -412,4 +412,15 @@ public final class TornadoWorkspace {
         }
         return logitsView;
     }
+
+    /**
+     * Copies the hidden state into {@code out} ({@code dim} floats). After the logits graph ran
+     * with {@code ExecutionPolicy.hiddenStateToHost()}, this is the final-normalised state of the
+     * last token, which is what an embedding model's vector is read from.
+     */
+    public void copyHiddenState(float[] out) {
+        for (int i = 0; i < out.length; i++) {
+            out[i] = wrapX.get(i);
+        }
+    }
 }
