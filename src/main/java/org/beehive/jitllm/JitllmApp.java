@@ -168,8 +168,51 @@ public class JitllmApp {
      * @param args command-line arguments used to configure model path, temperature, seed, etc.
      * @throws IOException if model loading or file operations fail.
      */
-    static void main(String[] args) throws IOException {
-        org.beehive.jitllm.integration.cli.CliErrors.reportDiagnostics(() -> run(args));
+    static void main(String[] args) throws Exception {
+        switch (entryPoint(args)) {
+            case SERVE -> {
+                // the server skips a leading "serve" only: spell the legacy flags that way
+                String[] serve = args.clone();
+                serve[0] = "serve";
+                org.beehive.jitllm.server.OpenAIServer.main(serve);
+            }
+            case BENCH ->
+                    org.beehive.jitllm.bench.JitllmBench.main(
+                            java.util.Arrays.copyOfRange(args, 1, args.length));
+            case RUN ->
+                    org.beehive.jitllm.integration.cli.CliErrors.reportDiagnostics(() -> run(args));
+        }
+    }
+
+    /** Which program a command line starts. */
+    enum EntryPoint {
+        RUN,
+        SERVE,
+        BENCH
+    }
+
+    // @formatter:off
+    /**
+     * The program a command line names with its first argument: {@code serve} (or the legacy {@code
+     * --server}/{@code --serve}) is the OpenAI-compatible server, {@code bench} the benchmark,
+     * anything else this application.
+     *
+     * <p>The {@code jitllm} launcher picks the main class itself, so on the JVM this only matters
+     * when the class is started directly. A native image has one entry point, this one, and without
+     * the dispatch {@code ./target/jitllm serve ...} failed with "Invalid option serve". {@code
+     * OpenAIServer} skips a leading {@code serve}, so the server gets the arguments with the legacy
+     * flags spelled that way.
+     */
+    // @formatter:on
+    static EntryPoint entryPoint(String[] args) {
+        if (args.length == 0) {
+            return EntryPoint.RUN;
+        }
+        return switch (args[0]) {
+            case "serve", "--server", "--serve" -> EntryPoint.SERVE;
+            case "bench" -> EntryPoint.BENCH;
+            default -> EntryPoint.RUN;
+        };
     }
 
     private static void run(String[] args) throws IOException {
