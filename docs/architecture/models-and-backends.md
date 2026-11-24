@@ -27,7 +27,8 @@ mapped to the nearest family.
 
 Registered architectures today: Llama, Mistral, Qwen2, Qwen2-MoE, Qwen3, DeepSeek-R1-Distill-Qwen,
 Granite, Phi-3, Gemma-4, Devstral, Qwen3.5 / 3.6 / 3.8 (`qwen35`), Qwen3.6 MoE (`qwen35moe`),
-GLM-4.7-Flash (`deepseek2`) and LFM2-8B-A1B / LFM2.5-24B-A2B (`lfm2moe`).
+GLM-4.7-Flash (`deepseek2`), LFM2-8B-A1B / LFM2.5-24B-A2B (`lfm2moe`) and gpt-oss-20b /
+gpt-oss-120b (`gpt-oss`).
 
 `qwen35` needed no recognition case at all — the file declares that architecture, nothing
 else claims the name, and the pass-through branch resolved it. A provider class and one
@@ -47,6 +48,20 @@ calls and results are written in a bare-key dictionary syntax whose strings are 
 is a single token. The results go inside the assistant turn that made the calls, which stays open
 for the answer, so the conversation encoder does not add a new assistant header after them. The
 model ends a call with `<|tool_response>` or `<eos>`, both tool-aware stop tokens.
+
+gpt-oss (`gpt-oss`, llama.cpp's `ggml-org/gpt-oss-*-GGUF` files) is a mixture of experts in
+every layer: 32 or 128 experts, the top 4 chosen per token, with the softmax taken over the four
+chosen router logits and a bias on the router and on every expert projection. Its SwiGLU clamps:
+the gate is capped at 7, the linear part is clamped to [-7, 7] and offset by 1, and the sigmoid's
+slope is 1.702. Attention has 64 query heads of 64 over 8 key/value heads (so the query is wider
+than the 2880-wide residual stream), biases on Q, K, V and the output, and a learned sink per
+head that joins the softmax denominator. Even layers attend over the last 128 positions, odd
+layers over the whole context. RoPE is NeoX-style with YaRN (factor 32 over 4096 positions),
+precomputed into the frequency tables with its magnitude scaling. The experts are MXFP4 (32
+E2M1 values sharing an E8M0 exponent), the attention and vocabulary Q8_0. The tokenizer is
+`o200k_harmony` (byte-level BPE under the GPT-4o split), and the chat format is Harmony: a system
+message the template always writes, the caller's system prompt as the developer message, and
+answers the model writes in an `analysis` channel and then a `final` one, ended by `<|return|>`.
 
 ### Tool calling per family
 
@@ -68,6 +83,7 @@ compare the encoder's output with that template rendered by Jinja2
 | Phi-3 mini | no | no tools in the template (GGUF or upstream) |
 | GLM-4.7-Flash (`deepseek2`) | no | `Glm4ChatFormat` implements no tool format |
 | LFM2 / LFM2.5 MoE (`lfm2moe`) | yes | `List of tools: [...]` in the system turn; calls as a Python-style list of keyword calls between `<\|tool_call_start\|>` and `<\|tool_call_end\|>`; `tool` turns. LFM2-8B-A1B wraps the list in `<\|tool_list_start\|>…<\|tool_list_end\|>` and each result in `<\|tool_response_start\|>…<\|tool_response_end\|>` |
+| gpt-oss | no, for now | Harmony declares tools as a TypeScript-like namespace in the developer message and calls them in the `commentary` channel; `HarmonyChatFormat` does not render that yet |
 | Mistral v0.3, Devstral | no, for now | the Mistral v0.3 GGUF template has no tools; the upstream one does (`[AVAILABLE_TOOLS]`), but it needs this format's non-tool turns reworked first |
 
 Granite's two dialects are told apart by the file's own template. A Granite file whose template
@@ -194,11 +210,11 @@ batched; greedy text is identical in every row:
 | Qwen3.5-0.8B Q4_0 | 60 | 2057 |
 | Gemma-4-E2B Q8_0 | 69 | 1067 |
 
-On CUDA every family has a batched prefill on the tensor cores: Llama (F16, Q8_0, Q4_0), Mistral,
-Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Phi-3, Granite, Devstral (F16, Q8_0, Q4_K), Qwen2-MoE,
-Gemma 4, Qwen3.5 / 3.6 / 3.8, deepseek2 and `lfm2moe`, whose experts are grouped by expert and run
-`GroupedExpertMmaKernels` over the weights' integer codes, each group's scale applied in FP32. It
-is the default,
+On CUDA every family has a batched prefill on the tensor cores: Llama (F16, Q8_0, Q4_0),
+Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Phi-3, Granite, Devstral (F16, Q8_0, Q4_K),
+Qwen2-MoE, Gemma 4, Qwen3.5 / 3.6 / 3.8, deepseek2, gpt-oss (in chunks that are a multiple of
+128) and `lfm2moe`, whose experts are grouped by expert and run `GroupedExpertMmaKernels` over
+the weights' integer codes, each group's scale applied in FP32. It is the default,
 in chunks of 512, wherever the family's batched prefill builds on the device; elsewhere the
 single-token plan runs. `--with-prefill-decode --batch-prefill-size N` chooses the chunk, and an
 explicit request the device cannot build is refused with `GPUL-CFG-002`, naming the flag to drop. The Llama-shaped families share

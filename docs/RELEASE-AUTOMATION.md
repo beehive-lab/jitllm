@@ -11,7 +11,7 @@ Available in `.github/workflows/`:
 | File | Name in Actions | Trigger | Purpose |
 |------|-----------------|---------|---------|
 | `release.yml` | **Release jitllm** | manual | One click: prepare → merge the release PR → finalize → deploy |
-| `prepare-release.yml` | **Prepare jitllm Release** | manual, or called by `release.yml` | Creates `release/X.Y.Z`, sets the version and the TornadoVM release, regenerates the README dependency snippets, `CITATION.cff` and the changelog entry, opens the release PR |
+| `prepare-release.yml` | **Prepare jitllm Release** | manual, or called by `release.yml` | Creates `release/X.Y.Z`, sets the version and the TornadoVM release, regenerates the README dependency snippets and Quickstart versions, pins the JBang script (`JitllmCli.java`) to the release and its TornadoVM release, updates `CITATION.cff` and the changelog entry, opens the release PR |
 | `finalize-release.yml` | **Finalize jitllm Release** | a merged PR from a `release/*` branch, manual, or called by `release.yml` | Creates tag `jitllm-vX.Y.Z` and the GitHub Release (notes from `CHANGELOG.md`), deletes the release branch |
 | `deploy-maven-central.yml` | **Deploy to Maven Central** | after a successful **Finalize jitllm Release** run, manual, or called by `release.yml` | Builds both JDK lines with `-P release` and deploys them |
 | `bump-tornadovm-version.yml` | **Bump TornadoVM version** | `repository_dispatch` (`tornadovm-release`) from TornadoVM's release pipeline, or manual | Sets `tornadovm.release.version`, checks the build against the published TornadoVM release on JDK 21 and 25, opens a PR |

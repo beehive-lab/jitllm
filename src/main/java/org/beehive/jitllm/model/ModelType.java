@@ -35,6 +35,7 @@ public enum ModelType {
     GEMMA_4,
     DEEPSEEK_2,
     LFM2_MOE,
+    GPT_OSS,
     UNKNOWN;
 
     public boolean isDeepSeekR1() {

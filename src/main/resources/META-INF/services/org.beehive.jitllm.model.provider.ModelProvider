@@ -12,3 +12,4 @@ org.beehive.jitllm.model.provider.Qwen35Provider
 org.beehive.jitllm.model.provider.Qwen35MoeProvider
 org.beehive.jitllm.model.provider.DeepSeek2Provider
 org.beehive.jitllm.model.provider.Lfm2Provider
+org.beehive.jitllm.model.provider.GptOssProvider

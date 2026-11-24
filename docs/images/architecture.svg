@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 900" width="1000" height="900" role="img" aria-labelledby="t d">
+<title id="t">jitllm architecture</title>
+<desc id="d">Integrations (CLI, OpenAI-compatible server, LangChain4j and Quarkus, Java applications) on top of the public API and the serving engine; GGUF loading into model families registered as providers; the backend-neutral inference program; the TornadoVM backend that lowers each program once into task graphs, compiles them and replays them per token, with its kernels, native libraries and multi-GPU pipeline; TornadoVM compiling to CUDA, OpenCL and Metal; and the hardware. A CPU backend runs the same programs in plain Java.</desc>
+<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#A3B1BF"/></marker></defs>
+<rect width="1000" height="900" rx="14" fill="#FFFFFF"/>
+<rect x="20" y="20" width="960" height="78" rx="10" fill="#F6F8FA"/>
+<text x="34" y="59.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#5B6B7B" letter-spacing="1.2" text-anchor="middle" transform="rotate(-90 34 59.0)">YOUR CODE</text>
+<rect x="52.0" y="30" width="220.0" height="58" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="64.0" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">CLI</text>
+<text x="64.0" y="71" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">jitllm run, chat, bench</text>
+<rect x="284.0" y="30" width="220.0" height="58" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="296.0" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">OpenAI-compatible server</text>
+<text x="296.0" y="71" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">jitllm serve, /v1/chat/...</text>
+<rect x="516.0" y="30" width="220.0" height="58" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="528.0" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">LangChain4j, Quarkus</text>
+<text x="528.0" y="71" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">model provider</text>
+<rect x="748.0" y="30" width="220.0" height="58" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="760.0" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">Java applications</text>
+<text x="760.0" y="71" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">LocalModels API</text>
+<rect x="20" y="112" width="960" height="112" rx="10" fill="#F6F8FA"/>
+<text x="34" y="168.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#5B6B7B" letter-spacing="1.2" text-anchor="middle" transform="rotate(-90 34 168.0)">API, ENGINE</text>
+<rect x="52.0" y="122" width="220.0" height="92" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="64.0" y="144" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">Public API</text>
+<text x="260.0" y="144" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="400" fill="#5B6B7B" text-anchor="end">api</text>
+<text x="64.0" y="163" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">LocalModels, LocalModel,</text>
+<text x="64.0" y="180" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">GenerationSession; options,</text>
+<text x="64.0" y="197" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">conversations, tool calls</text>
+<rect x="284.0" y="122" width="220.0" height="92" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="296.0" y="144" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">Generation</text>
+<text x="492.0" y="144" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="400" fill="#5B6B7B" text-anchor="end">generation</text>
+<text x="296.0" y="163" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">token loop, stop conditions,</text>
+<text x="296.0" y="180" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">streaming, detokenization</text>
+<rect x="516.0" y="122" width="220.0" height="92" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="528.0" y="144" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">Serving engine</text>
+<text x="724.0" y="144" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="400" fill="#5B6B7B" text-anchor="end">engine</text>
+<text x="528.0" y="163" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">LLMEngine, Scheduler;</text>
+<text x="528.0" y="180" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">continuous batching, KV block</text>
+<text x="528.0" y="197" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">pool, prefix cache</text>
+<rect x="748.0" y="122" width="220.0" height="92" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="760.0" y="144" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">Tokenizers</text>
+<text x="956.0" y="144" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="400" fill="#5B6B7B" text-anchor="end">tokenizer</text>
+<text x="760.0" y="163" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">tokenizers, chat templates</text>
+<text x="760.0" y="180" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">and tool-call formats</text>
+<text x="760.0" y="197" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">per family</text>
+<rect x="20" y="238" width="960" height="112" rx="10" fill="#F6F8FA"/>
+<text x="34" y="294.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#5B6B7B" letter-spacing="1.2" text-anchor="middle" transform="rotate(-90 34 294.0)">MODELS</text>
+<rect x="52" y="248" width="297.3333333333333" height="92" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="64" y="270" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">GGUF loading</text>
+<text x="337.3333333333333" y="270" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="400" fill="#5B6B7B" text-anchor="end">format</text>
+<text x="64" y="289" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">recognises the declared</text>
+<text x="64" y="306" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">architecture; F16, BF16, Q8_0,</text>
+<text x="64" y="323" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">Q5_0, Q4_0/1, K-quants, IQ4_XS</text>
+<rect x="361.3333333333333" y="248" width="606.6666666666666" height="92" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="373.3333333333333" y="270" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">Model families</text>
+<text x="956.0" y="270" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="400" fill="#5B6B7B" text-anchor="end">model</text>
+<text x="373.3333333333333" y="289" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">one ServiceLoader provider each, no central switch: Llama, Mistral, Devstral,</text>
+<text x="373.3333333333333" y="306" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">Qwen2 / 2-MoE / 3 / 3.5-3.8 / 3.6 MoE, DeepSeek-R1-Distill, Granite, Phi-3,</text>
+<text x="373.3333333333333" y="323" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">Gemma 4, GLM-4.7-Flash; immutable weights and configuration, shared by sessions</text>
+<rect x="20" y="364" width="960" height="84" rx="10" fill="#F6F8FA"/>
+<text x="34" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#5B6B7B" letter-spacing="1.2" text-anchor="middle" transform="rotate(-90 34 406.0)">PROGRAM</text>
+<rect x="52" y="374" width="916" height="64" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="64" y="396" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">Backend-neutral inference program</text>
+<text x="956" y="396" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="400" fill="#5B6B7B" text-anchor="end">program, runtime</text>
+<text x="64" y="415" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">one forward pass as data: embedding, RMSNorm, RoPE, matmul, attention, KV append, SwiGLU, MoE routing, sampling ...</text>
+<text x="64" y="432" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">PREFILL and DECODE phases  ·  runtime: DataType, KV leases, memory plan, execution policy, metrics</text>
+<rect x="20" y="462" width="960" height="226" rx="10" fill="#F6F8FA"/>
+<text x="34" y="575.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#5B6B7B" letter-spacing="1.2" text-anchor="middle" transform="rotate(-90 34 575.0)">BACKENDS</text>
+<rect x="52.0" y="474" width="209.5" height="74" rx="8" fill="#F0FAF6" stroke="#7FD1B9" stroke-width="1.2"/>
+<text x="64.0" y="496" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">1  Lower</text>
+<text x="64.0" y="515" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">family program to a</text>
+<text x="64.0" y="532" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">workspace plan</text>
+<line x1="264.5" y1="511" x2="284.5" y2="511" stroke="#A3B1BF" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="287.5" y="474" width="209.5" height="74" rx="8" fill="#F0FAF6" stroke="#7FD1B9" stroke-width="1.2"/>
+<text x="299.5" y="496" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">2  Build</text>
+<text x="299.5" y="515" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">task graphs, grids;</text>
+<text x="299.5" y="532" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">kernel per op and dtype</text>
+<line x1="500.0" y1="511" x2="520.0" y2="511" stroke="#A3B1BF" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="523.0" y="474" width="209.5" height="74" rx="8" fill="#F0FAF6" stroke="#7FD1B9" stroke-width="1.2"/>
+<text x="535.0" y="496" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">3  Compile once</text>
+<text x="535.0" y="515" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">TornadoVM JIT; CUDA</text>
+<text x="535.0" y="532" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">graph capture</text>
+<line x1="735.5" y1="511" x2="755.5" y2="511" stroke="#A3B1BF" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="758.5" y="474" width="209.5" height="74" rx="8" fill="#F0FAF6" stroke="#7FD1B9" stroke-width="1.2"/>
+<text x="770.5" y="496" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">4  Replay</text>
+<text x="770.5" y="515" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">per token or prompt</text>
+<text x="770.5" y="532" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">chunk; buffers stay</text>
+<text x="510.0" y="570" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="middle">TornadoVM backend (backend/tornado): batched prefill, single-token decode; values move through control arrays, buffers are never rebound</text>
+<rect x="52.0" y="584" width="220.0" height="92" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="64.0" y="606" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">Kernels</text>
+<text x="260.0" y="606" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="400" fill="#5B6B7B" text-anchor="end">kernels</text>
+<text x="64.0" y="625" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">Java KernelContext kernels; tensor-</text>
+<text x="64.0" y="642" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">core (MMA) and SIMD-group variants</text>
+<rect x="284.0" y="584" width="220.0" height="92" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="296.0" y="606" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">Native libraries</text>
+<text x="492.0" y="606" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="400" fill="#5B6B7B" text-anchor="end">nativelib</text>
+<text x="296.0" y="625" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">cuBLAS, cuDNN, MLX as TornadoVM</text>
+<text x="296.0" y="642" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">library tasks; optional</text>
+<rect x="516.0" y="584" width="220.0" height="92" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="528.0" y="606" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">Several GPUs</text>
+<text x="724.0" y="606" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="400" fill="#5B6B7B" text-anchor="end">pipeline</text>
+<text x="528.0" y="625" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">layer split across devices;</text>
+<text x="528.0" y="642" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">hidden state over NCCL or the host</text>
+<rect x="748.0" y="584" width="220.0" height="92" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="760.0" y="606" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">CPU backend</text>
+<text x="956.0" y="606" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="400" fill="#5B6B7B" text-anchor="end">backend/cpu</text>
+<text x="760.0" y="625" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">plain Java and the Vector</text>
+<text x="760.0" y="642" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">API, no TornadoVM needed</text>
+<rect x="20" y="702" width="960" height="70" rx="10" fill="#EAF3FC" stroke="#B9D4EE" stroke-width="1.2"/>
+<text x="500.0" y="732" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#1F2D3D" text-anchor="middle">TornadoVM</text>
+<text x="500.0" y="754" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5B6B7B" text-anchor="middle">JIT-compiles the Java kernels for the device: CUDA C (NVRTC), OpenCL C, Metal Shading Language</text>
+<rect x="20" y="786" width="960" height="94" rx="10" fill="#F6F8FA"/>
+<text x="34" y="833.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#5B6B7B" letter-spacing="1.2" text-anchor="middle" transform="rotate(-90 34 833.0)">HARDWARE</text>
+<rect x="52.0" y="796" width="220.0" height="74" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="64.0" y="818" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">NVIDIA GPUs</text>
+<text x="64.0" y="837" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">CUDA or OpenCL backend</text>
+<rect x="284.0" y="796" width="220.0" height="74" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="296.0" y="818" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">Apple silicon</text>
+<text x="296.0" y="837" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">Metal backend; weights read</text>
+<text x="296.0" y="854" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">in place from unified memory</text>
+<rect x="516.0" y="796" width="220.0" height="74" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="528.0" y="818" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">AMD, Intel GPUs</text>
+<text x="528.0" y="837" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">OpenCL backend</text>
+<rect x="748.0" y="796" width="220.0" height="74" rx="8" fill="#FFFFFF" stroke="#D8E0E8" stroke-width="1.2"/>
+<text x="760.0" y="818" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1F2D3D" text-anchor="start">CPUs</text>
+<text x="760.0" y="837" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5B6B7B" text-anchor="start">CPU backend</text>
+</svg>

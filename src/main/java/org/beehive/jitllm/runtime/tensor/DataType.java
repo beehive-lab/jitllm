@@ -115,7 +115,13 @@ public enum DataType {
      * <p>Here because quantizers mix it into K-quant files: {@code Qwen3-0.6B-UD-Q4_K_XL.gguf}
      * holds five layers' q, k, gate and up projections as IQ4_XS.
      */
-    IQ4_XS(true);
+    IQ4_XS(true),
+
+    /**
+     * OCP microscaling FP4: 32 E2M1 values sharing one E8M0 power-of-two scale, 17 bytes per block.
+     * gpt-oss ships its expert weights in it.
+     */
+    MXFP4(true);
 
     private final boolean quantized;
 
