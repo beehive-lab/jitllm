@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.IntPredicate;
 import org.beehive.jitllm.tokenizer.Tokenizer;
 
 /**
@@ -37,6 +38,7 @@ final class TokenEventStream {
     private static final char REPLACEMENT = '�';
 
     private final Tokenizer tokenizer;
+    private final IntPredicate display;
     private final Set<Integer> stopTokens;
     private final Consumer<GenerationEvent> onEvent;
     private final Consumer<String> onText;
@@ -54,7 +56,21 @@ final class TokenEventStream {
             Set<Integer> stopTokens,
             Consumer<GenerationEvent> onEvent,
             Consumer<String> onText) {
+        this(tokenizer, tokenizer::shouldDisplayToken, stopTokens, onEvent, onText);
+    }
+
+    /**
+     * @param display which tokens show text, for this response: the chat format's filter, which a
+     *     structured format (Harmony's channels) keeps state in
+     */
+    TokenEventStream(
+            Tokenizer tokenizer,
+            IntPredicate display,
+            Set<Integer> stopTokens,
+            Consumer<GenerationEvent> onEvent,
+            Consumer<String> onText) {
         this.tokenizer = tokenizer;
+        this.display = display;
         this.stopTokens = stopTokens;
         this.onEvent = onEvent;
         this.onText = onText;
@@ -101,7 +117,7 @@ final class TokenEventStream {
      * the tokenizer does not display.
      */
     private String decodeIncrementally(int token) {
-        if (!tokenizer.shouldDisplayToken(token)) {
+        if (!display.test(token)) {
             return "";
         }
         pending.add(token);

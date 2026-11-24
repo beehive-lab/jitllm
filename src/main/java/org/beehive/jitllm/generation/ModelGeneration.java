@@ -8,6 +8,7 @@ import java.util.Scanner;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
+import java.util.function.IntPredicate;
 import org.beehive.jitllm.Options;
 import org.beehive.jitllm.auxiliary.RunMetrics;
 import org.beehive.jitllm.auxiliary.metrics.RunMetricsSink;
@@ -128,10 +129,11 @@ public final class ModelGeneration {
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
 
                 List<Integer> responseTokens;
+                IntPredicate display = chatFormat.displayFilter(model.tokenizer());
                 IntConsumer tokenConsumer =
                         token -> {
                             if (options.stream()) {
-                                if (model.tokenizer().shouldDisplayToken(token)) {
+                                if (display.test(token)) {
                                     System.out.print(model.tokenizer().decode(List.of(token)));
                                 }
                             }
@@ -177,7 +179,10 @@ public final class ModelGeneration {
                     responseTokens.removeLast();
                 }
                 if (!options.stream()) {
-                    String responseText = model.tokenizer().decode(responseTokens);
+                    IntPredicate shown = chatFormat.displayFilter(model.tokenizer());
+                    String responseText =
+                            model.tokenizer()
+                                    .decode(responseTokens.stream().filter(shown::test).toList());
                     // Add the forced <think>\n prefix for non-streaming output
                     if (model.shouldIncludeReasoning()) {
                         responseText = "<think>\n" + responseText;
@@ -261,10 +266,12 @@ public final class ModelGeneration {
 
         List<Integer> responseTokens;
 
+        IntPredicate display = chatFormat.displayFilter(model.tokenizer());
+
         IntConsumer tokenConsumer =
                 token -> {
                     if (options.stream()) {
-                        if (model.tokenizer().shouldDisplayToken(token)) {
+                        if (display.test(token)) {
                             System.out.print(model.tokenizer().decode(List.of(token)));
                         }
                     }
@@ -306,7 +313,9 @@ public final class ModelGeneration {
 
         String responseText = "";
         if (!options.stream()) {
-            responseText = model.tokenizer().decode(responseTokens);
+            IntPredicate shown = chatFormat.displayFilter(model.tokenizer());
+            responseText =
+                    model.tokenizer().decode(responseTokens.stream().filter(shown::test).toList());
             // Add the forced <think>\n prefix for non-streaming output
             if (model.shouldIncludeReasoning()) {
                 responseText = "<think>\n" + responseText;
@@ -366,9 +375,11 @@ public final class ModelGeneration {
 
         List<Integer> responseTokens;
 
+        IntPredicate display = chatFormat.displayFilter(model.tokenizer());
+
         IntConsumer tokenConsumer =
                 token -> {
-                    if (model.tokenizer().shouldDisplayToken(token)) {
+                    if (display.test(token)) {
                         String piece = model.tokenizer().decode(List.of(token));
                         if (options.stream() && tokenCallback != null) {
                             tokenCallback.accept(piece); // ✅ send to LangChain4j handler
@@ -412,7 +423,9 @@ public final class ModelGeneration {
         String responseText = model.tokenizer().decode(responseTokens);
 
         if (!options.stream()) {
-            responseText = model.tokenizer().decode(responseTokens);
+            IntPredicate shown = chatFormat.displayFilter(model.tokenizer());
+            responseText =
+                    model.tokenizer().decode(responseTokens.stream().filter(shown::test).toList());
             if (model.shouldIncludeReasoning()) {
                 responseText = "<think>\n" + responseText;
             }

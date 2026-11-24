@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.IntPredicate;
+import org.beehive.jitllm.tokenizer.Tokenizer;
 
 /**
  * How a family turns messages into tokens.
@@ -335,6 +337,26 @@ public interface ChatFormat {
      */
     default boolean supportsThinking() {
         return false;
+    }
+
+    /**
+     * A fresh filter of which generated tokens a response shows, for one response at a time.
+     *
+     * <p>Most formats decide token by token, as the tokenizer does. A format whose response carries
+     * structure in its tokens (Harmony's channels) keeps state across the response, which is why
+     * each response gets its own filter.
+     */
+    default IntPredicate displayFilter(Tokenizer tokenizer) {
+        return tokenizer::shouldDisplayToken;
+    }
+
+    /**
+     * What a later turn's history keeps of a finished response (its terminal stop token removed),
+     * or empty to keep the response as generated. A format whose template renders earlier assistant
+     * turns as their answer alone (Harmony keeps only the final channel) answers with those tokens.
+     */
+    default Optional<List<Integer>> historyOfResponse(List<Integer> responseTokens) {
+        return Optional.empty();
     }
 
     /**
