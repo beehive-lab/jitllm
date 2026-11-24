@@ -19,6 +19,7 @@ import org.beehive.jitllm.model.format.HarmonyChatFormat;
 import org.beehive.jitllm.model.gptoss.GptOss;
 import org.beehive.jitllm.model.gptoss.GptOssConfiguration;
 import org.beehive.jitllm.runtime.diagnostics.DiagnosticCode;
+import org.beehive.jitllm.runtime.tensor.DataType;
 import org.beehive.jitllm.tensor.standard.ArrayFloatTensor;
 import org.beehive.jitllm.tensor.standard.FloatTensor;
 import org.beehive.jitllm.tokenizer.GptOssTokenizer;
@@ -243,6 +244,7 @@ public class GptOssModelLoader extends AbstractModelLoader<GptOss, GptOssConfigu
         TornadoTensor[] wk = gpu(nl, tensorEntries, "attn_k.weight");
         TornadoTensor[] wv = gpu(nl, tensorEntries, "attn_v.weight");
         TornadoTensor[] wo = gpu(nl, tensorEntries, "attn_output.weight");
+        q8_0("attention projections", wq, wk, wv, wo);
         GptOssLayerWeights<TornadoTensor> layers =
                 new GptOssLayerWeights<>(
                         gpu(nl, tensorEntries, "attn_q.bias"),
@@ -282,6 +284,27 @@ public class GptOssModelLoader extends AbstractModelLoader<GptOss, GptOssConfigu
     private static TornadoTensor[] gpu(
             int layers, Map<String, GGMLTensorEntry> tensorEntries, String role) {
         return loadArrayOfTornadoTensorsNative(layers, i -> required(tensorEntries, i, role));
+    }
+
+    /**
+     * Checks that every tensor of {@code projections} is Q8_0, the one representation the device
+     * layers read them in: a file that mixes in another type is refused here, by name, rather than
+     * failing when the plan is built.
+     */
+    private static void q8_0(String role, TornadoTensor[]... projections) {
+        for (TornadoTensor[] layers : projections) {
+            for (TornadoTensor t : layers) {
+                if (t.dataType() != DataType.Q8_0) {
+                    throw new ModelLoadException(
+                            DiagnosticCode.MODEL_MALFORMED.prefix()
+                                    + "gpt-oss "
+                                    + role
+                                    + " include a "
+                                    + t.dataType()
+                                    + " tensor; the device layers read them as Q8_0 only");
+                }
+            }
+        }
     }
 
     /** The experts, checked to be MXFP4: the device layers read no other representation. */

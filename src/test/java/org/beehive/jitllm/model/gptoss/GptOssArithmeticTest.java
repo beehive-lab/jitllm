@@ -49,7 +49,7 @@ public class GptOssArithmeticTest {
         for (int n = 0; n < 16; n++) {
             assertEquals(MXFP4FloatTensor.KVALUES[n], GptOssKernelsHostView.fp4(n), 0f);
         }
-        for (int e = 2; e < 255; e++) {
+        for (int e = 0; e < 255; e++) {
             assertEquals(MXFP4FloatTensor.scale(e), GptOssKernelsHostView.e8m0Half(e), 0f);
             assertEquals((float) Math.pow(2, e - 128), MXFP4FloatTensor.scale(e), 0f);
         }

@@ -58,10 +58,11 @@ public final class GptOssKernels {
         return (float) ((small + large) * sign);
     }
 
-    /** {@code 2^(e - 128)}, the E8M0 exponent halved; exponents below 2 are read as 2. */
+    /** {@code 2^(e - 128)}, the E8M0 exponent halved, exactly as the host decodes it. */
     static float e8m0Half(int e) {
-        int clamped = Math.max(e, 2);
-        return Float.intBitsToFloat((clamped - 1) << 23);
+        // Below 2 the halved scale is subnormal: 2^-128 and 2^-127 as their bit patterns.
+        int bits = e < 2 ? 0x00200000 << e : (e - 1) << 23;
+        return Float.intBitsToFloat(bits);
     }
 
     /** gpt-oss's clamped SwiGLU. */

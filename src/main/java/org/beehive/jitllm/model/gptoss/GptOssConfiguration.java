@@ -86,6 +86,37 @@ public record GptOssConfiguration(
         return numberOfHeads / numberOfKeyValueHeads;
     }
 
+    /**
+     * The batched prefill's own chunk buffers, beyond the staging every family allocates: the
+     * normed chunk and its int8 copy, the routing and the per-assignment expert scratch (sorted
+     * rows, their hidden vectors in FP32 and int8, the expert outputs), and the tensor-core
+     * attention's FP16 queries and gathered keys and values, which span the whole context. Counted
+     * at their widest, whether or not the tensor-core attention is built.
+     */
+    @Override
+    public long additionalBatchWorkspaceBytes(int batchSize) {
+        if (batchSize <= 1) {
+            return 0L;
+        }
+        long batch = batchSize;
+        long assignments = batch * numberOfExpertsUsed;
+        long widest = Math.max(queryDim(), Math.max(dim, expertHiddenDim));
+        long maxTiles = numberOfExperts + (assignments + 63) / 64;
+        long floats =
+                batch * dim // the normed chunk
+                        + batch * widest / 32 // the int8 copy's block scales
+                        + batch * numberOfExperts // the router logits
+                        + assignments // the routing weights
+                        + assignments * expertHiddenDim // the hidden vectors
+                        + assignments * expertHiddenDim / 32 // their int8 block scales
+                        + assignments * dim; // the expert outputs
+        long ints = 3 * assignments + 1 + 3 * maxTiles; // ids, sorted rows, positions, tiles
+        long bytes = batch * widest + assignments * expertHiddenDim; // the int8 copies
+        long positions = (contextLength() + 127L) / 128 * 128;
+        long halves = batch * queryDim() + 2L * kvDim() * positions; // the FP16 attention staging
+        return floats * Float.BYTES + ints * Integer.BYTES + bytes + halves * Short.BYTES;
+    }
+
     /** The attention projections and every expert: what the file holds per layer, times layers. */
     @Override
     public long projectionWeights() {

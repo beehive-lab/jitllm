@@ -10,7 +10,11 @@ import java.util.Map;
  * is the pre-tokenizer split: letter runs are split by case (an optional run of upper-case letters
  * followed by lower-case ones, or the reverse), English contractions attach to the word before
  * them, and digits group in threes. The pattern is the original from {@code tokenizer.json}, which
- * llama.cpp carries for {@code LLAMA_VOCAB_PRE_TYPE_GPT4O}.
+ * llama.cpp carries for {@code LLAMA_VOCAB_PRE_TYPE_GPT4O}, compiled with Unicode character classes
+ * ({@code (?U)}): {@code \s} is Unicode white space, as in the reference tokenizers, so a no-break
+ * or ideographic space splits where theirs does. The contractions are spelled out letter by letter
+ * rather than matched case-insensitively, as llama.cpp does, so Unicode case folding (on under
+ * {@code (?U)}) cannot widen them.
  *
  * <p>Every token from {@code <|endoftext|>} on is special: the Harmony control tokens ({@code
  * <|start|>}, {@code <|channel|>}, {@code <|message|>}, {@code <|end|>}, {@code <|return|>}, {@code
@@ -19,10 +23,11 @@ import java.util.Map;
 public class GptOssTokenizer extends Qwen3Tokenizer {
 
     private static final String GPT4O_PATTERN =
-            "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+"
-                    + "(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
+            "(?U)"
+                    + "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+"
+                    + "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?"
                     + "|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*"
-                    + "(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
+                    + "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?"
                     + "|\\p{N}{1,3}"
                     + "| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*"
                     + "|\\s*[\\r\\n]+"
