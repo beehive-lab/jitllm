@@ -1,3 +1,20 @@
+/*
+ * Copyright (c) 2024-2026, APT Group, Department of Computer Science,
+ * The University of Manchester.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 package org.beehive.jitllm.backend.tornado.plan;
 
 import static org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets.NATIVE_QUANTIZED;
@@ -12,8 +29,8 @@ import org.beehive.jitllm.backend.tornado.layers.BatchDecodeLayers;
 import org.beehive.jitllm.backend.tornado.layers.type.fp16.decode.LlamaFP16LayersBatchDecodeMMA;
 import org.beehive.jitllm.backend.tornado.lowering.TornadoSupportSets;
 import org.beehive.jitllm.backend.tornado.memory.BatchPrefillWorkspace;
-import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.ops.Target;
+import org.beehive.jitllm.backend.tornado.ops.nativelib.apple.MlxPrefill;
 import org.beehive.jitllm.backend.tornado.plan.components.SingleTokenForwardPlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.fp16.LlamaFP16PlanComponents;
 import org.beehive.jitllm.backend.tornado.plan.components.q8_0.LlamaQ8_0PlanComponents;
