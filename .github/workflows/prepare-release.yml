@@ -185,6 +185,50 @@ jobs:
 
           echo "✅ Updated README.md dependency snippets to ${VERSION}"
 
+      # The JBang catalog alias (jitllm@beehive-lab) runs JitllmCli.java from main, which pins the
+      # released jitllm and the TornadoVM release it was built against, both from Maven Central.
+      - name: Update the JBang script
+        run: |
+          set -euo pipefail
+          SCRIPT="JitllmCli.java"
+          VERSION="${{ env.VERSION }}"
+          TORNADOVM="${{ inputs.tornadovm_release }}"
+          sed -i -E \
+            -e "s|^(//DEPS io\.github\.beehive-lab:jitllm:)[^:[:space:]]+-jdk22plus$|\1${VERSION}-jdk22plus|" \
+            -e "s|^(//DEPS io\.github\.beehive-lab:tornado-[a-z-]+:)[^:[:space:]]+-jdk22plus$|\1${TORNADOVM}-jdk22plus|" \
+            "$SCRIPT"
+          grep -qx "//DEPS io.github.beehive-lab:jitllm:${VERSION}-jdk22plus" "$SCRIPT" \
+            || { echo "❌ $SCRIPT does not depend on jitllm ${VERSION}-jdk22plus"; exit 1; }
+          if grep -E '^//DEPS io\.github\.beehive-lab:tornado-' "$SCRIPT" | grep -vq ":${TORNADOVM}-jdk22plus$"; then
+            echo "❌ $SCRIPT has a TornadoVM dependency other than ${TORNADOVM}-jdk22plus"; exit 1
+          fi
+          grep -E '^//DEPS' "$SCRIPT"
+          echo "✅ Updated $SCRIPT to jitllm ${VERSION} and TornadoVM ${TORNADOVM}"
+
+      # The README Quickstart's Maven Central option lists the same coordinates by hand (outside the
+      # generated DEPENDENCY-SNIPPETS block): jitllm and the TornadoVM jars it runs on.
+      - name: Update the README Quickstart versions
+        run: |
+          set -euo pipefail
+          VERSION="${{ env.VERSION }}" TORNADOVM="${{ inputs.tornadovm_release }}" python3 -I - <<'PY'
+          import os, re, sys
+          version, tornadovm = os.environ["VERSION"], os.environ["TORNADOVM"]
+          text = open("README.md").read()
+          start, end = text.find("## Quickstart"), text.find("\n## ", text.find("## Quickstart") + 1)
+          if start < 0 or end < 0:
+              sys.exit("❌ README.md has no Quickstart section")
+          section = text[start:end]
+          dependency = re.compile(r"(<artifactId>(jitllm|tornado-[a-z-]+)</artifactId>[^\n]*\n\s*<version>)[^<]+(</version>)")
+          def bump(m):
+              target = version if m.group(2) == "jitllm" else tornadovm
+              return f"{m.group(1)}{target}-jdk22plus{m.group(3)}"
+          section, count = dependency.subn(bump, section)
+          if count == 0 or f"<version>{version}-jdk22plus</version>" not in section:
+              sys.exit("❌ found no jitllm dependency to update in the README Quickstart")
+          open("README.md", "w").write(text[:start] + section + text[end:])
+          print(f"✅ Updated {count} Quickstart dependencies to jitllm {version} and TornadoVM {tornadovm}")
+          PY
+
       - name: Update CITATION.cff
         run: |
           if [ -f "CITATION.cff" ]; then
