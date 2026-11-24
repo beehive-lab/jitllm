@@ -14,7 +14,7 @@ public record Glm5NextLayerWeights<T>(
         Mhc<T> mhc,
         T[] attnNorm,
         T[] ffnNorm,
-        Kda<T> kda,
+        KdaWeights<T> kda,
         SparseAttention<T> sparse,
         FeedForward<T> ffn,
         Nextn<T> nextn) {
@@ -22,24 +22,6 @@ public record Glm5NextLayerWeights<T>(
     /** The collapse/expand/mix projections around the attention and feed-forward sublayers. */
     public record Mhc<T>(
             T[] attnFn, T[] attnBase, T[] attnScale, T[] ffnFn, T[] ffnBase, T[] ffnScale) {}
-
-    /** Kimi delta attention: projections, short convolutions, decay, beta and the output gate. */
-    public record Kda<T>(
-            T[] q,
-            T[] k,
-            T[] v,
-            T[] convQ,
-            T[] convK,
-            T[] convV,
-            T[] decayA,
-            T[] decayB,
-            T[] dtBias,
-            T[] a,
-            T[] beta,
-            T[] gateA,
-            T[] gateB,
-            T[] outNorm,
-            T[] output) {}
 
     /** Latent attention without RoPE, its {@code kv_b} split llama.cpp's way, and the indexer. */
     public record SparseAttention<T>(

@@ -6,7 +6,9 @@ import java.util.List;
 import java.util.Map;
 import org.beehive.jitllm.backend.tornado.kernels.DeepSeek2Kernels;
 import org.beehive.jitllm.backend.tornado.kernels.Glm5NextKernels;
+import org.beehive.jitllm.backend.tornado.kernels.KdaKernels;
 import org.beehive.jitllm.backend.tornado.kernels.Qwen35DeltaNetKernels;
+import org.beehive.jitllm.backend.tornado.kernels.RoutedExpertKernels;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ4_0;
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernelsQ8_0DP4A;
 import org.beehive.jitllm.backend.tornado.scheduling.SchedulerType;
@@ -655,7 +657,7 @@ public class Glm5NextLayers
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::kdaL2Norm,
+                                KdaKernels::kdaL2Norm,
                                 context,
                                 d.kdaConvQ,
                                 heads,
@@ -670,7 +672,7 @@ public class Glm5NextLayers
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::kdaL2Norm,
+                                KdaKernels::kdaL2Norm,
                                 context,
                                 d.kdaConvK,
                                 heads,
@@ -690,7 +692,7 @@ public class Glm5NextLayers
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::kdaDecayAndBeta,
+                                KdaKernels::kdaDecayAndBeta,
                                 context,
                                 d.kdaDecay,
                                 k.dtBias()[l].asFloatArray(),
@@ -706,14 +708,12 @@ public class Glm5NextLayers
                 l,
                 "kda_delta",
                 groups(
-                        heads
-                                * ((hd + Glm5NextKernels.DELTA_COLUMNS - 1)
-                                        / Glm5NextKernels.DELTA_COLUMNS),
-                        Glm5NextKernels.DELTA_COLUMNS * Glm5NextKernels.DELTA_CHUNKS),
+                        heads * ((hd + KdaKernels.DELTA_COLUMNS - 1) / KdaKernels.DELTA_COLUMNS),
+                        KdaKernels.DELTA_COLUMNS * KdaKernels.DELTA_CHUNKS),
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::kdaDeltaRule,
+                                KdaKernels::kdaDeltaRule,
                                 context,
                                 d.kdaConvQ,
                                 d.kdaConvK,
@@ -733,7 +733,7 @@ public class Glm5NextLayers
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::kdaGatedNorm,
+                                KdaKernels::kdaGatedNorm,
                                 context,
                                 d.kdaOut,
                                 d.kdaGate,
@@ -1045,7 +1045,7 @@ public class Glm5NextLayers
                 t ->
                         g.task(
                                 t,
-                                Glm5NextKernels::routerTopKSigmoid,
+                                RoutedExpertKernels::routerTopKSigmoid,
                                 context,
                                 ws.wrapRouterLogits,
                                 f.routerBias()[l].asFloatArray(),
@@ -1064,8 +1064,8 @@ public class Glm5NextLayers
                         g.task(
                                 t,
                                 q4
-                                        ? Glm5NextKernels::expertsGateUpClampedQ4_0
-                                        : Glm5NextKernels::expertsGateUpClamped,
+                                        ? RoutedExpertKernels::expertsGateUpClampedQ4_0
+                                        : RoutedExpertKernels::expertsGateUpClamped,
                                 context,
                                 ws.wrapXbQuants,
                                 ws.wrapXbScales,
@@ -1106,8 +1106,8 @@ public class Glm5NextLayers
                         g.task(
                                 t,
                                 q4
-                                        ? Glm5NextKernels::expertsDownQ4_0
-                                        : Glm5NextKernels::expertsDown,
+                                        ? RoutedExpertKernels::expertsDownQ4_0
+                                        : RoutedExpertKernels::expertsDown,
                                 context,
                                 ws.wrapMoeHiddenQuants,
                                 ws.wrapMoeHiddenQScales,

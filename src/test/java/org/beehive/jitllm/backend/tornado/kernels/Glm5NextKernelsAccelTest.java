@@ -366,7 +366,7 @@ public class Glm5NextKernelsAccelTest {
                         .transferToDevice(DataTransferMode.FIRST_EXECUTION, state)
                         .task(
                                 "decay",
-                                Glm5NextKernels::kdaDecayAndBeta,
+                                KdaKernels::kdaDecayAndBeta,
                                 new KernelContext(),
                                 decay,
                                 dtBias,
@@ -378,7 +378,7 @@ public class Glm5NextKernelsAccelTest {
                                 lower)
                         .task(
                                 "nq",
-                                Glm5NextKernels::kdaL2Norm,
+                                KdaKernels::kdaL2Norm,
                                 new KernelContext(),
                                 q,
                                 heads,
@@ -387,7 +387,7 @@ public class Glm5NextKernelsAccelTest {
                                 l2Eps)
                         .task(
                                 "nk",
-                                Glm5NextKernels::kdaL2Norm,
+                                KdaKernels::kdaL2Norm,
                                 new KernelContext(),
                                 k,
                                 heads,
@@ -396,7 +396,7 @@ public class Glm5NextKernelsAccelTest {
                                 l2Eps)
                         .task(
                                 "delta",
-                                Glm5NextKernels::kdaDeltaRule,
+                                KdaKernels::kdaDeltaRule,
                                 new KernelContext(),
                                 q,
                                 k,
@@ -410,7 +410,7 @@ public class Glm5NextKernelsAccelTest {
                                 0)
                         .task(
                                 "norm",
-                                Glm5NextKernels::kdaGatedNorm,
+                                KdaKernels::kdaGatedNorm,
                                 new KernelContext(),
                                 out,
                                 gate,
@@ -426,10 +426,8 @@ public class Glm5NextKernelsAccelTest {
         s.addWorkerGrid(
                 "kda.delta",
                 groups(
-                        heads
-                                * ((hd + Glm5NextKernels.DELTA_COLUMNS - 1)
-                                        / Glm5NextKernels.DELTA_COLUMNS),
-                        Glm5NextKernels.DELTA_COLUMNS * Glm5NextKernels.DELTA_CHUNKS));
+                        heads * ((hd + KdaKernels.DELTA_COLUMNS - 1) / KdaKernels.DELTA_COLUMNS),
+                        KdaKernels.DELTA_COLUMNS * KdaKernels.DELTA_CHUNKS));
         s.addWorkerGrid("kda.norm", groups(heads, 32));
         try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
             for (int step = 0; step < steps; step++) {
@@ -746,7 +744,7 @@ public class Glm5NextKernelsAccelTest {
                         .transferToDevice(DataTransferMode.EVERY_EXECUTION, logits, bias)
                         .task(
                                 "topk",
-                                Glm5NextKernels::routerTopKSigmoid,
+                                RoutedExpertKernels::routerTopKSigmoid,
                                 new KernelContext(),
                                 logits,
                                 bias,
