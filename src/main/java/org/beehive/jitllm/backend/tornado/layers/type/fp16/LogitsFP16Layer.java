@@ -1,3 +1,20 @@
+/*
+ * Copyright (c) 2024-2026, APT Group, Department of Computer Science,
+ * The University of Manchester.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 package org.beehive.jitllm.backend.tornado.layers.type.fp16;
 
 import org.beehive.jitllm.backend.tornado.kernels.TransformerComputeKernels;
@@ -129,6 +146,11 @@ public class LogitsFP16Layer extends AbstractLogitsTaskGraph {
     // @formatter:off
     @Override
     protected TaskGraph setupLogitsTaskGraph(TornadoWeights weights, Configuration config) {
+        if (state.executionPolicy().hiddenStateToHost()) {
+            throw new UnsupportedOperationException(
+                    "hiddenStateToHost is implemented for Q8_0 weights; this FP16 plan normalises into"
+                            + " a half-precision scratch and does not expose the hidden state");
+        }
         var logits = new TaskGraph(GraphNames.LOGITS);
         // === Data Setup ===
         configureAdditionalConsumes(logits);

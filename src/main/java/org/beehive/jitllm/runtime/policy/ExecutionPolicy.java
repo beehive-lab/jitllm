@@ -1,3 +1,20 @@
+/*
+ * Copyright (c) 2024-2026, APT Group, Department of Computer Science,
+ * The University of Manchester.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 package org.beehive.jitllm.runtime.policy;
 
 import java.util.Objects;
@@ -84,6 +101,7 @@ public final class ExecutionPolicy {
     private final boolean scalarFp16KeyValueReads;
     private final boolean nativeLibraries;
     private final DecodedProjections decodedProjections;
+    private final boolean hiddenStateToHost;
 
     private ExecutionPolicy(
             PhaseStrategy phaseStrategy,
@@ -93,7 +111,9 @@ public final class ExecutionPolicy {
             boolean packedHalf2Attention,
             boolean scalarFp16KeyValueReads,
             boolean nativeLibraries,
-            DecodedProjections decodedProjections) {
+            DecodedProjections decodedProjections,
+            boolean hiddenStateToHost) {
+        this.hiddenStateToHost = hiddenStateToHost;
         this.nativeLibraries = nativeLibraries;
         this.decodedProjections = Objects.requireNonNull(decodedProjections, "decodedProjections");
         this.packedHalf2Attention = packedHalf2Attention;
@@ -136,7 +156,8 @@ public final class ExecutionPolicy {
                 .packedHalf2Attention(base.packedHalf2Attention)
                 .scalarFp16KeyValueReads(base.scalarFp16KeyValueReads)
                 .nativeLibraries(base.nativeLibraries)
-                .decodedProjections(base.decodedProjections);
+                .decodedProjections(base.decodedProjections)
+                .hiddenStateToHost(base.hiddenStateToHost);
     }
 
     /**
@@ -281,6 +302,15 @@ public final class ExecutionPolicy {
         return decodedProjections;
     }
 
+    /**
+     * Whether each step also copies the final-normalised hidden state (the input of the vocabulary
+     * projection, {@code dim} floats) back to the host. Embedding models read their vector from it;
+     * a text-generation session leaves it off and pays nothing.
+     */
+    public boolean hiddenStateToHost() {
+        return hiddenStateToHost;
+    }
+
     @Override
     public boolean equals(Object other) {
         if (this == other) {
@@ -296,7 +326,8 @@ public final class ExecutionPolicy {
                 && packedHalf2Attention == that.packedHalf2Attention
                 && scalarFp16KeyValueReads == that.scalarFp16KeyValueReads
                 && nativeLibraries == that.nativeLibraries
-                && decodedProjections == that.decodedProjections;
+                && decodedProjections == that.decodedProjections
+                && hiddenStateToHost == that.hiddenStateToHost;
     }
 
     @Override
@@ -309,7 +340,8 @@ public final class ExecutionPolicy {
                 packedHalf2Attention,
                 scalarFp16KeyValueReads,
                 nativeLibraries,
-                decodedProjections);
+                decodedProjections,
+                hiddenStateToHost);
     }
 
     @Override
@@ -330,6 +362,7 @@ public final class ExecutionPolicy {
                 + nativeLibraries
                 + ", decodedProjections="
                 + decodedProjections
+                + (hiddenStateToHost ? ", hiddenStateToHost=true" : "")
                 + "]";
     }
 
@@ -343,8 +376,15 @@ public final class ExecutionPolicy {
         private boolean scalarFp16KeyValueReads;
         private boolean nativeLibraries;
         private DecodedProjections decodedProjections = DecodedProjections.BACKEND;
+        private boolean hiddenStateToHost;
 
         private Builder() {}
+
+        /** Copy the final-normalised hidden state to the host each step; off by default. */
+        public Builder hiddenStateToHost(boolean hiddenStateToHost) {
+            this.hiddenStateToHost = hiddenStateToHost;
+            return this;
+        }
 
         /**
          * Where a batched prefill keeps its decoded FP16 weights; the backend's choice by default.
@@ -404,7 +444,8 @@ public final class ExecutionPolicy {
                     packedHalf2Attention,
                     scalarFp16KeyValueReads,
                     nativeLibraries,
-                    decodedProjections);
+                    decodedProjections,
+                    hiddenStateToHost);
         }
     }
 
@@ -426,8 +467,10 @@ public final class ExecutionPolicy {
         private final OptionalInt splitKvPartitions;
         private final boolean splitKvSet;
         private final Boolean nativeLibraries;
+        private final Boolean hiddenStateToHost;
 
         private Overrides(Builder builder) {
+            this.hiddenStateToHost = builder.hiddenStateToHost;
             this.nativeLibraries = builder.nativeLibraries;
             this.phaseStrategy = builder.phaseStrategy;
             this.prefillBatchSize = builder.prefillBatchSize;
@@ -445,13 +488,27 @@ public final class ExecutionPolicy {
             return new Builder();
         }
 
+        /** These overrides with the hidden-state copy set; every other field kept. */
+        public Overrides withHiddenStateToHost(boolean on) {
+            Builder b = builder();
+            b.phaseStrategy = phaseStrategy;
+            b.prefillBatchSize = prefillBatchSize;
+            b.samplingResidency = samplingResidency;
+            b.splitKvPartitions = splitKvPartitions;
+            b.splitKvSet = splitKvSet;
+            b.nativeLibraries = nativeLibraries;
+            b.hiddenStateToHost = on;
+            return b.build();
+        }
+
         /** Whether this overrides anything at all. */
         public boolean isEmpty() {
             return phaseStrategy == null
                     && prefillBatchSize == null
                     && samplingResidency == null
                     && !splitKvSet
-                    && nativeLibraries == null;
+                    && nativeLibraries == null
+                    && hiddenStateToHost == null;
         }
 
         /** The model's policy with this session's fields applied. */
@@ -482,6 +539,9 @@ public final class ExecutionPolicy {
             if (nativeLibraries != null) {
                 builder.nativeLibraries(nativeLibraries);
             }
+            if (hiddenStateToHost != null) {
+                builder.hiddenStateToHost(hiddenStateToHost);
+            }
             return builder.build();
         }
 
@@ -499,6 +559,8 @@ public final class ExecutionPolicy {
                             + (splitKvSet ? String.valueOf(splitKvPartitions) : "unset")
                             + ", nativeLibraries="
                             + nativeLibraries
+                            + ", hiddenStateToHost="
+                            + hiddenStateToHost
                             + "]";
         }
 
@@ -510,8 +572,15 @@ public final class ExecutionPolicy {
             private OptionalInt splitKvPartitions = OptionalInt.empty();
             private boolean splitKvSet;
             private Boolean nativeLibraries;
+            private Boolean hiddenStateToHost;
 
             private Builder() {}
+
+            /** Copy the final-normalised hidden state to the host each step (embeddings). */
+            public Builder hiddenStateToHost(boolean hiddenStateToHost) {
+                this.hiddenStateToHost = hiddenStateToHost;
+                return this;
+            }
 
             /** Allow or forbid vendor native libraries for this session. */
             public Builder nativeLibraries(boolean nativeLibraries) {

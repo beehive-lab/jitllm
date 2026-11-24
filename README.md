@@ -9,7 +9,7 @@
 ![OpenCL](https://img.shields.io/badge/OpenCL-supported-blue?logo=khronos)
 ![Apple](https://img.shields.io/badge/Metal-Apple%20Silicon-black?logo=apple)
 [![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-blue)](https://deepwiki.com/beehive-lab/jitllm)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 -----------
 
@@ -531,4 +531,4 @@ Partially funded by EU Horizon Europe & UKRI grants (most recent first):
 
 ## License
 
-[MIT](LICENSE)
+[Apache License 2.0](LICENSE)

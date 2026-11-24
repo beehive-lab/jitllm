@@ -1,3 +1,20 @@
+/*
+ * Copyright (c) 2024-2026, APT Group, Department of Computer Science,
+ * The University of Manchester.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 package org.beehive.jitllm.api;
 
 import static org.junit.Assert.assertEquals;
@@ -192,5 +209,37 @@ public class ExecutionPolicyTest {
                 overrides,
                 SessionOptions.builder().executionPolicy(overrides).build().executionPolicy());
         assertTrue(SessionOptions.defaults().executionPolicy().isEmpty());
+    }
+
+    /**
+     * The hidden-state copy is part of a policy's identity, and adding it keeps every other
+     * override.
+     */
+    @Test
+    public void hiddenStateToHostIsAFieldAndWithKeepsTheRest() {
+        ExecutionPolicy base = ExecutionPolicy.builder().build();
+        assertNotEquals(
+                "hidden state to host",
+                base,
+                ExecutionPolicy.builder().hiddenStateToHost(true).build());
+        assertTrue(
+                ExecutionPolicy.from(ExecutionPolicy.builder().hiddenStateToHost(true).build())
+                        .build()
+                        .hiddenStateToHost());
+
+        Overrides overrides =
+                Overrides.builder()
+                        .phaseStrategy(PhaseStrategy.PREFILL_DECODE)
+                        .prefillBatchSize(4)
+                        .splitKvPartitions(2)
+                        .build();
+        ExecutionPolicy applied = overrides.withHiddenStateToHost(true).applyTo(base);
+        assertTrue(applied.hiddenStateToHost());
+        assertEquals(
+                "every other field as the original override sets it",
+                ExecutionPolicy.from(overrides.applyTo(base)).hiddenStateToHost(true).build(),
+                applied);
+        assertTrue(!Overrides.none().withHiddenStateToHost(true).isEmpty());
+        assertTrue(!Overrides.none().applyTo(base).hiddenStateToHost());
     }
 }

@@ -1,3 +1,20 @@
+/*
+ * Copyright (c) 2024-2026, APT Group, Department of Computer Science,
+ * The University of Manchester.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 package org.beehive.jitllm.backend.tornado.ops.nativelib.apple;
 
 import java.util.Optional;
@@ -97,7 +114,8 @@ public record MlxPrefill(DataType weights, Projections projections) {
                 || ExecutionMode.of(policy) != ExecutionMode.BATCH_PREFILL_DECODE
                 || !BackendId.METAL.equals(TornadoDevices.target().backend())
                 || (weights != DataType.F16 && weights != DataType.Q8_0 && weights != DataType.Q4_0)
-                || !available()) {
+                || !available()
+                || deviceTooOld().isPresent()) {
             return Optional.empty();
         }
         Projections projections;
@@ -136,6 +154,33 @@ public record MlxPrefill(DataType weights, Projections projections) {
     /** Whether MLX's kernel library can be reached from this process at all. */
     public static boolean available() {
         return Probe.MLX;
+    }
+
+    /**
+     * The oldest Apple silicon generation whose GPU runs TornadoVM's MLX library tasks: older GPUs
+     * load the library but are refused at the first dispatch ({@code
+     * TornadoLibraryTaskNotSupported}).
+     */
+    public static final int MIN_APPLE_SILICON_GENERATION = 4;
+
+    /**
+     * Why the target device's GPU cannot run MLX's library tasks, or empty when it can or when its
+     * generation cannot be read (then the dispatch decides, as before).
+     */
+    public static Optional<String> deviceTooOld() {
+        return deviceTooOld(TornadoDevices.targetAppleSiliconGeneration());
+    }
+
+    /** {@link #deviceTooOld()} for a given generation. Package-private for the unit test. */
+    static Optional<String> deviceTooOld(int appleSiliconGeneration) {
+        if (appleSiliconGeneration < 0 || appleSiliconGeneration >= MIN_APPLE_SILICON_GENERATION) {
+            return Optional.empty();
+        }
+        return Optional.of(
+                "MLX needs an M"
+                        + MIN_APPLE_SILICON_GENERATION
+                        + " or newer GPU and this device is an M"
+                        + appleSiliconGeneration);
     }
 
     // @formatter:off
