@@ -69,6 +69,200 @@ public class KQuantKernelAccelTest {
         assertMatvecMatchesHost(false);
     }
 
+    @Test
+    public void q6_KWarpMatvecOnTheDeviceMatchesTheHost() {
+        assertWarpQ6_KMatchesHost(2048);
+    }
+
+    /** Sixteen units a row: half of each warp has no unit to take. */
+    @Test
+    public void q6_KWarpMatvecWithFewerUnitsThanLanesMatchesTheHost() {
+        assertWarpQ6_KMatchesHost(512);
+    }
+
+    /**
+     * {@code TransformerComputeKernelsQ6_K.matrixVectorQ6_KWarp} over thirteen rows, so the last
+     * workgroup holds rows past the matrix; the block scales are kept small and finite.
+     */
+    private void assertWarpQ6_KMatchesHost(int n) {
+        int rows = 13;
+        int blocksPerRow = n / QK_K;
+        byte[] raw = new byte[rows * blocksPerRow * Q6_K_BLOCK_BYTES];
+        Random rng = new Random(6060L + n);
+        rng.nextBytes(raw);
+        for (int b = 0; b < rows * blocksPerRow; b++) {
+            int bits = 0x2000 + rng.nextInt(0x400);
+            raw[b * Q6_K_BLOCK_BYTES + 208] = (byte) (bits & 0xFF);
+            raw[b * Q6_K_BLOCK_BYTES + 209] = (byte) (bits >> 8);
+        }
+        ByteArray weights = new ByteArray(raw.length);
+        for (int i = 0; i < raw.length; i++) {
+            weights.set(i, raw[i]);
+        }
+        FloatArray x = new FloatArray(n);
+        for (int i = 0; i < n; i++) {
+            x.set(i, rng.nextFloat() * 2 - 1);
+        }
+        FloatArray out = new FloatArray(rows);
+        out.init(0.0f);
+
+        KernelContext context = new KernelContext();
+        TaskGraph graph =
+                new TaskGraph("q6warp")
+                        .transferToDevice(DataTransferMode.FIRST_EXECUTION, context, weights, x)
+                        .transferToDevice(DataTransferMode.EVERY_EXECUTION, out)
+                        .task(
+                                "matvec",
+                                TransformerComputeKernelsQ6_K::matrixVectorQ6_KWarp,
+                                context,
+                                x,
+                                out,
+                                weights,
+                                n,
+                                rows)
+                        .transferToHost(DataTransferMode.EVERY_EXECUTION, out);
+        int groups =
+                (rows + TransformerComputeKernelsQ6_K.WARP_ROWS_PER_GROUP - 1)
+                        / TransformerComputeKernelsQ6_K.WARP_ROWS_PER_GROUP;
+        WorkerGrid worker = new WorkerGrid1D(groups * 256);
+        worker.setLocalWork(256, 1, 1);
+        GridScheduler scheduler = new GridScheduler();
+        scheduler.addWorkerGrid("q6warp.matvec", worker);
+        try (TornadoExecutionPlan plan = new TornadoExecutionPlan(graph.snapshot())) {
+            plan.withGridScheduler(scheduler).execute();
+        } catch (Exception e) {
+            throw new AssertionError("Q6_K warp matvec failed to build or execute: " + e, e);
+        }
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment segment = arena.allocate(raw.length);
+            MemorySegment.copy(
+                    raw, 0, segment, java.lang.foreign.ValueLayout.JAVA_BYTE, 0, raw.length);
+            var host = new Q6_KFloatTensor(rows * n, segment);
+            for (int row = 0; row < rows; row++) {
+                double expected = 0;
+                for (int j = 0; j < n; j++) {
+                    expected += (double) host.getFloat(row * n + j) * x.get(j);
+                }
+                assertEquals(
+                        "row " + row + " of the Q6_K warp matvec at n = " + n,
+                        expected,
+                        out.get(row),
+                        Math.max(1e-3, Math.abs(expected) * 1e-4));
+            }
+        }
+    }
+
+    @Test
+    public void q4_KWarpMatvecOnTheDeviceMatchesTheHost() {
+        assertWarpQ4_KMatchesHost(2048, false);
+    }
+
+    /** Two super-blocks a row: the lanes of the last two super-block slots have none. */
+    @Test
+    public void q4_KWarpMatvecWithFewerBlocksThanSlotsMatchesTheHost() {
+        assertWarpQ4_KMatchesHost(512, false);
+    }
+
+    @Test
+    public void q4_KWarpResidualMatvecOnTheDeviceMatchesTheHost() {
+        assertWarpQ4_KMatchesHost(2048, true);
+    }
+
+    /**
+     * {@code TransformerComputeKernelsQ4_K.matrixVectorQ4_KWarp}, or its residual form, over
+     * thirteen rows, so the last workgroup holds rows past the matrix; the super-block scales are
+     * kept small and finite.
+     */
+    private void assertWarpQ4_KMatchesHost(int n, boolean residual) {
+        int rows = 13;
+        int blocksPerRow = n / QK_K;
+        byte[] raw = new byte[rows * blocksPerRow * Q4_K_BLOCK_BYTES];
+        Random rng = new Random(4040L + n);
+        rng.nextBytes(raw);
+        for (int b = 0; b < rows * blocksPerRow; b++) {
+            int d = 0x2000 + rng.nextInt(0x400);
+            int dmin = 0x1C00 + rng.nextInt(0x400);
+            raw[b * Q4_K_BLOCK_BYTES] = (byte) (d & 0xFF);
+            raw[b * Q4_K_BLOCK_BYTES + 1] = (byte) (d >> 8);
+            raw[b * Q4_K_BLOCK_BYTES + 2] = (byte) (dmin & 0xFF);
+            raw[b * Q4_K_BLOCK_BYTES + 3] = (byte) (dmin >> 8);
+        }
+        ByteArray weights = new ByteArray(raw.length);
+        for (int i = 0; i < raw.length; i++) {
+            weights.set(i, raw[i]);
+        }
+        FloatArray x = new FloatArray(n);
+        for (int i = 0; i < n; i++) {
+            x.set(i, rng.nextFloat() * 2 - 1);
+        }
+        float[] start = new float[rows];
+        FloatArray out = new FloatArray(rows);
+        for (int r = 0; r < rows; r++) {
+            start[r] = residual ? rng.nextFloat() * 2 - 1 : 0f;
+            out.set(r, start[r]);
+        }
+
+        KernelContext context = new KernelContext();
+        TaskGraph graph =
+                new TaskGraph("q4warp")
+                        .transferToDevice(DataTransferMode.FIRST_EXECUTION, context, weights, x)
+                        .transferToDevice(DataTransferMode.EVERY_EXECUTION, out);
+        if (residual) {
+            graph.task(
+                    "matvec",
+                    TransformerComputeKernelsQ4_K::matrixVectorWithResidualQ4_KWarp,
+                    context,
+                    x,
+                    out,
+                    weights,
+                    n,
+                    rows);
+        } else {
+            graph.task(
+                    "matvec",
+                    TransformerComputeKernelsQ4_K::matrixVectorQ4_KWarp,
+                    context,
+                    x,
+                    out,
+                    weights,
+                    n,
+                    rows);
+        }
+        graph.transferToHost(DataTransferMode.EVERY_EXECUTION, out);
+        int groups =
+                (rows + TransformerComputeKernelsQ4_K.WARP_GROUP_ROWS - 1)
+                        / TransformerComputeKernelsQ4_K.WARP_GROUP_ROWS;
+        int threads = 32 * TransformerComputeKernelsQ4_K.WARP_GROUP_ROWS;
+        WorkerGrid worker = new WorkerGrid1D(groups * threads);
+        worker.setLocalWork(threads, 1, 1);
+        GridScheduler scheduler = new GridScheduler();
+        scheduler.addWorkerGrid("q4warp.matvec", worker);
+        try (TornadoExecutionPlan plan = new TornadoExecutionPlan(graph.snapshot())) {
+            plan.withGridScheduler(scheduler).execute();
+        } catch (Exception e) {
+            throw new AssertionError("Q4_K warp matvec failed to build or execute: " + e, e);
+        }
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment segment = arena.allocate(raw.length);
+            MemorySegment.copy(
+                    raw, 0, segment, java.lang.foreign.ValueLayout.JAVA_BYTE, 0, raw.length);
+            var host = new Q4_KFloatTensor(rows * n, segment);
+            for (int row = 0; row < rows; row++) {
+                double expected = start[row];
+                for (int j = 0; j < n; j++) {
+                    expected += (double) host.getFloat(row * n + j) * x.get(j);
+                }
+                assertEquals(
+                        "row " + row + " of the Q4_K warp matvec at n = " + n,
+                        expected,
+                        out.get(row),
+                        Math.max(1e-3, Math.abs(expected) * 1e-4));
+            }
+        }
+    }
+
     private void assertMatvecMatchesHost(boolean q4k) {
         int blockBytes = q4k ? Q4_K_BLOCK_BYTES : Q6_K_BLOCK_BYTES;
         int blocksPerRow = N / QK_K;

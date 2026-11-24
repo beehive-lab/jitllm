@@ -28,8 +28,10 @@ import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
 import org.beehive.jitllm.runtime.tensor.DataType;
+import uk.ac.manchester.tornado.api.DataRange;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
+import uk.ac.manchester.tornado.api.TornadoExecutionResult;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 // @formatter:off
@@ -82,6 +84,9 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
      * Rule 17 seam. Costs one boolean test per execution while the sink is the disabled default.
      */
     private final TornadoMetricsReporter metrics;
+
+    /** The last prefill layer graph's result, read back through by {@link #awaitBatchPrefill}. */
+    private TornadoExecutionResult lastBatchPrefill;
 
     // ── Construction ─────────────────────────────────────────────────────────
     TornadoVMMasterPlanBatchPrefillDecode(State initialState, Model model, MetricsSink sink) {
@@ -316,7 +321,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
             if (CUDA_GRAPHS) {
                 batchLayer.withCUDAGraph();
             }
-            metrics.report(batchLayer.execute());
+            lastBatchPrefill = metrics.report(batchLayer.execute());
         }
     }
 
@@ -351,11 +356,22 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
             if (CUDA_GRAPHS) {
                 layer.withCUDAGraph();
             }
-            metrics.report(layer.execute());
+            lastBatchPrefill = metrics.report(layer.execute());
         }
     }
 
     // @formatter:on
+
+    /**
+     * Reads one value of the last chunk's {@code wrapXBatch} back, which waits for the layer that
+     * wrote it.
+     */
+    @Override
+    public void awaitBatchPrefill() {
+        if (lastBatchPrefill != null) {
+            lastBatchPrefill.transferToHost(new DataRange(state.workspace.wrapXBatch).withSize(1));
+        }
+    }
 
     @Override
     public int narrowPrefillRows() {
@@ -395,7 +411,7 @@ public class TornadoVMMasterPlanBatchPrefillDecode implements BatchPrefillDecode
             if (CUDA_GRAPHS) {
                 layer.withCUDAGraph();
             }
-            metrics.report(layer.execute());
+            lastBatchPrefill = metrics.report(layer.execute());
         }
     }
 

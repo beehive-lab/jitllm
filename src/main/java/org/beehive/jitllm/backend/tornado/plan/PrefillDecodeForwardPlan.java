@@ -54,7 +54,11 @@ public class PrefillDecodeForwardPlan extends ForwardPlan {
     public PrefillDecodeForwardPlan(
             Model model, PrefillDecodeForwardPlanComponents components, WeightPrepacker prepacker) {
         super(prepacker);
-        int N = model.configuration().numberOfLayers();
+        // N is the number of layer graphs, as in SingleTokenForwardPlan: a family may put several
+        // adjacent layers in one graph. Example: LFM2's 40 layers in 5 graphs.
+        TransformerLayerTaskGraphs layers = components.prefillDecodeTransformerLayers();
+        List<ImmutableTaskGraph> layerGraphs = layers.getFFNLayerImmutableTaskGraphs();
+        int N = layerGraphs.size();
         List<ImmutableTaskGraph> inference = new ArrayList<>(N + 2);
         GridScheduler scheduler = new GridScheduler();
 
@@ -62,8 +66,7 @@ public class PrefillDecodeForwardPlan extends ForwardPlan {
         inference.add(act.getImmutableTaskGraph());
         act.updateGridScheduler(scheduler);
 
-        TransformerLayerTaskGraphs layers = components.prefillDecodeTransformerLayers();
-        inference.addAll(layers.getFFNLayerImmutableTaskGraphs());
+        inference.addAll(layerGraphs);
         layers.updateGridScheduler(scheduler);
 
         AbstractLogitsTaskGraph logits =

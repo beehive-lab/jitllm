@@ -13,13 +13,25 @@ rendered for those families only.
 import json
 import os
 
+from jinja2.ext import Extension
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+class GenerationTag(Extension):
+    """transformers' {% generation %} block, which marks the assistant's text for training masks and
+    renders its body unchanged (LFM2.5's template uses it)."""
+    tags = {"generation"}
+
+    def parse(self, parser):
+        next(parser.stream)
+        return parser.parse_statements(("name:endgeneration",), drop_needle=True)
+
+
 def environment():
-    env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+    env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True,
+                                        extensions=[GenerationTag])
     env.filters['tojson'] = lambda x, indent=None, separators=None, sort_keys=False: json.dumps(
         x, ensure_ascii=False, indent=indent, separators=separators, sort_keys=sort_keys)
 
@@ -62,6 +74,32 @@ def granite_3_2_messages(messages):
     return out
 
 
+def lfm2_python_calls(calls):
+    """Calls in LFM2's output syntax, as LFM2.5's template writes tool_calls: a Python-style list of
+    keyword calls between <|tool_call_start|> and <|tool_call_end|>."""
+    def value(v):
+        if isinstance(v, str):
+            return "'" + v.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r") + "'"
+        if isinstance(v, (dict, list)):
+            return json.dumps(v, ensure_ascii=False)
+        return str(v)
+    return "<|tool_call_start|>[" + ", ".join(
+        c["name"] + "(" + ", ".join(k + "=" + value(v) for k, v in c["arguments"].items()) + ")"
+        for c in calls) + "]<|tool_call_end|>"
+
+
+def lfm2_messages(messages):
+    """LFM2's template renders an assistant message's content only, so a call is its content, in
+    the model's own output syntax."""
+    out = []
+    for m in messages:
+        if m["role"] == "assistant" and "tool_calls" in m:
+            out.append({"role": "assistant", "content": lfm2_python_calls(m["tool_calls"])})
+        else:
+            out.append(dict(m))
+    return out
+
+
 FAMILIES = {
     "granite-3.2": dict(bos_token="", eos_token="<|end_of_text|>", messages=granite_3_2_messages),
     "granite-4.0": dict(bos_token="", eos_token="<|end_of_text|>", messages=openai_messages),
@@ -75,6 +113,12 @@ FAMILIES = {
     # only the tool-free scenarios are rendered for it.
     "llama-3.1": dict(bos_token="<|begin_of_text|>", eos_token="<|eot_id|>", messages=openai_messages,
                       chat_only=True),
+    # LFM2-8B-A1B: tools in <|tool_list_start|>…<|tool_list_end|>, results in
+    # <|tool_response_start|>…<|tool_response_end|>, calls replayed as content.
+    "lfm2": dict(bos_token="<|startoftext|>", eos_token="<|im_end|>", messages=lfm2_messages),
+    # LFM2.5-24B-A2B: tools as a bare list, calls rendered from tool_calls, results as they are; the
+    # generation prompt opens <think>.
+    "lfm2.5": dict(bos_token="<|startoftext|>", eos_token="<|im_end|>", messages=openai_messages),
 }
 
 # Qwen3.8's template writes a reasoning-effort instruction into the system turn while thinking is on.

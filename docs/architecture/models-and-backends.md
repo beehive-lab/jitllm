@@ -27,7 +27,8 @@ mapped to the nearest family.
 
 Registered architectures today: Llama, Mistral, Qwen2, Qwen2-MoE, Qwen3, DeepSeek-R1-Distill-Qwen,
 Granite, Phi-3, Gemma-4, Devstral, Qwen3.5 / 3.6 / 3.8 (`qwen35`), Qwen3.6 MoE (`qwen35moe`),
-GLM-4.7-Flash (`deepseek2`) and gpt-oss-20b / gpt-oss-120b (`gpt-oss`).
+GLM-4.7-Flash (`deepseek2`), LFM2-8B-A1B / LFM2.5-24B-A2B (`lfm2moe`) and gpt-oss-20b /
+gpt-oss-120b (`gpt-oss`).
 
 `qwen35` needed no recognition case at all — the file declares that architecture, nothing
 else claims the name, and the pass-through branch resolved it. A provider class and one
@@ -81,6 +82,7 @@ compare the encoder's output with that template rendered by Jinja2
 | Qwen 1.5 / Qwen 2 MoE | no | no tools in the template, no `<tool_call>` in the vocabulary |
 | Phi-3 mini | no | no tools in the template (GGUF or upstream) |
 | GLM-4.7-Flash (`deepseek2`) | no | `Glm4ChatFormat` implements no tool format |
+| LFM2 / LFM2.5 MoE (`lfm2moe`) | yes | `List of tools: [...]` in the system turn; calls as a Python-style list of keyword calls between `<\|tool_call_start\|>` and `<\|tool_call_end\|>`; `tool` turns. LFM2-8B-A1B wraps the list in `<\|tool_list_start\|>…<\|tool_list_end\|>` and each result in `<\|tool_response_start\|>…<\|tool_response_end\|>` |
 | gpt-oss | no, for now | Harmony declares tools as a TypeScript-like namespace in the developer message and calls them in the `commentary` channel; `HarmonyChatFormat` does not render that yet |
 | Mistral v0.3, Devstral | no, for now | the Mistral v0.3 GGUF template has no tools; the upstream one does (`[AVAILABLE_TOOLS]`), but it needs this format's non-tool turns reworked first |
 
@@ -210,8 +212,9 @@ batched; greedy text is identical in every row:
 
 On CUDA every family has a batched prefill on the tensor cores: Llama (F16, Q8_0, Q4_0),
 Mistral, Qwen2 / DeepSeek-R1-Distill-Qwen, Qwen3, Phi-3, Granite, Devstral (F16, Q8_0, Q4_K),
-Qwen2-MoE, Gemma 4, Qwen3.5 / 3.6 / 3.8, deepseek2 and gpt-oss (in chunks that are a multiple of
-128). It is the default,
+Qwen2-MoE, Gemma 4, Qwen3.5 / 3.6 / 3.8, deepseek2, gpt-oss (in chunks that are a multiple of
+128) and `lfm2moe`, whose experts are grouped by expert and run `GroupedExpertMmaKernels` over
+the weights' integer codes, each group's scale applied in FP32. It is the default,
 in chunks of 512, wherever the family's batched prefill builds on the device; elsewhere the
 single-token plan runs. `--with-prefill-decode --batch-prefill-size N` chooses the chunk, and an
 explicit request the device cannot build is refused with `GPUL-CFG-002`, naming the flag to drop. The Llama-shaped families share
@@ -241,8 +244,10 @@ projection, its RoPE) rather than copying the layer graph.
   (`NativeLibrarySupport.defaultFor`): every one of these GEMMs is then
   `cublasGemmExFP16FP32`; Q, K and V (and gate and up) are copied into one contiguous buffer so one call
   covers them. The flag is accepted for Llama (Q4_0, Q8_0, F16), Mistral, Qwen2 / DeepSeek, Qwen3,
-  Phi-3 and Granite (Q8_0, F16), Devstral (Q8_0, Q4_K, F16), Gemma 4 (Q8_0, Q4_0) and Qwen3.5 (Q8_0); the
-  JIT kernels run elsewhere. Where the path exists but cuBLAS does not load, the run notes once
+  Phi-3 and Granite (Q8_0, F16), Devstral (Q8_0, Q4_K, F16), Gemma 4 (Q8_0, Q4_0), Qwen3.5 (Q8_0)
+  and LFM2 (`lfm2moe`, Q4_K files: the attention and short-convolution projections, each weight
+  decoded into one FP16 scratch per call; its experts stay on the grouped JIT kernels, since the
+  cuBLAS binding has no grouped GEMM); the JIT kernels run elsewhere. Where the path exists but cuBLAS does not load, the run notes once
   (`For maximum performance please install cuBLAS 12 and cuDNN 9; falling back to the JIT
   kernels.`) and runs the JIT kernels. `--with-native-libraries` requires the path and refuses
   any configuration without one; `--no-native-libraries` keeps the JIT kernels. The TornadoVM binding loads `libcublasLt.so.12`. For Qwen3 F16 the first
@@ -255,7 +260,8 @@ projection, its RoPE) rather than copying the layer graph.
   own queue and buffers (`MlxPrefill`). Decode stays on the JIT kernels. Each provider declares
   the weights it implements per backend (`TornadoPlanProvider.nativeLibraryWeights(BackendId)`):
   on Metal Llama (F16, Q8_0, Q4_0), Mistral, Qwen2 / DeepSeek, Qwen3, Phi-3 and Granite
-  (F16, Q8_0), and Gemma 4 (Q8_0); everything else runs the JIT kernels.
+  (F16, Q8_0), and Gemma 4 (Q8_0); everything else runs the JIT kernels. LFM2 has no MLX path:
+  `MlxPrefill` reads F16, Q8_0 and Q4_0, and LFM2's K-quant weights would have to be converted.
   `--with-native-libraries` requires the MLX path and refuses any configuration without one;
   `--no-native-libraries` keeps the JIT kernels. F16 weights are multiplied as they are, split Q/K/V
   and gate/up copied into one contiguous buffer each. Q8_0 and Q4_0 weights are either decoded once into

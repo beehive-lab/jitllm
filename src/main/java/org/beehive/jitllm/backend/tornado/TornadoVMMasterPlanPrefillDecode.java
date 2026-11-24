@@ -22,7 +22,6 @@ import org.beehive.jitllm.backend.tornado.plan.ForwardPlanFactory;
 import org.beehive.jitllm.backend.tornado.plan.PrefillDecodeForwardPlan;
 import org.beehive.jitllm.backend.tornado.plan.layout.PrefillDecodeForwardTaskGraphLayout;
 import org.beehive.jitllm.inference.state.State;
-import org.beehive.jitllm.model.Configuration;
 import org.beehive.jitllm.model.Model;
 import org.beehive.jitllm.runtime.backend.ExecutionInfo;
 import org.beehive.jitllm.runtime.metrics.MetricsSink;
@@ -75,7 +74,6 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
 
     private final State state;
     private final Model model;
-    private final Configuration config;
 
     PrefillDecodeForwardPlan prefillDecodeForwardPlan;
     PrefillDecodeForwardTaskGraphLayout taskGraphLayout;
@@ -94,7 +92,6 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
 
         this.state = state;
         this.model = model;
-        this.config = model.configuration();
         this.metrics = new TornadoMetricsReporter(sink);
 
         long startTime = System.nanoTime();
@@ -229,7 +226,7 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
         state.workspace.temp.clear();
         state.workspace.tempFFN.clear();
 
-        for (int layer = 0; layer < config.numberOfLayers(); layer++) {
+        for (int layer = 0; layer < taskGraphLayout.N(); layer++) {
             var l =
                     executionPlan
                             .withGraph(taskGraphLayout.layerIdx(layer))
@@ -265,7 +262,7 @@ public class TornadoVMMasterPlanPrefillDecode implements TornadoVMMasterPlan {
         state.workspace.temp.clear();
         state.workspace.tempFFN.clear();
 
-        for (int layer = 0; layer < config.numberOfLayers(); layer++) {
+        for (int layer = 0; layer < taskGraphLayout.N(); layer++) {
             var l =
                     executionPlan
                             .withGraph(taskGraphLayout.layerIdx(layer))

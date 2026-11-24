@@ -32,6 +32,14 @@ public interface BatchPrefillDecodePlan extends TornadoVMMasterPlan {
     void tornadoVMForwardBatchPrefill();
 
     /**
+     * Returns once the device has finished the prefill just run; call it before anything else runs
+     * on the plan. On Metal {@code execute()} returns with the command buffers still queued, so a
+     * pp512 timer stopped without this misses the end of the prefill. A decode step waits anyway,
+     * when it reads its logits; CUDA's {@code execute()} already waits.
+     */
+    default void awaitBatchPrefill() {}
+
+    /**
      * Whether chunks after the first take a separate family of prefill graphs. Only a plan whose
      * first chunk uses a kernel that cannot continue a sequence has one.
      */

@@ -474,11 +474,16 @@ public class JitllmBench {
 
         // Untimed depth prefill.
         prefill(model, state, plan, hostForward, toks, 0, t.depth(), batch);
+        awaitPrefill(plan, t.depth(), batch);
 
         int base = t.depth();
         long t0 = System.nanoTime();
         // Prompt processing: batched-prefill chunks when batch>1, else single-token.
         prefill(model, state, plan, hostForward, toks, base, t.nPrompt(), batch);
+        if (t.nGen() == 0) {
+            // With no decode step to read logits, the clock waits for the prefill itself.
+            awaitPrefill(plan, t.nPrompt(), batch);
+        }
         // Generation: always single-token decode over the growing KV cache.
         for (int i = 0; i < t.nGen(); i++) {
             int pos = base + t.nPrompt() + i;
@@ -494,6 +499,17 @@ public class JitllmBench {
         }
         long t1 = System.nanoTime();
         return t.tokens() / ((t1 - t0) / 1e9);
+    }
+
+    /**
+     * Waits for the device to finish a batched prefill of {@code count} tokens just run. On Metal
+     * the last pp512 chunk is still queued when the host returns; the single-token path reads
+     * logits every token and needs no wait.
+     */
+    static void awaitPrefill(TornadoVMMasterPlan plan, int count, int batch) {
+        if (plan != null && batch > 1 && count > 0) {
+            ((BatchPrefillDecodePlan) plan).awaitBatchPrefill();
+        }
     }
 
     /**

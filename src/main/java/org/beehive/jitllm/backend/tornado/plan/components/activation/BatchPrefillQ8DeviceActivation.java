@@ -32,7 +32,7 @@ import uk.ac.manchester.tornado.api.TaskGraph;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 
 /**
- * Batch prefill activation for a Q8_0 or Q4_0 embedding, decoded on the device.
+ * Batch prefill activation for a Q8_0, Q4_0 or Q6_K embedding, decoded on the device.
  *
  * <p>{@link BatchPrefillActivation} takes the batch already decoded to FP32 by the host, element by
  * element in Java. Until the JIT compiles that loop the first chunks of a prompt spend a quarter of
@@ -45,6 +45,8 @@ public class BatchPrefillQ8DeviceActivation implements ActivationTaskGraph {
     private static final int Q8_0_BLOCK_SIZE = 32;
     private static final int Q8_0_BLOCK_BYTES = 34;
     private static final int Q4_0_BLOCK_BYTES = 18;
+    private static final int Q6_K_BLOCK_SIZE = 256;
+    private static final int Q6_K_BLOCK_BYTES = 210;
 
     private final ImmutableTaskGraph itg;
     private final int batchSize;
@@ -55,15 +57,23 @@ public class BatchPrefillQ8DeviceActivation implements ActivationTaskGraph {
     }
 
     /**
-     * The embedding rows in {@code embedding}'s representation: Q8_0, or Q4_0, whose consecutive
-     * rows are likewise one Q4_0 vector.
+     * The embedding rows in {@code embedding}'s representation: Q8_0, or Q4_0 or Q6_K, whose
+     * consecutive rows are likewise one vector of that type. For example LFM2-8B's Q6_K rows of
+     * 2,048 weights are 8 super-blocks, 1,680 bytes each.
      */
     public BatchPrefillQ8DeviceActivation(
             State state, Configuration config, int batchSize, DataType embedding) {
-        if (embedding != DataType.Q8_0 && embedding != DataType.Q4_0) {
+        if (embedding != DataType.Q8_0
+                && embedding != DataType.Q4_0
+                && embedding != DataType.Q6_K) {
             throw new IllegalArgumentException(
-                    "the device-decoded batch activation reads Q8_0 or Q4_0 rows, not "
+                    "the device-decoded batch activation reads Q8_0, Q4_0 or Q6_K rows, not "
                             + embedding);
+        }
+        if (embedding == DataType.Q6_K && config.dim() % Q6_K_BLOCK_SIZE != 0) {
+            throw new IllegalArgumentException(
+                    "a Q6_K batch decoded as one vector needs a width divisible by 256, not "
+                            + config.dim());
         }
         if (config.dim() % Q8_0_BLOCK_SIZE != 0) {
             throw new IllegalArgumentException(
@@ -73,7 +83,10 @@ public class BatchPrefillQ8DeviceActivation implements ActivationTaskGraph {
         this.batchSize = batchSize;
         this.dim = config.dim();
         boolean q8 = embedding == DataType.Q8_0;
-        int rowBytes = dim / Q8_0_BLOCK_SIZE * (q8 ? Q8_0_BLOCK_BYTES : Q4_0_BLOCK_BYTES);
+        int rowBytes =
+                embedding == DataType.Q6_K
+                        ? dim / Q6_K_BLOCK_SIZE * Q6_K_BLOCK_BYTES
+                        : dim / Q8_0_BLOCK_SIZE * (q8 ? Q8_0_BLOCK_BYTES : Q4_0_BLOCK_BYTES);
         if (state.workspace.embeddingQ8Batch == null
                 || state.workspace.embeddingQ8Batch.getSize() < batchSize * rowBytes) {
             state.workspace.embeddingQ8Batch = TornadoWorkspaces.bytes(batchSize * rowBytes);
@@ -89,9 +102,11 @@ public class BatchPrefillQ8DeviceActivation implements ActivationTaskGraph {
                                 DataTransferMode.EVERY_EXECUTION, state.workspace.embeddingQ8Batch)
                         .task(
                                 "updateX",
-                                q8
-                                        ? TransformerComputeKernels::convertQ8_0toFP32
-                                        : TransformerComputeKernels::convertQ4_0toFP32,
+                                embedding == DataType.Q6_K
+                                        ? TransformerComputeKernels::convertQ6_KtoFP32
+                                        : q8
+                                                ? TransformerComputeKernels::convertQ8_0toFP32
+                                                : TransformerComputeKernels::convertQ4_0toFP32,
                                 context,
                                 state.workspace.embeddingQ8Batch,
                                 state.workspace.wrapXBatch)
