@@ -14,7 +14,7 @@ authors:
 - family-names: "Kotselidis"
   given-names: "Christos"
 title: "jitllm (formerly GPULlama3.java)"
-license: MIT License
+license: Apache-2.0
 version: 3.0.0
 date-released: 2026-11-12
 url: "https://github.com/beehive-lab/jitllm"
