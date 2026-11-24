@@ -1,7 +1,7 @@
 ---
 name: port-model-to-jitllm
 description: Port a new model architecture to jitllm. Use when a GGUF file is not recognized, when a family needs its own program description or lowering, or when deciding whether an existing family's implementation can be reused for a new one.
-license: MIT
+license: Apache-2.0
 ---
 
 # Port a model architecture to jitllm
