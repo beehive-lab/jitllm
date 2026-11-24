@@ -2,6 +2,8 @@ package org.beehive.jitllm.backend.tornado.plan.components;
 
 import org.beehive.jitllm.backend.tornado.layers.BatchPrefillTransformerLayerTaskGraphs;
 import org.beehive.jitllm.backend.tornado.layers.TransformerLayerTaskGraphs;
+import org.beehive.jitllm.inference.state.State;
+import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 
 // @formatter:off
 /**
@@ -32,6 +34,20 @@ public interface StagedForwardPlanComponents extends SingleTokenForwardPlanCompo
         throw new UnsupportedOperationException(
                 "this family's batched prefill is not split across devices; drop"
                         + " --batch-prefill-size to split its single-token plan");
+    }
+
+    /**
+     * What crosses a stage boundary in the single-token and decode plans, on {@code stageState}:
+     * the hidden state, unless a family carries more between its layers (glm5next's residual
+     * streams).
+     */
+    default FloatArray stageCarrier(State stageState) {
+        return stageState.workspace.wrapX;
+    }
+
+    /** What crosses a stage boundary in the batched prefill: a chunk's hidden states by default. */
+    default FloatArray batchStageCarrier(State stageState) {
+        return stageState.workspace.wrapXBatch;
     }
 
     /** The decode layers {@code [firstLayer, endLayer)} that follow a staged batched prefill. */

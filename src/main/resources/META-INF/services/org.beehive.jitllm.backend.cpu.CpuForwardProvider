@@ -11,3 +11,4 @@ org.beehive.jitllm.backend.cpu.DevstralCpuForwardProvider
 org.beehive.jitllm.backend.cpu.Qwen35CpuForwardProvider
 org.beehive.jitllm.backend.cpu.Qwen35MoeCpuForwardProvider
 org.beehive.jitllm.backend.cpu.DeepSeek2CpuForwardProvider
+org.beehive.jitllm.backend.cpu.Glm5NextCpuForwardProvider

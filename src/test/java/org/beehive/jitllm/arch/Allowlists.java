@@ -39,6 +39,7 @@ public final class Allowlists {
                     "org.beehive.jitllm.model.deepseek2.DeepSeek2",
                     "org.beehive.jitllm.model.devstral.Devstral",
                     "org.beehive.jitllm.model.gemma4.Gemma4",
+                    "org.beehive.jitllm.model.glm5next.Glm5Next",
                     "org.beehive.jitllm.model.granite.Granite",
                     "org.beehive.jitllm.model.llama.Llama",
                     "org.beehive.jitllm.model.mistral.Mistral",
