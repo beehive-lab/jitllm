@@ -227,7 +227,11 @@ final class DelegatingSession implements GenerationSession {
 
         TokenEventStream events =
                 new TokenEventStream(
-                        model.tokenizer(), stopTokens, request.onEvent(), request.onToken());
+                        model.tokenizer(),
+                        model.chatFormat().displayFilter(model.tokenizer()),
+                        stopTokens,
+                        request.onEvent(),
+                        request.onToken());
         // With a cancellation token, the loops can see it through the consumer they already take,
         // and stop after the token being delivered (TokenGenerationLoop.cancellationRequested).
         var cancellable =
@@ -438,18 +442,10 @@ final class DelegatingSession implements GenerationSession {
      * whole history, answer included, is fed again.
      */
     private void dropReasoningFromHistory(int responseStart, List<Integer> responseTokens) {
-        int reasoningEnd = responseTokens.indexOf(model.chatFormat().reasoningEndToken());
-        if (model.chatFormat().reasoningEndToken() < 0 || reasoningEnd < 0) {
+        List<Integer> answer = answerOf(responseTokens);
+        if (answer == null) {
             return;
         }
-        int answerStart = reasoningEnd + 1;
-        // The template strips the whitespace that separates reasoning from the answer.
-        while (answerStart < responseTokens.size()
-                && model.tokenizer().decode(List.of(responseTokens.get(answerStart))).isBlank()) {
-            answerStart++;
-        }
-        List<Integer> answer =
-                List.copyOf(responseTokens.subList(answerStart, responseTokens.size()));
         if (model.configuration().recurrentStateBytes() == 0) {
             position = responseStart;
             encodedContext.truncate(responseStart);
@@ -462,6 +458,29 @@ final class DelegatingSession implements GenerationSession {
         encodedContext.clear();
         runtime.reset();
         carriedHistory = history;
+    }
+
+    /**
+     * What the next prompt keeps of {@code responseTokens}, or {@code null} to keep it all: the
+     * format's own answer when it names one, otherwise everything after the reasoning block.
+     */
+    private List<Integer> answerOf(List<Integer> responseTokens) {
+        java.util.Optional<List<Integer>> kept =
+                model.chatFormat().historyOfResponse(responseTokens);
+        if (kept.isPresent()) {
+            return kept.get().equals(responseTokens) ? null : List.copyOf(kept.get());
+        }
+        int reasoningEnd = responseTokens.indexOf(model.chatFormat().reasoningEndToken());
+        if (model.chatFormat().reasoningEndToken() < 0 || reasoningEnd < 0) {
+            return null;
+        }
+        int answerStart = reasoningEnd + 1;
+        // The template strips the whitespace that separates reasoning from the answer.
+        while (answerStart < responseTokens.size()
+                && model.tokenizer().decode(List.of(responseTokens.get(answerStart))).isBlank()) {
+            answerStart++;
+        }
+        return List.copyOf(responseTokens.subList(answerStart, responseTokens.size()));
     }
 
     /**

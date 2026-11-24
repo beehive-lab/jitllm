@@ -156,7 +156,8 @@ public final class OperationSupport {
                             DataType.Q4_K,
                             DataType.Q5_K,
                             DataType.Q6_K,
-                            DataType.IQ4_XS);
+                            DataType.IQ4_XS,
+                            DataType.MXFP4);
 
                 // No matrix-matrix implementation: batched prefill repeats single rows.
             case MAT_MUL -> Set.of();

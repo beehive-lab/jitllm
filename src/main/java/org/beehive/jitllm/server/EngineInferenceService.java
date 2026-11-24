@@ -148,12 +148,14 @@ public final class EngineInferenceService implements AutoCloseable {
         int maxNewTokens = request.maxTokens() > 0 ? request.maxTokens() : 256;
 
         StringBuilder text = new StringBuilder();
+        java.util.function.IntPredicate display =
+                model.chatFormat().displayFilter(model.tokenizer());
         RequestHandle handle =
                 engine.addRequest(
                         promptTokens,
                         maxNewTokens,
                         token -> {
-                            if (!model.tokenizer().shouldDisplayToken(token)) {
+                            if (!display.test(token)) {
                                 return;
                             }
                             String piece = model.tokenizer().decode(List.of(token));
