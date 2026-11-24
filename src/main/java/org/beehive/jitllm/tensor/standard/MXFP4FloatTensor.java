@@ -1,8 +1,6 @@
 package org.beehive.jitllm.tensor.standard;
 
 import java.lang.foreign.MemorySegment;
-import java.nio.ByteOrder;
-import jdk.incubator.vector.ByteVector;
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorOperators;
 import jdk.incubator.vector.VectorSpecies;
@@ -24,8 +22,9 @@ public final class MXFP4FloatTensor extends FloatTensor {
     private static final int BLOCK = 32;
     private static final int BLOCK_BYTES = 17;
 
-    private static final ByteVector KVALUES_128 =
-            ByteVector.fromArray(ByteVector.SPECIES_128, KVALUES, 0);
+    private static final float[] KVALUES_FLOAT = {
+        0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12
+    };
 
     final int size;
     final MemorySegment memorySegment;
@@ -88,6 +87,11 @@ public final class MXFP4FloatTensor extends FloatTensor {
         return FloatTensor.scalarDot(this, thisOffset, that, thatOffset, size);
     }
 
+    /**
+     * Decodes each block into a 32-float scratch with the table, then multiplies it with the vector
+     * API. The decode is a scalar table lookup rather than a {@code VectorShuffle}: shuffles fail
+     * to build in a native image with shared-arena support.
+     */
     private static float vectorDot(
             MXFP4FloatTensor thiz,
             int thisOffset,
@@ -98,27 +102,20 @@ public final class MXFP4FloatTensor extends FloatTensor {
         int upperBound = size / BLOCK * BLOCK;
         long blockOffset = (long) (thisOffset / BLOCK) * BLOCK_BYTES;
         int lanes = F_SPECIES.length();
+        float[] w = new float[BLOCK];
         int j = 0;
         for (; j < upperBound; j += BLOCK, blockOffset += BLOCK_BYTES) {
             float scale = scale(Byte.toUnsignedInt(readByte(thiz.memorySegment, blockOffset)));
-            ByteVector packed =
-                    ByteVector.fromMemorySegment(
-                            ByteVector.SPECIES_128,
-                            thiz.memorySegment,
-                            blockOffset + 1,
-                            ByteOrder.LITTLE_ENDIAN);
-            ByteVector lo = KVALUES_128.rearrange(packed.and((byte) 0x0F).toShuffle());
-            ByteVector hi =
-                    KVALUES_128.rearrange(
-                            packed.lanewise(VectorOperators.LSHR, 4).and((byte) 0x0F).toShuffle());
+            for (int k = 0; k < BLOCK / 2; k++) {
+                int q = Byte.toUnsignedInt(readByte(thiz.memorySegment, blockOffset + 1 + k));
+                w[k] = KVALUES_FLOAT[q & 0x0F];
+                w[k + BLOCK / 2] = KVALUES_FLOAT[q >>> 4];
+            }
             FloatVector acc = FloatVector.zero(F_SPECIES);
-            for (int part = 0; part < 16 / lanes; part++) {
+            for (int part = 0; part < BLOCK; part += lanes) {
                 acc =
-                        that.getFloatVector(F_SPECIES, thatOffset + j + part * lanes)
-                                .fma((FloatVector) lo.castShape(F_SPECIES, part), acc);
-                acc =
-                        that.getFloatVector(F_SPECIES, thatOffset + j + 16 + part * lanes)
-                                .fma((FloatVector) hi.castShape(F_SPECIES, part), acc);
+                        that.getFloatVector(F_SPECIES, thatOffset + j + part)
+                                .fma(FloatVector.fromArray(F_SPECIES, w, part), acc);
             }
             val = acc.fma(FloatVector.broadcast(F_SPECIES, scale), val);
         }
