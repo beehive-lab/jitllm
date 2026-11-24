@@ -41,6 +41,10 @@ java -version && tornado --devices
 
 Quote every path: some contain spaces.
 
+`TORNADOVM_HOME` is the SDK root, the directory that contains `bin/`, `etc/` and `share/java/tornado`.
+A build's `dist/` folder holds it one or two levels down; pointing at `dist/…` fails `validate` with
+"is not a TornadoVM SDK: it has no share/java/tornado".
+
 ## Build
 
 ```bash
@@ -49,6 +53,12 @@ Quote every path: some contain spaces.
 make lint                            # Spotless check
 make format                          # Spotless apply
 ```
+
+Spotless ratchets from `origin/main` (`pom.xml`), so that ref must exist; in a clone whose
+remote has another name, create it with `git update-ref refs/remotes/origin/main <remote>/main`.
+It cannot run inside a `git worktree` (its git library does not follow the worktree's `.git`
+file): run the check from a plain clone of the branch. New Java files start with the same
+Apache 2.0 header as the existing sources.
 
 Always `clean` when the JDK line changes. A `target/` left by the other line fails partway
 through with `UnsupportedClassVersionError`, and the message names a test class rather than
