@@ -130,12 +130,13 @@ as a numerical result nobody can attribute.
 
 ## Backends
 
-`BackendId` is `CPU`, `CUDA`, `OPENCL` or `METAL`. CUDA, OpenCL and Metal are
-*TornadoVM* backends: capabilities of one jitllm backend, selected by which SDK is
+`BackendId` is `CPU`, `CUDA`, `OPENCL` or `METAL`; a TornadoVM HIP device resolves to
+`BackendId.of("hip")`, which grants only the backend-neutral capabilities. CUDA, OpenCL, HIP
+and Metal are *TornadoVM* backends: capabilities of one jitllm backend, selected by which SDK is
 installed, not separate jitllm backends.
 
 The launcher detects installed backends from `$TORNADOVM_HOME/etc/tornado.backend`. On a
-multi-backend SDK, `--cuda`/`--opencl`/`--metal` force one and set TornadoVM's own
+multi-backend SDK, `--cuda`/`--opencl`/`--hip`/`--metal` force one and set TornadoVM's own
 device-0 priority to match; on a single-backend SDK they are redundant but harmless. A
 backend the SDK does not contain is an error, not a fallback.
 
