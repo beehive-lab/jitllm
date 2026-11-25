@@ -8,6 +8,21 @@ Releases up to and including 1.0.0 of 2026-07-28 are GPULlama3.java releases (ar
 `llama-tornado` and `llamaTornado` launchers are now `jitllm` and `jitllm4j`, and `-Dllama.*`
 properties are now `-Djitllm.*`.
 
+## [3.1.0] - 2026-11-25
+
+### Other Changes
+
+- Depend on TornadoVM release 8.2.0 for releases ([#280](https://github.com/beehive-lab/jitllm/pull/280))
+- [feat][lfm] Port LFM2.5-24B-A2B (lfm2moe) ([#207](https://github.com/beehive-lab/jitllm/pull/207))
+- Add gpt-oss-20b and gpt-oss-120b ([#276](https://github.com/beehive-lab/jitllm/pull/276))
+- Add Kimi-Linear-48B-A3B (kimi-linear) ([#275](https://github.com/beehive-lab/jitllm/pull/275))
+- Run the JBang script without a TornadoVM SDK; bump it on release ([#282](https://github.com/beehive-lab/jitllm/pull/282))
+- Curate the README and add an architecture diagram ([#281](https://github.com/beehive-lab/jitllm/pull/281))
+- Relicense under the Apache License 2.0 ([#279](https://github.com/beehive-lab/jitllm/pull/279))
+- Dispatch serve and bench from JitllmApp so a native image can run them ([#278](https://github.com/beehive-lab/jitllm/pull/278))
+- Add EmbeddingSession: text embeddings from the last-token hidden state on the GPU ([#274](https://github.com/beehive-lab/jitllm/pull/274))
+- [fix][metal] Fall back to the JIT kernels on GPUs older than M4 instead of failing in MLX ([#277](https://github.com/beehive-lab/jitllm/pull/277))
+
 ## [3.0.0] - 2026-11-12
 
 ### Model Support
