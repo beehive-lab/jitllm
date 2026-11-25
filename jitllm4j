@@ -5,12 +5,12 @@ import module java.logging;
 String name = MethodHandles.lookup().lookupClass().getName();
 String version = "2026-04-11.1";
 
-enum Backend { OPENCL, CUDA, METAL }
+enum Backend { OPENCL, CUDA, HIP, METAL }
 
 // When an SDK is built with more than one backend, prefer in this order. Also
 // determines which backend becomes TornadoVM's default device (driver 0) - see
 // BACKEND_PRIORITY_PROPERTY below.
-List<Backend> BACKEND_PRIORITY = List.of(Backend.CUDA, Backend.OPENCL, Backend.METAL);
+List<Backend> BACKEND_PRIORITY = List.of(Backend.CUDA, Backend.HIP, Backend.OPENCL, Backend.METAL);
 
 // TornadoVM system property that ranks each backend for "driver 0" (default
 // device) selection when more than one backend is loaded - see
@@ -20,6 +20,7 @@ List<Backend> BACKEND_PRIORITY = List.of(Backend.CUDA, Backend.OPENCL, Backend.M
 Map<Backend, String> BACKEND_PRIORITY_PROPERTY = Map.of(
     Backend.OPENCL, "tornado.opencl.priority",
     Backend.CUDA, "tornado.cuda.priority",
+    Backend.HIP, "tornado.hip.priority",
     Backend.METAL, "tornado.metal.priority"
 );
 
@@ -35,7 +36,7 @@ record Config(
     boolean showCommand, boolean executeAfterShow,
     String openclFlags, int maxWaitEvents, boolean verbose,
     boolean bench, String benchArgs,
-    boolean diagnosticScalarBatchedPrefill
+    boolean diagnosticScalarBatchedPrefill, boolean fp32KvCache
 ) {}
 
 Config parseArgs(String[] args, List<Backend> installedBackends) {
@@ -72,6 +73,7 @@ Config parseArgs(String[] args, List<Backend> installedBackends) {
     boolean bench = false;
     String benchArgs = "";
     boolean diagnosticScalarBatchedPrefill = false;
+    boolean fp32KvCache = false;
     boolean deprecatedTensorCores = false;
     boolean deprecatedNoTensorCores = false;
 
@@ -96,6 +98,7 @@ Config parseArgs(String[] args, List<Backend> installedBackends) {
             case "--gpu" -> useGpu = true;
             case "--opencl" -> backendOverride = Backend.OPENCL;
             case "--cuda" -> backendOverride = Backend.CUDA;
+            case "--hip" -> backendOverride = Backend.HIP;
             case "--metal" -> backendOverride = Backend.METAL;
             case "--gpu-memory" -> gpuMemory = args[++i];
             case "--heap-min" -> heapMin = args[++i];
@@ -116,6 +119,7 @@ Config parseArgs(String[] args, List<Backend> installedBackends) {
             case "--verbose", "-v" -> verbose = true;
             case "--bench" -> bench = true;
             case "--bench-args" -> benchArgs = args[++i];
+            case "--fp32-kv-cache" -> fp32KvCache = true;
             default -> {
                 System.err.println("Unknown option: " + args[i]);
                 System.exit(1);
@@ -172,7 +176,7 @@ Config parseArgs(String[] args, List<Backend> installedBackends) {
             stream, echo, interactive, instruct, useGpu, backend, backendOverridden, gpuMemory, heapMin, heapMax, directMemory,
             debug, profiler, profilerDumpDir, printBytecodes, threads, printKernel, fullDump,
             verboseInit, showCommand, executeAfterShow, openclFlags, maxWaitEvents, verbose,
-            bench, benchArgs, diagnosticScalarBatchedPrefill);
+            bench, benchArgs, diagnosticScalarBatchedPrefill, fp32KvCache);
 }
 
 String parseAndScale(String memoryValue, int multiplier) {
@@ -213,11 +217,15 @@ void printUsage() {
                                        (backend is auto-detected from TORNADOVM_HOME/etc/tornado.backend)
               --opencl                Force the OpenCL backend if the SDK has more than one
               --cuda                  Force the CUDA backend if the SDK has more than one
+              --hip                   Force the HIP backend if the SDK has more than one
               --metal                 Force the Metal backend if the SDK has more than one
               --gpu-memory <val>      GPU memory allocation (default: 14GB)
               --heap-min <val>        Min JVM heap (default: 20g)
               --heap-max <val>        Max JVM heap (default: 20g)
               --direct-memory <val>   Max direct buffer memory (default: 3x heap-max)
+              --fp32-kv-cache         Keep the key/value cache in FP32 instead of FP16: twice the
+                                      storage. For numerical reference, and where FP16 is
+                                      unsupported (the run says so), e.g. HIP
 
             Debug:
               --debug                 Enable debug output
@@ -293,6 +301,7 @@ List<Backend> detectInstalledBackends(String tornadoSdk) {
     var nameMap = Map.of(
         "opencl-backend", Backend.OPENCL,
         "cuda-backend", Backend.CUDA,
+        "hip-backend", Backend.HIP,
         "metal-backend", Backend.METAL
     );
 
@@ -357,6 +366,7 @@ List<String> buildCommand(Config cfg, String javaHome, String tornadoSdk, String
     if (cfg.useGpu()) cmd.add("-Duse.tornadovm=true");
     if (cfg.verboseInit()) cmd.add("-Djitllm.EnableTimingForTornadoVMInit=true");
     if (cfg.diagnosticScalarBatchedPrefill()) cmd.add("-Djitllm.qwen35.tensorCores=false");
+    if (cfg.fp32KvCache()) cmd.add("-Djitllm.kvcache.fp32=true");
 
     // Debug flags
     cmd.add("-Dtornado.debug=" + cfg.debug());
@@ -387,7 +397,7 @@ List<String> buildCommand(Config cfg, String javaHome, String tornadoSdk, String
         // (default device) selection to match cfg.backend() - otherwise it
         // falls back to its own defaults (OpenCL beats everything else).
         // cfg.backend() goes first (whether auto-picked or --opencl/--cuda/
-        // --metal override), then the rest of BACKEND_PRIORITY as a
+        // --hip/--metal override), then the rest of BACKEND_PRIORITY as a
         // tiebreak.
         var effectivePriority = new ArrayList<Backend>();
         effectivePriority.add(cfg.backend());
