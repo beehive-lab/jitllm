@@ -71,17 +71,17 @@ No TornadoVM SDK: jitllm, TornadoVM's runtime and the driver for your GPU are or
 <dependency>
     <groupId>io.github.beehive-lab</groupId>
     <artifactId>jitllm</artifactId>
-    <version>3.0.0-jdk22plus</version>
+    <version>3.1.0-jdk22plus</version>
 </dependency>
 <dependency>
     <groupId>io.github.beehive-lab</groupId>
     <artifactId>tornado-runtime</artifactId>
-    <version>8.1.0-jdk22plus</version>
+    <version>8.2.0-jdk22plus</version>
 </dependency>
 <dependency>
     <groupId>io.github.beehive-lab</groupId>
     <artifactId>tornado-drivers-cuda</artifactId>   <!-- or tornado-drivers-metal, tornado-drivers-opencl -->
-    <version>8.1.0-jdk22plus</version>
+    <version>8.2.0-jdk22plus</version>
 </dependency>
 ```
 
@@ -196,7 +196,7 @@ startup timings. `./jitllm COMMAND --help` lists every option.
 <dependency>
     <groupId>io.github.beehive-lab</groupId>
     <artifactId>jitllm</artifactId>
-    <version>3.0.0-jdk21</version>
+    <version>3.1.0-jdk21</version>
 </dependency>
 ```
 
@@ -205,7 +205,7 @@ startup timings. `./jitllm COMMAND --help` lists every option.
 <dependency>
     <groupId>io.github.beehive-lab</groupId>
     <artifactId>jitllm</artifactId>
-    <version>3.0.0-jdk22plus</version>
+    <version>3.1.0-jdk22plus</version>
 </dependency>
 ```
 
@@ -213,12 +213,12 @@ startup timings. `./jitllm COMMAND --help` lists every option.
 
 **JDK 21**:
 ```groovy
-implementation 'io.github.beehive-lab:jitllm:3.0.0-jdk21'
+implementation 'io.github.beehive-lab:jitllm:3.1.0-jdk21'
 ```
 
 **JDK 22+**:
 ```groovy
-implementation 'io.github.beehive-lab:jitllm:3.0.0-jdk22plus'
+implementation 'io.github.beehive-lab:jitllm:3.1.0-jdk22plus'
 ```
 <!-- DEPENDENCY-SNIPPETS:END -->
 

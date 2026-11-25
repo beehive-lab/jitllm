@@ -1,13 +1,13 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 22+
-//DEPS io.github.beehive-lab:jitllm:3.0.0-jdk22plus
-//DEPS io.github.beehive-lab:tornado-runtime:8.1.0-jdk22plus
-//DEPS io.github.beehive-lab:tornado-drivers-cuda:8.1.0-jdk22plus
-//DEPS io.github.beehive-lab:tornado-drivers-opencl:8.1.0-jdk22plus
-//DEPS io.github.beehive-lab:tornado-drivers-metal:8.1.0-jdk22plus
-//DEPS io.github.beehive-lab:tornado-cublas:8.1.0-jdk22plus
-//DEPS io.github.beehive-lab:tornado-cudnn:8.1.0-jdk22plus
-//DEPS io.github.beehive-lab:tornado-mlx:8.1.0-jdk22plus
+//DEPS io.github.beehive-lab:jitllm:3.1.0-jdk22plus
+//DEPS io.github.beehive-lab:tornado-runtime:8.2.0-jdk22plus
+//DEPS io.github.beehive-lab:tornado-drivers-cuda:8.2.0-jdk22plus
+//DEPS io.github.beehive-lab:tornado-drivers-opencl:8.2.0-jdk22plus
+//DEPS io.github.beehive-lab:tornado-drivers-metal:8.2.0-jdk22plus
+//DEPS io.github.beehive-lab:tornado-cublas:8.2.0-jdk22plus
+//DEPS io.github.beehive-lab:tornado-cudnn:8.2.0-jdk22plus
+//DEPS io.github.beehive-lab:tornado-mlx:8.2.0-jdk22plus
 /*
  * Copyright (c) 2024-2026, APT Group, Department of Computer Science,
  * The University of Manchester.
