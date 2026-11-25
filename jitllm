@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 jitllm: GPU-accelerated Java LLM runner with TornadoVM
-Run LLM models using OpenCL, CUDA, or Metal backends.
+Run LLM models using OpenCL, CUDA, HIP, or Metal backends.
 
 The backend is auto-detected from the installed TornadoVM SDK
 (TORNADOVM_HOME/etc/tornado.backend) - no need to select it manually.
@@ -26,6 +26,7 @@ from enum import Enum
 class Backend(Enum):
     OPENCL = "opencl"
     CUDA = "cuda"
+    HIP = "hip"
     METAL = "metal"
 
 
@@ -33,6 +34,7 @@ class Backend(Enum):
 BACKEND_NAME_MAP: Dict[str, Backend] = {
     "opencl-backend": Backend.OPENCL,
     "cuda-backend": Backend.CUDA,
+    "hip-backend": Backend.HIP,
     "metal-backend": Backend.METAL,
 }
 
@@ -44,13 +46,14 @@ BACKEND_NAME_MAP: Dict[str, Backend] = {
 BACKEND_PRIORITY_PROPERTY: Dict[Backend, str] = {
     Backend.OPENCL: "tornado.opencl.priority",
     Backend.CUDA: "tornado.cuda.priority",
+    Backend.HIP: "tornado.hip.priority",
     Backend.METAL: "tornado.metal.priority",
 }
 
 # When an SDK is built with more than one backend, prefer this one for
 # properties that need a single "primary" backend (e.g. the printed message,
 # and which backend becomes TornadoVM's default device).
-BACKEND_PRIORITY: List[Backend] = [Backend.CUDA, Backend.OPENCL, Backend.METAL]
+BACKEND_PRIORITY: List[Backend] = [Backend.CUDA, Backend.HIP, Backend.OPENCL, Backend.METAL]
 
 # TornadoVM's asynchronous MLX dispatch (-Dtornado.mlx.async=true) commits a batch of Metal work
 # before an MLX library task without waiting for it; without it every MLX call waits for the GPU
@@ -742,7 +745,7 @@ def create_parser(command=None) -> argparse.ArgumentParser:
     hw_group.add_argument("--gpu", dest="use_gpu", action="store_true",
                           help="Run on the accelerator (default: CPU)")
     for flag, backend, name in (("--opencl", Backend.OPENCL, "OpenCL"), ("--cuda", Backend.CUDA, "CUDA"),
-                                ("--metal", Backend.METAL, "Metal")):
+                                ("--hip", Backend.HIP, "HIP"), ("--metal", Backend.METAL, "Metal")):
         hw_group.add_argument(flag, dest="backend_override", action="store_const", const=backend,
                               help=f"Use the {name} backend when the TornadoVM SDK has more than one "
                                    "(default: auto-detected)")
@@ -858,7 +861,7 @@ def create_parser(command=None) -> argparse.ArgumentParser:
 def validate_backend_selection(args):
     """Reject a backend flag that was given without --gpu (T12.1d).
 
-    --opencl/--cuda/--metal only rank TornadoVM's backends; they do not enable
+    --opencl/--cuda/--hip/--metal only rank TornadoVM's backends; they do not enable
     acceleration. --gpu is what sets -Duse.tornadovm=true. So `--cuda` on its own used to
     run the whole model on the CPU while printing "using cuda", which reads as a slow GPU
     rather than as a mistake -- about 21 tok/s where the GPU gives 82, with no error and

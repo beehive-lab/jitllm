@@ -179,8 +179,10 @@ Per-backend support and multi-GPU splits: [models-and-backends.md](docs/architec
 ./jitllm bench -m model.gguf --gpu --pp 512 --tg 128            # llama-bench-style pp/tg table
 ```
 
-The backend (CUDA, OpenCL or Metal) comes from the SDK in `TORNADOVM_HOME`; `--cuda`, `--opencl` or
-`--metal` picks one from an SDK built with several. `-v` prints the run configuration, memory plan and
+The backend (CUDA, OpenCL, HIP or Metal) comes from the SDK in `TORNADOVM_HOME`; `--cuda`, `--opencl`,
+`--hip` or `--metal` picks one from an SDK built with several. On HIP (AMD GPUs) TornadoVM compiles
+kernels with hipRTC, so `ROCM_PATH` must name a ROCm 7 install, and the KV cache is FP32
+(`--fp32-kv-cache`), as on OpenCL on a non-NVIDIA GPU. `-v` prints the run configuration, memory plan and
 startup timings. `./jitllm COMMAND --help` lists every option.
 
 <p align="center"><img src="docs/inter-output.gif" alt="jitllm chat on an RTX 5090, with nvtop showing GPU use" width="800"></p>

@@ -171,6 +171,35 @@ class VerbosityOptions(unittest.TestCase):
         finally:
             launcher.platform.system = real
 
+    def detect(self, backends_line):
+        with tempfile.TemporaryDirectory() as sdk:
+            os.makedirs(os.path.join(sdk, "etc"))
+            with open(os.path.join(sdk, "etc", "tornado.backend"), "w") as f:
+                f.write("tornado.backends=%s\n" % backends_line)
+            runner = launcher.LlamaRunner.__new__(launcher.LlamaRunner)
+            runner.tornado_sdk = sdk
+            return runner.detect_installed_backends()
+
+    def test_hip_sdk_is_detected_and_ranked(self):
+        # A HIP-only SDK (make BACKEND=hip) must be accepted, not refused as unsupported.
+        self.assertEqual([launcher.Backend.HIP], self.detect("hip-backend"))
+        both = self.detect("opencl-backend,hip-backend")
+        self.assertEqual(launcher.Backend.HIP, launcher.LlamaRunner.select_primary_backend(both))
+        args = launcher.create_parser().parse_args(["--model", "stub.gguf", "--gpu", "--hip"])
+        self.assertEqual(launcher.Backend.HIP, args.backend_override)
+        with tempfile.TemporaryDirectory() as sdk:
+            open(os.path.join(sdk, "tornado-argfile"), "w").close()
+            os.makedirs(os.path.join(sdk, "target"))
+            open(os.path.join(sdk, "target", "jitllm-1.0.0-jdk21.jar"), "w").close()
+            runner = launcher.LlamaRunner.__new__(launcher.LlamaRunner)
+            runner.tornado_sdk = sdk
+            runner.java_home, runner.llama_root = "/stub/java", sdk
+            args.installed_backends, args.backend = both, launcher.Backend.HIP
+            cmd = runner._build_base_command(args)
+        hip_rank = int(next(a for a in cmd if a.startswith("-Dtornado.hip.priority=")).split("=")[1])
+        ocl_rank = int(next(a for a in cmd if a.startswith("-Dtornado.opencl.priority=")).split("=")[1])
+        self.assertGreater(hip_rank, ocl_rank, "HIP must become TornadoVM's default device")
+
     def test_mlx_async_is_on_for_metal_after_tornadovm_7_3_1(self):
         self.assertIn("-Dtornado.mlx.async=true", self.metal_command("7.3.2-jdk22plus-dev"))
         self.assertIn("-Dtornado.mlx.async=true", self.metal_command("7.4.0"))
