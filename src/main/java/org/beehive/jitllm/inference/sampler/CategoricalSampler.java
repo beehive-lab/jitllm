@@ -2,6 +2,11 @@
  * Copyright (c) 2024-2026, APT Group, Department of Computer Science,
  * The University of Manchester.
  *
+ * Portions of this file are derived from Llama3.java
+ * (https://github.com/mukel/llama3.java),
+ * Copyright (c) 2024 Alfonso² Peterssen and Copyright (c) 2024 Andrej Karpathy.
+ * Used under the MIT License; see the LICENSE file.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at

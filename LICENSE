@@ -200,3 +200,86 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+
+===============================================================================
+APPENDIX: THIRD-PARTY COMPONENTS
+===============================================================================
+
+jitllm includes the third-party code listed below, which is distributed under
+its own licence. The licence text and copyright notices are reproduced in full
+after the list.
+
+Source files derived from Llama3.java
+-------------------------------------
+
+jitllm (formerly GPULlama3.java) began as a refactoring of Llama3.java. Each of
+the files below carries a notice in its header, and the MIT License applies to
+the portions derived from Llama3.java.
+
+  Llama3.java                                          MIT
+  https://github.com/mukel/llama3.java
+    src/main/java/org/beehive/jitllm/
+        Options.java
+        auxiliary/Parallel.java
+        auxiliary/Timer.java
+        backend/cpu/InferenceCoreWithPrefillDecode.java
+        format/GGMLType.java
+        format/GGUF.java
+        generation/ModelGeneration.java
+        inference/sampler/CategoricalSampler.java
+        inference/sampler/Sampler.java
+        inference/sampler/ToppSampler.java
+        inference/state/State.java
+        inference/weights/standard/StandardWeights.java
+        model/format/LlamaChatFormat.java
+        model/loader/LlamaModelLoader.java
+        model/loader/MistralModelLoader.java
+        model/loader/RopeFrequencies.java
+        tensor/standard/ArrayFloatTensor.java
+        tensor/standard/BF16FloatTensor.java
+        tensor/standard/FP16FloatTensor.java
+        tensor/standard/FloatTensor.java
+        tensor/standard/Q4_0FloatTensor.java
+        tensor/standard/Q4_1FloatTensor.java
+        tensor/standard/Q8_0FloatTensor.java
+        tokenizer/DevstralTokenizer.java
+        tokenizer/GraniteTokenizer.java
+        tokenizer/LlamaTokenizer.java
+        tokenizer/Qwen3Tokenizer.java
+        tokenizer/Tokenizer.java
+        tokenizer/Vocabulary.java
+    src/test/java/org/beehive/jitllm/
+        inference/op/DevstralCpuOperationEquivalenceTest.java
+        inference/op/GraniteCpuOperationEquivalenceTest.java
+        inference/op/LlamaCpuOperationEquivalenceTest.java
+        inference/op/Phi3CpuOperationEquivalenceTest.java
+        inference/op/Qwen2CpuOperationEquivalenceTest.java
+        inference/op/Qwen2MoeCpuOperationEquivalenceTest.java
+
+-------------------------------------------------------------------------------
+Llama3.java
+-------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2024 Alfonso² Peterssen
+Copyright (c) 2024 Andrej Karpathy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
