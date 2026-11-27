@@ -35,12 +35,17 @@ For a published release:
 Otherwise build and inspect both JARs locally. Among others check model loading/generation, metrics,
 `ChatFormat`, tool/thinking support, stop tokens, and TornadoVM lifecycle APIs.
 
+Note the TornadoVM release the jitllm POM names (`tornadovm.release.version`; the script prints
+it). Validate on SDKs of that release, and update every TornadoVM and `tornado-api` version
+in the LangChain4j README and docs page to match.
+
 ## 2. Inspect and update LangChain4j
 
 The integration is the `langchain4j-jitllm` module (package `dev.langchain4j.model.jitllm`,
 classes `JitLLMChatModel`, `JitLLMStreamingChatModel`, `JitLLMBaseModel`, `JitLLMConversions`,
-`JitLLMResponseParser`), added upstream in langchain4j/langchain4j#6508. The older
-`langchain4j-gpu-llama3` module targets GPULlama3.java and is not updated for jitllm releases.
+`JitLLMOutputParser`, `JitLLMStreamingHandle`), added upstream in langchain4j/langchain4j#6508.
+The older `langchain4j-gpu-llama3` module targets GPULlama3.java and is not updated for jitllm
+releases.
 Re-read the layout rather than assuming it:
 
 ```bash
@@ -109,9 +114,15 @@ Finish with:
 
 ```bash
 git diff --check
-./mvnw -pl langchain4j-jitllm spotless:check
+./mvnw -Pspotless -pl langchain4j-jitllm spotless:check
 git status --short
 ```
+
+`-Pspotless` is how `make lint` runs it (palantir-java-format for Java, sortPom for the POM,
+ratcheted from `origin/main`, so only changed files are checked). An edit can make spotless
+rewrap untouched lines in the same file; apply its formatting. Keep added lines within the
+120 columns of `.editorconfig`, the docs and POM comments too, and do not rewrap existing
+lines you did not otherwise change.
 
 Report the API changes, exact JDK/backend/models tested, every whole-chain result, failures,
 disabled capabilities, publication compatibility, and files that must not be committed. Remember

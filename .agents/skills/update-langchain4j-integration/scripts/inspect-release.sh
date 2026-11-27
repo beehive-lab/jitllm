@@ -47,6 +47,11 @@ for line in jdk21:65 jdk22plus:66; do
 done
 
 echo
+tornadovm_release=$(sed -n 's|.*<tornadovm.release.version>\(.*\)</tornadovm.release.version>.*|\1|p' \
+    "${inspection_dir}/${artifact}-${version}-jdk22plus.pom" | head -1)
+echo "TornadoVM release: ${tornadovm_release:-not found in the POM}"
+
+echo
 echo "ChatFormat API from ${version}-jdk21:"
 javap -public -classpath "${inspection_dir}/${artifact}-${version}-jdk21.jar" \
     org.beehive.jitllm.model.format.ChatFormat

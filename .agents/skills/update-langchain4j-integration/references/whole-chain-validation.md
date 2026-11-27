@@ -57,7 +57,7 @@ needs a comment, and a method with a return value needs `@return`. A missing one
   "$LANGCHAIN4J_DIR"
 ```
 
-Two environment facts the suite depends on, both of which fail in ways that look like
+Three environment facts the suite depends on, all of which fail in ways that look like
 adapter defects:
 
 - `src/test/resources/tornado-jvm.args` must carry `--add-modules jdk.incubator.vector`.
@@ -68,22 +68,56 @@ adapter defects:
   several models and sessions in one JVM, and device memory a closed session frees goes back
   to TornadoVM's buffer provider rather than to the driver — so the later classes fail on
   allocation while the earlier ones passed. 20GB is enough on a 24GB device.
+- TornadoVM SDKs after 7.0.1 ship JUnit 6 in `share/java/tornado`, and `tornado.runtime`
+  binds `tornado.unittests`, so every TornadoVM JVM resolves the JUnit Platform and the
+  Jupiter engine as named modules. The suite's classpath copies of `junit-jupiter-params`,
+  and the `junit-vintage` engine bundled in `junit-platform-console-standalone`, cannot read
+  their internals. The run then fails with `TestEngine with ID 'junit-vintage' failed to
+  discover tests`, or every parameterized container fails with `IllegalAccessError: ... does
+  not export org.junit.platform.commons.util` while the plain tests pass. The fix
+  (langchain4j#7295) is `--add-modules org.junit.jupiter.params` in `tornado-jvm.args` and
+  `--exclude-engine=junit-vintage` in the `run-tests` launcher arguments. Check what the SDK
+  resolves with `tornado --jvm="--show-module-resolution" -version | grep junit`.
+
+The run-tests JVM sets `-Duse.tornadovm=true`, so a unit test that asserts `onGPU(true)` fails
+without TornadoVM must be disabled there (`@DisabledIfSystemProperty`), not counted as a failure.
+
+To run one inherited test, select its class and filter by method name; `--select-method`
+does not find a method declared in LangChain4j's abstract base class:
+
+```bash
+../mvnw -P run-tests "-Dit.selection=--select-class=dev.langchain4j.model.jitllm.JitLLMChatModelIT \
+  --include-methodname=.*should_execute_a_tool_then_answer.*"
+```
 
 ### The inherited tests measure the model as much as the adapter
 
 Several of LangChain4j's shared contract tests assert model behaviour. Which of them pass
-depends on the fixture, and no single small fixture passes all of them:
+depends on the fixture, and no single small fixture passes all of them.
 
-Historical, measured on jitllm 1.0.0 / TornadoVM 7.0.1, unit tests included (the script's
-selection); re-measure on the current release before relying on it:
+The ITs build their models with `.think(false)`, and jitllm rejects `ThinkingMode.DISABLED`
+for a model without a reasoning phase (`thinkingMode(DISABLED) was requested, but LLAMA_3 has
+no reasoning phase to control`). Until the ITs set it only for thinking models, use a
+fixture with a reasoning phase, such as Qwen3; a Llama fixture fails every generating test
+on that error, not on its output.
 
-| Fixture | Result |
-| --- | --- |
-| `Qwen3-0.6B-F16` | 42/42 on JDK 25 CUDA, JDK 21 CUDA and JDK 25 OpenCL |
-| `Llama-3.2-3B-Instruct-Q8_0` | 36/42 — the six tool tests call the tool correctly, but the final answer lacks the expected text |
+Measured with unit tests included (the script's selection); re-measure on the current
+release before relying on it:
 
-Before recording a failure as an adapter defect, establish which it is. Tool transport is
-covered deterministically by `JitLLMConversionsTest`, whatever a given fixture emits.
+| jitllm / TornadoVM | Fixture | Result |
+| --- | --- | --- |
+| 3.1.0 / 8.2.0 | `Qwen3-0.6B-F16` | 75/77 on JDK 25 Metal and JDK 21 Metal (Apple M4 Pro); 3 skipped |
+| 1.0.0 / 7.0.1 | `Qwen3-0.6B-F16` | 42/42 on JDK 25 CUDA, JDK 21 CUDA and JDK 25 OpenCL |
+| 1.0.0 / 7.0.1 | `Llama-3.2-3B-Instruct-Q8_0` | 36/42: the six tool tests call the tool correctly, but the final answer lacks the expected text |
+
+The two 3.1.0 Metal failures are `should_execute_a_tool_then_answer`, sync and streaming: the
+model answers the weather question itself instead of calling the tool. It does the same on
+the CPU and on jitllm 1.0.2, so it is fixture behaviour, not a regression.
+
+Before recording a failure as an adapter defect, establish which it is: rerun the test on the
+CPU (`-Duse.tornadovm=false` in a copy of `tornado-jvm.args`) and on the previous release in a
+separate worktree. Identical output on both points to the model. Tool transport is covered
+deterministically by `JitLLMConversionsTest`, whatever a given fixture emits.
 
 **Report the fixture with the counts, and never call the inherited suite green.**
 
@@ -111,11 +145,20 @@ Run basic chat, streaming chat, the capability this release changed, and any lon
 demo through to its end. Startup is not a pass: each demo must perform inference and reach
 its expected end.
 
-The demo repository still targets `langchain4j-gpu-llama3` 1.7.x. Validate on a copy: switch
-the dependency to `langchain4j-jitllm`, the imports to `dev.langchain4j.model.jitllm.JitLLM*`,
-`agentBuilder(...).outputName(...)` to `outputKey(...)`, and model paths to `MODEL`. Launch with
-`tornado --jvm="-Duse.tornadovm=true --add-modules jdk.incubator.vector ..."`.
-`printLastMetrics()` logs through SLF4J, so it prints nothing without an SLF4J provider.
+The demo repository still targets `langchain4j-gpu-llama3`. Validate on a copy: set
+`langchain4j.version` to the LangChain4j snapshot you built, switch the dependency to
+`langchain4j-jitllm`, the imports to `dev.langchain4j.model.jitllm.JitLLM*`,
+`agentBuilder(...).outputName(...)` to `outputKey(...)`, and pass `MODEL` as the model path.
+Delete the `printLastMetrics()` calls in `_1_ChatExample` and `_2_StreamingExample`: that
+method belongs to the GPULlama3 adapter, and the JitLLM adapter has never had it.
+
+Launch with `tornado --jvm="-Duse.tornadovm=true --add-modules jdk.incubator.vector ..."`, and
+add `--enable-preview` on JDK 21. `TicTacToeAgenticGame` takes `--gpu-model` and `--cpu-model`
+and runs one model on each, so it covers the CPU path too.
+
+Small fixtures run the demos to their end, but they can still give poor answers; for
+example, `Qwen3-0.6B-F16` mixes up the user's name in `_3_ChatMemoryExample`. Record that,
+but it is not a failure.
 
 ## Record
 
