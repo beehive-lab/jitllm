@@ -295,6 +295,9 @@ IDE setup, building against TornadoVM `develop`, GraalVM native image and releas
 
 ## Acknowledgments
 
+jitllm builds on [Llama3.java](https://github.com/mukel/llama3.java) by [Alfonso² Peterssen](https://github.com/mukel),
+which is released under the MIT License. Earlier Llama2 work: [llama2.tornadovm](https://github.com/mikepapadim/llama2.tornadovm.java).
+
 Partially funded by EU Horizon Europe and UKRI grants: [AERO 101092850](https://aero-project.eu/),
 [P2CODE 101093069](https://p2code-project.eu/), [ENCRYPT 101070670](https://encrypt-project.eu),
 [TANGO 101070052](https://tango-project.eu).
@@ -303,4 +306,4 @@ If you use jitllm in research, please cite it ([CITATION.cff](CITATION.cff)).
 
 ## License
 
-[Apache License 2.0](LICENSE)
+[Apache License 2.0](LICENSE). Code derived from Llama3.java is used under the MIT License; the affected files and the licence text are listed at the end of [LICENSE](LICENSE).
